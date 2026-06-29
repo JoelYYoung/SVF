@@ -366,8 +366,10 @@ void MTA::reportRaces()
     std::set<RacePair> racePairs;
     detectRace(pag, pta, mhp, lsa, callGraph, racePairs);
 
-    for (const RacePair& rp : racePairs)
-        outs() << SVFUtil::bugMsg1("race pair(") << " stmt1: " << rp.stmt1->toString()
-               << ", stmt2: " << rp.stmt2->toString() << SVFUtil::bugMsg1(")") << "\n";
+    // Report the distinct racy statements (not the pairs).
+    std::set<const SVFStmt*> racyStmts;
+    for (const RacePair& rp : racePairs) { racyStmts.insert(rp.stmt1); racyStmts.insert(rp.stmt2); }
+    for (const SVFStmt* stmt : racyStmts)
+        outs() << SVFUtil::bugMsg1("race statement: ") << stmt->toString() << "\n";
 }
 

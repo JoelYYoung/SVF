@@ -311,7 +311,6 @@ bool SlicedMTA::runPreAnalysis(const ResolveIndirectCalls& resolveIndirectCalls)
                                    preAnder->getCallGraph(), racePairs);
     });
     SVFUtil::outs() << "Found " << vulnerableStatements.size() << " vulnerable statements\n";
-    SVFUtil::outs() << "Found " << racePairs.size() << " race pairs\n";
 
     // Step 6: build the thread-aware VFG once (substrate for slicing + main FS).
     buildVFGPre();
@@ -326,7 +325,7 @@ bool SlicedMTA::runMTASlicingAndAnalysis()
 
     if (racePairs.empty())
     {
-        SVFUtil::outs() << "[SKIP] No race pairs found in pre-analysis\n";
+        SVFUtil::outs() << "[SKIP] No races found in pre-analysis\n";
         return true;
     }
 
@@ -443,7 +442,7 @@ bool SlicedMTA::runPTASlicingAndAnalysis()
     }
     if (racePairs.empty())
     {
-        SVFUtil::outs() << "[SKIP] No race pairs found in pre-analysis, skipping PTA slicing\n";
+        SVFUtil::outs() << "[SKIP] No races found in pre-analysis, skipping PTA slicing\n";
         return true;
     }
 
@@ -464,7 +463,6 @@ bool SlicedMTA::runPTASlicingAndAnalysis()
     else
     {
         SVFUtil::outs() << "Using " << vulnerableStatements.size() << " vulnerable statements from pre-analysis\n";
-        SVFUtil::outs() << "Using " << racePairs.size() << " race pairs from pre-analysis\n";
 
         // Reuse the slicer built during MTA slicing (it memoised the shared
         // data-dependence closure over VFG_pre); construct it only if absent
@@ -583,22 +581,16 @@ bool SlicedMTA::runFinalRaceDetection()
     for (const RacePair& rp : detectedPairs) { racyStmts.insert(rp.stmt1); racyStmts.insert(rp.stmt2); }
 
     SVFUtil::outs() << "\n=== Race Detection Summary ===\n";
-    SVFUtil::outs() << "Race pairs (pre-analysis): " << racePairs.size() << "\n";
-    SVFUtil::outs() << "Race pairs (sliced graph): " << detectedPairs.size() << "\n";
     SVFUtil::outs() << "Race statements (sliced graph): " << racyStmts.size() << "\n";
     // Machine-readable line for the artifact's `msli` table generator: the race
     // statements reported after slicing (the preservation metric).
     SVFUtil::outs() << "[MSLI-RQ] mode=MSli alarms=" << racyStmts.size() << "\n";
 
-    if (!detectedPairs.empty())
-    {
-        SVFUtil::outs() << "\n=== Bug Report ===\n";
-        SVFUtil::outs() << "Found " << detectedPairs.size() << " race pair(s) in sliced graph\n";
-    }
+    if (!racyStmts.empty())
+        SVFUtil::outs() << "\n=== Bug Report ===\nFound " << racyStmts.size()
+                        << " race statement(s) in sliced graph\n";
     else
-    {
-        SVFUtil::outs() << "\nNo race pairs detected in sliced graph.\n";
-    }
+        SVFUtil::outs() << "\nNo races detected in sliced graph.\n";
 
     return true;
 }
@@ -613,7 +605,7 @@ void SlicedMTA::runWholeProgramDetection()
     SVFUtil::outs() << "\n=== Whole-program FSAM Race Detection (no slicing) ===\n";
     if (threadFunctions.empty() || racePairs.empty())
     {
-        SVFUtil::outs() << "[SKIP] No thread functions / race pairs in pre-analysis\n";
+        SVFUtil::outs() << "[SKIP] No thread functions / races in pre-analysis\n";
         return;
     }
 
@@ -651,8 +643,6 @@ void SlicedMTA::runWholeProgramDetection()
     for (const RacePair& rp : detectedPairs) { racyStmts.insert(rp.stmt1); racyStmts.insert(rp.stmt2); }
 
     SVFUtil::outs() << "\n=== Race Detection Summary ===\n";
-    SVFUtil::outs() << "Race pairs (pre-analysis): " << racePairs.size() << "\n";
-    SVFUtil::outs() << "Race pairs (whole program): " << detectedPairs.size() << "\n";
     SVFUtil::outs() << "Race statements (whole program): " << racyStmts.size() << "\n";
     SVFUtil::outs() << "[MSLI-RQ] mode=FSAM alarms=" << racyStmts.size() << "\n";
 }
