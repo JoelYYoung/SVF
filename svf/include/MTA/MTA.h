@@ -127,6 +127,8 @@ private:
     /// Helpers for the equivalence-class race detector.
     //@{
     static std::string contextSignature(const CallStrCxt& context);
+    static bool isReportableRaceObject(SVFIR* svfIr, NodeID object);
+    static bool hasAnyCommonLock(LockAnalysis* lockAnalysis, const ICFGNode* first, const ICFGNode* second);
     static std::string lockSignature(LockAnalysis* lockAnalysis, const ICFGNode* node);
     static bool occurrencesRace(MHP* mhp, const RaceOccurrence& first, const RaceOccurrence& second);
     static void commitRacePair(std::set<RacePair>& out,

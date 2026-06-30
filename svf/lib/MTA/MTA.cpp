@@ -149,23 +149,27 @@ PointsTo MTA::getGlobalObjectVariables(SVFIR* svfIr) {
 // object reached through a struct's pointer field -- would be screened out of the
 // escape set as "not shared".
 PointsTo MTA::getPointsToClosure(AndersenBase* pta, const PointsTo& pts) {
+    constexpr unsigned MaxSharedClosureDepth = 5;
     SVFIR* pag = pta->getPAG();
     PointsTo ptsClosure = pts;
-    std::deque<NodeID> worklist;
+    std::deque<std::pair<NodeID, unsigned>> worklist;
     for (NodeID pt : pts) {
-        worklist.push_back(pt);
+        worklist.emplace_back(pt, 0);
     }
 
     while (!worklist.empty()) {
-        NodeID obj = worklist.front();
+        NodeID obj = worklist.front().first;
+        unsigned depth = worklist.front().second;
         worklist.pop_front();
+        if (depth >= MaxSharedClosureDepth)
+            continue;
 
         for (NodeID target : pta->getPts(obj))           // points-to
-            if (!ptsClosure.test(target)) { ptsClosure.set(target); worklist.push_back(target); }
+            if (!ptsClosure.test(target)) { ptsClosure.set(target); worklist.emplace_back(target, depth + 1); }
 
         if (pag->getBaseObject(obj) != nullptr)          // containment (object nodes only)
             for (NodeID field : pta->getAllFieldsObjVars(pta->getBaseObjVarID(obj)))
-                if (!ptsClosure.test(field)) { ptsClosure.set(field); worklist.push_back(field); }
+                if (!ptsClosure.test(field)) { ptsClosure.set(field); worklist.emplace_back(field, depth + 1); }
     }
 
     return ptsClosure;
@@ -178,10 +182,46 @@ std::string MTA::contextSignature(const CallStrCxt& context) {
     return sig;
 }
 
+bool MTA::isReportableRaceObject(SVFIR* svfIr, NodeID object) {
+    if (svfIr->isBlkObjOrConstantObj(object))
+        return false;
+
+    const BaseObjVar* base = svfIr->getBaseObject(object);
+    return base != nullptr && !SVFUtil::isa<DummyObjVar>(base);
+}
+
+bool MTA::hasAnyCommonLock(LockAnalysis* lockAnalysis, const ICFGNode* first, const ICFGNode* second) {
+    if (lockAnalysis->hasIntraLockSet(first) && lockAnalysis->hasIntraLockSet(second)) {
+        const LockAnalysis::InstSet& firstLocks = lockAnalysis->getIntraLockSet(first);
+        const LockAnalysis::InstSet& secondLocks = lockAnalysis->getIntraLockSet(second);
+        for (const ICFGNode* lock : firstLocks)
+            if (secondLocks.find(lock) != secondLocks.end())
+                return true;
+    }
+
+    if (lockAnalysis->hasCxtStmtFromInst(first) && lockAnalysis->hasCxtStmtFromInst(second)) {
+        const LockAnalysis::CxtStmtSet& firstCxts = lockAnalysis->getCxtStmtsFromInst(first);
+        const LockAnalysis::CxtStmtSet& secondCxts = lockAnalysis->getCxtStmtsFromInst(second);
+        for (const CxtStmt& firstCxt : firstCxts) {
+            if (!lockAnalysis->hasCxtLockfromCxtStmt(firstCxt))
+                continue;
+            const LockAnalysis::CxtLockSet& firstLocks = lockAnalysis->getCxtLockfromCxtStmt(firstCxt);
+            for (const CxtStmt& secondCxt : secondCxts) {
+                if (!lockAnalysis->hasCxtLockfromCxtStmt(secondCxt))
+                    continue;
+                if (lockAnalysis->intersects(firstLocks, lockAnalysis->getCxtLockfromCxtStmt(secondCxt)))
+                    return true;
+            }
+        }
+    }
+
+    return lockAnalysis->isProtectedByCommonLock(first, second);
+}
+
 // Lock signature of a node: equal signatures => identical common-lock relation
 // against any partner ("U" = holds no lock), so C4 is decided once per class pair.
 std::string MTA::lockSignature(LockAnalysis* lockAnalysis, const ICFGNode* node) {
-    if (!lockAnalysis->isProtectedByCommonLock(node, node)) return "U";
+    if (!hasAnyCommonLock(lockAnalysis, node, node)) return "U";
     std::string sig = "L";
     sig += lockAnalysis->isInsideIntraLock(node) ? 'i' : '.';
     sig += lockAnalysis->isInsideCondIntraLock(node) ? 'c' : '.';
@@ -273,6 +313,12 @@ std::set<const SVFStmt*> MTA::detectRace(
                     } else continue;
                     PointsTo objects = pta->getPts(accessedPtr);
                     objects &= escSet;                               // screen 2: touches shared object?
+                    std::vector<NodeID> summaryObjects;
+                    for (NodeID object : objects)
+                        if (!isReportableRaceObject(svfIr, object))
+                            summaryObjects.push_back(object);
+                    for (NodeID object : summaryObjects)
+                        objects.reset(object);
                     if (objects.empty()) continue;
                     std::string sig = lockSignature(lockAnalysis, node);
                     const size_t firstNew = occurrences.size();
@@ -320,7 +366,7 @@ std::set<const SVFStmt*> MTA::detectRace(
                 // so emit a statement-COVERING set -- every racy member as an endpoint.
                 if (firstIdx != secondIdx) {
                     if (firstClass.locked && secondClass.locked &&
-                        lockAnalysis->isProtectedByCommonLock(firstRep.node, secondRep.node))
+                        hasAnyCommonLock(lockAnalysis, firstRep.node, secondRep.node))
                         continue;
                     for (size_t memberIdx : firstClass.members)
                         commitRacePair(outRacePairs, occurrences[memberIdx],
@@ -334,14 +380,14 @@ std::set<const SVFStmt*> MTA::detectRace(
                     // instance of itself, independent of any cross-race below.
                     for (size_t memberIdx : members)
                         if (!firstClass.locked ||
-                            !lockAnalysis->isProtectedByCommonLock(occurrences[memberIdx].node,
-                                                                   occurrences[memberIdx].node))
+                            !hasAnyCommonLock(lockAnalysis, occurrences[memberIdx].node,
+                                              occurrences[memberIdx].node))
                             commitRacePair(outRacePairs, occurrences[memberIdx], occurrences[memberIdx]);
                     // Cross-race needs >=2 members: two distinct occurrences to pair.
                     if (members.size() >= 2 &&
                         (!firstClass.locked ||
-                         !lockAnalysis->isProtectedByCommonLock(occurrences[members[0]].node,
-                                                                occurrences[members[1]].node)))
+                         !hasAnyCommonLock(lockAnalysis, occurrences[members[0]].node,
+                                           occurrences[members[1]].node)))
                         for (size_t pos = 0; pos < members.size(); ++pos)
                             commitRacePair(outRacePairs, occurrences[members[pos]],
                                            occurrences[members[pos == 0 ? 1 : 0]]);
@@ -372,4 +418,3 @@ void MTA::reportRaces()
     for (const SVFStmt* stmt : racyStmts)
         outs() << SVFUtil::bugMsg1("race statement: ") << stmt->toString() << "\n";
 }
-
