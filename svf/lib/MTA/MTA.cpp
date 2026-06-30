@@ -218,6 +218,40 @@ bool MTA::hasAnyCommonLock(LockAnalysis* lockAnalysis, const ICFGNode* first, co
     return lockAnalysis->isProtectedByCommonLock(first, second);
 }
 
+std::string MTA::raceStmtKey(const SVFStmt* stmt) {
+    std::string loc;
+    if (stmt->getICFGNode() != nullptr && stmt->getICFGNode()->getFun() != nullptr)
+        loc = stmt->getICFGNode()->getFun()->getName();
+    if (loc.empty())
+        loc = stmt->getICFGNode() != nullptr ? stmt->getICFGNode()->getSourceLoc() : stmt->toString();
+    loc += SVFUtil::isa<StoreStmt>(stmt) ? "|S" : "|L";
+    return loc;
+}
+
+void MTA::normaliseRacePairs(std::set<RacePair>& pairs) {
+    Map<std::string, const SVFStmt*> canonicalStmts;
+    std::set<RacePair> normalised;
+
+    auto canonical = [&canonicalStmts](const SVFStmt* stmt) {
+        std::string key = raceStmtKey(stmt);
+        auto found = canonicalStmts.find(key);
+        if (found != canonicalStmts.end())
+            return found->second;
+        canonicalStmts[key] = stmt;
+        return stmt;
+    };
+
+    for (const RacePair& pair : pairs) {
+        const SVFStmt* stmt1 = canonical(pair.stmt1);
+        const SVFStmt* stmt2 = canonical(pair.stmt2);
+        if (stmt2 < stmt1)
+            std::swap(stmt1, stmt2);
+        normalised.insert(RacePair(stmt1, stmt2));
+    }
+
+    pairs.swap(normalised);
+}
+
 // Lock signature of a node: equal signatures => identical common-lock relation
 // against any partner ("U" = holds no lock), so C4 is decided once per class pair.
 std::string MTA::lockSignature(LockAnalysis* lockAnalysis, const ICFGNode* node) {
@@ -395,6 +429,7 @@ std::set<const SVFStmt*> MTA::detectRace(
             }
     }
 
+    normaliseRacePairs(outRacePairs);
     for (const RacePair& r : outRacePairs) { bugStmts.insert(r.stmt1); bugStmts.insert(r.stmt2); }
     return bugStmts;
 }
