@@ -71,9 +71,9 @@ class SlicedLockAnalysis;
  * runOnModule drives five stages on a pre-built SVFIR:
  *   1. (caller) build SVFIR + resolve indirect calls into the PAG
  *   2. pre-analysis: Andersen, TCT, MHP, lock, candidate race pairs, VFG_pre
- *   3. MTA slicing: slice the thread-aware graph, build the sliced MHP/lock
- *   4. PTA slicing + main flow-sensitive FSAM (FSMPTA) on the slice
- *   5. final race detection on the sliced graph using FSAM points-to
+ *   3. ILA slicing: slice the thread-aware graph, build the sliced MHP/lock
+ *   4. FSPTA slicing + sparse flow-sensitive pointer analysis on the slice
+ *   5. final race detection on the sliced graph using FSPTA points-to
  *
  * Behaviour is controlled by Options (FlowSensitive, EnableSlicing, MainIlaSliced,
  * ThreadVFSources, SlicingSingle, SlicedDumpDot, MTAObserve).
@@ -116,8 +116,8 @@ private:
     void runObserveFSAM();
     void runObserveFSAMSliced();
 
-    /// Main pointer-analysis instance feeding final race detection (the
-    /// flow-sensitive FSAM, a BVDataPTAImpl queried polymorphically).
+    /// Main FSPTA instance feeding final race detection (queried polymorphically
+    /// through BVDataPTAImpl).
     BVDataPTAImpl* getMainPTA() const;
 
     /// Union of both statements of every candidate race pair (the slice targets).
@@ -144,15 +144,15 @@ private:
     std::unique_ptr<LockAnalysis> lockAnalysis;
     // Inclusion-based Andersen's pre-analysis (a shared singleton, not owned
     // here -- released once in the destructor). Feeds the TCT / MHP / lock /
-    // race pre-analysis, the thread-aware VFG_pre, and the main FSMPTA.
+    // race pre-analysis, the thread-aware VFG_pre, and the main FSPTA.
     AndersenWaveDiff* preAnder = nullptr;
     std::unique_ptr<MTASVFGBuilder> vfgPreBuilder; // owns vfgPre
     SVFG* vfgPre = nullptr;
     std::unique_ptr<PTASlicer> ptaSlicer;
     std::unique_ptr<MTASlicer> mtaSlicer;
     std::unique_ptr<SingleSlicer> singleSlicer;
-    // -slicing-single: the one unified slice, computed in MTA slicing and reused
-    // (not recomputed) for PTA slicing so both stages share V_Single.
+    // -slicing-single: the one unified slice, computed in ILA slicing and reused
+    // (not recomputed) for FSPTA slicing so both stages share V_Single.
     std::set<const ICFGNode*> singleSlicedNodes;
     std::unique_ptr<SlicedSVFIRView> mtaSlicedView;
     std::unique_ptr<SlicedSVFIRView> ptaSlicedView;

@@ -203,8 +203,8 @@ SlicedMTA::~SlicedMTA()
 
 BVDataPTAImpl* SlicedMTA::getMainPTA() const
 {
-    // The main FSMPTA phase is the flow-sensitive FSAM (FSMPTA), a
-    // BVDataPTAImpl, so the downstream race detector queries it polymorphically.
+    // The main FSPTA phase is queried polymorphically through BVDataPTAImpl by
+    // the downstream race detector.
     return mtaFSMPTA.get();
 }
 
@@ -221,7 +221,7 @@ std::set<const SVFStmt*> SlicedMTA::getVulnerableStmts() const
 
 // Pre-Analysis (Pointer Analysis + TCT + MHP & Lock + Race Detection).
 // Build the thread-aware value-flow graph (VFG_pre) once, on a shared Andersen
-// (reused by the main FSMPTA via the AndersenWaveDiff singleton). This is the
+// (reused by the main FSPTA via the AndersenWaveDiff singleton). This is the
 // substrate the paper uses for both slicing (data dependence over the
 // thread-aware value flow) and the main sparse FS resolution.
 void SlicedMTA::buildVFGPre()
@@ -252,7 +252,7 @@ bool SlicedMTA::runPreAnalysis(const ResolveIndirectCalls& resolveIndirectCalls)
     // Step 1: Pointer Analysis. Inclusion-based Andersen's (more precise than
     // Steensgaard's unification, so fewer spurious MHP/races and a smaller slice).
     // The same Andersen instance (a singleton) is reused for the thread-aware
-    // VFG_pre and the main FSMPTA, so the whole pipeline shares one pre-analysis.
+    // VFG_pre and the main FSPTA, so the whole pipeline shares one pre-analysis.
     timePhase("Andersen's pointer analysis", [&]()
     {
         preAnder = AndersenWaveDiff::createAndersenWaveDiff(svfIr);
@@ -318,10 +318,10 @@ bool SlicedMTA::runPreAnalysis(const ResolveIndirectCalls& resolveIndirectCalls)
     return true;
 }
 
-// MTA Slicing and Analysis (using pre-analysis pointer analysis results)
+// ILA slicing and analysis (using pre-analysis pointer analysis results).
 bool SlicedMTA::runMTASlicingAndAnalysis()
 {
-    SVFUtil::outs() << "\n=== MTA Slicing and Analysis ===\n";
+    SVFUtil::outs() << "\n=== ILA Slicing and Analysis ===\n";
 
     if (racePairs.empty())
     {
@@ -340,7 +340,7 @@ bool SlicedMTA::runMTASlicingAndAnalysis()
     {
         // Single-pass baseline (MSli §3/§5.4): one unified slice (V_Single)
         // combining synchronization + data + call dependence, shared by both the
-        // ILA and the FSPTA stages. Computed once here; reused in PTA slicing.
+        // ILA and the FSPTA stages. Computed once here; reused in FSPTA slicing.
         SVFUtil::outs() << "[Slicing Mode] Single unified slice (V_Single) for ILA + FSPTA\n";
         singleSlicer = std::make_unique<SingleSlicer>(
                            svfIr, preAnder, mhp.get(), lockAnalysis.get(),
@@ -361,7 +361,7 @@ bool SlicedMTA::runMTASlicingAndAnalysis()
         // ILA slicing sources = [INIT] race statements + [THREAD-VF] sources. Keep
         // a candidate edge's query (see MTASVFGBuilder::getThreadVFQueryMap) only if
         // both endpoints survive the FSPTA slice -- i.e. the edge is in
-        // ThreadVF(VFG'_pre). Closure computed here (pre<->pre) and reused by PTA slicing.
+        // ThreadVF(VFG'_pre). Closure computed here (pre<->pre) and reused by FSPTA slicing.
         std::set<const ICFGNode*> threadVFSources;
         const bool useThreadVFSources = Options::ThreadVFSources();
         if (useThreadVFSources && vfgPreBuilder)
@@ -381,26 +381,26 @@ bool SlicedMTA::runMTASlicingAndAnalysis()
         SVFUtil::outs() << "[THREAD-VF] " << threadVFSources.size()
                         << " ILA slicing sources from VFG_pre value-flow construction"
                         << (useThreadVFSources ? "\n" : " (ablation: [THREAD-VF] sources OFF)\n");
-        timePhase("MTA Slicing", [&]()
+        timePhase("ILA Slicing", [&]()
         {
             mtaSlicedNodes = mtaSlicer->runSlicing(vulnerableStatements, threadVFSources);
         });
-        SVFUtil::outs() << "MTA sliced to " << mtaSlicedNodes.size() << " nodes\n";
-    } // end differential MTA slice
+        SVFUtil::outs() << "ILA sliced to " << mtaSlicedNodes.size() << " nodes\n";
+    } // end differential ILA slice
 
-    // Step 4: Build MTA SlicedSVFIRView (using pre-analysis pointer analysis)
-    timePhase("Build MTA Sliced View", [&]()
+    // Step 4: Build ILA SlicedSVFIRView (using pre-analysis pointer analysis)
+    timePhase("Build ILA Sliced View", [&]()
     {
         mtaSlicedView = std::make_unique<SlicedSVFIRView>(
                             svfIr, preAnder->getCallGraph(), svfIr->getICFG(), mtaSlicedNodes);
     });
-    mtaSlicedView->dumpStats("MTA Sliced");
+    mtaSlicedView->dumpStats("ILA Sliced");
 
     const SlicedSVFIRView* slicedView = mtaSlicedView.get();
 
     if (dumpDot)
     {
-        SVFUtil::outs() << "\n[Dump] MTA Sliced views:\n";
+        SVFUtil::outs() << "\n[Dump] ILA Sliced views:\n";
         slicedView->getICFG()->dump("sliced_icfg");
         if (slicedView->getThreadCallGraph() != nullptr)
             slicedView->getThreadCallGraph()->dump("sliced_tcg");
@@ -430,19 +430,19 @@ bool SlicedMTA::runMTASlicingAndAnalysis()
     return true;
 }
 
-// PTA Slicing and Sliced Pointer Analysis
+// FSPTA slicing and sliced pointer analysis.
 bool SlicedMTA::runPTASlicingAndAnalysis()
 {
-    SVFUtil::outs() << "\n=== PTA Slicing and Sliced Pointer Analysis ===\n";
+    SVFUtil::outs() << "\n=== FSPTA Slicing and Sliced Pointer Analysis ===\n";
 
     if (threadFunctions.empty())
     {
-        SVFUtil::outs() << "[SKIP] No thread functions found in pre-analysis, skipping PTA slicing\n";
+        SVFUtil::outs() << "[SKIP] No thread functions found in pre-analysis, skipping FSPTA slicing\n";
         return true;
     }
     if (racePairs.empty())
     {
-        SVFUtil::outs() << "[SKIP] No races found in pre-analysis, skipping PTA slicing\n";
+        SVFUtil::outs() << "[SKIP] No races found in pre-analysis, skipping FSPTA slicing\n";
         return true;
     }
 
@@ -454,17 +454,17 @@ bool SlicedMTA::runPTASlicingAndAnalysis()
 
     if (Options::SlicingSingle())
     {
-        // Single-pass baseline: reuse the unified V_Single computed in MTA slicing
+        // Single-pass baseline: reuse the unified V_Single computed in ILA slicing
         // (no separate data-dependence slice); FSPTA runs on the same slice as ILA.
         SVFUtil::outs() << "[Slicing Mode] Reusing unified slice (V_Single) for FSPTA\n";
         ptaSlicedNodes = singleSlicedNodes;
-        SVFUtil::outs() << "PTA reuses unified slice: " << ptaSlicedNodes.size() << " nodes\n";
+        SVFUtil::outs() << "FSPTA reuses unified slice: " << ptaSlicedNodes.size() << " nodes\n";
     }
     else
     {
         SVFUtil::outs() << "Using " << vulnerableStatements.size() << " vulnerable statements from pre-analysis\n";
 
-        // Reuse the slicer built during MTA slicing (it memoised the shared
+        // Reuse the slicer built during ILA slicing (it memoised the shared
         // data-dependence closure over VFG_pre); construct it only if absent
         // (e.g. the [THREAD-VF] ablation skipped its early creation).
         if (!ptaSlicer)
@@ -472,41 +472,42 @@ bool SlicedMTA::runPTASlicingAndAnalysis()
                             svfIr, preAnder, mhp.get(), lockAnalysis.get(),
                             vfgPre /* paper-faithful data dependence over the thread-aware VFG */);
 
-        timePhase("PTA Slicing", [&]()
+        timePhase("FSPTA Slicing", [&]()
         {
             ptaSlicedNodes = ptaSlicer->runSlicing(vulnerableStatements);
         });
-        SVFUtil::outs() << "PTA sliced to " << ptaSlicedNodes.size() << " nodes\n";
+        SVFUtil::outs() << "FSPTA sliced to " << ptaSlicedNodes.size() << " nodes\n";
     }
 
-    // Step 4: Build PTA SlicedSVFIRView for pointer analysis
-    timePhase("Build PTA Sliced View", [&]()
+    // Step 4: Build FSPTA SlicedSVFIRView for pointer analysis
+    timePhase("Build FSPTA Sliced View", [&]()
     {
         ptaSlicedView = std::make_unique<SlicedSVFIRView>(
                             svfIr, preAnder->getCallGraph(), svfIr->getICFG(), ptaSlicedNodes);
     });
-    ptaSlicedView->dumpStats("PTA Sliced");
+    ptaSlicedView->dumpStats("FSPTA Sliced");
 
-    // Step 5: Main FSMPTA phase (flow-sensitive FSAM over a thread-aware SVFG).
+    // Step 5: Main FSPTA phase (sparse flow-sensitive PTA over a thread-aware SVFG).
     // -main-ila-sliced: rebuild the thread-aware value flow from the SLICED ILA
     // (paper-faithful; relies on [THREAD-VF] keeping the queried witnesses; costs
-    // a fresh SVFG). Default: reuse VFG_pre and restrict the solve to the PTA
+    // a fresh SVFG). Default: reuse VFG_pre and restrict the solve to the FSPTA
     // slice -- same result under query preservation, no second SVFG build.
     bool useSlicedIla = (Options::MainIlaSliced() &&
                          slicedMhp != nullptr && slicedLockAnalysis != nullptr);
     if (useSlicedIla)
     {
-        SVFUtil::outs() << "[Main FSMPTA] Thread-aware value flow from the SLICED ILA "
+        SVFUtil::outs() << "[Main FSPTA] Thread-aware value flow from the SLICED ILA "
                         "(paper-faithful; fresh SVFG; [THREAD-VF] load-bearing)\n";
     }
     else
     {
         if (Options::MainIlaSliced())
-            SVFUtil::outs() << "[Main FSMPTA] -main-ila-sliced requested but sliced ILA unavailable; "
+            SVFUtil::outs() << "[Main FSPTA] -main-ila-sliced requested but sliced ILA unavailable; "
                             "falling back to full ILA\n";
-        SVFUtil::outs() << "[Main FSMPTA] Using flow-sensitive FSAM (FSMPTA, sliced solve, reusing VFG_pre)\n";
+        SVFUtil::outs() << "[Main FSPTA] Using sparse flow-sensitive pointer analysis "
+                        << "(sliced solve, reusing VFG_pre)\n";
     }
-    timePhase("Flow-Sensitive FSAM Analysis", [&]()
+    timePhase("FSPTA Analysis", [&]()
     {
         if (useSlicedIla)
             mtaFSMPTA = std::make_unique<FSMPTA>(slicedMhp.get(), slicedLockAnalysis.get(),
@@ -552,7 +553,7 @@ bool SlicedMTA::runFinalRaceDetection()
     }
     if (mtaSlicedView == nullptr)
     {
-        SVFUtil::outs() << "[SKIP] MTA sliced view not available\n";
+        SVFUtil::outs() << "[SKIP] ILA sliced view not available\n";
         return true;
     }
     if (slicedMhp == nullptr || slicedLockAnalysis == nullptr)
@@ -571,7 +572,7 @@ bool SlicedMTA::runFinalRaceDetection()
     timePhase("Final Race Detection", [&]()
     {
         detectedPairs = detectRacePairsOnSlicedGraph(
-                            getMainPTA(),     // Use flow-sensitive FSAM points-to
+                            getMainPTA(),     // Use FSPTA points-to
                             slicedMhp.get(), fullLock);
     });
 
@@ -596,7 +597,7 @@ bool SlicedMTA::runFinalRaceDetection()
 }
 
 // No-slice A/B baseline: run the SAME refined machinery as the sliced path
-// (SlicedTCT/MHP/LockAnalysis + flow-sensitive FSAM + the same final re-check),
+// (SlicedTCT/MHP/LockAnalysis + FSPTA + the same final re-check),
 // but over a "slice" that keeps EVERY ICFG node -- i.e. the whole program. This
 // is the correct reference: if slicing preserves the result, this must produce
 // the same race set as the real (reduced) slice, only slower.
@@ -625,7 +626,7 @@ void SlicedMTA::runWholeProgramDetection()
         slicedLockAnalysis->analyze();
     });
 
-    timePhase("Whole-program Flow-Sensitive FSAM Analysis", [&]()
+    timePhase("Whole-program FSAM Baseline", [&]()
     {
         mtaFSMPTA = std::make_unique<FSMPTA>(mhp.get(), lockAnalysis.get(),
                                            ptaSlicedView.get(), vfgPre);
@@ -668,7 +669,7 @@ void SlicedMTA::runObserveFSAM()
 // load. Used to check query preservation (sliced pt == unsliced pt).
 void SlicedMTA::runObserveFSAMSliced()
 {
-    SVFUtil::outs() << "\n===== [OBSERVE-SLICED] Sliced flow-sensitive FSAM points-to =====\n";
+    SVFUtil::outs() << "\n===== [OBSERVE-SLICED] Sliced FSPTA points-to =====\n";
     if (racePairs.empty())
     {
         SVFUtil::outs() << "[no race targets -- nothing to slice]\n===== [OBSERVE-SLICED] end =====\n\n";
@@ -781,7 +782,7 @@ std::set<SlicedMTA::RacePair> SlicedMTA::detectRacePairsOnSlicedGraph(
     // The only remaining screen is the flow-sensitive points-to refinement (the
     // ILA conditions C1-C4 were already applied by detectRace above).
     for (const RacePair& pair : candidatePairs) {
-        // Re-check points-to intersection using sliced PTA
+        // Re-check points-to intersection using sliced FSPTA
         PointsTo pts1, pts2;
         if (const LoadStmt* ldStmt1 = SVFUtil::dyn_cast<LoadStmt>(pair.stmt1)) {
             pts1 = slicedPTA->getPts(ldStmt1->getRHSVarID());
@@ -806,4 +807,3 @@ std::set<SlicedMTA::RacePair> SlicedMTA::detectRacePairsOnSlicedGraph(
 
     return filteredRacePairs;
 }
-

@@ -27,7 +27,7 @@
  *
  * The MSli program slicers: a shared SlicerBase plus three concrete slicers.
  *   - MTASlicer   : ILA (sync + dual + call) slice for the thread-aware analysis
- *   - PTASlicer   : data-dependence slice over the thread-aware VFG_pre
+ *   - PTASlicer   : FSPTA data-dependence slice over the thread-aware VFG_pre
  *   - SingleSlicer: one unified slice combining all three dependence kinds, shared
  *                   by both ILA and FSPTA (the single-pass baseline, MSli §3/§5.4)
  */
@@ -74,7 +74,7 @@ protected:
     SVF::MHP* mhp;
     SVF::LockAnalysis* lockAnalysis;
     CallGraph* callGraph;
-    SVF::SVFG* vfg;   ///< thread-aware VFG_pre (PTA/Single slicers; null for MTA)
+    SVF::SVFG* vfg;   ///< thread-aware VFG_pre (FSPTA/Single slicers; null for ILA)
 
     // === Data flow analysis helper ===
     /**
@@ -110,7 +110,7 @@ protected:
 
     // === Common slicing helpers ===
     /**
-     * Collect common pthread and mutex statements (shared by PTA and MTA slicing).
+     * Collect common pthread and mutex statements (shared by FSPTA and ILA slicing).
      * @param vulnerableStatements Set of vulnerable statements
      * @return Pair of (pthreadCallNodes, mutexCallNodes)
      */
@@ -132,7 +132,7 @@ protected:
 
     /**
      * Perform dual slicing (temporal slicing): filter statements based on control flow and parallel execution.
-     * This is shared by both PTA and MTA slicing.
+     * This is shared by both FSPTA and ILA slicing.
      * @param slicedNodes Set of statements from statement-level slicing
      * @return Set of ICFG nodes in the dual slice
      */
@@ -141,9 +141,9 @@ protected:
 };
 
 /**
- * MTASlicer - Slicer for Multi-Threaded Analysis.
+ * MTASlicer - Slicer for the ILA stage of MTA.
  *
- * Performs the ILA slice for MTA, including function expansion and temporal
+ * Performs the ILA slice, including function expansion and temporal
  * (dual) slicing.
  */
 class MTASlicer : public SlicerBase {
@@ -152,7 +152,7 @@ public:
               LockAnalysis* lockAnalysis);
 
     /**
-     * Perform slicing for MTA (includes dual slicing and function expansion for IRView).
+     * Perform ILA slicing (includes dual slicing and function expansion for IRView).
      * @param vulnerableStatements Set of vulnerable statements to start slicing from
      *        (the [INIT] rule: pre-analysis race statements).
      * @param threadVFSources Extra ILA slicing sources from the [THREAD-VF] rule
@@ -167,7 +167,7 @@ public:
 };
 
 /**
- * PTASlicer - Slicer for Pointer Analysis.
+ * PTASlicer - Slicer for FSPTA.
  *
  * Performs backward data-dependence slicing over the thread-aware VFG_pre.
  */
@@ -186,7 +186,7 @@ public:
 
     /**
      * The FSPTA data-dependence slice at SVFG-node granularity (memoised). ILA
-     * slicing queries this before PTA slicing runs, to restrict the [THREAD-VF]
+     * slicing queries this before FSPTA slicing runs, to restrict the [THREAD-VF]
      * sources to ThreadVF(VFG'_pre); runSlicing reuses the same set, so the
      * backward closure over VFG_pre is computed once and shared.
      */
@@ -202,7 +202,7 @@ private:
  * SingleSlicer - Unified slicer combining synchronization, data, and call
  * dependence into ONE slice (the single-pass baseline, MSli §3/§5.4: the
  * transitive closure of the target statements under the combined dependence
- * graph). Both ILA and FSPTA run on this single slice, so V_ILA, V_PTA subset
+ * graph). Both ILA and FSPTA run on this single slice, so V_ILA, V_FSPTA subset
  * V_Single. Used by the differential-slicing ablation (-slicing-single).
  *
  * Iteratively applies data dependence (over the thread-aware VFG_pre) and call

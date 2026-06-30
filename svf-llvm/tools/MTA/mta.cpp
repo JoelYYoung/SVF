@@ -44,9 +44,8 @@ int main(int argc, char** argv)
     SVFIR* pag = builder.build();
 
     // MTA's only client is race detection. -flow-sensitive (default) selects the
-    // FSAM pipeline (SlicedMTA), which decides slicing and the pre-analysis
-    // context handling internally; otherwise run the flow-insensitive Andersen
-    // detector.
+    // MSli pipeline (ILA + FSPTA), which decides slicing and pre-analysis context
+    // handling internally; otherwise run the flow-insensitive Andersen detector.
     if (Options::FlowSensitive())
     {
         // The only LLVM-dependent step -- materialising resolved indirect calls

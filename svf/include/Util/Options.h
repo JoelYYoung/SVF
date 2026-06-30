@@ -259,7 +259,7 @@ public:
     static const Option<bool> FileCheck;
     /// double free checker, Default: false
     static const Option<bool> DFreeCheck;
-    /// MTA: flow-sensitive (FSAM) main analysis; false = Andersen flow-insensitive base, Default: true
+    /// MTA: enable sparse flow-sensitive pointer analysis; false = Andersen flow-insensitive base, Default: true
     static const Option<bool> FlowSensitive;
     /// MTA: dump the pointer-analysis and thread call graphs (ptacg/tcg.dot), Default: false
     static const Option<bool> DumpMTAGraphs;
