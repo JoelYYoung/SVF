@@ -109,6 +109,10 @@ public:
         SVFIR* svfIr, AndersenBase* pta, MHP* mhp, LockAnalysis* lockAnalysis,
         CallGraph* callGraph, std::set<RacePair>& outRacePairs);
 
+    /// The reported alarm metric: distinct racy statements among the pair
+    /// endpoints, deduplicated by raceStmtKey (order-independent).
+    static u32_t countRaceStmts(const std::set<RacePair>& pairs);
+
     /// Escape/points-to helpers for the shared detector.
     static PointsTo getGlobalObjectVariables(SVFIR* svfIr);
     static PointsTo getPointsToClosure(AndersenBase* pta, const PointsTo& pts);
@@ -131,7 +135,6 @@ private:
     static bool hasAnyCommonLock(LockAnalysis* lockAnalysis, const ICFGNode* first, const ICFGNode* second);
     static std::string lockSignature(LockAnalysis* lockAnalysis, const ICFGNode* node);
     static std::string raceStmtKey(const SVFStmt* stmt);
-    static void normaliseRacePairs(std::set<RacePair>& pairs);
     static bool occurrencesRace(MHP* mhp, const RaceOccurrence& first, const RaceOccurrence& second);
     static void commitRacePair(std::set<RacePair>& out,
                                const RaceOccurrence& first, const RaceOccurrence& second);

@@ -36,8 +36,10 @@
 #include "MTA/MTAStat.h"
 #include "WPA/Andersen.h"
 #include "Util/SVFUtil.h"
+#include <algorithm>
 #include <deque>
 #include <set>
+#include <vector>
 #include <string>
 #include <vector>
 
@@ -228,29 +230,6 @@ std::string MTA::raceStmtKey(const SVFStmt* stmt) {
     return loc;
 }
 
-void MTA::normaliseRacePairs(std::set<RacePair>& pairs) {
-    Map<std::string, const SVFStmt*> canonicalStmts;
-    std::set<RacePair> normalised;
-
-    auto canonical = [&canonicalStmts](const SVFStmt* stmt) {
-        std::string key = raceStmtKey(stmt);
-        auto found = canonicalStmts.find(key);
-        if (found != canonicalStmts.end())
-            return found->second;
-        canonicalStmts[key] = stmt;
-        return stmt;
-    };
-
-    for (const RacePair& pair : pairs) {
-        const SVFStmt* stmt1 = canonical(pair.stmt1);
-        const SVFStmt* stmt2 = canonical(pair.stmt2);
-        if (stmt2 < stmt1)
-            std::swap(stmt1, stmt2);
-        normalised.insert(RacePair(stmt1, stmt2));
-    }
-
-    pairs.swap(normalised);
-}
 
 // Lock signature of a node: equal signatures => identical common-lock relation
 // against any partner ("U" = holds no lock), so C4 is decided once per class pair.
@@ -429,9 +408,25 @@ std::set<const SVFStmt*> MTA::detectRace(
             }
     }
 
-    normaliseRacePairs(outRacePairs);
+    // Keep the RAW pairs: canonicalising statements here would (a) thin the
+    // slicing seeds derived from the endpoints and (b) let a representative with
+    // different points-to swallow a real pair in the downstream FSPTA filter.
+    // Deduplication to the reported metric happens at reporting time only
+    // (countRaceStmts / reportRaces).
     for (const RacePair& r : outRacePairs) { bugStmts.insert(r.stmt1); bugStmts.insert(r.stmt2); }
     return bugStmts;
+}
+
+// The reported alarm metric: distinct racy statements, deduplicated by
+// raceStmtKey. Counting keys (not chosen representatives) keeps the metric
+// deterministic regardless of container iteration order.
+u32_t MTA::countRaceStmts(const std::set<RacePair>& pairs) {
+    Set<std::string> keys;
+    for (const RacePair& pair : pairs) {
+        keys.insert(raceStmtKey(pair.stmt1));
+        keys.insert(raceStmtKey(pair.stmt2));
+    }
+    return keys.size();
 }
 
 void MTA::reportRaces()
@@ -447,9 +442,20 @@ void MTA::reportRaces()
     std::set<RacePair> racePairs;
     detectRace(pag, pta, mhp, lsa, callGraph, racePairs);
 
-    // Report the distinct racy statements (not the pairs).
-    std::set<const SVFStmt*> racyStmts;
-    for (const RacePair& rp : racePairs) { racyStmts.insert(rp.stmt1); racyStmts.insert(rp.stmt2); }
-    for (const SVFStmt* stmt : racyStmts)
-        outs() << SVFUtil::bugMsg1("race statement: ") << stmt->toString() << "\n";
+    // Report the distinct racy statements (not the pairs): one line per
+    // raceStmtKey, represented by its smallest-ID statement and printed in
+    // sorted order so the report is deterministic across runs.
+    Map<std::string, const SVFStmt*> canonicalStmts;
+    for (const RacePair& rp : racePairs)
+        for (const SVFStmt* stmt : {rp.stmt1, rp.stmt2}) {
+            auto found = canonicalStmts.find(raceStmtKey(stmt));
+            if (found == canonicalStmts.end() || stmt->getEdgeID() < found->second->getEdgeID())
+                canonicalStmts[raceStmtKey(stmt)] = stmt;
+        }
+    std::vector<std::string> lines;
+    for (const auto& entry : canonicalStmts)
+        lines.push_back(entry.second->toString());
+    std::sort(lines.begin(), lines.end());
+    for (const std::string& line : lines)
+        outs() << SVFUtil::bugMsg1("race statement: ") << line << "\n";
 }

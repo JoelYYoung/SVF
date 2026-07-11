@@ -27,6 +27,7 @@
 #include "Util/CommandLine.h"
 #include "Util/Options.h"
 
+#include <iostream>
 #include <string>
 #include <vector>
 
@@ -36,12 +37,19 @@ using namespace SVF;
 
 int main(int argc, char** argv)
 {
+    // Progress lines must reach the terminal (or a driver pipe) as they are
+    // produced, not when the stream buffer fills.
+    std::cout << std::unitbuf;
+
     std::vector<std::string> moduleNameVec = OptionBase::parseOptions(
                 argc, argv, "MTA Analysis", "[options] <input-bitcode...>");
 
+    SVFUtil::outs() << "[MTA] Loading LLVM bitcode and building the module...\n";
     LLVMModuleSet::buildSVFModule(moduleNameVec);
+    SVFUtil::outs() << "[MTA] Building the SVFIR (PAG + ICFG)...\n";
     SVFIRBuilder builder;
     SVFIR* pag = builder.build();
+    SVFUtil::outs() << "[MTA] SVFIR ready; starting the analysis\n";
 
     // MTA's only client is race detection. -flow-sensitive (default) selects the
     // MSli pipeline (ILA + FSPTA), which decides slicing and pre-analysis context

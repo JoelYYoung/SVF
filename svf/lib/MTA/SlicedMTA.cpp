@@ -97,9 +97,12 @@ bool checkAndReport(const char* phase, bool condition)
     return condition;
 }
 
+// Main-phase context depth. The default must not depend on -enable-slicing:
+// the sliced run and the whole-program FSAM baseline are compared against each
+// other, so both must analyze at the same context sensitivity.
 u32_t slicedMaxContextLen()
 {
-    if (Options::EnableSlicing() && !Options::MaxContextLen.isSet())
+    if (!Options::MaxContextLen.isSet())
         return 2;
     return Options::MaxContextLen();
 }
@@ -315,6 +318,7 @@ bool SlicedMTA::runPreAnalysis(const ResolveIndirectCalls& resolveIndirectCalls)
     // Step 6: build the thread-aware VFG once (substrate for slicing + main FS).
     buildVFGPre();
 
+    SVFUtil::outs() << "=== Pre-Analysis complete ===\n";
     return true;
 }
 
@@ -427,6 +431,7 @@ bool SlicedMTA::runMTASlicingAndAnalysis()
         slicedLockAnalysis->analyze();
     });
 
+    SVFUtil::outs() << "=== ILA Slicing and Analysis complete ===\n";
     return true;
 }
 
@@ -520,6 +525,7 @@ bool SlicedMTA::runPTASlicingAndAnalysis()
             mtaFSMPTA->getSVFG()->dump("mta_svfg");
     });
 
+    SVFUtil::outs() << "=== FSPTA Slicing and Sliced Pointer Analysis complete ===\n";
     return true;
 }
 
@@ -576,19 +582,18 @@ bool SlicedMTA::runFinalRaceDetection()
                             slicedMhp.get(), fullLock);
     });
 
-    // Distinct racy statements (the endpoints of the race pairs) -- a stabler,
-    // smaller-to-report metric than the pair count.
-    std::set<const SVFStmt*> racyStmts;
-    for (const RacePair& rp : detectedPairs) { racyStmts.insert(rp.stmt1); racyStmts.insert(rp.stmt2); }
+    // Distinct racy statements (the endpoints of the race pairs, deduplicated
+    // by raceStmtKey) -- a stabler, smaller-to-report metric than the pair count.
+    const u32_t raceStmtCount = MTA::countRaceStmts(detectedPairs);
 
     SVFUtil::outs() << "\n=== Race Detection Summary ===\n";
-    SVFUtil::outs() << "Race statements (sliced graph): " << racyStmts.size() << "\n";
+    SVFUtil::outs() << "Race statements (sliced graph): " << raceStmtCount << "\n";
     // Machine-readable line for the artifact's `msli` table generator: the race
     // statements reported after slicing (the preservation metric).
-    SVFUtil::outs() << "[MSLI-RQ] mode=MSli alarms=" << racyStmts.size() << "\n";
+    SVFUtil::outs() << "[MSLI-RQ] mode=MSli alarms=" << raceStmtCount << "\n";
 
-    if (!racyStmts.empty())
-        SVFUtil::outs() << "\n=== Bug Report ===\nFound " << racyStmts.size()
+    if (raceStmtCount != 0)
+        SVFUtil::outs() << "\n=== Bug Report ===\nFound " << raceStmtCount
                         << " race statement(s) in sliced graph\n";
     else
         SVFUtil::outs() << "\nNo races detected in sliced graph.\n";
@@ -640,12 +645,11 @@ void SlicedMTA::runWholeProgramDetection()
                             getMainPTA(), slicedMhp.get(), slicedLockAnalysis.get());
     });
 
-    std::set<const SVFStmt*> racyStmts;
-    for (const RacePair& rp : detectedPairs) { racyStmts.insert(rp.stmt1); racyStmts.insert(rp.stmt2); }
+    const u32_t raceStmtCount = MTA::countRaceStmts(detectedPairs);
 
     SVFUtil::outs() << "\n=== Race Detection Summary ===\n";
-    SVFUtil::outs() << "Race statements (whole program): " << racyStmts.size() << "\n";
-    SVFUtil::outs() << "[MSLI-RQ] mode=FSAM alarms=" << racyStmts.size() << "\n";
+    SVFUtil::outs() << "Race statements (whole program): " << raceStmtCount << "\n";
+    SVFUtil::outs() << "[MSLI-RQ] mode=FSAM alarms=" << raceStmtCount << "\n";
 }
 
 // Observe whole-program FSAM points-to and ILA (Layer 1) for soundness checking.
@@ -703,9 +707,11 @@ void SlicedMTA::runOnModule(SVFIR* pag, const ResolveIndirectCalls& resolveIndir
 
     reportOriginalStats(svfIr);
 
+    // The pre-analysis is context-insensitive in BOTH modes (the sliced run and
+    // the FSAM baseline must share an identical pre-analysis substrate); the
+    // main phase then runs at the configured context depth.
     const u32_t mainCxt = slicedMaxContextLen();
-    if (Options::EnableSlicing())
-        Options::MaxContextLen.setValue(0);
+    Options::MaxContextLen.setValue(0);
     const bool preOk = runPreAnalysis(resolveIndirectCalls);
     Options::MaxContextLen.setValue(mainCxt);
     if (!preOk)
