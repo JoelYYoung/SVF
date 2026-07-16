@@ -38,6 +38,7 @@ namespace SVF
 class ForkJoinAnalysis;
 class LockAnalysis;
 
+
 /*!
  * This class serves as a base may-happen in parallel analysis for multithreaded program
  * Given a statement under an abstract thread, it tells which abstract threads may be alive at the same time (May-happen-in-parallel).
@@ -47,7 +48,10 @@ class MHP
 
 public:
     typedef Set<const FunObjVar*> FunSet;
-    typedef FIFOWorkList<CxtThreadStmt> CxtThreadStmtWorkList;
+    /// Deterministic (content-ordered) worklist: see TCT.h. The interleaving
+    /// fixed point is not confluent (joins remove tids), so the traversal order
+    /// must not depend on allocation addresses.
+    typedef DeterministicWorkList<CxtThreadStmt, CxtThreadStmtCmp> CxtThreadStmtWorkList;
     typedef Set<CxtThreadStmt> CxtThreadStmtSet;
     typedef Map<CxtThreadStmt,NodeBS> ThreadStmtToThreadInterleav;
     typedef Map<const ICFGNode*,CxtThreadStmtSet> InstToThreadStmtSetMap;
@@ -319,7 +323,7 @@ public:
     typedef Map<CxtStmt,NodeBS> CxtStmtToTIDMap;
     typedef Set<NodePair> ThreadPairSet;
     typedef Map<CxtStmt, LoopBBs> CxtStmtToLoopMap;
-    typedef FIFOWorkList<CxtStmt> CxtStmtWorkList;
+    typedef DeterministicWorkList<CxtStmt, CxtStmtCmp> CxtStmtWorkList;
 
     typedef Set<CxtStmt> CxtStmtSet;
     typedef Map<const ICFGNode*, CxtStmtSet> InstToCxtStmt;

@@ -304,8 +304,8 @@ bool LockAnalysis::intraBackwardTraverse(const InstSet& unlockSet, InstSet& back
 
 void LockAnalysis::collectCxtLock()
 {
-    FunSet entryFuncSet = tct->getEntryProcs();
-    for (FunSet::const_iterator it = entryFuncSet.begin(), eit = entryFuncSet.end(); it != eit; ++it)
+    const TCT::FunSet& entryFuncSet = tct->getEntryProcs();
+    for (TCT::FunSet::const_iterator it = entryFuncSet.begin(), eit = entryFuncSet.end(); it != eit; ++it)
     {
         if (!isLockCandidateFun(*it))
             continue;
@@ -384,8 +384,8 @@ bool LockAnalysis::isAliasedLocks(const ICFGNode* i1, const ICFGNode* i2)
 void LockAnalysis::analyzeLockSpanCxtStmt()
 {
 
-    FunSet entryFuncSet = tct->getEntryProcs();
-    for (FunSet::const_iterator it = entryFuncSet.begin(), eit = entryFuncSet.end(); it != eit; ++it)
+    const TCT::FunSet& entryFuncSet = tct->getEntryProcs();
+    for (TCT::FunSet::const_iterator it = entryFuncSet.begin(), eit = entryFuncSet.end(); it != eit; ++it)
     {
         if (!isLockCandidateFun(*it))
             continue;
@@ -505,6 +505,25 @@ void LockAnalysis::handleCall(const CxtStmt& cts)
                 continue;
             CxtStmt newCts(newCxt, svfInst);
             markCxtStmtFlag(newCts, cts);
+
+            // Return-flow rendezvous (see MHP::handleCall): if the callee's
+            // exit lockset already exists under newCxt, propagate it to this
+            // callsite's return site now -- handleRet only reaches callsite
+            // contexts present when the exit was processed.
+            if (svfcallee->hasBasicBlock())
+            {
+                const ICFGNode* exitInst = svfcallee->getExitBB()->back();
+                CxtStmt exitCts(newCxt, exitInst);
+                if (acceptsNode(exitInst) && hasCxtLockfromCxtStmt(exitCts))
+                {
+                    const ICFGNode* retNode = call->getRetICFGNode();
+                    if (acceptsNode(retNode))
+                    {
+                        CxtStmt retCts(curCxt, retNode);
+                        markCxtStmtFlag(retCts, exitCts);
+                    }
+                }
+            }
         }
     }
 }
