@@ -506,10 +506,8 @@ void LockAnalysis::handleCall(const CxtStmt& cts)
             CxtStmt newCts(newCxt, svfInst);
             markCxtStmtFlag(newCts, cts);
 
-            // Return-flow rendezvous (see MHP::handleCall): if the callee's
-            // exit lockset already exists under newCxt, propagate it to this
-            // callsite's return site now -- handleRet only reaches callsite
-            // contexts present when the exit was processed.
+            // Return-flow rendezvous (see MHP::handleCall): forward an already
+            // computed callee-exit lockset to this callsite's return site.
             if (svfcallee->hasBasicBlock())
             {
                 const ICFGNode* exitInst = svfcallee->getExitBB()->back();

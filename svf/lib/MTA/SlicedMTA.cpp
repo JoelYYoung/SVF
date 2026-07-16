@@ -283,11 +283,8 @@ bool SlicedMTA::runPreAnalysis(const ResolveIndirectCalls& resolveIndirectCalls)
     if (dumpDot)
         tct->dump("original_tct");
 
-    // Context truncation must preserve thread multiplicity: a thread the main
-    // phase (mainCxtDepth contexts) sees as several mutually-interleaving
-    // instances must be multiforked in this depth-0 TCT, or the pre-analysis
-    // under-approximates the main phase. Probe with a throwaway TCT at the
-    // main depth (milliseconds) and mark the merged nodes.
+    // A thread with several instances at the main depth must be multiforked in
+    // this depth-0 TCT, or the pre-analysis under-approximates the main phase.
     timePhase("Mark truncation-merged multiforked threads", [&]()
     {
         const u32_t preCxtDepth = Options::MaxContextLen();
@@ -295,9 +292,8 @@ bool SlicedMTA::runPreAnalysis(const ResolveIndirectCalls& resolveIndirectCalls)
         TCT deepTct(preAnder);
         Options::MaxContextLen.setValue(preCxtDepth);
 
-        // Multiforked if the main depth sees >1 instance of the fork site, or
-        // its single deep instance is itself multiforked (merging just beyond
-        // the main depth, per the getOrCreateTCTNode guard).
+        // >1 instance at the main depth, or a single instance that is itself
+        // multiforked (merged just beyond the main depth), marks the fork site.
         Map<const ICFGNode*, u32_t> forkSiteInstances;
         for (const auto& deepPair : deepTct)
             if (const ICFGNode* forkSite = deepPair.second->getCxtThread().getThread())
