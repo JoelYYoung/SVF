@@ -68,10 +68,13 @@ class PointerAnalysis;
 class SlicedICFGView {
 public:
     /// Build complete ICFG view from keepNodes and keptFunctions
+    // buildBridged=false skips bridged-edge construction for views whose control
+    // flow is never walked (e.g. the FSPTA view, used only for isKeptNode).
     SlicedICFGView(SVF::ICFG* icfg,
                    SVF::CallGraph* cg,
                    const std::set<const SVF::ICFGNode*>& keepNodes,
-                   const std::set<const SVF::FunObjVar*>& keptFunctions);
+                   const std::set<const SVF::FunObjVar*>& keptFunctions,
+                   bool buildBridged = true);
 
     /// Get successor nodes (including bridged edges)
     void getSuccNodes(const SVF::ICFGNode* node, std::vector<const SVF::ICFGNode*>& out) const;
@@ -192,7 +195,8 @@ public:
     SlicedSVFIRView(SVF::SVFIR* svfIr,
                     SVF::CallGraph* cg,
                     SVF::ICFG* icfg,
-                    const std::set<const SVF::ICFGNode*>& keepNodes);
+                    const std::set<const SVF::ICFGNode*>& keepNodes,
+                    bool buildBridged = true);
 
     /// Get SlicedICFGView
     const SlicedICFGView* getICFG() const { return icfgView.get(); }
