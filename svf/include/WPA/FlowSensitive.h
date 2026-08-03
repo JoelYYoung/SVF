@@ -30,8 +30,7 @@
 #ifndef FLOWSENSITIVEANALYSIS_H_
 #define FLOWSENSITIVEANALYSIS_H_
 
-#include "FastCluster/fastcluster.h"
-#include "Graphs/SVFGOPT.h"
+#include "Graphs/SVFG.h"
 #include "MemoryModel/PointerAnalysisImpl.h"
 #include "MSSA/SVFGBuilder.h"
 #include "WPA/WPAFSSolver.h"
@@ -57,7 +56,7 @@ public:
     typedef BVDataPTAImpl::MutDFPTDataTy::PtsMap PtsMap;
 
     /// Constructor
-    explicit FlowSensitive(SVFIR* _pag, PTATY type = FSSPARSE_WPA) : WPASVFGFSSolver(), BVDataPTAImpl(_pag, type)
+    explicit FlowSensitive(SVFIR* _pag, PTATY type = PTATY::FSSPARSE_WPA) : WPASVFGFSSolver(), BVDataPTAImpl(_pag, type)
     {
         svfg = nullptr;
         solveTime = sccTime = processTime = propagationTime = updateTime = 0;
@@ -126,7 +125,7 @@ public:
     }
     static inline bool classof(const PointerAnalysis *pta)
     {
-        return pta->getAnalysisTy() == FSSPARSE_WPA;
+        return pta->getAnalysisTy() == PTATY::FSSPARSE_WPA;
     }
     //@}
 

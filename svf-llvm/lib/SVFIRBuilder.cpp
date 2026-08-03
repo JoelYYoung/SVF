@@ -510,10 +510,6 @@ void SVFIRBuilder::initialiseValVars()
         {
             pag->addConstantAggValNode(iter->second, icfgNode, llvmModuleSet()->getSVFType(llvmValue->getType()));
         }
-        else if (SVFUtil::isa<BasicBlock>(llvmValue))
-        {
-            pag->addBasicBlockValNode(iter->second, llvmModuleSet()->getSVFType(llvmValue->getType()));
-        }
         else if (SVFUtil::isa<InlineAsm>(llvmValue) ||
                  SVFUtil::isa<DSOLocalEquivalent>(llvmValue) ||
                  SVFUtil::isa<NoCFIValue>(llvmValue))
@@ -1678,7 +1674,9 @@ const Value* SVFIRBuilder::getBaseValueForExtArg(const Value* V)
 
                     const auto* copySize = SVFUtil::dyn_cast<ConstantInt>(cs->getArgOperand(2));
                     if (!copySize)
+                    {
                         return false;
+                    }
 
                     const u64_t copyBytes = copySize->getZExtValue();
                     return copyBytes >= accessBytes && copyBytes - accessBytes >= offset;

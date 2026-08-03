@@ -32,17 +32,20 @@
 
 
 #include "CFL/CFLBase.h"
-#include "CFL/CFLStat.h"
 #include "CFL/CFLSVFGBuilder.h"
-#include "WPA/Andersen.h"
+#include "Graphs/SVFG.h"
+#include "MemoryModel/PTATY.h"
 
 namespace SVF
 {
+
+class SVFIR;
+
 class CFLVF : public CFLBase
 {
 
 public:
-    CFLVF(SVFIR* ir) : CFLBase(ir, PointerAnalysis::CFLFSCS_WPA)
+    CFLVF(SVFIR* ir) : CFLBase(ir, PTATY::CFLFSCS_WPA)
     {
     }
 

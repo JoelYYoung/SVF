@@ -32,13 +32,12 @@
 #ifndef INCLUDE_SVFIR_SVFVALUE_H_
 #define INCLUDE_SVFIR_SVFVALUE_H_
 
-#include "SVFIR/SVFType.h"
-#include "Graphs/GraphPrinter.h"
-
+#include "Util/GeneralType.h"
 
 namespace SVF
 {
 
+class SVFType;
 
 class SVFValue
 {
@@ -81,7 +80,6 @@ public:
         // │   └─ Subclass: DummyValVar
         DummyValNode,            // │   └── Dummy node for uninitialized values
         IntrinsicValNode,        // │   └── LLVM intrinsic call instruction (e.g. llvm.dbg.declare)
-        BasicBlockValNode,       // │   └── LLVM BasicBlock (label operand of br/switch)
         AsmPCValNode,            // │   └── InlineAsm, DSOLocalEquivalent, NoCFIValue
 
         // └─ Subclass: ObjVar (Object variable nodes)
@@ -148,7 +146,6 @@ public:
         CHNodeKd,         // Class hierarchy graph node
         ConstraintNodeKd, // Constraint graph node
         TCTNodeKd,        // Thread creation tree node
-        DCHNodeKd,        // DCHG node
         BasicBlockKd,     // Basic block node
         OtherKd           // Other node kind
     };
@@ -233,7 +230,7 @@ protected:
 
     static inline bool isSVFVarKind(GNodeK n)
     {
-        static_assert(DummyObjNode - ValNode == 29,
+        static_assert(DummyObjNode - ValNode == 28,
                       "The number of SVFVarKinds has changed, make sure the "
                       "range is correct");
 
@@ -242,7 +239,7 @@ protected:
 
     static inline bool isValVarKinds(GNodeK n)
     {
-        static_assert(AsmPCValNode - ValNode == 16,
+        static_assert(AsmPCValNode - ValNode == 15,
                       "The number of ValVarKinds has changed, make sure the "
                       "range is correct");
         return n <= AsmPCValNode && n >= ValNode;

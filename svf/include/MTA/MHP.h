@@ -25,6 +25,11 @@
  *
  *  Created on: Jan 21, 2014
  *      Author: Yulei Sui, Peng Di
+ *
+ * May-happen-in-parallel analysis. One implementation runs on the whole program
+ * or a slice: analyze() is templated on the ICFG and CallGraph it traverses
+ * (whole graphs or their sliced views), as used by "Multi-Stage On-Demand Program Slicing for
+ * Modular Analysis of Multi-Threaded Programs" (ISSTA 2026).
  */
 
 #ifndef MHP_H_
@@ -32,12 +37,17 @@
 
 #include "MTA/TCT.h"
 #include "Util/SVFUtil.h"
+
+#include <memory>
+#include <vector>
+
 namespace SVF
 {
 
 class ForkJoinAnalysis;
 class LockAnalysis;
-
+// Forward declaration for the sliced-graph handle analyze() can run on.
+class SlicedSVFIRView;
 
 /*!
  * This class serves as a base may-happen in parallel analysis for multithreaded program
@@ -65,11 +75,15 @@ public:
     /// Destructor
     virtual ~MHP();
 
-    /// Start analysis here
-    void analyze();
+    /// Start analysis here. One implementation for the whole program and a
+    /// slice: the compute is templated on the two graphs it traverses -- the ICFG
+    /// (ICFG* whole / const SlicedICFGView* sliced) and the CallGraph (CallGraph*
+    /// whole / const SlicedThreadCallGraphView* sliced) -- and calls their
+    /// GenericGraphTraits specialisations directly (no wrapper layer).
+    template<class ICFGGraph, class CGGraph> void analyze(ICFGGraph icfg, CGGraph cg);
 
     /// Analyze thread interleaving
-    void analyzeInterleaving();
+    template<class ICFGGraph, class CGGraph> void analyzeInterleaving(ICFGGraph icfg, CGGraph cg);
 
     /// Get ThreadCallGraph
     inline ThreadCallGraph* getThreadCallGraph() const
@@ -131,44 +145,25 @@ protected:
     }
     /// Update non-candidate functions' interleaving.
     /// Copy interleaving threads of the entry inst to other insts.
-    /// Virtual so SlicedMHP can iterate the sliced CallGraph instead.
-    virtual void updateNonCandidateFunInterleaving();
+    template<class ICFGGraph, class CGGraph> void updateNonCandidateFunInterleaving(ICFGGraph icfg, CGGraph cg);
 
     /// Handle non-candidate function
-    void handleNonCandidateFun(const CxtThreadStmt& cts);
+    template<class ICFGGraph, class CGGraph> void handleNonCandidateFun(ICFGGraph icfg, CGGraph cg, const CxtThreadStmt& cts);
 
     /// Handle fork
-    void handleFork(const CxtThreadStmt& cts, NodeID rootTid);
+    template<class ICFGGraph, class CGGraph> void handleFork(ICFGGraph icfg, CGGraph cg, const CxtThreadStmt& cts, NodeID rootTid);
 
     /// Handle join
-    void handleJoin(const CxtThreadStmt& cts, NodeID rootTid);
+    template<class ICFGGraph, class CGGraph> void handleJoin(ICFGGraph icfg, CGGraph cg, const CxtThreadStmt& cts, NodeID rootTid);
 
     /// Handle call
-    void handleCall(const CxtThreadStmt& cts, NodeID rootTid);
+    template<class ICFGGraph, class CGGraph> void handleCall(ICFGGraph icfg, CGGraph cg, const CxtThreadStmt& cts, NodeID rootTid);
 
     /// Handle return
-    void handleRet(const CxtThreadStmt& cts);
+    template<class ICFGGraph, class CGGraph> void handleRet(ICFGGraph icfg, CGGraph cg, const CxtThreadStmt& cts);
 
     /// Handle intra
-    void handleIntra(const CxtThreadStmt& cts);
-
-    /// ICFG/CallGraph traversal hooks. The default implementations walk the full
-    /// ICFG/CallGraph; a subclass analysing a sliced view (SlicedMHP) overrides
-    /// them to walk only the kept nodes/edges, so the shared handlers above need
-    /// not be copied just to swap the traversal.
-    //@{
-    virtual const ICFGNode* getFunEntry(const FunObjVar* fun) const;
-    virtual void getSuccNodes(const ICFGNode* node, std::vector<const ICFGNode*>& out) const;
-    virtual void getInEdgesOfCallGraphNode(const CallGraphNode* node, std::vector<const CallGraphEdge*>& out) const;
-
-    /// Project an interleaving-seed node onto the kept graph. The full analysis
-    /// returns the node itself; a sliced subclass returns the first kept node(s)
-    /// reachable from it (intra-procedurally), so a seed that would land on a
-    /// removed node still propagates into the kept body instead of being stranded
-    /// (getSuccNodes() yields nothing for a non-kept node). Used where a seed is a
-    /// raw basic-block entry with no guaranteed-kept anchor (handleJoin loop exits).
-    virtual void projectSeedToKept(const ICFGNode* node, std::vector<const ICFGNode*>& out) const;
-    //@}
+    template<class ICFGGraph, class CGGraph> void handleIntra(ICFGGraph icfg, CGGraph cg, const CxtThreadStmt& cts);
 
     /// Symmetric-join loop-exit kills, applied to EDGE flows (node states stay
     /// pure unions, so paths bypassing the join keep their interleavings).
@@ -224,8 +219,8 @@ protected:
 
     /// Update Ancestor and sibling threads
     //@{
-    void updateAncestorThreads(NodeID tid);
-    void updateSiblingThreads(NodeID tid);
+    template<class ICFGGraph, class CGGraph> void updateAncestorThreads(ICFGGraph icfg, CGGraph cg, NodeID tid);
+    template<class ICFGGraph, class CGGraph> void updateSiblingThreads(ICFGGraph icfg, CGGraph cg, NodeID tid);
     //@}
 
     /// Thread curTid can be fully joined by parentTid recursively
@@ -309,15 +304,12 @@ protected:
     InstToThreadStmtSetMap instToTSMap; ///< Map an instruction to its ThreadStmtSet
     FuncPairToBool nonCandidateFuncMHPRelMap;
 
-
 public:
     u32_t numOfTotalQueries;		///< Total number of queries
     u32_t numOfMHPQueries;			///< Number of queries are answered as may-happen-in-parallel
     double interleavingTime;
     double interleavingQueriesTime;
 };
-
-
 
 /*!
  *
@@ -344,7 +336,6 @@ public:
 
     typedef Set<CxtStmt> CxtStmtSet;
     typedef Map<const ICFGNode*, CxtStmtSet> InstToCxtStmt;
-
 
     ForkJoinAnalysis(TCT* t) : tct(t)
     {
@@ -432,6 +423,7 @@ private:
 
     /// Whether it is a matched fork join pair
     bool isAliasedForkJoin(const CallICFGNode* forkSite, const CallICFGNode* joinSite);
+    ThreadAPI::ForkJoinAliasCache forkJoinAliasCache;
     /// Mark thread flags for cxtStmt
     //@{
     /// Get the flag for a cxtStmt

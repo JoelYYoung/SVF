@@ -32,14 +32,20 @@
 #ifndef INCLUDE_SVFIR_SVFVARIABLE_H_
 #define INCLUDE_SVFIR_SVFVARIABLE_H_
 
+#include "Graphs/BasicBlockG.h"
 #include "Graphs/GenericGraph.h"
 #include "SVFIR/ObjTypeInfo.h"
 #include "SVFIR/SVFStatements.h"
+#include "Util/GeneralType.h"
+#include "Util/SVFLoopAndDomInfo.h"
+#include "Util/SVFUtil.h"
 
 namespace SVF
 {
 
+class FunObjVar;
 class SVFVar;
+
 /*
  * Program variables in SVFIR (based on PAG nodes)
  * These represent variables in the program analysis graph
@@ -2217,46 +2223,6 @@ public:
         return "intrinsicVal";
     }
 
-    virtual const std::string toString() const;
-};
-
-/*
- * Represents an LLVM BasicBlock (label operand of br/switch).
- * Collected into valSyms as a branch operand but has no ICFGNode.
- */
-class BasicBlockValVar: public ValVar
-{
-    friend class GraphDBClient;
-
-public:
-    static inline bool classof(const BasicBlockValVar*)
-    {
-        return true;
-    }
-    static inline bool classof(const SVFVar* node)
-    {
-        return node->getNodeKind() == SVFVar::BasicBlockValNode;
-    }
-    static inline bool classof(const ValVar* node)
-    {
-        return node->getNodeKind() == SVFVar::BasicBlockValNode;
-    }
-    static inline bool classof(const GenericPAGNodeTy* node)
-    {
-        return node->getNodeKind() == SVFVar::BasicBlockValNode;
-    }
-    static inline bool classof(const SVFValue* node)
-    {
-        return node->getNodeKind() == SVFVar::BasicBlockValNode;
-    }
-
-    BasicBlockValVar(NodeID i, const SVFType* svfType)
-        : ValVar(i, svfType, nullptr, BasicBlockValNode) {}
-
-    inline const std::string getValueName() const
-    {
-        return "basicBlockVal";
-    }
     virtual const std::string toString() const;
 };
 

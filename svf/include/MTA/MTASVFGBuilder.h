@@ -33,10 +33,6 @@
  *   (1) may-happen-in-parallel (MHP), and
  *   (2) may-alias on the address-taken object, and
  *   (3) are not excluded by a common lock (non-interference lock-pair pruning).
- *
- * Only the default thread-aware edge construction is kept; the
- * precision-experiment variants (non-sparse, PCG, read-precision edge removal)
- * are intentionally omitted.
  */
 
 #ifndef INCLUDE_MTA_MTASVFGBUILDER_H_
@@ -55,6 +51,8 @@
 namespace SVF
 {
 
+class SlicedICFGView;
+
 class MTASVFGBuilder : public SVFGBuilder
 {
 public:
@@ -67,6 +65,32 @@ public:
 
     /// Number of thread-aware (interference) SVFG edges added.
     static u32_t numOfNewSVFGEdges;
+
+    /// Configure the builder for the main (post-slicing) FSAM solve rather than
+    /// the pre-analysis VFG_pre:
+    ///  - slice != null restricts the interference-edge construction to kept
+    ///    store/load nodes (a sliced-out endpoint's edge is inert in the gated
+    ///    solve, so it need not be built);
+    ///  - the [THREAD-VF] query map is skipped, as only VFG_pre slicing reads it.
+    /// The pre-analysis build leaves this unset (whole program, query map built).
+    void configureForMainSolve(const SlicedICFGView* slice)
+    {
+        icfgSlice = slice;
+        recordThreadVF = false;
+    }
+
+    /// Configure the builder for VFG_pre (pre-analysis) slicing, which is only
+    /// *sliced*, never *solved*: the data-dependence slice traverses the
+    /// interference edges for connectivity only (it reads getSrcNode/getInEdges,
+    /// never the per-edge points-to label). So drop the interference-edge
+    /// points-to labels here -- they are the dominant VFG_pre memory cost (e.g.
+    /// x264: ~1.4B edge labels) yet have no consumer in the slice. The edge SET
+    /// is unchanged (edges are added on the MHP + lock tests, not on points-to),
+    /// so the slice -- and the preserved race set -- are identical.
+    void configureForSlicingOnly()
+    {
+        labelInterferenceEdges = false;
+    }
 
     /// A candidate thread-aware value-flow edge s --o--> s' (src store, dst
     /// load/store), keyed by its endpoint SVFG nodes.
@@ -99,7 +123,13 @@ protected:
     std::unique_ptr<MRGenerator> createMRGenerator(BVDataPTAImpl* pta, bool ptrOnlyMSSA) override;
 
 private:
-    /// Collect all store/load SVFG nodes.
+    /// Main-solve configuration (see configureForMainSolve); defaults suit VFG_pre.
+    const SlicedICFGView* icfgSlice = nullptr; ///< null = whole program
+    bool recordThreadVF = true;                ///< false = skip [THREAD-VF] recording
+    bool labelInterferenceEdges = true;        ///< false = VFG_pre (sliced-only): omit edge points-to labels
+
+    /// Collect the store/load SVFG nodes to pair for interference edges (all of
+    /// them, or -- when a slice is set -- only the kept ones).
     void collectLoadStoreSVFGNodes();
 
     /// FSAM join-related thread-oblivious value flow (the "return" half of

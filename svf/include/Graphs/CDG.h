@@ -30,12 +30,18 @@
 #ifndef SVF_CONTROLDG_H
 #define SVF_CONTROLDG_H
 
+#include "Graphs/GenericGraph.h"
+#include "Graphs/GraphPrinter.h"
+#include "Graphs/ICFGNode.h"
 #include "SVFIR/SVFIR.h"
+#include "Util/GeneralType.h"
+#include "Util/SVFUtil.h"
 
 namespace SVF
 {
 
 class CDGNode;
+class SVFVar;
 
 typedef GenericEdge<CDGNode> GenericCDGEdgeTy;
 
@@ -420,34 +426,34 @@ struct DOTGraphTraits<SVF::CDG *> : public DOTGraphTraits<SVF::PAG *>
         std::stringstream rawstr(str);
         const SVF::ICFGNode *icfgNode = node->getICFGNode();
 
+        rawstr << "shape=record";
+
         if (SVF::SVFUtil::isa<SVF::IntraICFGNode>(icfgNode))
         {
-            rawstr << "color=black";
+            rawstr << ",color=black";
         }
         else if (SVF::SVFUtil::isa<SVF::FunEntryICFGNode>(icfgNode))
         {
-            rawstr << "color=yellow";
+            rawstr << ",color=yellow";
         }
         else if (SVF::SVFUtil::isa<SVF::FunExitICFGNode>(icfgNode))
         {
-            rawstr << "color=green";
+            rawstr << ",color=green";
         }
         else if (SVF::SVFUtil::isa<SVF::CallICFGNode>(icfgNode))
         {
-            rawstr << "color=red";
+            rawstr << ",color=red";
         }
         else if (SVF::SVFUtil::isa<SVF::RetICFGNode>(icfgNode))
         {
-            rawstr << "color=blue";
+            rawstr << ",color=blue";
         }
         else if (SVF::SVFUtil::isa<SVF::GlobalICFGNode>(icfgNode))
         {
-            rawstr << "color=purple";
+            rawstr << ",color=purple";
         }
         else
             assert(false && "no such kind of node!!");
-
-        rawstr << "";
 
         return rawstr.str();
     }

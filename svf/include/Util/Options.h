@@ -3,10 +3,9 @@
 #ifndef OPTIONS_H_
 #define OPTIONS_H_
 
-#include <sstream>
 #include "Util/CommandLine.h"
-#include "Util/PTAStat.h"
-#include "MemoryModel/PointerAnalysisImpl.h"
+#include "Util/SVFStat.h"
+#include "MemoryModel/PTATY.h"
 #include "Util/NodeIDAllocator.h"
 
 namespace SVF
@@ -18,7 +17,7 @@ class Options
 public:
     Options(void) = delete;
 
-    static const OptionMap<enum PTAStat::ClockType> ClockType;
+    static const OptionMap<SVFStat::ClockType> ClockType;
 
     /// If set, only return the clock when getClk is called as getClk(true).
     /// Retrieving the clock is slow but it should be fine for a few calls.
@@ -63,7 +62,7 @@ public:
     static const Option<bool> PredictPtOcc;
 
     /// PTData type.
-    static const OptionMap<BVDataPTAImpl::PTBackingType> ptDataBacking;
+    static const OptionMap<PTBackingType> ptDataBacking;
 
     /// Time limit for the main phase (i.e., the actual solving) of FS analyses.
     static const Option<u32_t> FsTimeLimit;
@@ -87,7 +86,7 @@ public:
     static const Option<bool> PrintCPts;
     static const Option<bool> PrintQueryPts;
     static const Option<bool> WPANum;
-    static OptionMultiple<PointerAnalysis::PTATY> DDASelected;
+    static OptionMultiple<PTATY> DDASelected;
 
     // FlowDDA.cpp
     static const Option<u32_t> FlowBudget;
@@ -156,9 +155,6 @@ public:
     static const Option<bool> PrintInterLev;
     static const Option<bool> DoLockAnalysis;
 
-    //MTAStat.cpp
-    static const Option<bool> AllPairMHP;
-
     // TCT.cpp
     static const Option<bool> TCTDotGraph;
 
@@ -171,9 +167,6 @@ public:
 
     // CHG.cpp
     static const Option<bool> DumpCHA;
-
-    // DCHG.cpp
-    static const Option<bool> PrintDCHG;
 
     // LLVMModule.cpp
     static const Option<std::string> Graphtxt;
@@ -218,7 +211,7 @@ public:
     static const Option<bool> AnderSVFG;
     static const Option<bool> SABERFULLSVFG;
     static const Option<bool> PrintAliases;
-    static OptionMultiple<PointerAnalysis::PTATY> PASelected;
+    static OptionMultiple<PTATY> PASelected;
     static OptionMultiple<u32_t> AliasRule;
 
     // DOTGraphTraits
@@ -259,23 +252,17 @@ public:
     static const Option<bool> FileCheck;
     /// double free checker, Default: false
     static const Option<bool> DFreeCheck;
-    /// MTA: enable sparse flow-sensitive pointer analysis; false = Andersen flow-insensitive base, Default: true
-    static const Option<bool> FlowSensitive;
+    /// MTA: flow-sensitive (FSAM) main analysis; false = Andersen flow-insensitive base, Default: true
+    static const Option<bool> MTFlowSensitive;
     /// MTA: dump the pointer-analysis and thread call graphs (ptacg/tcg.dot), Default: false
     static const Option<bool> DumpMTAGraphs;
 
     /// MTA slicing: slice before the FSAM main analysis (false = whole-program baseline), Default: true
     static const Option<bool> EnableSlicing;
-    /// MTA slicing: build the main FSMPTA value flow from the sliced ILA, Default: false
-    static const Option<bool> MainIlaSliced;
-    /// MTA slicing: seed the ILA slice with [THREAD-VF] sources (paper §4.2), Default: true
-    static const Option<bool> ThreadVFSources;
     /// MTA slicing: one unified slice for ILA + FSPTA (single-pass baseline), Default: false
     static const Option<bool> SlicingSingle;
     /// MTA slicing: dump intermediate dot graphs (ICFG/TCG/SVFG/...), Default: false
     static const Option<bool> SlicedDumpDot;
-    /// MTA: observe the FSAM points-to + ILA instead of detecting races, Default: false
-    static const Option<bool> MTAObserve;
     /// if the access index of gepstmt is unknown, skip it, Default: false
     static const Option<bool> GepUnknownIdx;
     static const Option<bool> RunUncallFuncs;
@@ -284,6 +271,9 @@ public:
 
     // float precision for symbolic abstraction
     static const Option<u32_t> AEPrecision;
+
+    // GraphWriter.h
+    static const Option<u32_t> MaxNodeLabelLength;
 };
 }  // namespace SVF
 

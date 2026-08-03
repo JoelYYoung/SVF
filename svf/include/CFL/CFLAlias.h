@@ -32,11 +32,12 @@
 
 #include "CFL/CFLBase.h"
 #include "CFL/CFLStat.h"
+#include "MemoryModel/PTATY.h"
+#include "SVFIR/SVFType.h"
+#include "Util/GeneralType.h"
 
 namespace SVF
 {
-
-class CFLStat;
 
 class CFLAlias : public CFLBase
 {
@@ -44,7 +45,7 @@ class CFLAlias : public CFLBase
 public:
     typedef OrderedMap<const CallICFGNode*, NodeID> CallSite2DummyValPN;
 
-    CFLAlias(SVFIR* ir) : CFLBase(ir, PointerAnalysis::CFLFICI_WPA)
+    CFLAlias(SVFIR* ir) : CFLBase(ir, PTATY::CFLFICI_WPA)
     {
     }
 

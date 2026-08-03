@@ -30,6 +30,9 @@
 #ifndef SVF_SVFSTAT_H
 #define SVF_SVFSTAT_H
 
+#include "MemoryModel/PointsTo.h"
+#include "Util/GeneralType.h"
+
 namespace SVF
 {
 
@@ -45,7 +48,7 @@ public:
 
     typedef OrderedMap<std::string, double> TIMEStatMap;
 
-    enum ClockType
+    enum class ClockType
     {
         Wall,
         CPU,

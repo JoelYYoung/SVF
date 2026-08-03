@@ -14,11 +14,9 @@
 #ifndef VFS_H_
 #define VFS_H_
 
-#include "Graphs/SVFGOPT.h"
-#include "MSSA/SVFGBuilder.h"
+#include "Graphs/SVFG.h"
 #include "WPA/FlowSensitive.h"
-#include "WPA/WPAFSSolver.h"
-#include "MemoryModel/PointsTo.h"
+#include "MemoryModel/PTATY.h"
 
 namespace SVF
 {
@@ -50,7 +48,7 @@ public:
     static VersionedVar atKey(NodeID, Version);
 
     /// Constructor
-    VersionedFlowSensitive(SVFIR *_pag, PTATY type = VFS_WPA);
+    VersionedFlowSensitive(SVFIR *_pag, PTATY type = PTATY::VFS_WPA);
 
     /// Initialize analysis
     virtual void initialize() override;
@@ -72,7 +70,7 @@ public:
     }
     static inline bool classof(const PointerAnalysis *pta)
     {
-        return pta->getAnalysisTy() == VFS_WPA;
+        return pta->getAnalysisTy() == PTATY::VFS_WPA;
     }
     //@}
 

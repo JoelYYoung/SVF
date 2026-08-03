@@ -30,7 +30,7 @@
 #ifndef THREADAPI_H_
 #define THREADAPI_H_
 
-#include "SVFIR/SVFValue.h"
+#include "Util/GeneralType.h"
 
 namespace SVF
 {
@@ -154,8 +154,15 @@ public:
     //@}
 
     /// If fork join the same thread
+    struct ForkJoinAliasCache
+    {
+        Map<const SVFVar*, NodeBS> joinedThreadObjects;
+    };
+
     bool isAliasedForkJoin(PointerAnalysis* pta, const SVFVar* forkArg,
                            const SVFVar* joinArg) const;
+    bool isAliasedForkJoin(PointerAnalysis* pta, const SVFVar* forkArg,
+                           const SVFVar* joinArg, ForkJoinAliasCache& cache) const;
 
 
     /// Return true if this call exits/terminate a thread

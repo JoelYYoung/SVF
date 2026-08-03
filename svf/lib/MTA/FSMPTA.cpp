@@ -30,6 +30,7 @@
  */
 
 #include "MTA/FSMPTA.h"
+#include "Graphs/SlicedGraphs.h"
 #include "WPA/Andersen.h"
 #include "WPA/WPAStat.h"
 #include "Util/Options.h"
@@ -39,28 +40,31 @@
 using namespace SVF;
 
 /*!
- * Sliced (Layer 2) mode: the thread-aware SVFG is built whole, but we do not
- * propagate flow facts through load/store statements that the FSMPTA slice
- * removed -- exactly "don't update the value flows that were sliced away".
- * By the slice's data-dependence closure, no target pointer depends on a
- * sliced-away statement, so the target points-to results are preserved.
- * Non-statement nodes (Addr, Phi, call/return boundaries) are always processed
- * to keep the inter-procedural value flow intact.
+ * Gate the per-node transfer: the solver still runs over the whole thread-aware
+ * SVFG, but a node outside the (possibly sliced) graph gets no transfer and
+ * propagates nothing -- a propagation barrier, exactly "don't update the value
+ * flows that were sliced away". By the slice's data-dependence closure, no target
+ * pointer depends on a sliced-away statement, so the target points-to results are
+ * preserved. The whole graph (SVFG*) contains every node, so its instantiation
+ * folds the test away.
  */
-void FSMPTA::processNode(NodeID nodeId)
+template<class SVFGGraph>
+void FSMPTA<SVFGGraph>::processNode(NodeID nodeId)
 {
-    if (slicedView)
-    {
-        const SVFGNode* node = svfg->getSVFGNode(nodeId);
-        if (SVFUtil::isa<StoreSVFGNode, LoadSVFGNode>(node))
-        {
-            const StmtSVFGNode* stmt = SVFUtil::cast<StmtSVFGNode>(node);
-            const ICFGNode* icfg = stmt->getICFGNode();
-            if (icfg && !slicedView->getICFG()->isKeptNode(icfg))
-                return; // sliced away -- leave inert
-        }
-    }
+    if (!GenericGraphTraits<SVFGGraph>::containsNode(graph, svfg->getSVFGNode(nodeId)))
+        return; // outside the sliced SVFG -- leave inert
     FlowSensitive::processNode(nodeId);
+}
+
+// The ICFG slice to restrict the main-solve interference edges to, or null for
+// the whole-program SVFG*. Overloaded on the graph handle (static: file-local).
+static const SlicedICFGView* mtaICFGSliceOf(SVFG*)
+{
+    return nullptr;
+}
+static const SlicedICFGView* mtaICFGSliceOf(const SlicedSVFGView* v)
+{
+    return v != nullptr ? v->getICFGView() : nullptr;
 }
 
 /*!
@@ -68,7 +72,8 @@ void FSMPTA::processNode(NodeID nodeId)
  * stock sparse flow-sensitive solver. Mirrors FlowSensitive::initialize()
  * but swaps the default SVFG builder for the MTA-aware one.
  */
-void FSMPTA::initialize()
+template<class SVFGGraph>
+void FSMPTA<SVFGGraph>::initialize()
 {
     PointerAnalysis::initialize();
 
@@ -82,27 +87,28 @@ void FSMPTA::initialize()
 
     ander = AndersenWaveDiff::createAndersenWaveDiff(getPAG());
 
-    if (preBuiltSVFG != nullptr)
+    // FSAM's thread-oblivious value flow treats a thread fork as an ordinary
+    // call: the spawner's memory state must flow into the spawnee. The stock
+    // Andersen call graph does not carry the pthread fork/join edges, so we
+    // add them here (they are CallGraphEdges) before building MemSSA/SVFG.
+    if (ThreadCallGraph* tcg = SVFUtil::dyn_cast<ThreadCallGraph>(ander->getCallGraph()))
     {
-        // Reuse the thread-aware SVFG built once in pre-analysis (build once):
-        // its fork/join call-graph edges and interference edges are already in
-        // place. The sliced solve is handled by processNode().
-        svfg = preBuiltSVFG;
+        tcg->updateCallGraph(ander);   // fork edges (spawner -> spawnee, forward)
+        tcg->updateJoinEdge(ander);    // join edges (for join-related def-use)
     }
-    else
-    {
-        // FSAM's thread-oblivious value flow treats a thread fork as an ordinary
-        // call: the spawner's memory state must flow into the spawnee. The stock
-        // Andersen call graph does not carry the pthread fork/join edges, so we
-        // add them here (they are CallGraphEdges) before building MemSSA/SVFG.
-        if (ThreadCallGraph* tcg = SVFUtil::dyn_cast<ThreadCallGraph>(ander->getCallGraph()))
-        {
-            tcg->updateCallGraph(ander);   // fork edges (spawner -> spawnee, forward)
-            tcg->updateJoinEdge(ander);    // join edges (for join-related def-use)
-        }
-        // Build the thread-aware SVFG (stock value flow + MHP interference edges).
-        svfg = mtaSVFGBuilder.buildPTROnlySVFG(ander);
-    }
+    // Main solve: restrict interference edges to the slice and skip the
+    // [THREAD-VF] recording (only VFG_pre slicing consumes it). For SVFGGraph ==
+    // SVFG* (whole program) the slice is null, so nothing is restricted.
+    mtaSVFGBuilder.configureForMainSolve(mtaICFGSliceOf(graph));
+    // Build the thread-aware SVFG (stock value flow + MHP interference edges).
+    svfg = mtaSVFGBuilder.buildPTROnlySVFG(ander);
 
     setGraph(svfg);
 }
+
+// The two SVFGs the solver runs on; the implementation above is written once.
+namespace SVF
+{
+template class FSMPTA<SVFG*>;
+template class FSMPTA<const SlicedSVFGView*>;
+} // namespace SVF

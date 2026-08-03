@@ -30,7 +30,7 @@
 #include "Graphs/ThreadCallGraph.h"
 #include "Util/ThreadAPI.h"
 #include "SVFIR/SVFIR.h"
-#include "MemoryModel/PointerAnalysisImpl.h"
+#include "MemoryModel/PointerAnalysis.h"
 #include "Graphs/CallGraph.h"
 
 using namespace SVF;
@@ -48,12 +48,9 @@ ThreadCallGraph::ThreadCallGraph(const CallGraph& cg) :
 
 ThreadCallGraph::~ThreadCallGraph()
 {
-    Set<ThreadJoinEdge*> joinEdges;
     for (const auto& entry : callinstToThreadJoinEdgesMap)
-        joinEdges.insert(entry.second.begin(), entry.second.end());
-
-    for (ThreadJoinEdge* edge : joinEdges)
-        delete edge;
+        for (ThreadJoinEdge* edge : entry.second)
+            delete edge;
 }
 
 const std::string ThreadForkEdge::toString() const
@@ -131,6 +128,7 @@ void ThreadCallGraph::updateCallGraph(PointerAnalysis* pta)
  */
 void ThreadCallGraph::updateJoinEdge(PointerAnalysis* pta)
 {
+    ThreadAPI::ForkJoinAliasCache aliasCache;
 
     for (CallSiteSet::const_iterator it = joinsitesBegin(), eit = joinsitesEnd(); it != eit; ++it)
     {
@@ -140,7 +138,7 @@ void ThreadCallGraph::updateJoinEdge(PointerAnalysis* pta)
         for (CallSiteSet::const_iterator it = forksitesBegin(), eit = forksitesEnd(); it != eit; ++it)
         {
             const SVFVar* forkthread = tdAPI->getForkedThread(*it);
-            if (tdAPI->isAliasedForkJoin(pta, forkthread, jointhread))
+            if (tdAPI->isAliasedForkJoin(pta, forkthread, jointhread, aliasCache))
             {
                 forkset.insert(*it);
             }

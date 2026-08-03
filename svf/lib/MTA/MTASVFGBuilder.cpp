@@ -29,8 +29,10 @@
  */
 
 #include "MTA/MTASVFGBuilder.h"
+#include "Graphs/SlicedGraphs.h"
 #include "MSSA/MemSSA.h"
 #include "MSSA/MemPartition.h"
+#include "MemoryModel/PointerAnalysisImpl.h"
 #include "Util/SVFUtil.h"
 #include "Util/Options.h"
 #include "Graphs/ThreadCallGraph.h"
@@ -42,10 +44,11 @@ u32_t MTASVFGBuilder::numOfNewSVFGEdges = 0;
 
 namespace
 {
-/// Thread-aware MRGenerator mixin: layers the FSAM fork/join mod-ref side effects
-/// on top of any base partition strategy (Distinct / IntraDisjoint /
-/// InterDisjoint), via the MRGenerator hooks. This keeps the thread-specific
-/// def-use out of core MemRegion -- it is only used for MTA's thread-aware SVFG.
+/// Thread-aware MRGenerator mixin: layers the FSAM fork/join mod-ref effects on
+/// top of any base partition strategy (Distinct / IntraDisjoint / InterDisjoint).
+/// This must happen during MemorySSA mod/ref construction because callsite
+/// MU/CHI nodes, and therefore ActualIN/ActualOUT SVFG nodes, are created from
+/// these mod/ref sets.
 template <class BaseMRG>
 class ThreadMRG : public BaseMRG
 {
@@ -57,7 +60,7 @@ protected:
     /// the fork site (ActualIN -> FormalIN, FSAM's thread-oblivious value flow).
     /// We do NOT add the spawnee's *mod* set -- a fork has no return, so its
     /// writes flow back via the thread-aware interference edges instead.
-    void handleForkSideEffect(NodeBS& mod, NodeBS& ref,
+    void refineCallsiteModRef(NodeBS& mod, NodeBS& ref,
                               const CallICFGNode* cs, const FunObjVar* callee) override
     {
         if (const ThreadCallGraph* tcg = SVFUtil::dyn_cast<ThreadCallGraph>(this->getCallGraph()))
@@ -77,8 +80,8 @@ protected:
     /// MOD set to the join callsite (creating an ActualOUT there -- a "return
     /// without a forward"). MOD only, never REF. Join edges are not real
     /// call-graph edges, so we reach them via getJoinSites.
-    void handleJoinSideEffect(CallGraphNode* callGraphNode,
-                              MRGenerator::WorkList& worklist) override
+    void propagateAdditionalModRef(CallGraphNode* callGraphNode,
+                                   MRGenerator::WorkList& worklist) override
     {
         ThreadCallGraph* tcg = SVFUtil::dyn_cast<ThreadCallGraph>(this->getCallGraph());
         if (tcg == nullptr)
@@ -89,7 +92,10 @@ protected:
             return;
         const NodeBS& spawneeMod = this->getModSideEffectOfFunction(callGraphNode->getFunction());
         for (const CallICFGNode* cs : joinsites)
-            if (this->addModSideEffectOfCallSite(cs, spawneeMod))
+            // A join exposes the joined thread's writes at the join point. Those
+            // writes are not necessarily reachable from pthread_join's handle
+            // argument, so use the MOD set as computed for the start routine.
+            if (this->addUnfilteredModSideEffectOfCallSite(cs, spawneeMod))
                 worklist.push(this->getCallGraph()->getCallGraphNode(cs->getCaller())->getId());
     }
 };
@@ -196,18 +202,21 @@ void MTASVFGBuilder::collectLoadStoreSVFGNodes()
     for (SVFG::const_iterator it = svfg->begin(), eit = svfg->end(); it != eit; ++it)
     {
         const SVFGNode* snode = it->second;
-        if (SVFUtil::isa<LoadSVFGNode>(snode))
-        {
-            const StmtSVFGNode* node = SVFUtil::cast<StmtSVFGNode>(snode);
-            if (node->getICFGNode())
-                ldnodeSet.insert(node);
-        }
-        else if (SVFUtil::isa<StoreSVFGNode>(snode))
-        {
-            const StmtSVFGNode* node = SVFUtil::cast<StmtSVFGNode>(snode);
-            if (node->getICFGNode())
-                stnodeSet.insert(node);
-        }
+        const bool isLoad = SVFUtil::isa<LoadSVFGNode>(snode);
+        if (!isLoad && !SVFUtil::isa<StoreSVFGNode>(snode))
+            continue;
+        const StmtSVFGNode* node = SVFUtil::cast<StmtSVFGNode>(snode);
+        const ICFGNode* icfg = node->getICFGNode();
+        if (icfg == nullptr)
+            continue;
+        // Main-solve slice restriction: an interference edge touching a sliced-out
+        // node is inert in the gated FSAM solve, so skip building it here.
+        if (icfgSlice != nullptr && !icfgSlice->isKeptNode(icfg))
+            continue;
+        if (isLoad)
+            ldnodeSet.insert(node);
+        else
+            stnodeSet.insert(node);
     }
 }
 
@@ -218,6 +227,17 @@ SVFGEdge* MTASVFGBuilder::addTDEdge(NodeID srcId, NodeID dstId, const PointsTo& 
 {
     SVFGNode* srcNode = svfg->getSVFGNode(srcId);
     SVFGNode* dstNode = svfg->getSVFGNode(dstId);
+
+    // VFG_pre (sliced-only) mode: keep the edge for connectivity but omit its
+    // points-to label -- no slice consumer reads it (see configureForSlicingOnly).
+    if (!labelInterferenceEdges)
+    {
+        if (SVFGEdge* edge = svfg->hasThreadVFGEdge(srcNode, dstNode, SVFGEdge::TheadMHPIndirectVF))
+            return edge;
+        numOfNewSVFGEdges++;
+        ThreadMHPIndSVFGEdge* indirectEdge = new ThreadMHPIndSVFGEdge(srcNode, dstNode);
+        return (svfg->addSVFGEdge(indirectEdge) ? indirectEdge : nullptr);
+    }
 
     if (SVFGEdge* edge = svfg->hasThreadVFGEdge(srcNode, dstNode, SVFGEdge::TheadMHPIndirectVF))
     {
@@ -414,14 +434,21 @@ void MTASVFGBuilder::handleStoreLoad(const StmtSVFGNode* n1, const StmtSVFGNode*
     // No alias() re-check: the bucketed candidate generator only pairs accesses
     // whose raw points-to sets share an object, so the intersection below is
     // non-empty by construction and alias() could never answer NoAlias here.
-    PointsTo pts = pta->getPts(n1->getDstNodeID());
-    pts &= pta->getPts(n2->getSrcNodeID());
+    // The label is only needed when the edge will be solved (main FSMPTA); in
+    // VFG_pre (sliced-only) mode skip the intersection -- it is never read.
+    PointsTo pts;
+    if (labelInterferenceEdges)
+    {
+        pts = pta->getPts(n1->getDstNodeID());
+        pts &= pta->getPts(n2->getSrcNodeID());
+    }
 
     // [THREAD-VF] source extraction runs for every candidate pair (both the
     // pairs that survive and the ones the lock test prunes), so the sliced ILA
     // can re-derive whether the edge holds.
     bool commonLock = lockana->isProtectedByCommonLock(i1, i2);
-    recordThreadVFSource(n1, n2, commonLock);
+    if (recordThreadVF)
+        recordThreadVFSource(n1, n2, commonLock);
 
     if (commonLock)
     {
@@ -447,14 +474,21 @@ void MTASVFGBuilder::handleStoreStore(const StmtSVFGNode* n1, const StmtSVFGNode
         return;
 
     // No alias() re-check: see handleStoreLoad -- bucketing already guarantees a
-    // shared raw object.
-    PointsTo pts = pta->getPts(n1->getDstNodeID());
-    pts &= pta->getPts(n2->getDstNodeID());
+    // shared raw object. Skip the label intersection in VFG_pre (sliced-only) mode.
+    PointsTo pts;
+    if (labelInterferenceEdges)
+    {
+        pts = pta->getPts(n1->getDstNodeID());
+        pts &= pta->getPts(n2->getDstNodeID());
+    }
 
     // Both directions are candidate thread-aware edges; extract sources for each.
     bool commonLock = lockana->isProtectedByCommonLock(i1, i2);
-    recordThreadVFSource(n1, n2, commonLock);
-    recordThreadVFSource(n2, n1, commonLock);
+    if (recordThreadVF)
+    {
+        recordThreadVFSource(n1, n2, commonLock);
+        recordThreadVFSource(n2, n1, commonLock);
+    }
 
     if (commonLock)
     {

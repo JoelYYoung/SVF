@@ -30,8 +30,6 @@
  * (`FlowSensitive`) over a *thread-aware* SVFG built by `MTASVFGBuilder`,
  * i.e. the stock thread-oblivious value flow augmented with inter-thread
  * (interference) edges derived from the MHP and lock analyses.
- *
- * This is the engine the MSli paper calls the main FSMPTA phase.
  */
 
 #ifndef INCLUDE_MTA_FSMPTA_H_
@@ -41,26 +39,29 @@
 #include "MTA/MHP.h"
 #include "MTA/LockAnalysis.h"
 #include "MTA/MTASVFGBuilder.h"
-#include "MTA/SlicedView.h"
+#include "MTA/MTASlicer.h"
 #include <unordered_set>
 
 namespace SVF
 {
 
+/// One solver for the whole and the sliced SVFG: SVFGGraph is SVFG* (whole;
+/// every node processed) or const SlicedSVFGView* (sliced; nodes outside the
+/// view are propagation barriers). Restriction is answered by
+/// GenericGraphTraits<SVFGGraph>::containsNode, resolved at compile time; the
+/// stock FlowSensitive transfer semantics are untouched.
+template<class SVFGGraph>
 class FSMPTA : public FlowSensitive
 {
 public:
     /// Constructor.
-    ///  - view != nullptr  => sliced (Layer 2): the FS solve skips memory ops not
-    ///    in the slice ("don't update the value flows sliced away").
-    ///  - preBuilt != nullptr => reuse an already-built thread-aware SVFG instead
-    ///    of building a fresh one (build the SVFG exactly once across slicing +
-    ///    main solve). Ownership stays with the caller.
-    FSMPTA(MHP* m, LockAnalysis* la,
-             const SlicedSVFIRView* view = nullptr, SVFG* preBuilt = nullptr)
+    ///  - graph: gates the per-node transfer (the solver runs over the whole
+    ///    thread-aware SVFG). For SVFGGraph == SVFG* it may be null (every node
+    ///    is processed). A SlicedSVFGView needs only its ICFG view for membership,
+    ///    so it can be created before the SVFG itself is built here.
+    FSMPTA(MHP* m, LockAnalysis* la, SVFGGraph graph)
         : FlowSensitive(m->getTCT()->getPTA()->getPAG()),
-          mhp(m), mtaSVFGBuilder(m, la),
-          slicedView(view), preBuiltSVFG(preBuilt)
+          mhp(m), mtaSVFGBuilder(m, la), graph(graph)
     {
     }
 
@@ -69,7 +70,7 @@ public:
     /// Initialise: build the thread-aware SVFG, then solve sparsely on it.
     void initialize() override;
 
-    /// Skip flow-sensitive processing of sliced-away load/store nodes.
+    /// Restrict the solve to the graph's nodes (whole: no restriction).
     void processNode(NodeID nodeId) override;
 
     inline MHP* getMHP() const
@@ -81,10 +82,8 @@ private:
     MHP* mhp;
     /// Owns the thread-aware SVFG used by the FS solver (must outlive `svfg`).
     MTASVFGBuilder mtaSVFGBuilder;
-    /// Non-null in sliced (Layer 2) mode.
-    const SlicedSVFIRView* slicedView;
-    /// Non-null when reusing a pre-built thread-aware SVFG (not owned).
-    SVFG* preBuiltSVFG;
+    /// The graph the solve is restricted to (see the constructor).
+    SVFGGraph graph;
 };
 
 } // End namespace SVF

@@ -27,14 +27,15 @@
  *      Author: Yulei Sui
  */
 
-#include "Graphs/ICFG.h"
 #include "Graphs/CallGraph.h"
-#include "SVFIR/SVFIR.h"
-#include <Util/Options.h>
+#include "Graphs/GraphPrinter.h"
+#include "Graphs/ICFG.h"
+#include "Util/Options.h"
 
 using namespace SVF;
 using namespace SVFUtil;
 
+class SVFIR;
 
 FunEntryICFGNode::FunEntryICFGNode(NodeID id, const FunObjVar* f) : InterICFGNode(id, FunEntryBlock)
 {
@@ -516,34 +517,34 @@ struct DOTGraphTraits<ICFG*> : public DOTGraphTraits<SVFIR*>
         std::string str;
         std::stringstream rawstr(str);
 
+        rawstr <<  "shape=record";
+
         if(SVFUtil::isa<IntraICFGNode>(node))
         {
-            rawstr <<  "color=black";
+            rawstr <<  ",color=black";
         }
         else if(SVFUtil::isa<FunEntryICFGNode>(node))
         {
-            rawstr <<  "color=yellow";
+            rawstr <<  ",color=yellow";
         }
         else if(SVFUtil::isa<FunExitICFGNode>(node))
         {
-            rawstr <<  "color=green";
+            rawstr <<  ",color=green";
         }
         else if(SVFUtil::isa<CallICFGNode>(node))
         {
-            rawstr <<  "color=red";
+            rawstr <<  ",color=red";
         }
         else if(SVFUtil::isa<RetICFGNode>(node))
         {
-            rawstr <<  "color=blue";
+            rawstr <<  ",color=blue";
         }
         else if(SVFUtil::isa<GlobalICFGNode>(node))
         {
-            rawstr <<  "color=purple";
+            rawstr <<  ",color=purple";
         }
         else
             assert(false && "no such kind of node!!");
-
-        rawstr <<  "";
 
         return rawstr.str();
     }
