@@ -1,13 +1,15 @@
-//===- Z3RelationalDomain.cpp -- Exact-formula relational domain --------===//
+//===- Z3RelationalDomain.cpp -- Formula and template relational domain -===//
 
 #include "AE/Core/RelationalDomain.h"
 
 #include "z3++.h"
 
+#include <optional>
 #include <sstream>
 #include <stdexcept>
 #include <unordered_map>
 #include <utility>
+#include <vector>
 
 using namespace SVF;
 
@@ -51,11 +53,57 @@ struct Z3RelationalContext
                 break;
             }
         }
+
+        // A finite octagon-style template bank makes widening/narrowing
+        // possible even though Z3 itself only supplies logical formulas.  Both
+        // signs are present in wideningTemplates, so an upper bound for -x is
+        // a lower bound for x.  lowerTemplates chooses one orientation for the
+        // explicit lower-bound-only projection.  IEEE variables are excluded:
+        // mapping them into ordered Real templates would erase NaN, infinity,
+        // signed-zero, and rounding semantics.  Their widening is therefore
+        // the conservative top projection until an FPA-specific finite domain
+        // is added.
+        for (const RelationalVariable& variable : domainVariables)
+        {
+            if (isFloating(variable.type))
+                continue;
+            const z3::expr& value = variables.at(variable.id);
+            wideningTemplates.emplace_back(value);
+            wideningTemplates.emplace_back(-value);
+            lowerTemplates.emplace_back(value);
+        }
+
+        for (std::size_t lhsIndex = 0; lhsIndex < domainVariables.size();
+             ++lhsIndex)
+        {
+            const RelationalVariable& lhs = domainVariables[lhsIndex];
+            if (isFloating(lhs.type))
+                continue;
+            for (std::size_t rhsIndex = lhsIndex + 1;
+                 rhsIndex < domainVariables.size(); ++rhsIndex)
+            {
+                const RelationalVariable& rhs = domainVariables[rhsIndex];
+                if (lhs.type != rhs.type)
+                    continue;
+                const z3::expr& lhsExpr = variables.at(lhs.id);
+                const z3::expr& rhsExpr = variables.at(rhs.id);
+                const z3::expr sum = lhsExpr + rhsExpr;
+                const z3::expr difference = lhsExpr - rhsExpr;
+                wideningTemplates.emplace_back(sum);
+                wideningTemplates.emplace_back(-sum);
+                wideningTemplates.emplace_back(difference);
+                wideningTemplates.emplace_back(-difference);
+                lowerTemplates.emplace_back(sum);
+                lowerTemplates.emplace_back(difference);
+            }
+        }
     }
 
     z3::context ctx;
     std::unordered_map<RelationalVariableId, RelationalNumericType> types;
     std::unordered_map<RelationalVariableId, z3::expr> variables;
+    std::vector<z3::expr> wideningTemplates;
+    std::vector<z3::expr> lowerTemplates;
     unsigned timeoutMilliseconds;
     std::uint64_t nextFreshVariable = 0;
 };
@@ -81,7 +129,7 @@ public:
 
     const char* backendName() const override
     {
-        return "z3-exact-formula";
+        return "svf-z3-formula-template";
     }
 
     void assign(RelationalVariableId target,
@@ -139,12 +187,91 @@ public:
         if (rhs.isSubsetOf(*this) == RelationalCheckResult::True)
             return clone();
 
-        // Formula disjunction is an exact join but is not a widening: an
-        // ascending loop sequence can grow forever.  Top is the only generic,
-        // backend-independent terminating fallback available without adding a
-        // template/polyhedral abstraction layer on top of Z3.
-        return std::make_unique<Z3RelationalDomain>(
-            context, context->ctx.bool_val(true));
+        const TemplateBounds current =
+            upperBounds(formula, context->wideningTemplates);
+        const TemplateBounds successor =
+            upperBounds(rhs.formula, context->wideningTemplates);
+        if (current.bottom)
+            return rhs.clone();
+        if (successor.bottom)
+            return clone();
+
+        z3::expr result = context->ctx.bool_val(true);
+        for (std::size_t index = 0;
+             index < context->wideningTemplates.size(); ++index)
+        {
+            // APRON-style standard template widening: a finite constraint is
+            // stable only when its successor bound does not increase.  An
+            // unstable or unknown bound is replaced by +infinity (omitted).
+            if (current.upper[index] && successor.upper[index] &&
+                    lessEqual(*successor.upper[index], *current.upper[index]))
+            {
+                result = result &&
+                         context->wideningTemplates[index] <=
+                             *current.upper[index];
+            }
+        }
+        return std::make_unique<Z3RelationalDomain>(context, result);
+    }
+
+    std::unique_ptr<RelationalDomain>
+    narrowing(const RelationalDomain& next) const override
+    {
+        const Z3RelationalDomain& rhs = compatible(next);
+        const RelationalCheckResult included = rhs.isSubsetOf(*this);
+        if (included != RelationalCheckResult::True)
+            throw std::invalid_argument(
+                included == RelationalCheckResult::False
+                    ? "narrowing requires next to be included in current"
+                    : "could not establish the narrowing inclusion precondition");
+
+        const TemplateBounds current =
+            upperBounds(formula, context->wideningTemplates);
+        const TemplateBounds successor =
+            upperBounds(rhs.formula, context->wideningTemplates);
+        if (current.bottom || successor.bottom)
+            return rhs.clone();
+
+        z3::expr result = formula;
+        for (std::size_t index = 0;
+             index < context->wideningTemplates.size(); ++index)
+        {
+            // As in APRON's octagon narrowing, finite constraints already in
+            // the widened state are left unchanged.  Only a +infinity entry is
+            // replaced by the successor's finite bound.
+            if (!current.upper[index] && successor.upper[index])
+            {
+                result = result &&
+                         context->wideningTemplates[index] <=
+                             *successor.upper[index];
+            }
+        }
+        return std::make_unique<Z3RelationalDomain>(context, result);
+    }
+
+    std::unique_ptr<RelationalDomain>
+    lowerBoundApproximation() const override
+    {
+        if (isBottom() == RelationalCheckResult::True)
+            return clone();
+
+        std::vector<z3::expr> negatedTemplates;
+        negatedTemplates.reserve(context->lowerTemplates.size());
+        for (const z3::expr& expression : context->lowerTemplates)
+            negatedTemplates.emplace_back(-expression);
+
+        const TemplateBounds bounds = upperBounds(formula, negatedTemplates);
+        if (bounds.bottom)
+            return clone();
+
+        z3::expr result = context->ctx.bool_val(true);
+        for (std::size_t index = 0; index < negatedTemplates.size(); ++index)
+        {
+            if (bounds.upper[index])
+                result = result &&
+                         negatedTemplates[index] <= *bounds.upper[index];
+        }
+        return std::make_unique<Z3RelationalDomain>(context, result);
     }
 
     RelationalCheckResult isBottom() const override
@@ -177,6 +304,68 @@ public:
     }
 
 private:
+    struct TemplateBounds
+    {
+        bool bottom = false;
+        std::vector<std::optional<z3::expr>> upper;
+    };
+
+    TemplateBounds upperBounds(const z3::expr& state,
+                               const std::vector<z3::expr>& templates) const
+    {
+        TemplateBounds result;
+        result.upper.resize(templates.size());
+
+        const RelationalCheckResult satisfiable = checkSatisfiable(state);
+        if (satisfiable == RelationalCheckResult::False)
+        {
+            result.bottom = true;
+            return result;
+        }
+        if (satisfiable == RelationalCheckResult::Unknown)
+            return result;
+
+        for (std::size_t index = 0; index < templates.size(); ++index)
+        {
+            try
+            {
+                z3::optimize optimizer(context->ctx);
+                z3::params parameters(context->ctx);
+                parameters.set("timeout", context->timeoutMilliseconds);
+                optimizer.set(parameters);
+                optimizer.add(state);
+                const z3::optimize::handle objective =
+                    optimizer.maximize(templates[index]);
+                if (optimizer.check() != z3::sat)
+                    continue;
+
+                z3::expr upper = optimizer.upper(objective);
+                // Linear closed Int/Real templates have numeral optima.  Z3
+                // represents unbounded objectives with oo and strict optima
+                // with epsilon.  Neither is asserted as a finite constraint:
+                // omitting it is the sound upper approximation.
+                if (upper.is_numeral())
+                    result.upper[index].emplace(std::move(upper));
+            }
+            catch (const z3::exception&)
+            {
+                // Unsupported/non-linear optimization or a timeout loses only
+                // precision.  The missing entry denotes +infinity.
+            }
+        }
+        return result;
+    }
+
+    bool lessEqual(const z3::expr& lhs, const z3::expr& rhs) const
+    {
+        z3::solver solver(context->ctx);
+        z3::params parameters(context->ctx);
+        parameters.set("timeout", context->timeoutMilliseconds);
+        solver.set(parameters);
+        solver.add(lhs > rhs);
+        return solver.check() == z3::unsat;
+    }
+
     const z3::expr& variable(RelationalVariableId id) const
     {
         auto found = context->variables.find(id);

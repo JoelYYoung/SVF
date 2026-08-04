@@ -13,15 +13,11 @@ set(ALL_TOOLS
     dvf
     llvm2svf
     mta
-    relational-domain-eval
+    relational-domain-test
     saber
     svf-ex
     wpa
 )
-
-if(SVF_ENABLE_APRON)
-  list(APPEND ALL_TOOLS fp-backend-precision-eval)
-endif()
 
 foreach(_tool IN LISTS ALL_TOOLS)
   # Link the SvfLLVM library against SVF's core & LLVM libraries

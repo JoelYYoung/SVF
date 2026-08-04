@@ -225,16 +225,6 @@ message(
 )
 
 # =================================================================================
-# Optional APRON relational-domain backend
-# =================================================================================
-
-option(SVF_ENABLE_APRON "Build the optional APRON/NewPolka AE relational domain" OFF)
-if(SVF_ENABLE_APRON)
-  find_package(Apron REQUIRED)
-  message(STATUS "APRON relational domain enabled (include: ${APRON_INCLUDE_DIR})")
-endif()
-
-# =================================================================================
 # SVF configuration interface library
 # =================================================================================
 

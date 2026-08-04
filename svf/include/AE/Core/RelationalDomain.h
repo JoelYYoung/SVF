@@ -2,10 +2,10 @@
 //
 //                     SVF: Static Value-Flow Analysis
 //
-// This file defines the small, backend-neutral contract used to compare
-// APRON and Z3 relational domains.  In particular, floating-point semantics
-// are explicit: callers must select an IEEE format and rounding mode instead
-// of silently treating machine values as mathematical reals.
+// This file defines SVF's relational numerical-domain contract.  Floating-
+// point semantics are explicit: callers must select an IEEE format and
+// rounding mode instead of silently treating machine values as mathematical
+// reals.
 //
 //===----------------------------------------------------------------------===//
 
@@ -146,11 +146,24 @@ public:
     virtual std::unique_ptr<RelationalDomain>
     meet(const RelationalDomain& other) const = 0;
 
-    /// Return a sound extrapolation containing this state and next.  Z3 does
-    /// not provide a native numerical widening; its backend intentionally uses
-    /// a coarse terminating fallback so that this limitation is measurable.
+    /// Return a sound extrapolation containing this state and next.  The usual
+    /// fixpoint precondition is that this state is included in next.
     virtual std::unique_ptr<RelationalDomain>
     widening(const RelationalDomain& next) const = 0;
+
+    /// Refine a widened state with a descending successor.  The caller must
+    /// establish next <= this state.  Unlike meet, a narrowing is deliberately
+    /// allowed to retain some finite bounds so that descending iteration can
+    /// be controlled by the backend's finite abstraction.
+    virtual std::unique_ptr<RelationalDomain>
+    narrowing(const RelationalDomain& next) const = 0;
+
+    /// Return a sound over-approximation that retains lower-bound templates.
+    /// "Lower" describes the direction of the retained inequalities; this is
+    /// not an under-approximation of reachable states.  A backend may retain
+    /// additional information when it has no separate lower-bound projection.
+    virtual std::unique_ptr<RelationalDomain>
+    lowerBoundApproximation() const = 0;
 
     virtual RelationalCheckResult isBottom() const = 0;
     virtual RelationalCheckResult
@@ -164,11 +177,6 @@ public:
 std::unique_ptr<RelationalDomain>
 makeZ3RelationalDomain(const std::vector<RelationalVariable>& variables,
                        unsigned timeoutMilliseconds = 1000);
-
-/// This factory is always declared.  It throws std::logic_error when SVF was
-/// built without -DSVF_ENABLE_APRON=ON.
-std::unique_ptr<RelationalDomain>
-makeApronRelationalDomain(const std::vector<RelationalVariable>& variables);
 
 const char* toString(RelationalCheckResult result);
 
