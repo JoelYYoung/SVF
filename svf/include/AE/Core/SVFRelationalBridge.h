@@ -3,6 +3,7 @@
 #ifndef SVF_RELATIONAL_BRIDGE_H
 #define SVF_RELATIONAL_BRIDGE_H
 
+#include "AE/Core/IntervalValue.h"
 #include "AE/Core/RelationalDomain.h"
 #include "Util/GeneralType.h"
 
@@ -37,6 +38,9 @@ public:
     bool tracks(NodeID id) const;
     relational::Variable variable(NodeID id) const;
     const relational::Environment& environment() const;
+    void changeTrackedVariables(
+        std::vector<TrackedRelationalVariable> variables,
+        bool projectNewVariables = false);
 
     void assignConstant(NodeID target, relational::Rational constant);
     void assignAffine(NodeID target, std::vector<AffineTerm> terms,
@@ -44,6 +48,8 @@ public:
     void assumeAffine(std::vector<AffineTerm> terms,
                       relational::Rational constant,
                       relational::ConstraintKind kind);
+    void assignInterval(NodeID target, const IntervalValue& interval);
+    void meetInterval(NodeID target, const IntervalValue& interval);
     void forget(NodeID id);
 
     void joinWith(const SVFRelationalBridge& other);
@@ -51,6 +57,8 @@ public:
     void widenWith(const SVFRelationalBridge& next,
                    const relational::WideningPolicy& policy = {});
     void narrowWith(const SVFRelationalBridge& next);
+    bool equals(const SVFRelationalBridge& other) const;
+    bool includedIn(const SVFRelationalBridge& other) const;
 
     relational::Interval bound(NodeID id) const;
     const relational::AbstractState& state() const { return state_; }
@@ -61,6 +69,7 @@ private:
     expression(const std::vector<AffineTerm>& terms,
                relational::Rational constant) const;
     void requireCompatible(const SVFRelationalBridge& other) const;
+    void constrainInterval(NodeID target, const IntervalValue& interval);
 
     std::shared_ptr<relational::Manager> manager_;
     relational::Environment environment_;

@@ -26,17 +26,78 @@ int main()
                 base.bound(22).upper().value() != Rational(6))
             throw std::runtime_error("bridge lost y := x + 2");
 
+        base.assignInterval(22, IntervalValue((s64_t)-3, (s64_t)8));
+        if (base.bound(22).lower().value() != Rational(-3) ||
+                base.bound(22).upper().value() != Rational(8))
+            throw std::runtime_error("bridge interval reduction failed");
+        base.changeTrackedVariables(
+            {{11, NumericType::integer(), "svf_11"}});
+        if (base.tracks(22) || base.bound(11).lower().value() != Rational(4))
+            throw std::runtime_error("bridge environment projection failed");
+
+        base.changeTrackedVariables(
+            {{11, NumericType::integer(), "svf_11"},
+             {22, NumericType::integer(), "svf_22"}});
+        const AbstractState beforeAffineAssignment = base.state();
+        base.assignAffine(22, {{11, Rational(1)}}, Rational(2));
+
+        Z3SoundnessChecker checker(base.environment());
+        LinearExpression xPlusTwo(Variable(11));
+        xPlusTwo.setConstant(Rational(2));
+        const ProofResult assignmentProof = checker.checkAssignment(
+            beforeAffineAssignment, Variable(22), xPlusTwo, base.state());
+        if (!assignmentProof.proved)
+            throw std::runtime_error(assignmentProof.detail);
+
+        SVFRelationalBridge assumed = base;
+        const AbstractState beforeAssume = assumed.state();
+        assumed.assumeAffine({{11, Rational(1)}, {22, Rational(-1)}},
+                             Rational(2), ConstraintKind::LessEqual);
+        LinearExpression branchExpression(Variable(11));
+        branchExpression.setCoefficient(Variable(22), Rational(-1));
+        branchExpression.setConstant(Rational(2));
+        const LinearConstraint branchConstraint(
+            branchExpression, ConstraintKind::LessEqual);
+        const ProofResult assumeProof = checker.checkAssume(
+            beforeAssume, branchConstraint, assumed.state());
+        if (!assumeProof.proved)
+            throw std::runtime_error(assumeProof.detail);
+
         SVFRelationalBridge branch = base;
         branch.assignConstant(11, Rational(5));
         branch.assignAffine(22, {{11, Rational(1)}}, Rational(2));
         SVFRelationalBridge joined = base;
         joined.joinWith(branch);
 
-        Z3SoundnessChecker checker(base.environment());
         const ProofResult proof =
             checker.checkJoin(base.state(), branch.state(), joined.state());
         if (!proof.proved)
             throw std::runtime_error(proof.detail);
+
+        SVFRelationalBridge firstRange(
+            {{11, NumericType::integer(), "svf_11"},
+             {22, NumericType::integer(), "svf_22"}},
+            manager);
+        firstRange.assignInterval(11, IntervalValue((s64_t)0, (s64_t)1));
+        firstRange.assignAffine(22, {{11, Rational(1)}}, Rational(1));
+        SVFRelationalBridge secondRange(
+            {{11, NumericType::integer(), "svf_11"},
+             {22, NumericType::integer(), "svf_22"}},
+            manager);
+        secondRange.assignInterval(11, IntervalValue((s64_t)0, (s64_t)2));
+        secondRange.assignAffine(22, {{11, Rational(1)}}, Rational(1));
+        SVFRelationalBridge widened = firstRange;
+        widened.widenWith(secondRange);
+        const ProofResult wideningProof = checker.checkWidening(
+            firstRange.state(), secondRange.state(), widened.state());
+        if (!wideningProof.proved)
+            throw std::runtime_error(wideningProof.detail);
+        SVFRelationalBridge narrowed = widened;
+        narrowed.narrowWith(secondRange);
+        const ProofResult narrowingProof = checker.checkNarrowing(
+            widened.state(), secondRange.state(), narrowed.state());
+        if (!narrowingProof.proved)
+            throw std::runtime_error(narrowingProof.detail);
 
         bool rejected = false;
         try

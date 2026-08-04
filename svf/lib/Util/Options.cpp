@@ -800,6 +800,13 @@ const OptionMap<u32_t> Options::AEFunEntry(
 });
 const Option<u32_t> Options::WidenDelay(
     "widen-delay", "Loop Widen Delay", 3);
+const Option<bool> Options::AERelational(
+    "ae-relational",
+    "Enable the per-function GMP Octagon reduced product", false);
+const Option<u32_t> Options::AERelationalMaxVars(
+    "ae-relational-max-vars",
+    "Maximum integer ValVars tracked per function by the Octagon domain",
+    64);
 const OptionMap<u32_t> Options::HandleRecur(
     "handle-recur",
     "Recursion handling mode in abstract execution (Default -widen-narrow)",

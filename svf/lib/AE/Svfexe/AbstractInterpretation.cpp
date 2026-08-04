@@ -68,6 +68,7 @@ AbstractInterpretation::AbstractInterpretation()
     callGraph = preAnalysis->getCallGraph();
     icfg->updateCallGraph(callGraph);
     preAnalysis->initWTO();
+    initializeRelationalEnvironments();
 }
 
 /// Factory: first call allocates the concrete subclass based on
@@ -223,6 +224,7 @@ void AbstractInterpretation::analyzeFromAllProgEntries()
         const FunObjVar* entryFun = entryFunctions.pop();
         const ICFGNode* funEntry = icfg->getFunEntryICFGNode(entryFun);
         updateAbsState(funEntry, getAbsState(globalNode));
+        copyRelationalState(funEntry, globalNode);
         handleFunction(funEntry, nullptr);
     }
 }
@@ -241,6 +243,7 @@ void AbstractInterpretation::handleGlobalNode()
     // Use the manager's operator[] (auto-creates the entry if absent).
     AbstractState& init = abstractTrace[node];
     init = AbstractState();
+    initializeRelationalState(node);
     // TODO: we cannot find right SVFVar for NullPtr, so we use init[NullPtr]
     // directly. Same for BlkPtr below.
     init[IRGraph::NullPtr] = AddressValue();
@@ -328,6 +331,7 @@ bool AbstractInterpretation::mergeStatesFromPredecessors(const ICFGNode* node)
         return false;
 
     updateAbsState(node, merged);
+    mergeRelationalFromPredecessors(node);
 
     return true;
 }
@@ -731,9 +735,15 @@ bool AbstractInterpretation::handleICFGNode(const ICFGNode* node)
             // Entry point with no callers: inherit from global node
             const ICFGNode* globalNode = icfg->getGlobalICFGNode();
             if (hasAbsState(globalNode))
+            {
                 updateAbsState(node, getAbsState(globalNode));
+                copyRelationalState(node, globalNode);
+            }
             else
+            {
                 updateAbsState(node, AbstractState());
+                initializeRelationalState(node);
+            }
         }
         else
         {
@@ -741,8 +751,11 @@ bool AbstractInterpretation::handleICFGNode(const ICFGNode* node)
         }
     }
 
+    initializeRelationalState(node);
+
     // Store the previous state for fixpoint detection
     AbstractState prevState = getAbsState(node);
+    RelationalStatePtr prevRelationalState = snapshotRelationalState(node);
 
     stat->getBlockTrace()++;
     stat->getICFGNodeTrace()++;
@@ -767,7 +780,13 @@ bool AbstractInterpretation::handleICFGNode(const ICFGNode* node)
     // Track this node as analyzed (for coverage statistics across all entry points)
     allAnalyzedNodes.insert(node);
 
-    if (getAbsState(node) == prevState)
+    const RelationalStatePtr currentRelationalState =
+        snapshotRelationalState(node);
+    const bool relationalUnchanged =
+        (!prevRelationalState && !currentRelationalState) ||
+        (prevRelationalState && currentRelationalState &&
+         currentRelationalState->equals(*prevRelationalState));
+    if (getAbsState(node) == prevState && relationalUnchanged)
         return false;
 
     return true;
@@ -836,6 +855,11 @@ void AbstractInterpretation::handleExtCall(const CallICFGNode *callNode)
     {
         detector->handleStubFunctions(callNode);
     }
+    // External summaries may update several interval values through paths
+    // that do not correspond to one affine SVF statement.  Rebuild the
+    // relational component from the authoritative interval component so no
+    // stale equality survives such a side effect.
+    synchronizeRelationalWithIntervals(callNode);
 }
 
 /// Get callee function: directly for direct calls, via pointer analysis for indirect calls
@@ -885,6 +909,7 @@ void AbstractInterpretation::handleFunCall(const CallICFGNode *callNode)
         handleFunction(calleeEntry, callNode);
         const RetICFGNode* retNode = callNode->getRetICFGNode();
         updateAbsState(retNode, getAbsState(callNode));
+        copyRelationalState(retNode, callNode);
         return;
     }
 
@@ -903,6 +928,7 @@ void AbstractInterpretation::handleFunCall(const CallICFGNode *callNode)
     }
     // Resume return node from caller's state (context-insensitive)
     updateAbsState(retNode, getAbsState(callNode));
+    copyRelationalState(retNode, callNode);
 }
 
 // Loop / recursion handling (handleLoopOrRecursion + cycle helpers +
@@ -1001,6 +1027,8 @@ void AbstractInterpretation::updateStateOnSelect(const SelectStmt *select)
         resVal.join_with(fVal);
     }
     updateAbsValue(select->getRes(), resVal, node);
+    if (resVal.isInterval())
+        assignRelationalInterval(node, select->getRes(), resVal.getInterval());
 }
 
 void AbstractInterpretation::updateStateOnPhi(const PhiStmt *phi)
@@ -1033,6 +1061,8 @@ void AbstractInterpretation::updateStateOnPhi(const PhiStmt *phi)
         }
     }
     updateAbsValue(phi->getRes(), rhs, icfgNode);
+    if (rhs.isInterval())
+        assignRelationalInterval(icfgNode, phi->getRes(), rhs.getInterval());
 }
 
 
@@ -1053,6 +1083,8 @@ void AbstractInterpretation::updateStateOnCall(const CallPE *callPE)
         }
     }
     updateAbsValue(res, rhs, node);
+    if (rhs.isInterval())
+        assignRelationalInterval(node, res, rhs.getInterval());
 }
 
 void AbstractInterpretation::updateStateOnRet(const RetPE *retPE)
@@ -1060,6 +1092,8 @@ void AbstractInterpretation::updateStateOnRet(const RetPE *retPE)
     const ICFGNode* node = retPE->getICFGNode();
     const AbstractValue& rhsVal = getAbsValue(retPE->getRHSVar(), node);
     updateAbsValue(retPE->getLHSVar(), rhsVal, node);
+    updateRelationalCopyValue(node, retPE->getLHSVar(),
+                              retPE->getRHSVar(), true);
 }
 
 
@@ -1136,6 +1170,7 @@ void AbstractInterpretation::updateStateOnBinary(const BinaryOPStmt *binary)
         assert(false && "undefined binary: ");
     }
     updateAbsValue(binary->getRes(), resVal, node);
+    updateRelationalOnBinary(binary, resVal);
 }
 
 void AbstractInterpretation::updateStateOnCmp(const CmpStmt *cmp)
@@ -1361,6 +1396,13 @@ void AbstractInterpretation::updateStateOnCmp(const CmpStmt *cmp)
             }
         }
     }
+    if (hasAbsValue(cmp->getRes(), node))
+    {
+        const AbstractValue& result = getAbsValue(cmp->getRes(), node);
+        if (result.isInterval())
+            assignRelationalInterval(node, cmp->getRes(),
+                                     result.getInterval());
+    }
 }
 
 void AbstractInterpretation::updateStateOnLoad(const LoadStmt *load)
@@ -1369,6 +1411,9 @@ void AbstractInterpretation::updateStateOnLoad(const LoadStmt *load)
     AbstractValue loaded =
         loadValue(SVFUtil::cast<ValVar>(load->getRHSVar()), node);
     updateAbsValue(load->getLHSVar(), loaded, node);
+    if (loaded.isInterval())
+        assignRelationalInterval(node, load->getLHSVar(),
+                                 loaded.getInterval());
 }
 
 void AbstractInterpretation::updateStateOnStore(const StoreStmt *store)
@@ -1518,4 +1563,5 @@ void AbstractInterpretation::updateStateOnCopy(const CopyStmt *copy)
     }
     else
         assert(false && "undefined copy kind");
+    updateRelationalOnCopy(copy);
 }

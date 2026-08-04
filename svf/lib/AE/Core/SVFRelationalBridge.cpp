@@ -60,6 +60,15 @@ const relational::Environment& SVFRelationalBridge::environment() const
     return environment_;
 }
 
+void SVFRelationalBridge::changeTrackedVariables(
+    std::vector<TrackedRelationalVariable> variables,
+    bool projectNewVariables)
+{
+    relational::Environment nextEnvironment = makeEnvironment(variables);
+    state_.changeEnvironment(nextEnvironment, projectNewVariables);
+    environment_ = std::move(nextEnvironment);
+}
+
 void SVFRelationalBridge::assignConstant(NodeID target,
                                          relational::Rational constant)
 {
@@ -94,6 +103,43 @@ void SVFRelationalBridge::assumeAffine(
 {
     state_.assume(relational::LinearConstraint(
         expression(terms, std::move(constant)), kind));
+}
+
+void SVFRelationalBridge::constrainInterval(
+    NodeID target, const IntervalValue& interval)
+{
+    if (interval.isBottom())
+    {
+        state_ = manager_->bottom(environment_);
+        return;
+    }
+    if (!interval.lb().is_minus_infinity())
+    {
+        assumeAffine({{target, relational::Rational(1)}},
+                     relational::Rational(
+                         -interval.lb().getIntNumeral()),
+                     relational::ConstraintKind::GreaterEqual);
+    }
+    if (!interval.ub().is_plus_infinity())
+    {
+        assumeAffine({{target, relational::Rational(1)}},
+                     relational::Rational(
+                         -interval.ub().getIntNumeral()),
+                     relational::ConstraintKind::LessEqual);
+    }
+}
+
+void SVFRelationalBridge::assignInterval(NodeID target,
+                                         const IntervalValue& interval)
+{
+    forget(target);
+    constrainInterval(target, interval);
+}
+
+void SVFRelationalBridge::meetInterval(NodeID target,
+                                       const IntervalValue& interval)
+{
+    constrainInterval(target, interval);
 }
 
 void SVFRelationalBridge::forget(NodeID id)
@@ -134,6 +180,19 @@ void SVFRelationalBridge::narrowWith(const SVFRelationalBridge& next)
 {
     requireCompatible(next);
     state_.narrowWith(next.state_);
+}
+
+bool SVFRelationalBridge::equals(const SVFRelationalBridge& other) const
+{
+    requireCompatible(other);
+    return state_.equals(other.state_) == relational::CheckResult::True;
+}
+
+bool SVFRelationalBridge::includedIn(
+    const SVFRelationalBridge& other) const
+{
+    requireCompatible(other);
+    return state_.leq(other.state_) == relational::CheckResult::True;
 }
 
 relational::Interval SVFRelationalBridge::bound(NodeID id) const
