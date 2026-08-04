@@ -13,6 +13,7 @@ set(ALL_TOOLS
     dvf
     llvm2svf
     mta
+    relational-domain-eval
     saber
     svf-ex
     wpa
