@@ -1,185 +1,189 @@
-//===- RelationalDomain.h -- Relational numerical domain API ------------===//
-//
-//                     SVF: Static Value-Flow Analysis
-//
-// This file defines SVF's relational numerical-domain contract.  Floating-
-// point semantics are explicit: callers must select an IEEE format and
-// rounding mode instead of silently treating machine values as mathematical
-// reals.
-//
-//===----------------------------------------------------------------------===//
+//===- RelationalDomain.h -- APRON-style relational API --------*- C++ -*-===//
 
-#ifndef SVF_AE_RELATIONALDOMAIN_H
-#define SVF_AE_RELATIONALDOMAIN_H
+#ifndef RELATIONAL_DOMAIN_H
+#define RELATIONAL_DOMAIN_H
 
-#include <cstdint>
+#include "AE/Core/RelationalExpression.h"
+
+#include <map>
 #include <memory>
 #include <string>
 #include <vector>
 
-namespace SVF
+namespace relational
 {
 
-using RelationalVariableId = std::uint32_t;
+class BackendState;
+class DomainBackend;
+class AbstractState;
 
-enum class RelationalNumericType
+enum class CheckResult
 {
-    Integer,
-    Real,
-    Float32,
-    Float64
-};
-
-enum class RelationalRoundingMode
-{
-    NearestTiesToEven,
-    NearestTiesToAway,
-    TowardPositive,
-    TowardNegative,
-    TowardZero
-};
-
-enum class RelationalBinaryOperator
-{
-    Add,
-    Subtract,
-    Multiply,
-    Divide
-};
-
-enum class RelationalPredicate
-{
-    Equal,
-    NotEqual,
-    LessThan,
-    LessEqual,
-    GreaterThan,
-    GreaterEqual,
-
-    /// Equality of the IEEE bit patterns.  This deliberately differs from
-    /// language-level floating-point equality for NaNs and signed zero.
-    BitwiseEqual,
-    BitwiseNotEqual
-};
-
-enum class RelationalCheckResult
-{
-    True,
     False,
+    True,
     Unknown
 };
 
-struct RelationalVariable
+const char* toString(CheckResult result);
+
+enum class ApproximationKind
 {
-    RelationalVariableId id;
-    RelationalNumericType type;
+    Exact,
+    BestAbstraction,
+    SoundOverApproximation,
+    UnsupportedFallback
 };
 
-struct RelationalExpr
+enum class OperationKind
 {
-    enum class Kind
-    {
-        Variable,
-        IntegerConstant,
-        RealConstant,
-        FloatConstant,
-        Binary
-    };
-
-    Kind kind = Kind::IntegerConstant;
-    RelationalNumericType type = RelationalNumericType::Integer;
-    RelationalVariableId variable = 0;
-    std::string literal;
-    std::uint64_t floatBits = 0;
-    RelationalBinaryOperator binaryOperator = RelationalBinaryOperator::Add;
-    RelationalRoundingMode roundingMode =
-        RelationalRoundingMode::NearestTiesToEven;
-    std::shared_ptr<const RelationalExpr> lhs;
-    std::shared_ptr<const RelationalExpr> rhs;
-
-    static RelationalExpr variableExpr(RelationalVariableId id,
-                                       RelationalNumericType type);
-    static RelationalExpr integerConstant(std::int64_t value);
-
-    /// Create an exact mathematical real.  The literal is accepted in Z3/GMP
-    /// rational syntax, for example "3/10", "0.3", or "-17".
-    static RelationalExpr realConstant(std::string literal);
-
-    /// Create an IEEE constant from its exact object representation.
-    static RelationalExpr float32Constant(std::uint32_t bits);
-    static RelationalExpr float64Constant(std::uint64_t bits);
-
-    static RelationalExpr binary(RelationalBinaryOperator op,
-                                 RelationalNumericType type,
-                                 RelationalExpr lhs,
-                                 RelationalExpr rhs,
-                                 RelationalRoundingMode rounding =
-                                     RelationalRoundingMode::NearestTiesToEven);
+    Assignment,
+    Assumption,
+    Join,
+    Meet,
+    Widening,
+    Narrowing,
+    Conversion
 };
 
-struct RelationalConstraint
+struct Diagnostic
 {
-    RelationalExpr lhs;
-    RelationalPredicate predicate;
-    RelationalExpr rhs;
+    OperationKind operation;
+    ApproximationKind approximation;
+    std::string reason;
 };
 
-/// A relational state denotes a set of valuations over a fixed variable set.
-/// Implementations must make assignment a strong update and all lattice
-/// operations sound.  A query may return Unknown when the backend times out or
-/// only provides a one-sided abstract predicate.
-class RelationalDomain
+class DiagnosticSink
 {
 public:
-    virtual ~RelationalDomain() = default;
-
-    virtual std::unique_ptr<RelationalDomain> clone() const = 0;
-    virtual const char* backendName() const = 0;
-
-    virtual void assign(RelationalVariableId target,
-                        const RelationalExpr& expression) = 0;
-    virtual void assume(const RelationalConstraint& constraint) = 0;
-    virtual void forget(RelationalVariableId variable) = 0;
-
-    virtual std::unique_ptr<RelationalDomain>
-    join(const RelationalDomain& other) const = 0;
-    virtual std::unique_ptr<RelationalDomain>
-    meet(const RelationalDomain& other) const = 0;
-
-    /// Return a sound extrapolation containing this state and next.  The usual
-    /// fixpoint precondition is that this state is included in next.
-    virtual std::unique_ptr<RelationalDomain>
-    widening(const RelationalDomain& next) const = 0;
-
-    /// Refine a widened state with a descending successor.  The caller must
-    /// establish next <= this state.  Unlike meet, a narrowing is deliberately
-    /// allowed to retain some finite bounds so that descending iteration can
-    /// be controlled by the backend's finite abstraction.
-    virtual std::unique_ptr<RelationalDomain>
-    narrowing(const RelationalDomain& next) const = 0;
-
-    /// Return a sound over-approximation that retains lower-bound templates.
-    /// "Lower" describes the direction of the retained inequalities; this is
-    /// not an under-approximation of reachable states.  A backend may retain
-    /// additional information when it has no separate lower-bound projection.
-    virtual std::unique_ptr<RelationalDomain>
-    lowerBoundApproximation() const = 0;
-
-    virtual RelationalCheckResult isBottom() const = 0;
-    virtual RelationalCheckResult
-    isSubsetOf(const RelationalDomain& other) const = 0;
-    virtual RelationalCheckResult
-    entails(const RelationalConstraint& constraint) const = 0;
-
-    virtual std::string toString() const = 0;
+    virtual ~DiagnosticSink() = default;
+    virtual void report(const Diagnostic& diagnostic) = 0;
 };
 
-std::unique_ptr<RelationalDomain>
-makeZ3RelationalDomain(const std::vector<RelationalVariable>& variables,
-                       unsigned timeoutMilliseconds = 1000);
+struct DomainCapabilities
+{
+    bool strictInequalities = false;
+    bool integerTightening = false;
+    bool thresholdWidening = false;
+    bool narrowing = false;
+    bool treeExpressions = false;
+};
 
-const char* toString(RelationalCheckResult result);
+struct OctagonOptions
+{
+    bool strongClosure = true;
+    bool integerTightening = true;
+    std::shared_ptr<DiagnosticSink> diagnostics;
+};
 
-} // namespace SVF
+struct WideningPolicy
+{
+    /// Constants for normalized +/-x +/-y <= c and +/-x <= c templates.
+    std::vector<Rational> thresholds;
+};
 
-#endif // SVF_AE_RELATIONALDOMAIN_H
+struct Box
+{
+    std::map<Variable, Interval> bounds;
+};
+
+enum class ConversionQuality
+{
+    Exact,
+    BestAbstraction,
+    SoundButLossy
+};
+
+class Manager final : public std::enable_shared_from_this<Manager>
+{
+public:
+    ~Manager();
+
+    const char* backendName() const;
+    DomainCapabilities capabilities() const;
+
+    AbstractState top(const Environment& environment) const;
+    AbstractState bottom(const Environment& environment) const;
+    AbstractState fromBox(const Environment& environment, const Box& box) const;
+    AbstractState fromConstraints(const Environment& environment,
+                                  const ConstraintSet& constraints) const;
+
+private:
+    friend class AbstractState;
+    friend std::shared_ptr<Manager>
+    makeOctagonManager(const OctagonOptions& options);
+
+    Manager(std::shared_ptr<DomainBackend> backend,
+            std::shared_ptr<DiagnosticSink> diagnostics);
+    void report(OperationKind operation, ApproximationKind approximation,
+                std::string reason) const;
+
+    std::shared_ptr<DomainBackend> backend_;
+    std::shared_ptr<DiagnosticSink> diagnostics_;
+};
+
+std::shared_ptr<Manager>
+makeOctagonManager(const OctagonOptions& options = {});
+
+class AbstractState
+{
+public:
+    AbstractState(const AbstractState& rhs);
+    AbstractState(AbstractState&& rhs) noexcept;
+    AbstractState& operator=(const AbstractState& rhs);
+    AbstractState& operator=(AbstractState&& rhs) noexcept;
+    ~AbstractState();
+
+    const Environment& environment() const { return environment_; }
+    const std::shared_ptr<const Manager>& manager() const { return manager_; }
+
+    void assign(Variable target, const LinearExpression& expression);
+    void assign(Variable target, const TreeExpression& expression);
+    void assume(const LinearConstraint& constraint);
+    void assume(const TreeConstraint& constraint);
+    void forget(Variable variable);
+
+    AbstractState joined(const AbstractState& other) const;
+    AbstractState met(const AbstractState& other) const;
+    AbstractState widened(const AbstractState& next,
+                          const WideningPolicy& policy = {}) const;
+    AbstractState narrowed(const AbstractState& next) const;
+    AbstractState projectLowerBounds() const;
+    AbstractState changedEnvironment(const Environment& environment,
+                                     bool projectNewVariables = false) const;
+
+    void joinWith(const AbstractState& other);
+    void meetWith(const AbstractState& other);
+    void widenWith(const AbstractState& next,
+                   const WideningPolicy& policy = {});
+    void narrowWith(const AbstractState& next);
+    void changeEnvironment(const Environment& environment,
+                           bool projectNewVariables = false);
+
+    bool isBottom() const;
+    bool isTop() const;
+    CheckResult leq(const AbstractState& other) const;
+    CheckResult equals(const AbstractState& other) const;
+    CheckResult entails(const LinearConstraint& constraint) const;
+
+    Interval bound(Variable variable) const;
+    Box toBox() const;
+    ConstraintSet toConstraints() const;
+    std::string toString() const;
+
+private:
+    friend class Manager;
+    AbstractState(std::shared_ptr<const Manager> manager,
+                  Environment environment,
+                  std::unique_ptr<BackendState> state);
+    const DomainBackend& backend() const;
+    DomainBackend& backend();
+    void requireCompatible(const AbstractState& other) const;
+
+    std::shared_ptr<const Manager> manager_;
+    Environment environment_;
+    std::unique_ptr<BackendState> state_;
+};
+
+} // namespace relational
+
+#endif // RELATIONAL_DOMAIN_H

@@ -45,6 +45,10 @@ include(CMakePackageConfigHelpers)
 # Allow checking for IPO support by the used compiler
 include(CheckIPOSupported)
 
+# Define BUILD_TESTING consistently even when the historical Test-Suite
+# directory is absent.  AE/Core tests are registered independently below.
+include(CTest)
+
 # Since SVF builds into non-standard directories; symlink/copy compile commands into top-level directory
 if(WIN32
    OR MINGW
@@ -93,6 +97,17 @@ option(SVF_EXPORT_DYNAMIC "Export all (not only the actually used) symbols to dy
 option(SVF_ENABLE_ASSERTIONS "Always enable debugging assertions, also if the build type is a release build")
 option(SVF_ENABLE_RTTI "Adds -fno-rtti to disable runtime type information (RTTI)" ON)
 option(SVF_ENABLE_EXCEPTIONS "Adds -fno-exceptions to disable exception handling" ON)
+option(SVF_BUILD_RELATIONAL_DOMAIN
+       "Build the GMP/MPFR relational abstract-domain library" ON)
+option(SVF_BUILD_RELATIONAL_TESTS
+       "Build Z3-backed soundness tests for the relational domain"
+       ${BUILD_TESTING})
+
+if(SVF_BUILD_RELATIONAL_DOMAIN AND NOT SVF_ENABLE_EXCEPTIONS)
+  message(FATAL_ERROR
+          "RelationalDomainCore uses exception-based API diagnostics; "
+          "SVF_ENABLE_EXCEPTIONS must be ON")
+endif()
 
 # If building dynamic libraries, always enable PIC
 if(SVF_SHARED_LIBS AND NOT SVF_USE_PIC)
@@ -224,6 +239,20 @@ message(
   Z3 C++ include dirs:  ${Z3_CXX_INCLUDE_DIRS}"
 )
 
+if(SVF_BUILD_RELATIONAL_DOMAIN)
+  find_package(GMP REQUIRED)
+  find_package(MPFR REQUIRED)
+  message(
+    STATUS
+      "Using relational-domain numeric libraries:
+  GMP include directory:  ${GMP_INCLUDE_DIR}
+  GMP C library:          ${GMP_LIBRARY}
+  GMP C++ library:        ${GMPXX_LIBRARY}
+  MPFR include directory: ${MPFR_INCLUDE_DIR}
+  MPFR library:           ${MPFR_LIBRARY}"
+  )
+endif()
+
 # =================================================================================
 # SVF configuration interface library
 # =================================================================================
@@ -273,7 +302,6 @@ install(TARGETS SvfFlags EXPORT SVFTargets)
 
 # If ./Test-Suite exists, add & run the tests
 if(EXISTS "${SVF_SOURCE_DIR}/Test-Suite")
-  include(CTest)
   enable_testing()
   add_subdirectory(Test-Suite)
 endif()
