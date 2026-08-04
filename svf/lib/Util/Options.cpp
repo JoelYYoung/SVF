@@ -838,9 +838,9 @@ const Option<bool> Options::MTFlowSensitive(
 const Option<bool> Options::DumpMTAGraphs(
     "mta-dump-graphs", "MTA: dump the pointer-analysis and thread call graphs (ptacg/tcg.dot)", false);
 const Option<bool> Options::EnableSlicing(
-    "mta-enable-slicing", "MTA slicing: slice before the FSAM main analysis (false = whole-program baseline)", true);
+    "enable-slicing", "MTA slicing: slice before the FSAM main analysis (false = whole-program baseline)", true);
 const Option<bool> Options::SlicingSingle(
-    "mta-slicing-single", "MTA slicing: use one unified slice for both ILA and FSPTA (single-pass baseline)", false);
+    "slicing-single", "MTA slicing: use one unified slice for both ILA and FSPTA (single-pass baseline)", false);
 const Option<bool> Options::SlicedDumpDot(
     "mta-sliced-dump-dot", "MTA slicing: dump intermediate dot graphs", false);
 const Option<bool> Options::GepUnknownIdx(
