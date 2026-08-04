@@ -19,6 +19,10 @@ set(ALL_TOOLS
     wpa
 )
 
+if(SVF_ENABLE_APRON)
+  list(APPEND ALL_TOOLS fp-backend-precision-eval)
+endif()
+
 foreach(_tool IN LISTS ALL_TOOLS)
   # Link the SvfLLVM library against SVF's core & LLVM libraries
   target_link_libraries(${_tool} PRIVATE SvfCore SvfLLVM)
