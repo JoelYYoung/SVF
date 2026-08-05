@@ -574,6 +574,10 @@ void testJoinClosureLawsAndRandomSoundness()
         require(lhs.joined(rhs).joined(third).equals(
                     lhs.joined(rhs.joined(third))) == CheckResult::True,
                 "join must be associative");
+        const AbstractState independentlyClosed =
+            joined.met(domain->top(environment));
+        require(joined.equals(independentlyClosed) == CheckResult::True,
+                "join's closed flag must agree with independent closure");
 
         // These queries deliberately run immediately after join. If the
         // closed-result fast path marks an invalid matrix as closed, the Z3
@@ -590,6 +594,120 @@ void testJoinClosureLawsAndRandomSoundness()
     require(integerJoin.bound(x).upper().value() == Rational(2) &&
                 !integerJoin.bound(x).upper().isStrict(),
             "join must preserve integer-tight unary closure");
+}
+
+void testUniversalJoinConfigurations()
+{
+    // Exercise both odd and even dimensions, including the empty DBM. The
+    // implementation must not rely on the powers of two used by performance
+    // sampling or on a fixed two-variable layout.
+    for (std::size_t dimensionCount = 0; dimensionCount <= 7;
+         ++dimensionCount)
+    {
+        std::vector<VariableDeclaration> declarations;
+        for (std::size_t dimension = 0; dimension < dimensionCount;
+             ++dimension)
+        {
+            declarations.push_back(
+                {Variable(static_cast<std::uint32_t>(dimension + 10)),
+                 NumericType::integer(),
+                 "i" + std::to_string(dimension)});
+        }
+        const Environment environment(std::move(declarations));
+        const auto domain = makeOctagonDomain();
+        AbstractState lhs = domain->top(environment);
+        AbstractState rhs = domain->top(environment);
+        for (std::size_t dimension = 0; dimension < dimensionCount;
+             ++dimension)
+        {
+            const Variable variable(
+                static_cast<std::uint32_t>(dimension + 10));
+            lhs.assume(equalsConstant(
+                variable, Rational(static_cast<std::int64_t>(dimension) - 3)));
+            rhs.assume(equalsConstant(
+                variable, Rational(static_cast<std::int64_t>(dimension) + 2)));
+        }
+        const AbstractState joined = lhs.joined(rhs);
+        Z3SoundnessChecker checker(environment);
+        requireProof(checker.checkJoin(lhs, rhs, joined));
+        require(joined.equals(rhs.joined(lhs)) == CheckResult::True,
+                "join must be dimension-independent");
+        require(joined.equals(joined.met(domain->top(environment))) ==
+                    CheckResult::True,
+                "closed join must equal an independently normalized copy");
+        if (dimensionCount == 0)
+            require(joined.isTop(), "the zero-dimensional join must be top");
+        else
+        {
+            const Variable first(10);
+            require(joined.bound(first).lower().value() == Rational(-3) &&
+                        joined.bound(first).upper().value() == Rational(2),
+                    "point hull bounds must hold at arbitrary dimensions");
+        }
+    }
+
+    const Variable integer(1);
+    const Variable real(2);
+    const Variable otherInteger(3);
+    const Environment mixed(
+        {{integer, NumericType::integer(), "integer"},
+         {real, NumericType::real(), "real"},
+         {otherInteger, NumericType::integer(), "other_integer"}});
+
+    for (bool strongClosure : {false, true})
+    {
+        for (bool integerTightening : {false, true})
+        {
+            OctagonOptions options;
+            options.strongClosure = strongClosure;
+            options.integerTightening = integerTightening;
+            const auto domain = makeOctagonDomain(options);
+            Z3SoundnessChecker checker(mixed);
+
+            AbstractState lhs = domain->top(mixed);
+            LinearExpression strictRelation(integer);
+            strictRelation.setCoefficient(real, Rational(-1));
+            strictRelation.setConstant(Rational("-1/3"));
+            lhs.assume(LinearConstraint(std::move(strictRelation),
+                                        ConstraintKind::LessThan));
+            lhs.assume(atLeast(integer, Rational(-2)));
+            lhs.assume(signedSumAtMost(otherInteger, 1, real, 1,
+                                       Rational("7/2")));
+
+            AbstractState rhs = domain->top(mixed);
+            LinearExpression closedRelation(integer);
+            closedRelation.setCoefficient(real, Rational(-1));
+            closedRelation.setConstant(Rational("-2/3"));
+            rhs.assume(LinearConstraint(std::move(closedRelation),
+                                        ConstraintKind::LessEqual));
+            rhs.assume(atMost(integer, Rational(5)));
+            rhs.assume(signedSumAtMost(otherInteger, 1, real, 1,
+                                       Rational(4)));
+
+            const AbstractState joined = lhs.joined(rhs);
+            requireProof(checker.checkJoin(lhs, rhs, joined));
+            require(joined.equals(rhs.joined(lhs)) == CheckResult::True &&
+                        joined.joined(joined).equals(joined) ==
+                            CheckResult::True,
+                    "join laws must hold for every closure/tightening option");
+            require(joined.equals(joined.met(domain->top(mixed))) ==
+                        CheckResult::True,
+                    "join closure must hold for every option configuration");
+        }
+    }
+
+    const Variable value(20);
+    const Environment reals({{value, NumericType::real(), "value"}});
+    const auto realDomain = makeOctagonDomain();
+    AbstractState strict = realDomain->top(reals);
+    strict.assume(below(value, Rational("1/3")));
+    AbstractState closed = realDomain->top(reals);
+    closed.assume(atMost(value, Rational("2/3")));
+    const AbstractState realJoin = strict.joined(closed);
+    requireProof(Z3SoundnessChecker(reals).checkJoin(strict, closed, realJoin));
+    require(realJoin.bound(value).upper().value() == Rational("2/3") &&
+                !realJoin.bound(value).upper().isStrict(),
+            "join must preserve exact rational and strict real ordering");
 }
 
 void testBottomFixpointAndEnvironmentPaths()
@@ -645,6 +763,7 @@ int main()
         testTopBottomIdentitiesAndQueries();
         testFallbacksConstantsAndOptions();
         testJoinClosureLawsAndRandomSoundness();
+        testUniversalJoinConfigurations();
         testBottomFixpointAndEnvironmentPaths();
         std::cout << "relational-domain tests: PASS\n";
         return EXIT_SUCCESS;

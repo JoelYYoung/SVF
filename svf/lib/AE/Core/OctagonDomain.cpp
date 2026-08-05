@@ -86,9 +86,11 @@ public:
     bool stronglyClosed = true;
 
 private:
-    /// A coherent Octagon DBM satisfies M[i,j] = M[j^1,i^1], so only one
-    /// representative of each pair is stored. This is APRON's hmat layout;
-    /// at(row,column) retains the logical 2n x 2n matrix interface.
+    /// APRON's hmat layout stores triangular 2x2 variable blocks. Coherent
+    /// off-diagonal entries share an index. Each diagonal block is fully
+    /// stored, so its two main-diagonal entries remain a distinct coherent
+    /// pair that normalize() keeps equal. at(row,column) preserves the logical
+    /// 2n x 2n matrix interface for all algorithms.
     static std::size_t matrixSize(std::size_t dimensions)
     {
         return 2 * dimensions * (dimensions + 1);
@@ -301,11 +303,13 @@ public:
             result->matrix[index] = left <= right ? right : left;
         }
 
-        // Point-wise maximum preserves coherence, shortest-path closure and
-        // strong closure: every right-hand side in a closure inequality can
-        // only grow. Integer-tight unary entries remain even because the
-        // maximum of two even bounds is even. APRON's oct_join uses this same
-        // closed-result fast path instead of scheduling another cubic close.
+        // Point-wise maximum preserves coherence and every closure inequality.
+        // If R[i,j] comes from operand K, then
+        // K[i,j] <= K[i,h] + K[h,j] <= R[i,h] + R[h,j]; the same monotonicity
+        // argument applies to the strong-closure inequality. Integer-tight
+        // unary entries remain even because the maximum of two even bounds is
+        // even. APRON's oct_join uses this same closed-result fast path instead
+        // of scheduling another cubic close.
         result->stronglyClosed = true;
         return result;
     }
@@ -665,8 +669,9 @@ public:
 private:
     void requireSameSize(const OctagonState& lhs, const OctagonState& rhs) const
     {
-        if (lhs.dimensions != rhs.dimensions)
-            throw std::invalid_argument("octagon dimensions do not match");
+        if (lhs.dimensions != rhs.dimensions ||
+            lhs.variableKinds != rhs.variableKinds)
+            throw std::invalid_argument("octagon state shapes do not match");
     }
 
     void requireVariables(const Environment& environment,
