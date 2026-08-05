@@ -3,6 +3,7 @@
 #include "AE/Core/OctagonDomain.h"
 
 #include <algorithm>
+#include <optional>
 #include <sstream>
 #include <stdexcept>
 #include <utility>
@@ -30,6 +31,10 @@ std::size_t opposite(std::size_t node)
 class OctagonState final : public DomainState
 {
 public:
+    struct ScratchMatrixTag
+    {
+    };
+
     explicit OctagonState(const Environment& environment, bool bottom = false)
         : OctagonState(extractVariableKinds(environment), bottom)
     {
@@ -39,12 +44,19 @@ public:
                           bool bottom = false)
         : dimensions(variableKinds.size()),
           variableKinds(std::move(variableKinds)),
-          matrix(4 * dimensions * dimensions, Bound::plusInfinity()),
+          matrix(matrixSize(dimensions)),
           bottom(bottom)
     {
         const std::size_t count = nodes();
         for (std::size_t node = 0; node < count; ++node)
             at(node, node) = Bound::finite(Rational());
+    }
+
+    OctagonState(std::vector<NumericKind> variableKinds, ScratchMatrixTag)
+        : dimensions(variableKinds.size()),
+          variableKinds(std::move(variableKinds)),
+          matrix(matrixSize(dimensions))
+    {
     }
 
     std::unique_ptr<DomainState> clone() const override
@@ -59,12 +71,12 @@ public:
 
     Bound& at(std::size_t row, std::size_t column)
     {
-        return matrix[row * nodes() + column];
+        return matrix[matrixIndex(row, column)];
     }
 
     const Bound& at(std::size_t row, std::size_t column) const
     {
-        return matrix[row * nodes() + column];
+        return matrix[matrixIndex(row, column)];
     }
 
     std::size_t dimensions;
@@ -74,6 +86,25 @@ public:
     bool stronglyClosed = true;
 
 private:
+    /// A coherent Octagon DBM satisfies M[i,j] = M[j^1,i^1], so only one
+    /// representative of each pair is stored. This is APRON's hmat layout;
+    /// at(row,column) retains the logical 2n x 2n matrix interface.
+    static std::size_t matrixSize(std::size_t dimensions)
+    {
+        return 2 * dimensions * (dimensions + 1);
+    }
+
+    static std::size_t storedIndex(std::size_t row, std::size_t column)
+    {
+        return column + ((row + 1) * (row + 1)) / 2;
+    }
+
+    static std::size_t matrixIndex(std::size_t row, std::size_t column)
+    {
+        return column > row ? storedIndex(opposite(column), opposite(row))
+                            : storedIndex(row, column);
+    }
+
     static std::vector<NumericKind> extractVariableKinds(
         const Environment& environment)
     {
@@ -249,41 +280,62 @@ public:
     std::unique_ptr<DomainState> join(const DomainState& genericLhs,
                                       const DomainState& genericRhs) const
     {
-        OctagonState lhs = normalized(asOctagon(genericLhs));
-        OctagonState rhs = normalized(asOctagon(genericRhs));
+        std::optional<OctagonState> lhsStorage;
+        std::optional<OctagonState> rhsStorage;
+        const OctagonState& lhs =
+            normalized(asOctagon(genericLhs), lhsStorage);
+        const OctagonState& rhs =
+            normalized(asOctagon(genericRhs), rhsStorage);
         requireSameSize(lhs, rhs);
         if (lhs.bottom)
             return rhs.clone();
         if (rhs.bottom)
             return lhs.clone();
 
-        OctagonState result(lhs.variableKinds);
-        for (std::size_t index = 0; index < result.matrix.size(); ++index)
-            result.matrix[index] =
-                Bound::max(lhs.matrix[index], rhs.matrix[index]);
-        result.stronglyClosed = false;
-        normalize(result);
-        return result.clone();
+        auto result = std::make_unique<OctagonState>(
+            lhs.variableKinds, OctagonState::ScratchMatrixTag{});
+        for (std::size_t index = 0; index < result->matrix.size(); ++index)
+        {
+            const Bound& left = lhs.matrix[index];
+            const Bound& right = rhs.matrix[index];
+            result->matrix[index] = left <= right ? right : left;
+        }
+
+        // Point-wise maximum preserves coherence, shortest-path closure and
+        // strong closure: every right-hand side in a closure inequality can
+        // only grow. Integer-tight unary entries remain even because the
+        // maximum of two even bounds is even. APRON's oct_join uses this same
+        // closed-result fast path instead of scheduling another cubic close.
+        result->stronglyClosed = true;
+        return result;
     }
 
     std::unique_ptr<DomainState> meet(const DomainState& genericLhs,
                                       const DomainState& genericRhs) const
     {
-        OctagonState lhs = normalized(asOctagon(genericLhs));
-        OctagonState rhs = normalized(asOctagon(genericRhs));
+        std::optional<OctagonState> lhsStorage;
+        std::optional<OctagonState> rhsStorage;
+        const OctagonState& lhs =
+            normalized(asOctagon(genericLhs), lhsStorage);
+        const OctagonState& rhs =
+            normalized(asOctagon(genericRhs), rhsStorage);
         requireSameSize(lhs, rhs);
         if (lhs.bottom)
             return lhs.clone();
         if (rhs.bottom)
             return rhs.clone();
 
-        OctagonState result(lhs.variableKinds);
-        for (std::size_t index = 0; index < result.matrix.size(); ++index)
-            result.matrix[index] =
-                Bound::min(lhs.matrix[index], rhs.matrix[index]);
-        result.stronglyClosed = false;
-        normalize(result);
-        return result.clone();
+        auto result = std::make_unique<OctagonState>(
+            lhs.variableKinds, OctagonState::ScratchMatrixTag{});
+        for (std::size_t index = 0; index < result->matrix.size(); ++index)
+        {
+            const Bound& left = lhs.matrix[index];
+            const Bound& right = rhs.matrix[index];
+            result->matrix[index] = left <= right ? left : right;
+        }
+        result->stronglyClosed = false;
+        normalize(*result);
+        return result;
     }
 
     std::unique_ptr<DomainState> widen(const DomainState& genericCurrent,
@@ -291,7 +343,9 @@ public:
                                        const WideningPolicy& policy) const
     {
         const OctagonState& current = asOctagon(genericCurrent);
-        OctagonState next = normalized(asOctagon(genericNext));
+        std::optional<OctagonState> nextStorage;
+        const OctagonState& next =
+            normalized(asOctagon(genericNext), nextStorage);
         requireSameSize(current, next);
         if (current.bottom)
             return next.clone();
@@ -301,20 +355,21 @@ public:
         std::vector<Rational> thresholds = policy.thresholds;
         std::sort(thresholds.begin(), thresholds.end());
 
-        OctagonState result(current.variableKinds);
-        for (std::size_t row = 0; row < result.nodes(); ++row)
+        auto result = std::make_unique<OctagonState>(
+            current.variableKinds, OctagonState::ScratchMatrixTag{});
+        for (std::size_t row = 0; row < result->nodes(); ++row)
         {
-            for (std::size_t column = 0; column < result.nodes(); ++column)
+            for (std::size_t column = 0; column < result->nodes(); ++column)
             {
                 const Bound& oldBound = current.at(row, column);
                 const Bound& nextBound = next.at(row, column);
                 if (nextBound <= oldBound)
                 {
-                    result.at(row, column) = oldBound;
+                    result->at(row, column) = oldBound;
                     continue;
                 }
 
-                result.at(row, column) = Bound::plusInfinity();
+                result->at(row, column) = Bound::plusInfinity();
                 if (nextBound.isFinite())
                 {
                     // Public thresholds use normalized octagonal constants.
@@ -327,52 +382,58 @@ public:
                             unary ? threshold * Rational(2) : threshold);
                         if (nextBound <= candidate)
                         {
-                            result.at(row, column) = std::move(candidate);
+                            result->at(row, column) = std::move(candidate);
                             break;
                         }
                     }
                 }
             }
         }
-        for (std::size_t node = 0; node < result.nodes(); ++node)
-            result.at(node, node) = Bound::finite(Rational());
-        result.stronglyClosed = false;
-        return result.clone();
+        for (std::size_t node = 0; node < result->nodes(); ++node)
+            result->at(node, node) = Bound::finite(Rational());
+        result->stronglyClosed = false;
+        return result;
     }
 
     std::unique_ptr<DomainState> narrow(const DomainState& genericCurrent,
                                         const DomainState& genericNext) const
     {
-        const OctagonState& current = asOctagon(genericCurrent);
-        OctagonState next = normalized(asOctagon(genericNext));
+        std::optional<OctagonState> currentStorage;
+        std::optional<OctagonState> nextStorage;
+        const OctagonState& current =
+            normalized(asOctagon(genericCurrent), currentStorage);
+        const OctagonState& next =
+            normalized(asOctagon(genericNext), nextStorage);
         requireSameSize(current, next);
         if (current.bottom || next.bottom)
             return next.clone();
 
-        OctagonState result = current;
-        for (std::size_t index = 0; index < result.matrix.size(); ++index)
+        auto result = std::make_unique<OctagonState>(current);
+        for (std::size_t index = 0; index < result->matrix.size(); ++index)
         {
             if (current.matrix[index].isPlusInfinity() &&
                 next.matrix[index].isFinite())
-                result.matrix[index] = next.matrix[index];
+                result->matrix[index] = next.matrix[index];
         }
-        result.stronglyClosed = false;
-        return result.clone();
+        result->stronglyClosed = false;
+        return result;
     }
 
     std::unique_ptr<DomainState> projectLowerBounds(
         const DomainState& genericState) const
     {
-        OctagonState source = normalized(asOctagon(genericState));
+        std::optional<OctagonState> sourceStorage;
+        const OctagonState& source =
+            normalized(asOctagon(genericState), sourceStorage);
         if (source.bottom)
             return source.clone();
 
-        OctagonState result(source.variableKinds);
+        auto result = std::make_unique<OctagonState>(source.variableKinds);
         for (Dimension dimension = 0; dimension < source.dimensions;
              ++dimension)
         {
             setCoherent(
-                result, negativeNode(dimension), positiveNode(dimension),
+                *result, negativeNode(dimension), positiveNode(dimension),
                 source.at(negativeNode(dimension), positiveNode(dimension)));
         }
         for (Dimension lhs = 0; lhs < source.dimensions; ++lhs)
@@ -380,29 +441,31 @@ public:
             for (Dimension rhs = lhs + 1; rhs < source.dimensions; ++rhs)
             {
                 // -(x+y) and -(x-y) are the selected lower orientations.
-                setCoherent(result, negativeNode(lhs), positiveNode(rhs),
+                setCoherent(*result, negativeNode(lhs), positiveNode(rhs),
                             source.at(negativeNode(lhs), positiveNode(rhs)));
-                setCoherent(result, negativeNode(lhs), negativeNode(rhs),
+                setCoherent(*result, negativeNode(lhs), negativeNode(rhs),
                             source.at(negativeNode(lhs), negativeNode(rhs)));
             }
         }
-        result.stronglyClosed = false;
-        normalize(result);
-        return result.clone();
+        result->stronglyClosed = false;
+        normalize(*result);
+        return result;
     }
 
     std::unique_ptr<DomainState> changeEnvironment(
         const DomainState& genericState, const Environment& oldEnvironment,
         const Environment& newEnvironment, bool projectNewVariables) const
     {
-        OctagonState source = normalized(asOctagon(genericState));
+        std::optional<OctagonState> sourceStorage;
+        const OctagonState& source =
+            normalized(asOctagon(genericState), sourceStorage);
         if (source.dimensions != oldEnvironment.size())
             throw std::invalid_argument(
                 "old environment does not match octagon dimensions");
         if (source.bottom)
             return std::make_unique<OctagonState>(newEnvironment, true);
 
-        OctagonState result(newEnvironment);
+        auto result = std::make_unique<OctagonState>(newEnvironment);
         for (Dimension newRowDimension = 0;
              newRowDimension < newEnvironment.size(); ++newRowDimension)
         {
@@ -437,8 +500,8 @@ public:
                     for (std::size_t columnSign = 0; columnSign < 2;
                          ++columnSign)
                     {
-                        result.at(2 * newRowDimension + rowSign,
-                                  2 * newColumnDimension + columnSign) =
+                        result->at(2 * newRowDimension + rowSign,
+                                   2 * newColumnDimension + columnSign) =
                             source.at(2 * oldRowDimension + rowSign,
                                       2 * oldColumnDimension + columnSign);
                     }
@@ -454,25 +517,28 @@ public:
                 const Variable value = newEnvironment.variableOf(dimension);
                 if (oldEnvironment.contains(value))
                     continue;
-                setCoherent(result, positiveNode(dimension),
+                setCoherent(*result, positiveNode(dimension),
                             negativeNode(dimension), Bound::finite(Rational()));
-                setCoherent(result, negativeNode(dimension),
+                setCoherent(*result, negativeNode(dimension),
                             positiveNode(dimension), Bound::finite(Rational()));
             }
         }
-        result.stronglyClosed = false;
-        normalize(result);
-        return result.clone();
+        result->stronglyClosed = false;
+        normalize(*result);
+        return result;
     }
 
     bool isBottom(const DomainState& genericState) const
     {
-        return normalized(asOctagon(genericState)).bottom;
+        std::optional<OctagonState> storage;
+        return normalized(asOctagon(genericState), storage).bottom;
     }
 
     bool isTop(const DomainState& genericState) const
     {
-        OctagonState state = normalized(asOctagon(genericState));
+        std::optional<OctagonState> storage;
+        const OctagonState& state =
+            normalized(asOctagon(genericState), storage);
         if (state.bottom)
             return false;
         for (std::size_t row = 0; row < state.nodes(); ++row)
@@ -490,8 +556,12 @@ public:
 
     bool leq(const DomainState& genericLhs, const DomainState& genericRhs) const
     {
-        OctagonState lhs = normalized(asOctagon(genericLhs));
-        OctagonState rhs = normalized(asOctagon(genericRhs));
+        std::optional<OctagonState> lhsStorage;
+        std::optional<OctagonState> rhsStorage;
+        const OctagonState& lhs =
+            normalized(asOctagon(genericLhs), lhsStorage);
+        const OctagonState& rhs =
+            normalized(asOctagon(genericRhs), rhsStorage);
         requireSameSize(lhs, rhs);
         if (lhs.bottom)
             return true;
@@ -511,7 +581,9 @@ public:
         if (!environment.contains(variable))
             throw std::invalid_argument(
                 "bounded variable is not in relational environment");
-        OctagonState state = normalized(asOctagon(genericState));
+        std::optional<OctagonState> storage;
+        const OctagonState& state =
+            normalized(asOctagon(genericState), storage);
         if (state.bottom)
             return Interval(Bound::plusInfinity(), Bound::minusInfinity());
 
@@ -536,7 +608,9 @@ public:
     LinearConstraintSet constraints(const DomainState& genericState,
                                     const Environment& environment) const
     {
-        OctagonState state = normalized(asOctagon(genericState));
+        std::optional<OctagonState> storage;
+        const OctagonState& state =
+            normalized(asOctagon(genericState), storage);
         LinearConstraintSet result;
         if (state.bottom)
             return result;
@@ -624,6 +698,7 @@ private:
             throw std::out_of_range("invalid forgotten octagon dimension");
         if (state.bottom)
             return;
+        normalize(state);
         const std::size_t first = positiveNode(dimension);
         const std::size_t second = negativeNode(dimension);
         for (std::size_t node = 0; node < state.nodes(); ++node)
@@ -745,8 +820,8 @@ private:
         normalize(state, environment);
         if (state.bottom)
             return;
-        OctagonState old = state;
-        OctagonState result(state.variableKinds);
+        OctagonState old = std::move(state);
+        OctagonState result(old.variableKinds, OctagonState::ScratchMatrixTag{});
 
         auto oldNode = [target, sign](std::size_t newNode) {
             if (newNode == positiveNode(target))
@@ -892,11 +967,15 @@ private:
         normalize(state);
     }
 
-    OctagonState normalized(const OctagonState& state) const
+    const OctagonState& normalized(
+        const OctagonState& state,
+        std::optional<OctagonState>& normalizedStorage) const
     {
-        OctagonState result = state;
-        normalize(result);
-        return result;
+        if (state.bottom || state.stronglyClosed)
+            return state;
+        normalizedStorage.emplace(state);
+        normalize(*normalizedStorage);
+        return *normalizedStorage;
     }
 
     void addNodeTerm(LinearExpression& expression,

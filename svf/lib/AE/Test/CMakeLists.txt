@@ -57,3 +57,35 @@ target_link_libraries(
   svf-relational-bridge-test PRIVATE RelationalDomainCore ${Z3_LIBRARIES}
 )
 add_test(NAME relational-domain-svf-bridge COMMAND svf-relational-bridge-test)
+
+# Some standalone macOS Z3 packages use the bare install name
+# "libz3.dylib". Keep the workaround local to test executables and do not
+# mutate the supplied dependency.
+if(APPLE)
+  if(TARGET z3::libz3)
+    get_target_property(Z3_TEST_LIBRARY z3::libz3 IMPORTED_LOCATION)
+  else()
+    list(GET Z3_LIBRARIES 0 Z3_TEST_LIBRARY)
+  endif()
+  get_filename_component(
+    Z3_TEST_LIBRARY_DIRECTORY "${Z3_TEST_LIBRARY}" DIRECTORY
+  )
+  foreach(
+    relational_test_target
+    svf-relational-domain-test
+    svf-relational-bridge-test
+  )
+    set_property(
+      TARGET ${relational_test_target}
+      APPEND
+      PROPERTY BUILD_RPATH "${Z3_TEST_LIBRARY_DIRECTORY}"
+    )
+    add_custom_command(
+      TARGET ${relational_test_target}
+      POST_BUILD
+      COMMAND install_name_tool -change libz3.dylib @rpath/libz3.dylib
+              "$<TARGET_FILE:${relational_test_target}>"
+      VERBATIM
+    )
+  endforeach()
+endif()
