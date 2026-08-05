@@ -58,6 +58,36 @@ target_link_libraries(
 )
 add_test(NAME relational-domain-svf-bridge COMMAND svf-relational-bridge-test)
 
+if(TARGET SvfLLVM)
+  add_executable(
+    svf-ae-relational-integration-test
+    AERelationalIntegrationTest.cpp
+  )
+  target_link_libraries(
+    svf-ae-relational-integration-test PRIVATE SvfLLVM
+  )
+  function(add_relational_ae_integration_test test_name sparsity)
+    add_test(
+      NAME ${test_name}
+      COMMAND svf-ae-relational-integration-test
+              -ae-relational=true
+              -ae-sparsity=${sparsity}
+              -stat=false
+              -extapi=${CMAKE_BINARY_DIR}/lib/extapi.bc
+              ${CMAKE_CURRENT_LIST_DIR}/RelationalReducedProduct.ll
+    )
+  endfunction()
+  add_relational_ae_integration_test(
+    relational-domain-ae-integration dense
+  )
+  add_relational_ae_integration_test(
+    relational-domain-ae-integration-semi-sparse semi-sparse
+  )
+  add_relational_ae_integration_test(
+    relational-domain-ae-integration-sparse sparse
+  )
+endif()
+
 # Some standalone macOS Z3 packages use the bare install name
 # "libz3.dylib". Keep the workaround local to test executables and do not
 # mutate the supplied dependency.
@@ -70,11 +100,15 @@ if(APPLE)
   get_filename_component(
     Z3_TEST_LIBRARY_DIRECTORY "${Z3_TEST_LIBRARY}" DIRECTORY
   )
-  foreach(
-    relational_test_target
+  set(
+    relational_test_targets
     svf-relational-domain-test
     svf-relational-bridge-test
   )
+  if(TARGET svf-ae-relational-integration-test)
+    list(APPEND relational_test_targets svf-ae-relational-integration-test)
+  endif()
+  foreach(relational_test_target IN LISTS relational_test_targets)
     set_property(
       TARGET ${relational_test_target}
       APPEND

@@ -110,6 +110,11 @@ private:
     std::shared_ptr<const Data> data_;
 };
 
+// Keep a namespace-scope declaration in addition to the friend declaration.
+// This makes qualified out-of-line definitions well-formed without relying on
+// friend-only argument-dependent lookup behavior.
+bool operator==(const Environment& lhs, const Environment& rhs);
+
 } // namespace relational
 
 #endif // RELATIONAL_ENVIRONMENT_H

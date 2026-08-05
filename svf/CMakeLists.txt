@@ -97,7 +97,3 @@ install(
           FILE_SET HEADERS
           DESTINATION ${SVF_INSTALL_INCLUDEDIR}
 )
-
-if(SVF_BUILD_RELATIONAL_DOMAIN AND SVF_BUILD_RELATIONAL_TESTS)
-  add_subdirectory(lib/AE/Test)
-endif()

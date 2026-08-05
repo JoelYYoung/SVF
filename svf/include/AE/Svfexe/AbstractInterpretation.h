@@ -357,11 +357,16 @@ protected:
     void copyRelationalState(const ICFGNode* destination,
                              const ICFGNode* source);
     void mergeRelationalFromPredecessors(const ICFGNode* node);
+    bool isRelationalStateBottom(const ICFGNode* node) const;
+    bool isRelationalBranchFeasible(const IntraCFGEdge* edge);
     void assumeRelationalBranch(const IntraCFGEdge* edge,
                                 SVFRelationalBridge& state);
     void assignRelationalInterval(const ICFGNode* node, const SVFVar* target,
                                   const IntervalValue& interval);
     void synchronizeRelationalWithIntervals(const ICFGNode* node);
+    void reduceRelationalInterval(const ICFGNode* node,
+                                  const SVFVar* variable);
+    void reduceRelationalIntervals(const ICFGNode* node);
     bool appendRelationalOperand(
         const ICFGNode* node, const SVFVar* operand,
         const relational::Rational& multiplier,

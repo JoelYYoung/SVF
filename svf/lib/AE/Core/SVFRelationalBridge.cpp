@@ -2,7 +2,9 @@
 
 #include "AE/Core/SVFRelationalBridge.h"
 
+#include <optional>
 #include <stdexcept>
+#include <string>
 #include <utility>
 
 using namespace SVF;
@@ -30,6 +32,23 @@ std::shared_ptr<relational::AbstractDomain> requireDomain(
         throw std::invalid_argument(
             "SVF relational bridge needs an abstract domain");
     return domain;
+}
+
+std::optional<s64_t> exactSigned64(const relational::Rational& value)
+{
+    const std::string text = value.toString();
+    std::size_t consumed = 0;
+    try
+    {
+        const long long converted = std::stoll(text, &consumed, 10);
+        if (consumed != text.size())
+            return std::nullopt;
+        return static_cast<s64_t>(converted);
+    }
+    catch (const std::exception&)
+    {
+        return std::nullopt;
+    }
 }
 
 } // namespace
@@ -189,7 +208,52 @@ bool SVFRelationalBridge::includedIn(const SVFRelationalBridge& other) const
     return state_.leq(other.state_) == relational::CheckResult::True;
 }
 
+bool SVFRelationalBridge::isBottom() const
+{
+    return state_.isBottom();
+}
+
 relational::Interval SVFRelationalBridge::bound(NodeID id) const
 {
     return state_.bound(variable(id));
+}
+
+IntervalValue SVFRelationalBridge::projectInterval(NodeID id) const
+{
+    const relational::Variable value = variable(id);
+    if (environment_.typeOf(value).kind != relational::NumericKind::Integer)
+        return IntervalValue::top();
+
+    const relational::Interval projected = state_.bound(value);
+    if (projected.isBottom())
+        return IntervalValue::bottom();
+
+    BoundedInt lower = BoundedInt::minus_infinity();
+    BoundedInt upper = BoundedInt::plus_infinity();
+    if (projected.lower().isFinite())
+    {
+        const relational::Rational integerLower =
+            projected.lower().isStrict()
+                ? projected.lower().value().floor() + relational::Rational(1)
+                : projected.lower().value().ceil();
+        const std::optional<s64_t> converted = exactSigned64(integerLower);
+        if (!converted)
+            return IntervalValue::top();
+        lower = BoundedInt(*converted);
+    }
+    if (projected.upper().isFinite())
+    {
+        const relational::Rational integerUpper =
+            projected.upper().isStrict()
+                ? projected.upper().value().ceil() - relational::Rational(1)
+                : projected.upper().value().floor();
+        const std::optional<s64_t> converted = exactSigned64(integerUpper);
+        if (!converted)
+            return IntervalValue::top();
+        upper = BoundedInt(*converted);
+    }
+
+    if (!lower.leq(upper))
+        return IntervalValue::bottom();
+    return IntervalValue(std::move(lower), std::move(upper));
 }

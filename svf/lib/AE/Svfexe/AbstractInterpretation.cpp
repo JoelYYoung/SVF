@@ -277,7 +277,7 @@ bool AbstractInterpretation::mergeStatesFromPredecessors(const ICFGNode* node)
     for (auto& edge : node->getInEdges())
     {
         const ICFGNode* pred = edge->getSrcNode();
-        if (!hasAbsState(pred))
+        if (!hasAbsState(pred) || isRelationalStateBottom(pred))
             continue;
 
         if (const IntraCFGEdge* intraCfgEdge = SVFUtil::dyn_cast<IntraCFGEdge>(edge))
@@ -332,6 +332,7 @@ bool AbstractInterpretation::mergeStatesFromPredecessors(const ICFGNode* node)
 
     updateAbsState(node, merged);
     mergeRelationalFromPredecessors(node);
+    reduceRelationalIntervals(node);
 
     return true;
 }
@@ -713,9 +714,11 @@ bool AbstractInterpretation::isBranchEdgeFeasible(const IntraCFGEdge* edge,
 {
     const SVFVar* cmpVar = edge->getCondition();
     assert(!cmpVar->getInEdges().empty() && "branch condition has no defining edge?");
-    if (SVFUtil::isa<CmpStmt>(*cmpVar->getInEdges().begin()))
-        return isCmpBranchEdgeFeasible(edge, as);
-    return isSwitchBranchEdgeFeasible(edge, as);
+    const bool intervalFeasible =
+        SVFUtil::isa<CmpStmt>(*cmpVar->getInEdges().begin())
+            ? isCmpBranchEdgeFeasible(edge, as)
+            : isSwitchBranchEdgeFeasible(edge, as);
+    return intervalFeasible && isRelationalBranchFeasible(edge);
 }
 
 /**
@@ -1027,8 +1030,7 @@ void AbstractInterpretation::updateStateOnSelect(const SelectStmt *select)
         resVal.join_with(fVal);
     }
     updateAbsValue(select->getRes(), resVal, node);
-    if (resVal.isInterval())
-        assignRelationalInterval(node, select->getRes(), resVal.getInterval());
+    assignRelationalInterval(node, select->getRes(), resVal.getInterval());
 }
 
 void AbstractInterpretation::updateStateOnPhi(const PhiStmt *phi)
@@ -1061,8 +1063,7 @@ void AbstractInterpretation::updateStateOnPhi(const PhiStmt *phi)
         }
     }
     updateAbsValue(phi->getRes(), rhs, icfgNode);
-    if (rhs.isInterval())
-        assignRelationalInterval(icfgNode, phi->getRes(), rhs.getInterval());
+    assignRelationalInterval(icfgNode, phi->getRes(), rhs.getInterval());
 }
 
 
@@ -1083,8 +1084,7 @@ void AbstractInterpretation::updateStateOnCall(const CallPE *callPE)
         }
     }
     updateAbsValue(res, rhs, node);
-    if (rhs.isInterval())
-        assignRelationalInterval(node, res, rhs.getInterval());
+    assignRelationalInterval(node, res, rhs.getInterval());
 }
 
 void AbstractInterpretation::updateStateOnRet(const RetPE *retPE)
@@ -1399,9 +1399,7 @@ void AbstractInterpretation::updateStateOnCmp(const CmpStmt *cmp)
     if (hasAbsValue(cmp->getRes(), node))
     {
         const AbstractValue& result = getAbsValue(cmp->getRes(), node);
-        if (result.isInterval())
-            assignRelationalInterval(node, cmp->getRes(),
-                                     result.getInterval());
+        assignRelationalInterval(node, cmp->getRes(), result.getInterval());
     }
 }
 
@@ -1411,9 +1409,7 @@ void AbstractInterpretation::updateStateOnLoad(const LoadStmt *load)
     AbstractValue loaded =
         loadValue(SVFUtil::cast<ValVar>(load->getRHSVar()), node);
     updateAbsValue(load->getLHSVar(), loaded, node);
-    if (loaded.isInterval())
-        assignRelationalInterval(node, load->getLHSVar(),
-                                 loaded.getInterval());
+    assignRelationalInterval(node, load->getLHSVar(), loaded.getInterval());
 }
 
 void AbstractInterpretation::updateStateOnStore(const StoreStmt *store)

@@ -24,6 +24,25 @@ AbstractInterpretation::getRelationalState(const ICFGNode* node) const
     return it == relationalTrace.end() ? nullptr : it->second.get();
 }
 
+bool AbstractInterpretation::isRelationalStateBottom(
+    const ICFGNode* node) const
+{
+    const SVFRelationalBridge* state = getRelationalState(node);
+    return Options::AERelational() && state && state->isBottom();
+}
+
+bool AbstractInterpretation::isRelationalBranchFeasible(
+    const IntraCFGEdge* edge)
+{
+    if (!Options::AERelational())
+        return true;
+    RelationalStatePtr state = snapshotRelationalState(edge->getSrcNode());
+    if (!state)
+        return true;
+    assumeRelationalBranch(edge, *state);
+    return !state->isBottom();
+}
+
 void AbstractInterpretation::initializeRelationalEnvironments()
 {
     if (!Options::AERelational())
@@ -282,7 +301,16 @@ void AbstractInterpretation::assignRelationalInterval(
     initializeRelationalState(node);
     RelationalStatePtr& state = relationalTrace[node];
     if (state->tracks(target->getId()))
-        state->assignInterval(target->getId(), interval);
+    {
+        // SVF uses a bottom IntervalValue as its uninitialized/no-numeric
+        // sentinel, not as whole-path unreachability. Forgetting is the sound
+        // relational interpretation of that sentinel.
+        if (interval.isBottom())
+            state->forget(target->getId());
+        else
+            state->assignInterval(target->getId(), interval);
+        reduceRelationalInterval(node, target);
+    }
 }
 
 void AbstractInterpretation::synchronizeRelationalWithIntervals(
@@ -305,6 +333,35 @@ void AbstractInterpretation::synchronizeRelationalWithIntervals(
     }
 }
 
+void AbstractInterpretation::reduceRelationalInterval(
+    const ICFGNode* node, const SVFVar* variable)
+{
+    if (!Options::AERelational() || !variable)
+        return;
+    const SVFRelationalBridge* relationalState = getRelationalState(node);
+    if (!relationalState || !relationalState->tracks(variable->getId()) ||
+            !hasAbsValue(variable, node))
+        return;
+
+    const AbstractValue& current = getAbsValue(variable, node);
+    if (!current.isInterval())
+        return;
+    IntervalValue reduced = current.getInterval();
+    reduced.meet_with(
+        relationalState->projectInterval(variable->getId()));
+    updateAbsValue(variable, reduced, node);
+}
+
+void AbstractInterpretation::reduceRelationalIntervals(
+    const ICFGNode* node)
+{
+    if (!Options::AERelational() || Options::AESparsity() != Dense)
+        return;
+    for (const TrackedRelationalVariable& tracked :
+            trackedRelationalVariables(node))
+        reduceRelationalInterval(node, getSVFVar(tracked.id));
+}
+
 void AbstractInterpretation::updateRelationalOnBinary(
     const BinaryOPStmt* binary, const IntervalValue& result)
 {
@@ -325,17 +382,29 @@ void AbstractInterpretation::updateRelationalOnBinary(
         getAbsValue(binary->getOpVar(0), node);
     const AbstractValue& rhsValue =
         getAbsValue(binary->getOpVar(1), node);
-    bool noOverflow = affineOpcode && lhsValue.isInterval() &&
-                      rhsValue.isInterval() &&
-                      !lhsValue.getInterval().isBottom() &&
-                      !rhsValue.getInterval().isBottom() &&
-                      !lhsValue.getInterval().is_infinite() &&
-                      !rhsValue.getInterval().is_infinite() &&
+    auto reducedOperandInterval = [&](const SVFVar* operand,
+                                      const AbstractValue& value)
+    {
+        if (const ConstIntValVar* integer =
+                SVFUtil::dyn_cast<ConstIntValVar>(operand))
+            return IntervalValue(integer->getSExtValue());
+        IntervalValue interval =
+            value.isInterval() && !value.getInterval().isBottom()
+                ? value.getInterval()
+                : IntervalValue::top();
+        if (state.tracks(operand->getId()))
+            interval.meet_with(state.projectInterval(operand->getId()));
+        return interval;
+    };
+    const IntervalValue lhs =
+        reducedOperandInterval(binary->getOpVar(0), lhsValue);
+    const IntervalValue rhs =
+        reducedOperandInterval(binary->getOpVar(1), rhsValue);
+    bool noOverflow = affineOpcode && !lhs.isBottom() && !rhs.isBottom() &&
+                      !lhs.is_infinite() && !rhs.is_infinite() &&
                       !typeRange.isBottom() && !typeRange.is_infinite();
     if (noOverflow)
     {
-        const IntervalValue& lhs = lhsValue.getInterval();
-        const IntervalValue& rhs = rhsValue.getInterval();
         const relational::Rational mathematicalLower =
             relational::Rational(lhs.lb().getIntNumeral()) +
             (binary->getOpcode() == BinaryOPStmt::Add
@@ -354,7 +423,7 @@ void AbstractInterpretation::updateRelationalOnBinary(
     }
     if (!affineOpcode || !noOverflow)
     {
-        state.assignInterval(target->getId(), result);
+        assignRelationalInterval(node, target, result);
         return;
     }
 
@@ -368,12 +437,14 @@ void AbstractInterpretation::updateRelationalOnBinary(
             !appendRelationalOperand(node, binary->getOpVar(1), rhsSign,
                                      state, terms, constant))
     {
-        state.assignInterval(target->getId(), result);
+        assignRelationalInterval(node, target, result);
         return;
     }
     state.assignAffine(target->getId(), std::move(terms),
                        std::move(constant));
-    state.meetInterval(target->getId(), result);
+    if (!result.isBottom())
+        state.meetInterval(target->getId(), result);
+    reduceRelationalInterval(node, target);
 }
 
 void AbstractInterpretation::updateRelationalCopyValue(
@@ -404,10 +475,12 @@ void AbstractInterpretation::updateRelationalCopyValue(
             state.assignAffine(target->getId(), std::move(terms),
                                std::move(constant));
             state.meetInterval(target->getId(), result.getInterval());
+            reduceRelationalInterval(node, target);
             return;
         }
     }
     state.assignInterval(target->getId(), result.getInterval());
+    reduceRelationalInterval(node, target);
 }
 
 void AbstractInterpretation::updateRelationalOnCopy(const CopyStmt* copy)

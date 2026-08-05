@@ -59,8 +59,13 @@ public:
     void narrowWith(const SVFRelationalBridge& next);
     bool equals(const SVFRelationalBridge& other) const;
     bool includedIn(const SVFRelationalBridge& other) const;
+    bool isBottom() const;
 
     relational::Interval bound(NodeID id) const;
+    /// Project an integer Octagon bound into AE's signed 64-bit interval
+    /// representation. Unsupported numeric kinds or unrepresentable finite
+    /// endpoints conservatively project to top.
+    IntervalValue projectInterval(NodeID id) const;
     const relational::AbstractState& state() const
     {
         return state_;

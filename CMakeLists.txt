@@ -313,6 +313,10 @@ endif()
 add_subdirectory(svf)
 add_subdirectory(svf-llvm)
 
+if(SVF_BUILD_RELATIONAL_DOMAIN AND SVF_BUILD_RELATIONAL_TESTS)
+  add_subdirectory(svf/lib/AE/Test)
+endif()
+
 # =================================================================================
 # SVF build configuration handling (post linking LLVM)
 # =================================================================================
