@@ -2,7 +2,7 @@
 
 #include "AE/Core/RelationalDomain.h"
 
-#include "OctagonDomain.h"
+#include "AE/Core/OctagonDomain.h"
 
 #include <stdexcept>
 #include <utility>
