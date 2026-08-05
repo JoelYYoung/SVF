@@ -29,7 +29,7 @@ void AbstractInterpretation::initializeRelationalEnvironments()
     if (!Options::AERelational())
         return;
 
-    relationalManager = relational::makeOctagonManager();
+    relationalDomain = relational::makeOctagonDomain();
     const std::size_t maximum = Options::AERelationalMaxVars();
     for (SVFIR::iterator it = svfir->begin(); it != svfir->end(); ++it)
     {
@@ -71,7 +71,7 @@ AbstractInterpretation::makeRelationalTop(const ICFGNode* node) const
     if (!Options::AERelational())
         return nullptr;
     return std::make_shared<SVFRelationalBridge>(
-        trackedRelationalVariables(node), relationalManager);
+        trackedRelationalVariables(node), relationalDomain);
 }
 
 AbstractInterpretation::RelationalStatePtr

@@ -1,77 +1,86 @@
-//===- OctagonDomain.h -- Private relational backend interface -*- C++ -*-===//
+//===- OctagonDomain.h -- Exact-rational Octagon domain --------*- C++ -*-===//
 
 #ifndef RELATIONAL_OCTAGON_DOMAIN_H
 #define RELATIONAL_OCTAGON_DOMAIN_H
 
-#include "AE/Core/RelationalDomain.h"
+#include "AE/Core/AbstractDomain.h"
 
 #include <memory>
 
 namespace relational
 {
 
-class BackendState
+struct OctagonOptions
 {
-public:
-    virtual ~BackendState() = default;
-    virtual std::unique_ptr<BackendState> clone() const = 0;
+    bool strongClosure = true;
+    bool integerTightening = true;
+    std::shared_ptr<DiagnosticSink> diagnostics;
 };
 
-class DomainBackend
+/// Concrete AbstractDomain for constraints of the form +/-x +/-y <= c.
+class OctagonDomain final : public AbstractDomain
 {
 public:
-    virtual ~DomainBackend() = default;
+    ~OctagonDomain() override;
 
-    virtual const char* name() const = 0;
-    virtual DomainCapabilities capabilities() const = 0;
-    virtual std::unique_ptr<BackendState>
-    top(const Environment& environment) const = 0;
-    virtual std::unique_ptr<BackendState>
-    bottom(const Environment& environment) const = 0;
+    const char* name() const override;
+    DomainCapabilities capabilities() const override;
 
-    virtual ApproximationKind assign(BackendState& state,
-                                     const Environment& environment,
-                                     Variable target,
-                                     const LinearExpression& expression) const = 0;
-    virtual ApproximationKind assume(BackendState& state,
-                                     const Environment& environment,
-                                     const LinearConstraint& constraint) const = 0;
-    virtual void forget(BackendState& state, const Environment& environment,
-                        Variable variable) const = 0;
+private:
+    friend std::shared_ptr<OctagonDomain> makeOctagonDomain(
+        const OctagonOptions& options);
 
-    virtual std::unique_ptr<BackendState>
-    join(const BackendState& lhs, const BackendState& rhs) const = 0;
-    virtual std::unique_ptr<BackendState>
-    meet(const BackendState& lhs, const BackendState& rhs) const = 0;
-    virtual std::unique_ptr<BackendState>
-    widen(const BackendState& current, const BackendState& next,
-          const WideningPolicy& policy) const = 0;
-    virtual std::unique_ptr<BackendState>
-    narrow(const BackendState& current, const BackendState& next) const = 0;
-    virtual std::unique_ptr<BackendState>
-    projectLowerBounds(const BackendState& state) const = 0;
-    virtual std::unique_ptr<BackendState>
-    changeEnvironment(const BackendState& state,
-                      const Environment& oldEnvironment,
-                      const Environment& newEnvironment,
-                      bool projectNewVariables) const = 0;
+    explicit OctagonDomain(const OctagonOptions& options);
 
-    virtual bool isBottom(const BackendState& state) const = 0;
-    virtual bool isTop(const BackendState& state) const = 0;
-    virtual bool leq(const BackendState& lhs,
-                     const BackendState& rhs) const = 0;
-    virtual Interval bound(const BackendState& state,
-                           const Environment& environment,
-                           Variable variable) const = 0;
-    virtual ConstraintSet
-    constraints(const BackendState& state,
-                const Environment& environment) const = 0;
-    virtual std::string toString(const BackendState& state,
-                                 const Environment& environment) const = 0;
+    std::unique_ptr<DomainState> makeTop(
+        const Environment& environment) const override;
+    std::unique_ptr<DomainState> makeBottom(
+        const Environment& environment) const override;
+
+    ApproximationKind assignState(
+        DomainState& state, const Environment& environment, Variable target,
+        const LinearExpression& expression) const override;
+    ApproximationKind assumeState(
+        DomainState& state, const Environment& environment,
+        const LinearConstraint& constraint) const override;
+    void forgetState(DomainState& state, const Environment& environment,
+                     Variable variable) const override;
+
+    std::unique_ptr<DomainState> joinStates(
+        const DomainState& lhs, const DomainState& rhs) const override;
+    std::unique_ptr<DomainState> meetStates(
+        const DomainState& lhs, const DomainState& rhs) const override;
+    std::unique_ptr<DomainState> widenStates(
+        const DomainState& current, const DomainState& next,
+        const WideningPolicy& policy) const override;
+    std::unique_ptr<DomainState> narrowStates(
+        const DomainState& current, const DomainState& next) const override;
+    std::unique_ptr<DomainState> projectLowerBoundsState(
+        const DomainState& state) const override;
+    std::unique_ptr<DomainState> changeEnvironmentState(
+        const DomainState& state, const Environment& oldEnvironment,
+        const Environment& newEnvironment,
+        bool projectNewVariables) const override;
+
+    bool isBottomState(const DomainState& state) const override;
+    bool isTopState(const DomainState& state) const override;
+    bool leqStates(const DomainState& lhs,
+                   const DomainState& rhs) const override;
+    Interval boundState(const DomainState& state,
+                        const Environment& environment,
+                        Variable variable) const override;
+    LinearConstraintSet constraintsState(
+        const DomainState& state,
+        const Environment& environment) const override;
+    std::string stateToString(const DomainState& state,
+                              const Environment& environment) const override;
+
+    class Impl;
+    std::unique_ptr<Impl> impl_;
 };
 
-std::shared_ptr<DomainBackend>
-makeOctagonBackend(const OctagonOptions& options);
+std::shared_ptr<OctagonDomain> makeOctagonDomain(
+    const OctagonOptions& options = {});
 
 } // namespace relational
 

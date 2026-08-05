@@ -1,7 +1,7 @@
-//===- RelationalExpression.h -- Backend-neutral numeric syntax -*- C++ -*-===//
+//===- LinearConstraint.h -- Domain-neutral linear syntax -------*- C++ -*-===//
 
-#ifndef RELATIONAL_EXPRESSION_H
-#define RELATIONAL_EXPRESSION_H
+#ifndef RELATIONAL_LINEAR_CONSTRAINT_H
+#define RELATIONAL_LINEAR_CONSTRAINT_H
 
 #include "AE/Core/RelationalEnvironment.h"
 
@@ -9,6 +9,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <vector>
 
 namespace relational
 {
@@ -22,8 +23,14 @@ public:
     explicit LinearExpression(Rational constant);
     explicit LinearExpression(Variable variable);
 
-    const Terms& terms() const { return terms_; }
-    const Rational& constant() const { return constant_; }
+    const Terms& terms() const
+    {
+        return terms_;
+    }
+    const Rational& constant() const
+    {
+        return constant_;
+    }
     Rational coefficient(Variable variable) const;
 
     LinearExpression& setCoefficient(Variable variable, Rational coefficient);
@@ -96,22 +103,42 @@ public:
     static TreeExpression constant(Rational value,
                                    NumericType type = NumericType::real());
     static TreeExpression variable(Variable value, NumericType type);
-    static TreeExpression unary(UnaryOperator operation, TreeExpression operand,
-                                NumericType type,
-                                RoundingMode rounding =
-                                    RoundingMode::NearestTiesToEven);
-    static TreeExpression binary(BinaryOperator operation, TreeExpression lhs,
-                                 TreeExpression rhs, NumericType type,
-                                 RoundingMode rounding =
-                                     RoundingMode::NearestTiesToEven);
+    static TreeExpression unary(
+        UnaryOperator operation, TreeExpression operand, NumericType type,
+        RoundingMode rounding = RoundingMode::NearestTiesToEven);
+    static TreeExpression binary(
+        BinaryOperator operation, TreeExpression lhs, TreeExpression rhs,
+        NumericType type,
+        RoundingMode rounding = RoundingMode::NearestTiesToEven);
 
-    Kind kind() const { return kind_; }
-    const NumericType& type() const { return type_; }
-    const Rational& constant() const { return constant_; }
-    Variable variable() const { return variable_; }
-    UnaryOperator unaryOperator() const { return unaryOperator_; }
-    BinaryOperator binaryOperator() const { return binaryOperator_; }
-    RoundingMode roundingMode() const { return roundingMode_; }
+    Kind kind() const
+    {
+        return kind_;
+    }
+    const NumericType& type() const
+    {
+        return type_;
+    }
+    const Rational& constant() const
+    {
+        return constant_;
+    }
+    Variable variable() const
+    {
+        return variable_;
+    }
+    UnaryOperator unaryOperator() const
+    {
+        return unaryOperator_;
+    }
+    BinaryOperator binaryOperator() const
+    {
+        return binaryOperator_;
+    }
+    RoundingMode roundingMode() const
+    {
+        return roundingMode_;
+    }
     const TreeExpression& lhs() const;
     const TreeExpression& rhs() const;
 
@@ -148,8 +175,14 @@ class LinearConstraint
 public:
     LinearConstraint(LinearExpression expression, ConstraintKind kind);
 
-    const LinearExpression& expression() const { return expression_; }
-    ConstraintKind kind() const { return kind_; }
+    const LinearExpression& expression() const
+    {
+        return expression_;
+    }
+    ConstraintKind kind() const
+    {
+        return kind_;
+    }
     std::string toString(const Environment* environment = nullptr) const;
 
 private:
@@ -162,17 +195,24 @@ class TreeConstraint
 public:
     TreeConstraint(TreeExpression expression, ConstraintKind kind);
 
-    const TreeExpression& expression() const { return expression_; }
-    ConstraintKind kind() const { return kind_; }
+    const TreeExpression& expression() const
+    {
+        return expression_;
+    }
+    ConstraintKind kind() const
+    {
+        return kind_;
+    }
 
 private:
     TreeExpression expression_;
     ConstraintKind kind_;
 };
 
-using ConstraintSet = std::vector<LinearConstraint>;
+using LinearConstraintSet = std::vector<LinearConstraint>;
 
 LinearConstraint equal(LinearExpression lhs, LinearExpression rhs);
+LinearConstraint notEqual(LinearExpression lhs, LinearExpression rhs);
 LinearConstraint lessEqual(LinearExpression lhs, LinearExpression rhs);
 LinearConstraint lessThan(LinearExpression lhs, LinearExpression rhs);
 LinearConstraint greaterEqual(LinearExpression lhs, LinearExpression rhs);
@@ -180,4 +220,4 @@ LinearConstraint greaterThan(LinearExpression lhs, LinearExpression rhs);
 
 } // namespace relational
 
-#endif // RELATIONAL_EXPRESSION_H
+#endif // RELATIONAL_LINEAR_CONSTRAINT_H

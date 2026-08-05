@@ -1,6 +1,6 @@
-//===- RelationalExpression.cpp -- Backend-neutral numeric syntax -------===//
+//===- LinearConstraint.cpp -- Domain-neutral linear syntax -------------===//
 
-#include "AE/Core/RelationalExpression.h"
+#include "AE/Core/LinearConstraint.h"
 
 #include <sstream>
 #include <stdexcept>
@@ -93,7 +93,7 @@ std::string LinearExpression::toString(const Environment* environment) const
         first = false;
         output << coefficient.toString() << '*';
         if (environment && environment->contains(variable) &&
-                !environment->nameOf(variable).empty())
+            !environment->nameOf(variable).empty())
             output << environment->nameOf(variable);
         else
             output << 'v' << variable.id();
@@ -134,15 +134,13 @@ TreeExpression TreeExpression::unary(UnaryOperator operation,
     expression.type_ = type;
     expression.unaryOperator_ = operation;
     expression.roundingMode_ = rounding;
-    expression.lhs_ =
-        std::make_shared<TreeExpression>(std::move(operand));
+    expression.lhs_ = std::make_shared<TreeExpression>(std::move(operand));
     return expression;
 }
 
 TreeExpression TreeExpression::binary(BinaryOperator operation,
                                       TreeExpression lhs, TreeExpression rhs,
-                                      NumericType type,
-                                      RoundingMode rounding)
+                                      NumericType type, RoundingMode rounding)
 {
     TreeExpression expression;
     expression.kind_ = Kind::Binary;
@@ -179,16 +177,14 @@ std::optional<LinearExpression> TreeExpression::asLinear() const
         return LinearExpression(constant_);
     case Kind::Variable:
         return LinearExpression(variable_);
-    case Kind::Unary:
-    {
+    case Kind::Unary: {
         if (unaryOperator_ != UnaryOperator::Negate)
             return std::nullopt;
         std::optional<LinearExpression> operand = lhs().asLinear();
         return operand ? std::optional<LinearExpression>(-*operand)
                        : std::nullopt;
     }
-    case Kind::Binary:
-    {
+    case Kind::Binary: {
         std::optional<LinearExpression> left = lhs().asLinear();
         std::optional<LinearExpression> right = rhs().asLinear();
         if (!left || !right)
@@ -255,10 +251,15 @@ TreeConstraint::TreeConstraint(TreeExpression expression, ConstraintKind kind)
 {
 }
 
-LinearConstraint relational::equal(LinearExpression lhs,
-                                   LinearExpression rhs)
+LinearConstraint relational::equal(LinearExpression lhs, LinearExpression rhs)
 {
     return LinearConstraint(std::move(lhs) - rhs, ConstraintKind::Equal);
+}
+
+LinearConstraint relational::notEqual(LinearExpression lhs,
+                                      LinearExpression rhs)
+{
+    return LinearConstraint(std::move(lhs) - rhs, ConstraintKind::NotEqual);
 }
 
 LinearConstraint relational::lessEqual(LinearExpression lhs,
@@ -276,13 +277,11 @@ LinearConstraint relational::lessThan(LinearExpression lhs,
 LinearConstraint relational::greaterEqual(LinearExpression lhs,
                                           LinearExpression rhs)
 {
-    return LinearConstraint(std::move(lhs) - rhs,
-                            ConstraintKind::GreaterEqual);
+    return LinearConstraint(std::move(lhs) - rhs, ConstraintKind::GreaterEqual);
 }
 
 LinearConstraint relational::greaterThan(LinearExpression lhs,
                                          LinearExpression rhs)
 {
-    return LinearConstraint(std::move(lhs) - rhs,
-                            ConstraintKind::GreaterThan);
+    return LinearConstraint(std::move(lhs) - rhs, ConstraintKind::GreaterThan);
 }

@@ -27,7 +27,7 @@ std::size_t opposite(std::size_t node)
     return node ^ 1U;
 }
 
-class OctagonState final : public BackendState
+class OctagonState final : public DomainState
 {
 public:
     explicit OctagonState(const Environment& environment, bool bottom = false)
@@ -47,12 +47,15 @@ public:
             at(node, node) = Bound::finite(Rational());
     }
 
-    std::unique_ptr<BackendState> clone() const override
+    std::unique_ptr<DomainState> clone() const override
     {
         return std::make_unique<OctagonState>(*this);
     }
 
-    std::size_t nodes() const { return 2 * dimensions; }
+    std::size_t nodes() const
+    {
+        return 2 * dimensions;
+    }
 
     Bound& at(std::size_t row, std::size_t column)
     {
@@ -71,8 +74,8 @@ public:
     bool stronglyClosed = true;
 
 private:
-    static std::vector<NumericKind>
-    extractVariableKinds(const Environment& environment)
+    static std::vector<NumericKind> extractVariableKinds(
+        const Environment& environment)
     {
         std::vector<NumericKind> result;
         result.reserve(environment.size());
@@ -82,12 +85,12 @@ private:
     }
 };
 
-const OctagonState& asOctagon(const BackendState& state)
+const OctagonState& asOctagon(const DomainState& state)
 {
     return static_cast<const OctagonState&>(state);
 }
 
-OctagonState& asOctagon(BackendState& state)
+OctagonState& asOctagon(DomainState& state)
 {
     return static_cast<OctagonState&>(state);
 }
@@ -119,17 +122,19 @@ Bound tightenIntegerUnary(const Bound& bound)
     return Bound::finite(std::move(even));
 }
 
-class OctagonBackend final : public DomainBackend
+} // namespace
+
+class relational::OctagonDomain::Impl final
 {
 public:
-    explicit OctagonBackend(OctagonOptions options)
-        : options_(std::move(options))
+    explicit Impl(OctagonOptions options) : options_(std::move(options)) {}
+
+    const char* name() const
     {
+        return "gmp-octagon";
     }
 
-    const char* name() const override { return "gmp-octagon"; }
-
-    DomainCapabilities capabilities() const override
+    DomainCapabilities capabilities() const
     {
         return {/*strictInequalities=*/true,
                 /*integerTightening=*/options_.integerTightening,
@@ -138,21 +143,19 @@ public:
                 /*treeExpressions=*/false};
     }
 
-    std::unique_ptr<BackendState>
-    top(const Environment& environment) const override
+    std::unique_ptr<DomainState> top(const Environment& environment) const
     {
         return std::make_unique<OctagonState>(environment);
     }
 
-    std::unique_ptr<BackendState>
-    bottom(const Environment& environment) const override
+    std::unique_ptr<DomainState> bottom(const Environment& environment) const
     {
         return std::make_unique<OctagonState>(environment, true);
     }
 
-    ApproximationKind assign(BackendState& genericState,
+    ApproximationKind assign(DomainState& genericState,
                              const Environment& environment, Variable target,
-                             const LinearExpression& expression) const override
+                             const LinearExpression& expression) const
     {
         OctagonState& state = asOctagon(genericState);
         requireVariables(environment, expression);
@@ -173,9 +176,9 @@ public:
             forget(state, targetDimension);
             LinearExpression equality(target);
             equality -= expression;
-            addConstraint(state, environment,
-                          LinearConstraint(std::move(equality),
-                                           ConstraintKind::Equal));
+            addConstraint(
+                state, environment,
+                LinearConstraint(std::move(equality), ConstraintKind::Equal));
             normalize(state, environment);
             return ApproximationKind::Exact;
         }
@@ -184,7 +187,7 @@ public:
         {
             const auto& [source, coefficient] = *expression.terms().begin();
             if ((coefficient == Rational(1) || coefficient == Rational(-1)) &&
-                    environment.typeOf(source).kind != NumericKind::IEEEFloat)
+                environment.typeOf(source).kind != NumericKind::IEEEFloat)
             {
                 const Dimension sourceDimension =
                     environment.dimensionOf(source);
@@ -213,9 +216,9 @@ public:
         return ApproximationKind::UnsupportedFallback;
     }
 
-    ApproximationKind assume(BackendState& genericState,
+    ApproximationKind assume(DomainState& genericState,
                              const Environment& environment,
-                             const LinearConstraint& constraint) const override
+                             const LinearConstraint& constraint) const
     {
         OctagonState& state = asOctagon(genericState);
         requireVariables(environment, constraint.expression());
@@ -234,8 +237,8 @@ public:
                          : ApproximationKind::UnsupportedFallback;
     }
 
-    void forget(BackendState& genericState, const Environment& environment,
-                Variable variable) const override
+    void forget(DomainState& genericState, const Environment& environment,
+                Variable variable) const
     {
         if (!environment.contains(variable))
             throw std::invalid_argument(
@@ -243,9 +246,8 @@ public:
         forget(asOctagon(genericState), environment.dimensionOf(variable));
     }
 
-    std::unique_ptr<BackendState>
-    join(const BackendState& genericLhs,
-         const BackendState& genericRhs) const override
+    std::unique_ptr<DomainState> join(const DomainState& genericLhs,
+                                      const DomainState& genericRhs) const
     {
         OctagonState lhs = normalized(asOctagon(genericLhs));
         OctagonState rhs = normalized(asOctagon(genericRhs));
@@ -257,16 +259,15 @@ public:
 
         OctagonState result(lhs.variableKinds);
         for (std::size_t index = 0; index < result.matrix.size(); ++index)
-            result.matrix[index] = Bound::max(lhs.matrix[index],
-                                              rhs.matrix[index]);
+            result.matrix[index] =
+                Bound::max(lhs.matrix[index], rhs.matrix[index]);
         result.stronglyClosed = false;
         normalize(result);
         return result.clone();
     }
 
-    std::unique_ptr<BackendState>
-    meet(const BackendState& genericLhs,
-         const BackendState& genericRhs) const override
+    std::unique_ptr<DomainState> meet(const DomainState& genericLhs,
+                                      const DomainState& genericRhs) const
     {
         OctagonState lhs = normalized(asOctagon(genericLhs));
         OctagonState rhs = normalized(asOctagon(genericRhs));
@@ -278,17 +279,16 @@ public:
 
         OctagonState result(lhs.variableKinds);
         for (std::size_t index = 0; index < result.matrix.size(); ++index)
-            result.matrix[index] = Bound::min(lhs.matrix[index],
-                                              rhs.matrix[index]);
+            result.matrix[index] =
+                Bound::min(lhs.matrix[index], rhs.matrix[index]);
         result.stronglyClosed = false;
         normalize(result);
         return result.clone();
     }
 
-    std::unique_ptr<BackendState>
-    widen(const BackendState& genericCurrent,
-          const BackendState& genericNext,
-          const WideningPolicy& policy) const override
+    std::unique_ptr<DomainState> widen(const DomainState& genericCurrent,
+                                       const DomainState& genericNext,
+                                       const WideningPolicy& policy) const
     {
         const OctagonState& current = asOctagon(genericCurrent);
         OctagonState next = normalized(asOctagon(genericNext));
@@ -320,8 +320,7 @@ public:
                     // Public thresholds use normalized octagonal constants.
                     // A unary DBM entry encodes +/-2*x, so its matrix bound
                     // needs twice the user-visible threshold.
-                    const bool unary = row != column &&
-                                       row / 2 == column / 2;
+                    const bool unary = row != column && row / 2 == column / 2;
                     for (const Rational& threshold : thresholds)
                     {
                         Bound candidate = Bound::finite(
@@ -341,9 +340,8 @@ public:
         return result.clone();
     }
 
-    std::unique_ptr<BackendState>
-    narrow(const BackendState& genericCurrent,
-           const BackendState& genericNext) const override
+    std::unique_ptr<DomainState> narrow(const DomainState& genericCurrent,
+                                        const DomainState& genericNext) const
     {
         const OctagonState& current = asOctagon(genericCurrent);
         OctagonState next = normalized(asOctagon(genericNext));
@@ -355,15 +353,15 @@ public:
         for (std::size_t index = 0; index < result.matrix.size(); ++index)
         {
             if (current.matrix[index].isPlusInfinity() &&
-                    next.matrix[index].isFinite())
+                next.matrix[index].isFinite())
                 result.matrix[index] = next.matrix[index];
         }
         result.stronglyClosed = false;
         return result.clone();
     }
 
-    std::unique_ptr<BackendState>
-    projectLowerBounds(const BackendState& genericState) const override
+    std::unique_ptr<DomainState> projectLowerBounds(
+        const DomainState& genericState) const
     {
         OctagonState source = normalized(asOctagon(genericState));
         if (source.bottom)
@@ -373,10 +371,9 @@ public:
         for (Dimension dimension = 0; dimension < source.dimensions;
              ++dimension)
         {
-            setCoherent(result, negativeNode(dimension),
-                        positiveNode(dimension),
-                        source.at(negativeNode(dimension),
-                                  positiveNode(dimension)));
+            setCoherent(
+                result, negativeNode(dimension), positiveNode(dimension),
+                source.at(negativeNode(dimension), positiveNode(dimension)));
         }
         for (Dimension lhs = 0; lhs < source.dimensions; ++lhs)
         {
@@ -394,11 +391,9 @@ public:
         return result.clone();
     }
 
-    std::unique_ptr<BackendState>
-    changeEnvironment(const BackendState& genericState,
-                      const Environment& oldEnvironment,
-                      const Environment& newEnvironment,
-                      bool projectNewVariables) const override
+    std::unique_ptr<DomainState> changeEnvironment(
+        const DomainState& genericState, const Environment& oldEnvironment,
+        const Environment& newEnvironment, bool projectNewVariables) const
     {
         OctagonState source = normalized(asOctagon(genericState));
         if (source.dimensions != oldEnvironment.size())
@@ -416,7 +411,7 @@ public:
             if (!oldEnvironment.contains(rowVariable))
                 continue;
             if (oldEnvironment.typeOf(rowVariable) !=
-                    newEnvironment.typeOf(rowVariable))
+                newEnvironment.typeOf(rowVariable))
                 throw std::invalid_argument(
                     "environment change cannot alter a variable's type");
             const Dimension oldRowDimension =
@@ -431,7 +426,7 @@ public:
                 if (!oldEnvironment.contains(columnVariable))
                     continue;
                 if (oldEnvironment.typeOf(columnVariable) !=
-                        newEnvironment.typeOf(columnVariable))
+                    newEnvironment.typeOf(columnVariable))
                     throw std::invalid_argument(
                         "environment change cannot alter a variable's type");
                 const Dimension oldColumnDimension =
@@ -453,18 +448,16 @@ public:
 
         if (projectNewVariables)
         {
-            for (Dimension dimension = 0;
-                 dimension < newEnvironment.size(); ++dimension)
+            for (Dimension dimension = 0; dimension < newEnvironment.size();
+                 ++dimension)
             {
                 const Variable value = newEnvironment.variableOf(dimension);
                 if (oldEnvironment.contains(value))
                     continue;
                 setCoherent(result, positiveNode(dimension),
-                            negativeNode(dimension),
-                            Bound::finite(Rational()));
+                            negativeNode(dimension), Bound::finite(Rational()));
                 setCoherent(result, negativeNode(dimension),
-                            positiveNode(dimension),
-                            Bound::finite(Rational()));
+                            positiveNode(dimension), Bound::finite(Rational()));
             }
         }
         result.stronglyClosed = false;
@@ -472,12 +465,12 @@ public:
         return result.clone();
     }
 
-    bool isBottom(const BackendState& genericState) const override
+    bool isBottom(const DomainState& genericState) const
     {
         return normalized(asOctagon(genericState)).bottom;
     }
 
-    bool isTop(const BackendState& genericState) const override
+    bool isTop(const DomainState& genericState) const
     {
         OctagonState state = normalized(asOctagon(genericState));
         if (state.bottom)
@@ -495,8 +488,7 @@ public:
         return true;
     }
 
-    bool leq(const BackendState& genericLhs,
-             const BackendState& genericRhs) const override
+    bool leq(const DomainState& genericLhs, const DomainState& genericRhs) const
     {
         OctagonState lhs = normalized(asOctagon(genericLhs));
         OctagonState rhs = normalized(asOctagon(genericRhs));
@@ -513,9 +505,8 @@ public:
         return true;
     }
 
-    Interval bound(const BackendState& genericState,
-                   const Environment& environment,
-                   Variable variable) const override
+    Interval bound(const DomainState& genericState,
+                   const Environment& environment, Variable variable) const
     {
         if (!environment.contains(variable))
             throw std::invalid_argument(
@@ -536,18 +527,17 @@ public:
             upper = Bound::divideByPositive(doubledUpper, Rational(2));
         if (doubledNegativeLower.isFinite())
         {
-            lower = Bound::finite(
-                -(doubledNegativeLower.value() / Rational(2)),
-                doubledNegativeLower.isStrict());
+            lower = Bound::finite(-(doubledNegativeLower.value() / Rational(2)),
+                                  doubledNegativeLower.isStrict());
         }
         return Interval(std::move(lower), std::move(upper));
     }
 
-    ConstraintSet constraints(const BackendState& genericState,
-                              const Environment& environment) const override
+    LinearConstraintSet constraints(const DomainState& genericState,
+                                    const Environment& environment) const
     {
         OctagonState state = normalized(asOctagon(genericState));
-        ConstraintSet result;
+        LinearConstraintSet result;
         if (state.bottom)
             return result;
 
@@ -563,29 +553,29 @@ public:
                 const std::size_t coherentColumn = opposite(row);
                 if (std::pair<std::size_t, std::size_t>(coherentRow,
                                                         coherentColumn) <
-                        std::pair<std::size_t, std::size_t>(row, column))
+                    std::pair<std::size_t, std::size_t>(row, column))
                     continue;
 
                 LinearExpression expression;
                 addNodeTerm(expression, environment, row, Rational(1));
                 addNodeTerm(expression, environment, column, Rational(-1));
                 expression.setConstant(-state.at(row, column).value());
-                result.emplace_back(
-                    std::move(expression),
-                    state.at(row, column).isStrict()
-                        ? ConstraintKind::LessThan
-                        : ConstraintKind::LessEqual);
+                result.emplace_back(std::move(expression),
+                                    state.at(row, column).isStrict()
+                                        ? ConstraintKind::LessThan
+                                        : ConstraintKind::LessEqual);
             }
         }
         return result;
     }
 
-    std::string toString(const BackendState& genericState,
-                         const Environment& environment) const override
+    std::string toString(const DomainState& genericState,
+                         const Environment& environment) const
     {
         if (isBottom(genericState))
             return "bottom";
-        const ConstraintSet exported = constraints(genericState, environment);
+        const LinearConstraintSet exported =
+            constraints(genericState, environment);
         if (exported.empty())
             return "top";
         std::ostringstream output;
@@ -599,8 +589,7 @@ public:
     }
 
 private:
-    void requireSameSize(const OctagonState& lhs,
-                         const OctagonState& rhs) const
+    void requireSameSize(const OctagonState& lhs, const OctagonState& rhs) const
     {
         if (lhs.dimensions != rhs.dimensions)
             throw std::invalid_argument("octagon dimensions do not match");
@@ -618,8 +607,8 @@ private:
         }
     }
 
-    void setCoherent(OctagonState& state, std::size_t row,
-                     std::size_t column, const Bound& bound) const
+    void setCoherent(OctagonState& state, std::size_t row, std::size_t column,
+                     const Bound& bound) const
     {
         state.at(row, column) = Bound::min(state.at(row, column), bound);
         const std::size_t coherentRow = opposite(column);
@@ -657,12 +646,11 @@ private:
 
         switch (constraint.kind())
         {
-        case ConstraintKind::Equal:
-        {
-            const bool forward = addLessEqual(
-                state, environment, constraint.expression(), false);
-            const bool backward = addLessEqual(
-                state, environment, -constraint.expression(), false);
+        case ConstraintKind::Equal: {
+            const bool forward = addLessEqual(state, environment,
+                                              constraint.expression(), false);
+            const bool backward = addLessEqual(state, environment,
+                                               -constraint.expression(), false);
             return forward && backward;
         }
         case ConstraintKind::NotEqual:
@@ -732,19 +720,17 @@ private:
             const Rational rhsCoefficient = it->second;
             const Rational lhsMagnitude = absolute(lhsCoefficient);
             if (lhsMagnitude != absolute(rhsCoefficient) ||
-                    lhsMagnitude.isZero())
+                lhsMagnitude.isZero())
                 return false;
 
-            const Dimension lhsDimension =
-                environment.dimensionOf(lhsVariable);
-            const Dimension rhsDimension =
-                environment.dimensionOf(rhsVariable);
+            const Dimension lhsDimension = environment.dimensionOf(lhsVariable);
+            const Dimension rhsDimension = environment.dimensionOf(rhsVariable);
             const std::size_t lhsNode = lhsCoefficient.sign() > 0
                                             ? positiveNode(lhsDimension)
                                             : negativeNode(lhsDimension);
-            const std::size_t negativeRhsNode = rhsCoefficient.sign() > 0
-                                                    ? negativeNode(rhsDimension)
-                                                    : positiveNode(rhsDimension);
+            const std::size_t negativeRhsNode =
+                rhsCoefficient.sign() > 0 ? negativeNode(rhsDimension)
+                                          : positiveNode(rhsDimension);
             const Rational value = -expression.constant() / lhsMagnitude;
             setCoherent(state, lhsNode, negativeRhsNode,
                         Bound::finite(value, strict));
@@ -754,8 +740,7 @@ private:
     }
 
     void selfAssign(OctagonState& state, const Environment& environment,
-                    Dimension target, int sign,
-                    const Rational& constant) const
+                    Dimension target, int sign, const Rational& constant) const
     {
         normalize(state, environment);
         if (state.bottom)
@@ -763,16 +748,14 @@ private:
         OctagonState old = state;
         OctagonState result(state.variableKinds);
 
-        auto oldNode = [target, sign](std::size_t newNode)
-        {
+        auto oldNode = [target, sign](std::size_t newNode) {
             if (newNode == positiveNode(target))
                 return sign > 0 ? positiveNode(target) : negativeNode(target);
             if (newNode == negativeNode(target))
                 return sign > 0 ? negativeNode(target) : positiveNode(target);
             return newNode;
         };
-        auto delta = [target, &constant](std::size_t newNode)
-        {
+        auto delta = [target, &constant](std::size_t newNode) {
             if (newNode == positiveNode(target))
                 return constant;
             if (newNode == negativeNode(target))
@@ -825,9 +808,8 @@ private:
                 {
                     if (state.at(middle, column).isPlusInfinity())
                         continue;
-                    const Bound candidate =
-                        Bound::add(state.at(row, middle),
-                                   state.at(middle, column));
+                    const Bound candidate = Bound::add(
+                        state.at(row, middle), state.at(middle, column));
                     state.at(row, column) =
                         Bound::min(state.at(row, column), candidate);
                 }
@@ -839,8 +821,7 @@ private:
     {
         if (!options_.integerTightening)
             return;
-        for (Dimension dimension = 0; dimension < state.dimensions;
-             ++dimension)
+        for (Dimension dimension = 0; dimension < state.dimensions; ++dimension)
         {
             if (state.variableKinds[dimension] != NumericKind::Integer)
                 continue;
@@ -865,8 +846,8 @@ private:
                 const Bound& rhs = state.at(opposite(column), column);
                 if (lhs.isPlusInfinity() || rhs.isPlusInfinity())
                     continue;
-                const Bound candidate = Bound::divideByPositive(
-                    Bound::add(lhs, rhs), Rational(2));
+                const Bound candidate =
+                    Bound::divideByPositive(Bound::add(lhs, rhs), Rational(2));
                 state.at(row, column) =
                     Bound::min(state.at(row, column), candidate);
             }
@@ -905,8 +886,7 @@ private:
         state.stronglyClosed = true;
     }
 
-    void normalize(OctagonState& state,
-                   const Environment& environment) const
+    void normalize(OctagonState& state, const Environment& environment) const
     {
         (void)environment;
         normalize(state);
@@ -926,17 +906,144 @@ private:
         const Dimension dimension = node / 2;
         const Rational sign = node % 2 == 0 ? Rational(1) : Rational(-1);
         const Variable variable = environment.variableOf(dimension);
-        expression.setCoefficient(
-            variable, expression.coefficient(variable) + sign * multiplier);
+        expression.setCoefficient(variable, expression.coefficient(variable) +
+                                                sign * multiplier);
     }
 
     OctagonOptions options_;
 };
 
-} // namespace
-
-std::shared_ptr<DomainBackend>
-relational::makeOctagonBackend(const OctagonOptions& options)
+namespace relational
 {
-    return std::make_shared<OctagonBackend>(options);
+
+OctagonDomain::OctagonDomain(const OctagonOptions& options)
+    : AbstractDomain(options.diagnostics),
+      impl_(std::make_unique<Impl>(options))
+{
 }
+
+OctagonDomain::~OctagonDomain() = default;
+
+const char* OctagonDomain::name() const
+{
+    return impl_->name();
+}
+
+DomainCapabilities OctagonDomain::capabilities() const
+{
+    return impl_->capabilities();
+}
+
+std::unique_ptr<DomainState> OctagonDomain::makeTop(
+    const Environment& environment) const
+{
+    return impl_->top(environment);
+}
+
+std::unique_ptr<DomainState> OctagonDomain::makeBottom(
+    const Environment& environment) const
+{
+    return impl_->bottom(environment);
+}
+
+ApproximationKind OctagonDomain::assignState(
+    DomainState& state, const Environment& environment, Variable target,
+    const LinearExpression& expression) const
+{
+    return impl_->assign(state, environment, target, expression);
+}
+
+ApproximationKind OctagonDomain::assumeState(
+    DomainState& state, const Environment& environment,
+    const LinearConstraint& constraint) const
+{
+    return impl_->assume(state, environment, constraint);
+}
+
+void OctagonDomain::forgetState(DomainState& state,
+                                const Environment& environment,
+                                Variable variable) const
+{
+    impl_->forget(state, environment, variable);
+}
+
+std::unique_ptr<DomainState> OctagonDomain::joinStates(
+    const DomainState& lhs, const DomainState& rhs) const
+{
+    return impl_->join(lhs, rhs);
+}
+
+std::unique_ptr<DomainState> OctagonDomain::meetStates(
+    const DomainState& lhs, const DomainState& rhs) const
+{
+    return impl_->meet(lhs, rhs);
+}
+
+std::unique_ptr<DomainState> OctagonDomain::widenStates(
+    const DomainState& current, const DomainState& next,
+    const WideningPolicy& policy) const
+{
+    return impl_->widen(current, next, policy);
+}
+
+std::unique_ptr<DomainState> OctagonDomain::narrowStates(
+    const DomainState& current, const DomainState& next) const
+{
+    return impl_->narrow(current, next);
+}
+
+std::unique_ptr<DomainState> OctagonDomain::projectLowerBoundsState(
+    const DomainState& state) const
+{
+    return impl_->projectLowerBounds(state);
+}
+
+std::unique_ptr<DomainState> OctagonDomain::changeEnvironmentState(
+    const DomainState& state, const Environment& oldEnvironment,
+    const Environment& newEnvironment, bool projectNewVariables) const
+{
+    return impl_->changeEnvironment(state, oldEnvironment, newEnvironment,
+                                    projectNewVariables);
+}
+
+bool OctagonDomain::isBottomState(const DomainState& state) const
+{
+    return impl_->isBottom(state);
+}
+
+bool OctagonDomain::isTopState(const DomainState& state) const
+{
+    return impl_->isTop(state);
+}
+
+bool OctagonDomain::leqStates(const DomainState& lhs,
+                              const DomainState& rhs) const
+{
+    return impl_->leq(lhs, rhs);
+}
+
+Interval OctagonDomain::boundState(const DomainState& state,
+                                   const Environment& environment,
+                                   Variable variable) const
+{
+    return impl_->bound(state, environment, variable);
+}
+
+LinearConstraintSet OctagonDomain::constraintsState(
+    const DomainState& state, const Environment& environment) const
+{
+    return impl_->constraints(state, environment);
+}
+
+std::string OctagonDomain::stateToString(const DomainState& state,
+                                         const Environment& environment) const
+{
+    return impl_->toString(state, environment);
+}
+
+std::shared_ptr<OctagonDomain> makeOctagonDomain(const OctagonOptions& options)
+{
+    return std::shared_ptr<OctagonDomain>(new OctagonDomain(options));
+}
+
+} // namespace relational

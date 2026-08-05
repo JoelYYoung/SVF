@@ -382,7 +382,7 @@ protected:
                                     const RelationalStatePtr& current,
                                     const ICFGNode* cycleHead);
 
-    std::shared_ptr<relational::Manager> relationalManager;
+    std::shared_ptr<relational::AbstractDomain> relationalDomain;
     Map<const FunObjVar*, std::vector<TrackedRelationalVariable>>
         relationalVariablesByFunction;
     std::vector<TrackedRelationalVariable> globalRelationalVariables;

@@ -3,7 +3,7 @@
 #ifndef RELATIONAL_Z3_SOUNDNESS_CHECKER_H
 #define RELATIONAL_Z3_SOUNDNESS_CHECKER_H
 
-#include "AE/Core/RelationalDomain.h"
+#include "AE/Core/AbstractDomain.h"
 
 #include <z3++.h>
 

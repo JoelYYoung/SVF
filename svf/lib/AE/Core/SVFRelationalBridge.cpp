@@ -17,28 +17,29 @@ relational::Environment makeEnvironment(
     declarations.reserve(variables.size());
     for (const TrackedRelationalVariable& variable : variables)
     {
-        declarations.push_back({relational::Variable(variable.id),
-                                variable.type, variable.name});
+        declarations.push_back(
+            {relational::Variable(variable.id), variable.type, variable.name});
     }
     return relational::Environment(std::move(declarations));
 }
 
-std::shared_ptr<relational::Manager> requireManager(
-    std::shared_ptr<relational::Manager> manager)
+std::shared_ptr<relational::AbstractDomain> requireDomain(
+    std::shared_ptr<relational::AbstractDomain> domain)
 {
-    if (!manager)
-        throw std::invalid_argument("SVF relational bridge needs a manager");
-    return manager;
+    if (!domain)
+        throw std::invalid_argument(
+            "SVF relational bridge needs an abstract domain");
+    return domain;
 }
 
 } // namespace
 
 SVFRelationalBridge::SVFRelationalBridge(
     std::vector<TrackedRelationalVariable> variables,
-    std::shared_ptr<relational::Manager> manager)
-    : manager_(requireManager(std::move(manager))),
+    std::shared_ptr<relational::AbstractDomain> domain)
+    : domain_(requireDomain(std::move(domain))),
       environment_(makeEnvironment(variables)),
-      state_(manager_->top(environment_))
+      state_(domain_->top(environment_))
 {
 }
 
@@ -61,8 +62,7 @@ const relational::Environment& SVFRelationalBridge::environment() const
 }
 
 void SVFRelationalBridge::changeTrackedVariables(
-    std::vector<TrackedRelationalVariable> variables,
-    bool projectNewVariables)
+    std::vector<TrackedRelationalVariable> variables, bool projectNewVariables)
 {
     relational::Environment nextEnvironment = makeEnvironment(variables);
     state_.changeEnvironment(nextEnvironment, projectNewVariables);
@@ -77,15 +77,13 @@ void SVFRelationalBridge::assignConstant(NodeID target,
 }
 
 relational::LinearExpression SVFRelationalBridge::expression(
-    const std::vector<AffineTerm>& terms,
-    relational::Rational constant) const
+    const std::vector<AffineTerm>& terms, relational::Rational constant) const
 {
     relational::LinearExpression result(std::move(constant));
     for (const auto& [id, coefficient] : terms)
     {
         const relational::Variable value = variable(id);
-        result.setCoefficient(value,
-                              result.coefficient(value) + coefficient);
+        result.setCoefficient(value, result.coefficient(value) + coefficient);
     }
     return result;
 }
@@ -97,34 +95,32 @@ void SVFRelationalBridge::assignAffine(NodeID target,
     state_.assign(variable(target), expression(terms, std::move(constant)));
 }
 
-void SVFRelationalBridge::assumeAffine(
-    std::vector<AffineTerm> terms, relational::Rational constant,
-    relational::ConstraintKind kind)
+void SVFRelationalBridge::assumeAffine(std::vector<AffineTerm> terms,
+                                       relational::Rational constant,
+                                       relational::ConstraintKind kind)
 {
     state_.assume(relational::LinearConstraint(
         expression(terms, std::move(constant)), kind));
 }
 
-void SVFRelationalBridge::constrainInterval(
-    NodeID target, const IntervalValue& interval)
+void SVFRelationalBridge::constrainInterval(NodeID target,
+                                            const IntervalValue& interval)
 {
     if (interval.isBottom())
     {
-        state_ = manager_->bottom(environment_);
+        state_ = domain_->bottom(environment_);
         return;
     }
     if (!interval.lb().is_minus_infinity())
     {
         assumeAffine({{target, relational::Rational(1)}},
-                     relational::Rational(
-                         -interval.lb().getIntNumeral()),
+                     relational::Rational(-interval.lb().getIntNumeral()),
                      relational::ConstraintKind::GreaterEqual);
     }
     if (!interval.ub().is_plus_infinity())
     {
         assumeAffine({{target, relational::Rational(1)}},
-                     relational::Rational(
-                         -interval.ub().getIntNumeral()),
+                     relational::Rational(-interval.ub().getIntNumeral()),
                      relational::ConstraintKind::LessEqual);
     }
 }
@@ -150,10 +146,10 @@ void SVFRelationalBridge::forget(NodeID id)
 void SVFRelationalBridge::requireCompatible(
     const SVFRelationalBridge& other) const
 {
-    if (manager_.get() != other.manager_.get() ||
-            environment_ != other.environment_)
+    if (domain_.get() != other.domain_.get() ||
+        environment_ != other.environment_)
         throw std::invalid_argument(
-            "SVF relational bridges have incompatible managers or layouts");
+            "SVF relational bridges have incompatible domains or layouts");
 }
 
 void SVFRelationalBridge::joinWith(const SVFRelationalBridge& other)
@@ -168,9 +164,8 @@ void SVFRelationalBridge::meetWith(const SVFRelationalBridge& other)
     state_.meetWith(other.state_);
 }
 
-void SVFRelationalBridge::widenWith(
-    const SVFRelationalBridge& next,
-    const relational::WideningPolicy& policy)
+void SVFRelationalBridge::widenWith(const SVFRelationalBridge& next,
+                                    const relational::WideningPolicy& policy)
 {
     requireCompatible(next);
     state_.widenWith(next.state_, policy);
@@ -188,8 +183,7 @@ bool SVFRelationalBridge::equals(const SVFRelationalBridge& other) const
     return state_.equals(other.state_) == relational::CheckResult::True;
 }
 
-bool SVFRelationalBridge::includedIn(
-    const SVFRelationalBridge& other) const
+bool SVFRelationalBridge::includedIn(const SVFRelationalBridge& other) const
 {
     requireCompatible(other);
     return state_.leq(other.state_) == relational::CheckResult::True;

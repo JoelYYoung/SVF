@@ -13,9 +13,9 @@ if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
   add_library(
     RelationalDomainCore
     ${RELATIONAL_STANDALONE_ROOT}/lib/AE/Core/OctagonDomain.cpp
-    ${RELATIONAL_STANDALONE_ROOT}/lib/AE/Core/RelationalDomain.cpp
+    ${RELATIONAL_STANDALONE_ROOT}/lib/AE/Core/AbstractDomain.cpp
     ${RELATIONAL_STANDALONE_ROOT}/lib/AE/Core/RelationalEnvironment.cpp
-    ${RELATIONAL_STANDALONE_ROOT}/lib/AE/Core/RelationalExpression.cpp
+    ${RELATIONAL_STANDALONE_ROOT}/lib/AE/Core/LinearConstraint.cpp
     ${RELATIONAL_STANDALONE_ROOT}/lib/AE/Core/RelationalNumeric.cpp
   )
   target_compile_features(RelationalDomainCore PUBLIC cxx_std_17)

@@ -1,12 +1,13 @@
 //===- RelationalDomainTest.cpp -- Native relational-domain tests --------===//
 
-#include "AE/Core/RelationalDomain.h"
+#include "AE/Core/OctagonDomain.h"
 #include "Z3SoundnessChecker.h"
 
 #include <cstdlib>
 #include <iostream>
 #include <stdexcept>
 #include <string>
+#include <type_traits>
 
 using namespace relational;
 using namespace relational::test;
@@ -83,24 +84,53 @@ void testEnvironment()
 {
     const Variable x(7);
     const Variable y(2);
-    const Environment environment({{x, NumericType::integer(), "x"},
-                                   {y, NumericType::real(), "y"}});
+    const Environment environment(
+        {{x, NumericType::integer(), "x"}, {y, NumericType::real(), "y"}});
     require(environment.variableOf(0) == y && environment.variableOf(1) == x,
             "environment dimensions must be deterministic by variable id");
     require(environment.typeOf(y).kind == NumericKind::Real,
             "environment must preserve numeric types");
 }
 
+void testPublicDomainArchitecture()
+{
+    static_assert(std::is_base_of_v<AbstractDomain, OctagonDomain>);
+
+    const Variable x(1);
+    const Variable y(2);
+    const Environment environment(
+        {{x, NumericType::real(), "x"}, {y, NumericType::real(), "y"}});
+    std::shared_ptr<AbstractDomain> domain = makeOctagonDomain();
+    require(std::string(domain->name()) == "gmp-octagon",
+            "OctagonDomain must be usable through AbstractDomain");
+
+    LinearExpression lhs(x);
+    lhs.setCoefficient(y, Rational(-1));
+    const LinearConstraint constraint =
+        lessEqual(lhs, LinearExpression(Rational(3)));
+    require(constraint.kind() == ConstraintKind::LessEqual &&
+                constraint.expression().coefficient(x) == Rational(1) &&
+                constraint.expression().coefficient(y) == Rational(-1) &&
+                constraint.expression().constant() == Rational(-3),
+            "structured constraint construction must normalize lhs <= rhs "
+            "to lhs - rhs <= 0");
+
+    AbstractState state =
+        domain->fromConstraints(environment, LinearConstraintSet{constraint});
+    require(state.entails(constraint) == CheckResult::True,
+            "AbstractDomain must consume structured linear constraints");
+}
+
 void testAssumeClosureAndAssignment()
 {
     const Variable x(1);
     const Variable y(2);
-    const Environment environment({{x, NumericType::integer(), "x"},
-                                   {y, NumericType::integer(), "y"}});
-    const auto manager = makeOctagonManager();
+    const Environment environment(
+        {{x, NumericType::integer(), "x"}, {y, NumericType::integer(), "y"}});
+    const auto domain = makeOctagonDomain();
     Z3SoundnessChecker checker(environment);
 
-    AbstractState state = manager->top(environment);
+    AbstractState state = domain->top(environment);
     const LinearConstraint nonnegative = atLeast(x, Rational(0));
     AbstractState beforeAssume = state;
     state.assume(nonnegative);
@@ -114,7 +144,7 @@ void testAssumeClosureAndAssignment()
                 CheckResult::True,
             "the state must entail an explicitly assumed equality");
 
-    AbstractState assigned = manager->top(environment);
+    AbstractState assigned = domain->top(environment);
     assigned.assume(equalsConstant(x, Rational(2)));
     LinearExpression xPlusThree(x);
     xPlusThree.setConstant(Rational(3));
@@ -162,7 +192,7 @@ void testStrictIntegerAndRealBounds()
     const Variable integer(1);
     const Environment integers(
         {{integer, NumericType::integer(), "integer_value"}});
-    AbstractState integerState = makeOctagonManager()->top(integers);
+    AbstractState integerState = makeOctagonDomain()->top(integers);
     integerState.assume(below(integer, Rational("3/2")));
     const Interval integerBound = integerState.bound(integer);
     require(integerBound.upper().value() == Rational(1) &&
@@ -171,15 +201,14 @@ void testStrictIntegerAndRealBounds()
 
     const Variable real(2);
     const Environment reals({{real, NumericType::real(), "real_value"}});
-    AbstractState realState = makeOctagonManager()->top(reals);
+    AbstractState realState = makeOctagonDomain()->top(reals);
     realState.assume(below(real, Rational("3/2")));
     const Interval realBound = realState.bound(real);
     require(realBound.upper().value() == Rational("3/2") &&
                 realBound.upper().isStrict(),
             "real strict bounds must remain strict exact rationals");
     realState.assume(atLeast(real, Rational("3/2")));
-    require(realState.isBottom(),
-            "x < 3/2 and x >= 3/2 must close to bottom");
+    require(realState.isBottom(), "x < 3/2 and x >= 3/2 must close to bottom");
 }
 
 void testEnvironmentChanges()
@@ -187,19 +216,20 @@ void testEnvironmentChanges()
     const Variable x(1);
     const Variable y(2);
     const Variable z(3);
-    const Environment original({{x, NumericType::integer(), "x"},
-                                {y, NumericType::integer(), "y"}});
-    const Environment changed({{x, NumericType::integer(), "x"},
-                               {z, NumericType::integer(), "z"}});
-    const auto manager = makeOctagonManager();
-    AbstractState state = manager->top(original);
+    const Environment original(
+        {{x, NumericType::integer(), "x"}, {y, NumericType::integer(), "y"}});
+    const Environment changed(
+        {{x, NumericType::integer(), "x"}, {z, NumericType::integer(), "z"}});
+    const auto domain = makeOctagonDomain();
+    AbstractState state = domain->top(original);
     state.assume(equalsConstant(x, Rational(7)));
     state.assume(equalsConstant(y, Rational(9)));
 
     AbstractState unconstrained = state.changedEnvironment(changed);
     require(unconstrained.bound(x).lower().value() == Rational(7) &&
                 unconstrained.bound(z).isTop(),
-            "environment change must project removed variables and add top dimensions");
+            "environment change must project removed variables and add top "
+            "dimensions");
 
     AbstractState projected = state.changedEnvironment(changed, true);
     require(projected.bound(z).lower().value() == Rational(0) &&
@@ -211,15 +241,15 @@ void testLatticeAndZ3Soundness()
 {
     const Variable x(1);
     const Variable y(2);
-    const Environment environment({{x, NumericType::integer(), "x"},
-                                   {y, NumericType::integer(), "y"}});
-    const auto manager = makeOctagonManager();
+    const Environment environment(
+        {{x, NumericType::integer(), "x"}, {y, NumericType::integer(), "y"}});
+    const auto domain = makeOctagonDomain();
     Z3SoundnessChecker checker(environment);
 
-    AbstractState zero = manager->top(environment);
+    AbstractState zero = domain->top(environment);
     zero.assume(equalsConstant(x, Rational(0)));
     zero.assume(equalsConstant(y, Rational(0)));
-    AbstractState one = manager->top(environment);
+    AbstractState one = domain->top(environment);
     one.assume(equalsConstant(x, Rational(1)));
     one.assume(equalsConstant(y, Rational(1)));
 
@@ -229,25 +259,26 @@ void testLatticeAndZ3Soundness()
                 CheckResult::True,
             "octagon join must preserve the common x == y relation");
 
-    AbstractState xRange = manager->top(environment);
+    AbstractState xRange = domain->top(environment);
     xRange.assume(atLeast(x, Rational(0)));
     xRange.assume(atMost(x, Rational(2)));
-    AbstractState equality = manager->top(environment);
+    AbstractState equality = domain->top(environment);
     equality.assume(differenceEquals(x, y, Rational(0)));
     AbstractState met = xRange.met(equality);
     requireProof(checker.checkMeet(xRange, equality, met));
 
-    AbstractState current = manager->top(environment);
+    AbstractState current = domain->top(environment);
     current.assume(atLeast(x, Rational(0)));
     current.assume(atMost(x, Rational(1)));
-    AbstractState next = manager->top(environment);
+    AbstractState next = domain->top(environment);
     next.assume(atLeast(x, Rational(0)));
     next.assume(atMost(x, Rational(2)));
     AbstractState widened = current.widened(next);
     requireProof(checker.checkWidening(current, next, widened));
     require(widened.bound(x).lower().value() == Rational(0) &&
                 widened.bound(x).upper().isPlusInfinity(),
-            "widening must retain the stable lower bound and drop a growing upper bound");
+            "widening must retain the stable lower bound and drop a growing "
+            "upper bound");
 
     AbstractState thresholdWidened =
         current.widened(next, WideningPolicy{{Rational(10)}});
@@ -275,6 +306,7 @@ int main()
     {
         testExactNumericLayer();
         testEnvironment();
+        testPublicDomainArchitecture();
         testAssumeClosureAndAssignment();
         testStrictIntegerAndRealBounds();
         testEnvironmentChanges();

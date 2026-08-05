@@ -1,19 +1,17 @@
 # Build the backend-neutral relational library as a separate target.  None of
 # these sources includes SVF IR or LLVM headers.
 set(RELATIONAL_CORE_HEADERS
-    ${CMAKE_CURRENT_LIST_DIR}/include/AE/Core/RelationalDomain.h
+    ${CMAKE_CURRENT_LIST_DIR}/include/AE/Core/AbstractDomain.h
     ${CMAKE_CURRENT_LIST_DIR}/include/AE/Core/RelationalEnvironment.h
-    ${CMAKE_CURRENT_LIST_DIR}/include/AE/Core/RelationalExpression.h
-    ${CMAKE_CURRENT_LIST_DIR}/include/AE/Core/RelationalNumeric.h
-)
-set(RELATIONAL_CORE_PRIVATE_HEADERS
+    ${CMAKE_CURRENT_LIST_DIR}/include/AE/Core/LinearConstraint.h
     ${CMAKE_CURRENT_LIST_DIR}/include/AE/Core/OctagonDomain.h
+    ${CMAKE_CURRENT_LIST_DIR}/include/AE/Core/RelationalNumeric.h
 )
 set(RELATIONAL_CORE_SOURCES
     ${CMAKE_CURRENT_LIST_DIR}/lib/AE/Core/OctagonDomain.cpp
-    ${CMAKE_CURRENT_LIST_DIR}/lib/AE/Core/RelationalDomain.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/lib/AE/Core/AbstractDomain.cpp
     ${CMAKE_CURRENT_LIST_DIR}/lib/AE/Core/RelationalEnvironment.cpp
-    ${CMAKE_CURRENT_LIST_DIR}/lib/AE/Core/RelationalExpression.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/lib/AE/Core/LinearConstraint.cpp
     ${CMAKE_CURRENT_LIST_DIR}/lib/AE/Core/RelationalNumeric.cpp
 )
 set(RELATIONAL_BRIDGE_HEADERS
@@ -33,7 +31,7 @@ if(SVF_BUILD_RELATIONAL_DOMAIN)
     PUBLIC FILE_SET HEADERS
                     BASE_DIRS ${CMAKE_CURRENT_LIST_DIR}/include
                     FILES ${RELATIONAL_CORE_HEADERS}
-    PRIVATE ${RELATIONAL_CORE_PRIVATE_HEADERS} ${RELATIONAL_CORE_SOURCES}
+    PRIVATE ${RELATIONAL_CORE_SOURCES}
   )
   target_include_directories(
     RelationalDomainCore PUBLIC
@@ -67,8 +65,7 @@ target_link_libraries(SvfCore PUBLIC SvfFlags)
 file(GLOB_RECURSE SVF_CORE_HEADERS ${CMAKE_CURRENT_LIST_DIR}/include/*.h)
 file(GLOB_RECURSE SVF_CORE_SOURCES ${CMAKE_CURRENT_LIST_DIR}/lib/*.cpp)
 list(FILTER SVF_CORE_SOURCES EXCLUDE REGEX "/lib/AE/Test/")
-list(REMOVE_ITEM SVF_CORE_HEADERS ${RELATIONAL_CORE_HEADERS}
-                                  ${RELATIONAL_CORE_PRIVATE_HEADERS})
+list(REMOVE_ITEM SVF_CORE_HEADERS ${RELATIONAL_CORE_HEADERS})
 list(REMOVE_ITEM SVF_CORE_SOURCES ${RELATIONAL_CORE_SOURCES})
 if(SVF_BUILD_RELATIONAL_DOMAIN)
   target_link_libraries(SvfCore PUBLIC RelationalDomainCore)

@@ -4,7 +4,7 @@
 #define SVF_RELATIONAL_BRIDGE_H
 
 #include "AE/Core/IntervalValue.h"
-#include "AE/Core/RelationalDomain.h"
+#include "AE/Core/OctagonDomain.h"
 #include "Util/GeneralType.h"
 
 #include <string>
@@ -32,8 +32,8 @@ public:
 
     explicit SVFRelationalBridge(
         std::vector<TrackedRelationalVariable> variables,
-        std::shared_ptr<relational::Manager> manager =
-            relational::makeOctagonManager());
+        std::shared_ptr<relational::AbstractDomain> domain =
+            relational::makeOctagonDomain());
 
     bool tracks(NodeID id) const;
     relational::Variable variable(NodeID id) const;
@@ -61,17 +61,23 @@ public:
     bool includedIn(const SVFRelationalBridge& other) const;
 
     relational::Interval bound(NodeID id) const;
-    const relational::AbstractState& state() const { return state_; }
-    relational::AbstractState& state() { return state_; }
+    const relational::AbstractState& state() const
+    {
+        return state_;
+    }
+    relational::AbstractState& state()
+    {
+        return state_;
+    }
 
 private:
-    relational::LinearExpression
-    expression(const std::vector<AffineTerm>& terms,
-               relational::Rational constant) const;
+    relational::LinearExpression expression(
+        const std::vector<AffineTerm>& terms,
+        relational::Rational constant) const;
     void requireCompatible(const SVFRelationalBridge& other) const;
     void constrainInterval(NodeID target, const IntervalValue& interval);
 
-    std::shared_ptr<relational::Manager> manager_;
+    std::shared_ptr<relational::AbstractDomain> domain_;
     relational::Environment environment_;
     relational::AbstractState state_;
 };
