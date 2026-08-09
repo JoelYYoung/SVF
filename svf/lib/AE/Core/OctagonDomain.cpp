@@ -8,7 +8,7 @@
 #include <stdexcept>
 #include <utility>
 
-using namespace SVF;
+using namespace SVF::AbstractDomain;
 
 namespace
 {
@@ -35,7 +35,7 @@ public:
     {
     };
 
-    explicit OctagonStorage(const Environment& environment, bool bottom = false)
+    explicit OctagonStorage(const VariableEnvironment& environment, bool bottom = false)
         : OctagonStorage(extractVariableKinds(environment), bottom)
     {
     }
@@ -108,7 +108,7 @@ private:
     }
 
     static std::vector<NumericKind> extractVariableKinds(
-        const Environment& environment)
+        const VariableEnvironment& environment)
     {
         std::vector<NumericKind> result;
         result.reserve(environment.size());
@@ -157,10 +157,10 @@ Bound tightenIntegerUnary(const Bound& bound)
 
 } // namespace
 
-class SVF::OctagonState::Impl final
+class SVF::AbstractDomain::OctagonState::Impl final
 {
 public:
-    Impl(const Environment& environment, OctagonConfig options, bool bottom)
+    Impl(const VariableEnvironment& environment, OctagonConfig options, bool bottom)
         : options_(std::move(options)), state_(environment, bottom)
     {
     }
@@ -183,11 +183,11 @@ public:
                 /*integerTightening=*/options_.integerTightening,
                 /*thresholdWidening=*/true,
                 /*narrowing=*/true,
-                /*treeExpressions=*/false};
+                /*nonlinearTreeExpressions=*/false};
     }
 
     ApproximationKind assign(OctagonStorage& genericState,
-                             const Environment& environment, Variable target,
+                             const VariableEnvironment& environment, Variable target,
                              const LinearExpression& expression) const
     {
         OctagonStorage& state = asOctagon(genericState);
@@ -250,7 +250,7 @@ public:
     }
 
     ApproximationKind assume(OctagonStorage& genericState,
-                             const Environment& environment,
+                             const VariableEnvironment& environment,
                              const LinearConstraint& constraint) const
     {
         OctagonStorage& state = asOctagon(genericState);
@@ -270,7 +270,7 @@ public:
                          : ApproximationKind::UnsupportedFallback;
     }
 
-    void forget(OctagonStorage& genericState, const Environment& environment,
+    void forget(OctagonStorage& genericState, const VariableEnvironment& environment,
                 Variable variable) const
     {
         if (!environment.contains(variable))
@@ -457,8 +457,8 @@ public:
     }
 
     std::unique_ptr<OctagonStorage> changeEnvironment(
-        const OctagonStorage& genericState, const Environment& oldEnvironment,
-        const Environment& newEnvironment, bool projectNewVariables) const
+        const OctagonStorage& genericState, const VariableEnvironment& oldEnvironment,
+        const VariableEnvironment& newEnvironment, bool initializeNewVariablesToZero) const
     {
         std::optional<OctagonStorage> sourceStorage;
         const OctagonStorage& source =
@@ -513,7 +513,7 @@ public:
             }
         }
 
-        if (projectNewVariables)
+        if (initializeNewVariablesToZero)
         {
             for (Dimension dimension = 0; dimension < newEnvironment.size();
                  ++dimension)
@@ -580,7 +580,7 @@ public:
     }
 
     Interval bound(const OctagonStorage& genericState,
-                   const Environment& environment, Variable variable) const
+                   const VariableEnvironment& environment, Variable variable) const
     {
         if (!environment.contains(variable))
             throw std::invalid_argument(
@@ -610,7 +610,7 @@ public:
     }
 
     LinearConstraintSet constraints(const OctagonStorage& genericState,
-                                    const Environment& environment) const
+                                    const VariableEnvironment& environment) const
     {
         std::optional<OctagonStorage> storage;
         const OctagonStorage& state =
@@ -648,7 +648,7 @@ public:
     }
 
     std::string toString(const OctagonStorage& genericState,
-                         const Environment& environment) const
+                         const VariableEnvironment& environment) const
     {
         if (isBottom(genericState))
             return "bottom";
@@ -683,20 +683,20 @@ public:
         }
     }
 
-    ApproximationKind assignCurrent(const Environment& environment,
+    ApproximationKind assignCurrent(const VariableEnvironment& environment,
                                     Variable target,
                                     const LinearExpression& expression)
     {
         return assign(state_, environment, target, expression);
     }
 
-    ApproximationKind assumeCurrent(const Environment& environment,
+    ApproximationKind assumeCurrent(const VariableEnvironment& environment,
                                     const LinearConstraint& constraint)
     {
         return assume(state_, environment, constraint);
     }
 
-    void forgetCurrent(const Environment& environment, Variable variable)
+    void forgetCurrent(const VariableEnvironment& environment, Variable variable)
     {
         forget(state_, environment, variable);
     }
@@ -751,28 +751,28 @@ public:
         state_ = std::move(*projectLowerBounds(state_));
     }
 
-    std::unique_ptr<Impl> lowerBoundsProjection() const
+    std::unique_ptr<Impl> projectedLowerBounds() const
     {
         return std::make_unique<Impl>(
             options_, std::move(*projectLowerBounds(state_)));
     }
 
-    void changeEnvironmentCurrent(const Environment& oldEnvironment,
-                                  const Environment& newEnvironment,
-                                  bool projectNewVariables)
+    void changeEnvironmentCurrent(const VariableEnvironment& oldEnvironment,
+                                  const VariableEnvironment& newEnvironment,
+                                  bool initializeNewVariablesToZero)
     {
         state_ = std::move(*changeEnvironment(
-            state_, oldEnvironment, newEnvironment, projectNewVariables));
+            state_, oldEnvironment, newEnvironment, initializeNewVariablesToZero));
     }
 
     std::unique_ptr<Impl> changedEnvironment(
-        const Environment& oldEnvironment, const Environment& newEnvironment,
-        bool projectNewVariables) const
+        const VariableEnvironment& oldEnvironment, const VariableEnvironment& newEnvironment,
+        bool initializeNewVariablesToZero) const
     {
         return std::make_unique<Impl>(
             options_, std::move(*changeEnvironment(
                           state_, oldEnvironment, newEnvironment,
-                          projectNewVariables)));
+                          initializeNewVariablesToZero)));
     }
 
     bool isBottomCurrent() const
@@ -790,19 +790,19 @@ public:
         return leq(state_, other.state_);
     }
 
-    Interval boundCurrent(const Environment& environment,
+    Interval boundCurrent(const VariableEnvironment& environment,
                           Variable variable) const
     {
         return bound(state_, environment, variable);
     }
 
     LinearConstraintSet constraintsCurrent(
-        const Environment& environment) const
+        const VariableEnvironment& environment) const
     {
         return constraints(state_, environment);
     }
 
-    std::string toStringCurrent(const Environment& environment) const
+    std::string toStringCurrent(const VariableEnvironment& environment) const
     {
         return toString(state_, environment);
     }
@@ -815,7 +815,7 @@ private:
             throw std::invalid_argument("octagon state shapes do not match");
     }
 
-    void requireVariables(const Environment& environment,
+    void requireVariables(const VariableEnvironment& environment,
                           const LinearExpression& expression) const
     {
         for (const auto& [variable, coefficient] : expression.terms())
@@ -859,7 +859,7 @@ private:
         state.stronglyClosed = true;
     }
 
-    bool addConstraint(OctagonStorage& state, const Environment& environment,
+    bool addConstraint(OctagonStorage& state, const VariableEnvironment& environment,
                        const LinearConstraint& constraint) const
     {
         if (state.bottom)
@@ -902,7 +902,7 @@ private:
         return true;
     }
 
-    bool addLessEqual(OctagonStorage& state, const Environment& environment,
+    bool addLessEqual(OctagonStorage& state, const VariableEnvironment& environment,
                       const LinearExpression& expression, bool strict) const
     {
         const auto& terms = expression.terms();
@@ -960,7 +960,7 @@ private:
         return false;
     }
 
-    void selfAssign(OctagonStorage& state, const Environment& environment,
+    void selfAssign(OctagonStorage& state, const VariableEnvironment& environment,
                     Dimension target, int sign, const Rational& constant) const
     {
         normalize(state, environment);
@@ -1107,7 +1107,7 @@ private:
         state.stronglyClosed = true;
     }
 
-    void normalize(OctagonStorage& state, const Environment& environment) const
+    void normalize(OctagonStorage& state, const VariableEnvironment& environment) const
     {
         (void)environment;
         normalize(state);
@@ -1125,7 +1125,7 @@ private:
     }
 
     void addNodeTerm(LinearExpression& expression,
-                     const Environment& environment, std::size_t node,
+                     const VariableEnvironment& environment, std::size_t node,
                      const Rational& multiplier) const
     {
         const Dimension dimension = node / 2;
@@ -1139,35 +1139,35 @@ private:
     OctagonStorage state_;
 };
 
-namespace SVF
+namespace SVF::AbstractDomain
 {
 
-OctagonState::OctagonState(Environment environment, OctagonConfig config,
+OctagonState::OctagonState(VariableEnvironment environment, OctagonConfig config,
                            bool bottom)
     : environment_(std::move(environment)),
       impl_(std::make_unique<Impl>(environment_, std::move(config), bottom))
 {
 }
 
-OctagonState::OctagonState(Environment environment, std::unique_ptr<Impl> impl)
+OctagonState::OctagonState(VariableEnvironment environment, std::unique_ptr<Impl> impl)
     : environment_(std::move(environment)), impl_(std::move(impl))
 {
 }
 
-OctagonState OctagonState::top(const Environment& environment,
+OctagonState OctagonState::top(const VariableEnvironment& environment,
                                const OctagonConfig& config)
 {
     return OctagonState(environment, config, false);
 }
 
-OctagonState OctagonState::bottom(const Environment& environment,
+OctagonState OctagonState::bottom(const VariableEnvironment& environment,
                                   const OctagonConfig& config)
 {
     return OctagonState(environment, config, true);
 }
 
-OctagonState OctagonState::fromBox(const Environment& environment,
-                                   const Box& box,
+OctagonState OctagonState::fromBox(const VariableEnvironment& environment,
+                                   const IntervalBox& box,
                                    const OctagonConfig& config)
 {
     OctagonState state = top(environment, config);
@@ -1200,7 +1200,7 @@ OctagonState OctagonState::fromBox(const Environment& environment,
 }
 
 OctagonState OctagonState::fromConstraints(
-    const Environment& environment,
+    const VariableEnvironment& environment,
     const LinearConstraintSet& constraints,
     const OctagonConfig& config)
 {
@@ -1211,7 +1211,7 @@ OctagonState OctagonState::fromConstraints(
 }
 
 OctagonState::OctagonState(const OctagonState& other)
-    : AbstractState(other), environment_(other.environment_),
+    : NumericalState(other), environment_(other.environment_),
       impl_(std::make_unique<Impl>(*other.impl_))
 {
 }
@@ -1222,7 +1222,7 @@ OctagonState& OctagonState::operator=(const OctagonState& other)
 {
     if (this == &other)
         return *this;
-    AbstractState::operator=(other);
+    NumericalState::operator=(other);
     environment_ = other.environment_;
     impl_ = std::make_unique<Impl>(*other.impl_);
     return *this;
@@ -1252,8 +1252,7 @@ void OctagonState::report(OperationKind operation,
                           std::string reason) const
 {
     DiagnosticSink* sink = diagnosticSink();
-    if (sink && approximation != ApproximationKind::Exact &&
-        approximation != ApproximationKind::BestAbstraction)
+    if (sink && approximation != ApproximationKind::Exact)
         sink->report({operation, approximation, std::move(reason)});
 }
 
@@ -1314,11 +1313,11 @@ void OctagonState::projectLowerBounds()
     projectLowerBoundsState();
 }
 
-void OctagonState::changeEnvironment(const Environment& environment,
-                                     bool projectNewVariables)
+void OctagonState::changeEnvironment(const VariableEnvironment& environment,
+                                     bool initializeNewVariablesToZero)
 {
-    const Environment oldEnvironment = environment_;
-    changeEnvironmentState(oldEnvironment, environment, projectNewVariables);
+    const VariableEnvironment oldEnvironment = environment_;
+    changeEnvironmentState(oldEnvironment, environment, initializeNewVariablesToZero);
     environment_ = environment;
 }
 
@@ -1375,9 +1374,9 @@ Interval OctagonState::bound(Variable variable) const
     return boundState(variable);
 }
 
-Box OctagonState::toBox() const
+IntervalBox OctagonState::toBox() const
 {
-    Box box;
+    IntervalBox box;
     for (const VariableDeclaration& declaration : environment_.variables())
         box.bounds.emplace(declaration.variable, bound(declaration.variable));
     return box;
@@ -1400,26 +1399,26 @@ OctagonState OctagonState::reconfigured(const OctagonConfig& config) const
     return result;
 }
 
-OctagonState OctagonState::joinedOctagon(const OctagonState& other) const
+OctagonState OctagonState::join(const OctagonState& other) const
 {
     requireCompatible(other);
     return OctagonState(environment(), impl_->joined(*other.impl_));
 }
 
-OctagonState OctagonState::metOctagon(const OctagonState& other) const
+OctagonState OctagonState::meet(const OctagonState& other) const
 {
     requireCompatible(other);
     return OctagonState(environment(), impl_->met(*other.impl_));
 }
 
-OctagonState OctagonState::widenedOctagon(
+OctagonState OctagonState::widen(
     const OctagonState& next, const WideningPolicy& policy) const
 {
     requireCompatible(next);
     return OctagonState(environment(), impl_->widened(*next.impl_, policy));
 }
 
-OctagonState OctagonState::narrowedOctagon(const OctagonState& next) const
+OctagonState OctagonState::narrow(const OctagonState& next) const
 {
     requireCompatible(next);
     if (!next.leqState(*this))
@@ -1428,18 +1427,18 @@ OctagonState OctagonState::narrowedOctagon(const OctagonState& next) const
     return OctagonState(environment(), impl_->narrowed(*next.impl_));
 }
 
-OctagonState OctagonState::lowerBoundsProjection() const
+OctagonState OctagonState::projectedLowerBounds() const
 {
-    return OctagonState(environment(), impl_->lowerBoundsProjection());
+    return OctagonState(environment(), impl_->projectedLowerBounds());
 }
 
-OctagonState OctagonState::changedEnvironmentOctagon(
-    const Environment& environment, bool projectNewVariables) const
+OctagonState OctagonState::withEnvironment(
+    const VariableEnvironment& environment, bool initializeNewVariablesToZero) const
 {
     return OctagonState(
         environment,
         impl_->changedEnvironment(this->environment(), environment,
-                                  projectNewVariables));
+                                  initializeNewVariablesToZero));
 }
 
 DiagnosticSink* OctagonState::diagnosticSink() const
@@ -1506,11 +1505,11 @@ void OctagonState::projectLowerBoundsState()
 }
 
 void OctagonState::changeEnvironmentState(
-    const Environment& oldEnvironment, const Environment& newEnvironment,
-    bool projectNewVariables)
+    const VariableEnvironment& oldEnvironment, const VariableEnvironment& newEnvironment,
+    bool initializeNewVariablesToZero)
 {
     impl_->changeEnvironmentCurrent(oldEnvironment, newEnvironment,
-                                    projectNewVariables);
+                                    initializeNewVariablesToZero);
 }
 
 bool OctagonState::isBottomState() const
@@ -1543,4 +1542,4 @@ std::string OctagonState::stateToString() const
     return impl_->toStringCurrent(environment());
 }
 
-} // namespace SVF
+} // namespace SVF::AbstractDomain

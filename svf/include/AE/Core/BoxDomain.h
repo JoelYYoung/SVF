@@ -1,0 +1,103 @@
+//===- BoxDomain.h -- Exact-rational interval box state --------*- C++ -*-===//
+
+#ifndef SVF_AE_BOX_DOMAIN_H
+#define SVF_AE_BOX_DOMAIN_H
+
+#include "AE/Core/AbstractState.h"
+#include "AE/Core/NumericalDomain.h"
+
+#include <memory>
+#include <vector>
+
+namespace SVF::AbstractDomain
+{
+
+struct BoxConfig
+{
+    bool integerTightening = true;
+    std::shared_ptr<DiagnosticSink> diagnostics;
+
+    bool operationCompatible(const BoxConfig& other) const
+    {
+        return integerTightening == other.integerTightening;
+    }
+};
+
+/// Non-relational numerical state with one exact-rational interval per
+/// environment dimension.
+class BoxState final : public NumericalState
+{
+public:
+    static BoxState top(const VariableEnvironment& environment,
+                        const BoxConfig& config = {});
+    static BoxState bottom(const VariableEnvironment& environment,
+                           const BoxConfig& config = {});
+    static BoxState fromBox(const VariableEnvironment& environment,
+                            const IntervalBox& box,
+                            const BoxConfig& config = {});
+    static BoxState fromConstraints(
+        const VariableEnvironment& environment,
+        const LinearConstraintSet& constraints,
+        const BoxConfig& config = {});
+
+    std::unique_ptr<AbstractState> clone() const override;
+    const char* name() const override;
+    DomainCapabilities capabilities() const override;
+
+    const VariableEnvironment& environment() const override
+    {
+        return environment_;
+    }
+    const BoxConfig& config() const
+    {
+        return config_;
+    }
+
+    void assign(Variable target,
+                const LinearExpression& expression) override;
+    void assign(Variable target, const TreeExpression& expression) override;
+    void assume(const LinearConstraint& constraint) override;
+    void assume(const TreeConstraint& constraint) override;
+    void forget(Variable variable) override;
+    void changeEnvironment(const VariableEnvironment& environment,
+                           bool initializeNewVariablesToZero = false) override;
+
+    CheckResult entails(const LinearConstraint& constraint) const override;
+    Interval bound(Variable variable) const override;
+    IntervalBox toBox() const override;
+    LinearConstraintSet toConstraints() const override;
+
+    BoxState join(const BoxState& other) const;
+    BoxState meet(const BoxState& other) const;
+    BoxState widen(const BoxState& next,
+                        const WideningPolicy& policy = {}) const;
+    BoxState narrow(const BoxState& next) const;
+
+private:
+    BoxState(VariableEnvironment environment, BoxConfig config, bool bottom);
+
+    bool hasCompatibleDomain(const AbstractState& other) const override;
+    void joinState(const AbstractState& other) override;
+    void meetState(const AbstractState& other) override;
+    void widenState(const AbstractState& next) override;
+    void narrowState(const AbstractState& next) override;
+    bool isBottomState() const override;
+    bool isTopState() const override;
+    bool leqState(const AbstractState& other) const override;
+    std::string stateToString() const override;
+
+    const BoxState& requireBox(const AbstractState& other) const;
+    void canonicalize(Dimension dimension);
+    void setBound(Dimension dimension, Interval interval);
+    void report(OperationKind operation, ApproximationKind approximation,
+                std::string reason) const;
+
+    VariableEnvironment environment_;
+    BoxConfig config_;
+    std::vector<Interval> bounds_;
+    bool bottom_ = false;
+};
+
+} // namespace SVF::AbstractDomain
+
+#endif // SVF_AE_BOX_DOMAIN_H

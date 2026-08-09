@@ -31,9 +31,6 @@
 #pragma once
 #include "AE/Core/IntervalState.h"
 #include "AE/Core/ICFGWTO.h"
-#ifdef SVF_BUILD_RELATIONAL_DOMAIN
-#include "AE/Core/SVFRelationalBridge.h"
-#endif
 #include "AE/Svfexe/AEDetector.h"
 #include "AE/Svfexe/AEWTO.h"
 #include "AE/Svfexe/AbsExtAPI.h"
@@ -51,7 +48,6 @@ class AbsExtAPI;
 class AEStat;
 class AEAPI;
 class AndersenWaveDiff;
-class SVFRelationalBridge;
 
 template<typename T> class FILOWorkList;
 
@@ -160,7 +156,15 @@ public:
 
     // ---- State Access -------------------------------------------------
 
-    IntervalState& getAbsState(const ICFGNode* node);
+    /// Mutable compatibility view for legacy AE helpers. Dense control-flow
+    /// operations do not use this object as their authoritative state.
+    IntervalState& getIntervalStateView(const ICFGNode* node);
+
+    /// Return the authoritative complete state used for control-flow joins
+    /// and fixpoint computation. Dense mode returns a DomainProductState;
+    /// sparse modes return their legacy IntervalState.
+    virtual const AbstractDomain::AbstractState&
+    getAbstractState(const ICFGNode* node) const;
 
     /// Replace the state at `node`.  Sparse subclasses replace only the
     /// ObjVar map (ValVars live at def-sites).
@@ -171,14 +175,6 @@ public:
     virtual void joinStates(IntervalState& dst, const IntervalState& src);
 
     bool hasAbsState(const ICFGNode* node);
-
-    /// Optional relational component owned by the program-point state.
-    bool hasRelationalState(const ICFGNode* node) const;
-    const SVFRelationalBridge* getRelationalState(const ICFGNode* node) const;
-
-    void getAbsState(const Set<const ValVar*>& vars, IntervalState& result, const ICFGNode* node);
-    void getAbsState(const Set<const ObjVar*>& vars, IntervalState& result, const ICFGNode* node);
-    void getAbsState(const Set<const SVFVar*>& vars, IntervalState& result, const ICFGNode* node);
 
     // ---- GEP / Load-Store / Type Helpers ------------------------------
 
@@ -197,13 +193,11 @@ public:
 
     // ---- Direct Trace Access ------------------------------------------
 
-    Map<const ICFGNode*, IntervalState>& getTrace()
+    /// Compatibility projection used by legacy detectors and tests. It is
+    /// not the authoritative dense-domain trace.
+    const Map<const ICFGNode*, IntervalState>& getIntervalTraceView() const
     {
         return abstractTrace;
-    }
-    IntervalState& operator[](const ICFGNode* node)
-    {
-        return abstractTrace[node];
     }
 
 protected:
@@ -215,23 +209,39 @@ protected:
     // The dense versions write only to trace[cycle_head].  The semi-sparse
     // subclass adds def-site scatter on top for body ValVars.
 
-    /// Build a full cycle-head IntervalState.  Dense default: trace[cycle_head]
-    /// as-is.  Semi-sparse subclass: also pull cycle ValVars from def-sites.
-    virtual IntervalState getFullCycleHeadState(const ICFGCycleWTO* cycle);
+    /// Clone the complete cycle-head state. Sparse subclasses may first gather
+    /// values held at def-sites; dense implementations clone their domain
+    /// state directly.
+    virtual std::unique_ptr<AbstractDomain::AbstractState>
+    cloneCycleHeadState(const ICFGCycleWTO* cycle);
 
     /// Widen prev with cur; write the widened state to trace[cycle_head].
     /// Returns true when next == prev (fixpoint).  Semi-sparse subclass
     /// additionally scatters ValVars to their def-sites.
-    virtual bool widenCycleState(const IntervalState& prev, const IntervalState& cur,
+    virtual bool widenCycleState(const AbstractDomain::AbstractState& prev,
+                                 const AbstractDomain::AbstractState& cur,
                                  const ICFGCycleWTO* cycle);
 
     /// Narrow prev with cur; write the narrowed state back.  Returns true
     /// when narrowing is disabled or the narrowed state equals prev.
     /// Semi-sparse subclass scatters the narrowed ValVars on non-fixpoint.
-    virtual bool narrowCycleState(const IntervalState& prev, const IntervalState& cur,
+    virtual bool narrowCycleState(const AbstractDomain::AbstractState& prev,
+                                  const AbstractDomain::AbstractState& cur,
                                   const ICFGCycleWTO* cycle);
 
 protected:
+    /// Representation-independent state lifecycle used by the shared WTO and
+    /// call/return drivers. Dense and sparse analyses provide different
+    /// storage implementations behind this small surface.
+    virtual void resetAbstractState(const ICFGNode* node);
+    virtual void copyAbstractState(const ICFGNode* source,
+                                   const ICFGNode* destination);
+    virtual std::unique_ptr<AbstractDomain::AbstractState>
+    cloneAbstractState(const ICFGNode* node) const;
+    virtual bool isAbstractStateEquivalent(
+        const ICFGNode* node,
+        const AbstractDomain::AbstractState& snapshot) const;
+
     /// Pull-based state merge: read abstractTrace[pred] for each predecessor,
     /// apply branch refinement for conditional IntraCFGEdges, and join into
     /// abstractTrace[node]. Returns true if at least one predecessor had state.
@@ -259,7 +269,7 @@ protected:
                                         const ICFGNode* loadIcfg,
                                         const ICFGNode* succ);
 
-private:
+protected:
     /// Initialize abstract state for the global ICFG node and process global
     /// statements
     virtual void handleGlobalNode();
@@ -348,46 +358,20 @@ protected:
 
     bool shouldApplyNarrowing(const FunObjVar* fun);
 
-    // ---- Relational component of the unified program state -----------
-    void initializeRelationalEnvironments();
-#ifdef SVF_BUILD_RELATIONAL_DOMAIN
-    const std::vector<TrackedRelationalVariable>&
-    trackedRelationalVariables(const ICFGNode* node) const;
-#endif
-    void initializeRelationalState(const ICFGNode* node);
-    void adaptRelationalState(const ICFGNode* node,
-                              IntervalState& state) const;
-    bool isRelationalStateBottom(const ICFGNode* node) const;
-    bool isRelationalBranchFeasible(const IntraCFGEdge* edge);
-#ifdef SVF_BUILD_RELATIONAL_DOMAIN
-    void assumeRelationalBranch(const IntraCFGEdge* edge,
-                                SVFRelationalBridge& state);
-#endif
-    void assignRelationalInterval(const ICFGNode* node, const SVFVar* target,
-                                  const IntervalValue& interval);
-    void synchronizeRelationalWithIntervals(const ICFGNode* node);
-    void reduceRelationalInterval(const ICFGNode* node,
-                                  const SVFVar* variable);
-    void reduceRelationalIntervals(const ICFGNode* node);
-#ifdef SVF_BUILD_RELATIONAL_DOMAIN
-    bool appendRelationalOperand(
-        const ICFGNode* node, const SVFVar* operand,
-        const SVF::Rational& multiplier,
-        SVFRelationalBridge& state,
-        std::vector<SVFRelationalBridge::AffineTerm>& terms,
-        SVF::Rational& constant);
-#endif
-    void updateRelationalOnBinary(const BinaryOPStmt* binary,
-                                  const IntervalValue& result);
-    void updateRelationalOnCopy(const CopyStmt* copy);
-    void updateRelationalCopyValue(const ICFGNode* node,
-                                   const SVFVar* target,
-                                   const SVFVar* source,
-                                   bool exactMathematicalCopy);
-#ifdef SVF_BUILD_RELATIONAL_DOMAIN
-    Map<const FunObjVar*, std::vector<TrackedRelationalVariable>>
-        relationalVariablesByFunction;
-    std::vector<TrackedRelationalVariable> globalRelationalVariables;
-#endif
+    // ---- Domain-specific precision hooks -----------------------------
+    // Sparse modes use the no-op base implementations. Dense mode updates
+    // its selected numerical domain through these hooks after legacy
+    // transfer code computes the compatibility AbstractValue.
+    virtual void initializeDomainState(const ICFGNode* node);
+    virtual void assignDomainInterval(
+        const ICFGNode* node, const SVFVar* target,
+        const IntervalValue& interval);
+    virtual void updateDomainOnBinary(const BinaryOPStmt* binary,
+                                      const IntervalValue& result);
+    virtual void updateDomainOnCopy(const CopyStmt* copy);
+    virtual void updateDomainCopyValue(
+        const ICFGNode* node, const SVFVar* target, const SVFVar* source,
+        bool exactMathematicalCopy);
+    virtual void synchronizeDomainFromIntervalView(const ICFGNode* node);
 };
 } // namespace SVF

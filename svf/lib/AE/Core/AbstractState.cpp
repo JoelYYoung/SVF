@@ -4,9 +4,9 @@
 
 #include <stdexcept>
 
-using namespace SVF;
+using namespace SVF::AbstractDomain;
 
-const char* SVF::toString(CheckResult result)
+const char* SVF::AbstractDomain::toString(CheckResult result)
 {
     switch (result)
     {
@@ -27,38 +27,6 @@ void AbstractState::requireCompatible(const AbstractState& other) const
     if (!hasCompatibleDomain(other))
         throw std::invalid_argument(
             "abstract states use different domains or configurations");
-}
-
-std::unique_ptr<AbstractState>
-AbstractState::joined(const AbstractState& other) const
-{
-    std::unique_ptr<AbstractState> result = clone();
-    result->joinWith(other);
-    return result;
-}
-
-std::unique_ptr<AbstractState>
-AbstractState::met(const AbstractState& other) const
-{
-    std::unique_ptr<AbstractState> result = clone();
-    result->meetWith(other);
-    return result;
-}
-
-std::unique_ptr<AbstractState> AbstractState::widened(
-    const AbstractState& next) const
-{
-    std::unique_ptr<AbstractState> result = clone();
-    result->widenWith(next);
-    return result;
-}
-
-std::unique_ptr<AbstractState>
-AbstractState::narrowed(const AbstractState& next) const
-{
-    std::unique_ptr<AbstractState> result = clone();
-    result->narrowWith(next);
-    return result;
 }
 
 void AbstractState::joinWith(const AbstractState& other)
@@ -98,13 +66,13 @@ bool AbstractState::isTop() const
     return isTopState();
 }
 
-CheckResult AbstractState::leq(const AbstractState& other) const
+CheckResult AbstractState::isSubsetOf(const AbstractState& other) const
 {
     requireCompatible(other);
     return leqState(other) ? CheckResult::True : CheckResult::False;
 }
 
-CheckResult AbstractState::equals(const AbstractState& other) const
+CheckResult AbstractState::isEquivalentTo(const AbstractState& other) const
 {
     requireCompatible(other);
     return leqState(other) && other.leqState(*this) ? CheckResult::True

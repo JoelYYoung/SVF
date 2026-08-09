@@ -1,11 +1,11 @@
-//===- RelationalNumeric.cpp -- Exact relational-domain numbers ---------===//
+//===- NumericPrimitives.cpp -- Exact abstract-domain numbers -----------===//
 
-#include "AE/Core/RelationalNumeric.h"
+#include "AE/Core/NumericPrimitives.h"
 
 #include <stdexcept>
 #include <utility>
 
-using namespace SVF;
+using namespace SVF::AbstractDomain;
 
 Integer::Integer() : value_(0) {}
 

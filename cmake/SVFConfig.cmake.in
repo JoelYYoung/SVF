@@ -26,7 +26,7 @@ set(SVF_EXPORT_DYNAMIC @SVF_EXPORT_DYNAMIC@)
 set(SVF_ENABLE_ASSERTIONS @SVF_ENABLE_ASSERTIONS@)
 set(SVF_ENABLE_EXCEPTIONS @SVF_ENABLE_EXCEPTIONS@)
 set(SVF_ENABLE_RTTI @SVF_ENABLE_RTTI@)
-set(SVF_BUILD_RELATIONAL_DOMAIN @SVF_BUILD_RELATIONAL_DOMAIN@)
+set(SVF_BUILD_ABSTRACT_DOMAINS @SVF_BUILD_ABSTRACT_DOMAINS@)
 
 # Set the basic SVF paths based on the installed location (relocatable)
 set_and_check(SVF_INSTALL_ROOT "${PACKAGE_PREFIX_DIR}")
@@ -73,8 +73,8 @@ include(CMakeFindDependencyMacro)
 # Find Z3 (required)
 find_dependency(Z3 REQUIRED)
 
-# RelationalDomainCore uses exact GMP rationals and explicit MPFR rounding.
-if(SVF_BUILD_RELATIONAL_DOMAIN)
+# AbstractDomainCore uses exact GMP rationals and explicit MPFR rounding.
+if(SVF_BUILD_ABSTRACT_DOMAINS)
     find_dependency(GMP REQUIRED)
     find_dependency(MPFR REQUIRED)
 endif()

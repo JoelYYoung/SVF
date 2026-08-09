@@ -1,6 +1,6 @@
 if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
   cmake_minimum_required(VERSION 3.23)
-  project(SVFRelationalDomainTests LANGUAGES CXX)
+  project(SVFAbstractDomainTests LANGUAGES CXX)
   include(CTest)
 
   get_filename_component(SVF_REPOSITORY_ROOT "${CMAKE_CURRENT_LIST_DIR}/../../../.." ABSOLUTE)
@@ -9,22 +9,25 @@ if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
   find_package(MPFR REQUIRED)
   find_package(Z3 REQUIRED)
 
-  set(RELATIONAL_STANDALONE_ROOT "${SVF_REPOSITORY_ROOT}/svf")
+  set(ABSTRACT_DOMAIN_SOURCE_ROOT "${SVF_REPOSITORY_ROOT}/svf")
   add_library(
-    RelationalDomainCore
-    ${RELATIONAL_STANDALONE_ROOT}/lib/AE/Core/OctagonDomain.cpp
-    ${RELATIONAL_STANDALONE_ROOT}/lib/AE/Core/AbstractState.cpp
-    ${RELATIONAL_STANDALONE_ROOT}/lib/AE/Core/RelationalEnvironment.cpp
-    ${RELATIONAL_STANDALONE_ROOT}/lib/AE/Core/LinearConstraint.cpp
-    ${RELATIONAL_STANDALONE_ROOT}/lib/AE/Core/RelationalNumeric.cpp
+    AbstractDomainCore
+    ${ABSTRACT_DOMAIN_SOURCE_ROOT}/lib/AE/Core/BoxDomain.cpp
+    ${ABSTRACT_DOMAIN_SOURCE_ROOT}/lib/AE/Core/NonRelationalDomain.cpp
+    ${ABSTRACT_DOMAIN_SOURCE_ROOT}/lib/AE/Core/ConvexPolyhedraDomain.cpp
+    ${ABSTRACT_DOMAIN_SOURCE_ROOT}/lib/AE/Core/OctagonDomain.cpp
+    ${ABSTRACT_DOMAIN_SOURCE_ROOT}/lib/AE/Core/AbstractState.cpp
+    ${ABSTRACT_DOMAIN_SOURCE_ROOT}/lib/AE/Core/VariableEnvironment.cpp
+    ${ABSTRACT_DOMAIN_SOURCE_ROOT}/lib/AE/Core/LinearConstraint.cpp
+    ${ABSTRACT_DOMAIN_SOURCE_ROOT}/lib/AE/Core/NumericPrimitives.cpp
   )
-  target_compile_features(RelationalDomainCore PUBLIC cxx_std_17)
+  target_compile_features(AbstractDomainCore PUBLIC cxx_std_17)
   target_include_directories(
-    RelationalDomainCore
-    PUBLIC ${RELATIONAL_STANDALONE_ROOT}/include
-    PRIVATE ${RELATIONAL_STANDALONE_ROOT}/lib/AE/Core
+    AbstractDomainCore
+    PUBLIC ${ABSTRACT_DOMAIN_SOURCE_ROOT}/include
+    PRIVATE ${ABSTRACT_DOMAIN_SOURCE_ROOT}/lib/AE/Core
   )
-  target_link_libraries(RelationalDomainCore PUBLIC GMP::GMPXX MPFR::MPFR)
+  target_link_libraries(AbstractDomainCore PUBLIC GMP::GMPXX MPFR::MPFR)
 endif()
 
 add_executable(
@@ -38,25 +41,24 @@ target_include_directories(
   svf-relational-domain-test PRIVATE ${CMAKE_CURRENT_LIST_DIR}
 )
 target_link_libraries(
-  svf-relational-domain-test PRIVATE RelationalDomainCore ${Z3_LIBRARIES}
+  svf-relational-domain-test PRIVATE AbstractDomainCore ${Z3_LIBRARIES}
 )
 
 add_test(NAME relational-domain-soundness COMMAND svf-relational-domain-test)
 
 add_executable(
-  svf-relational-bridge-test
-  SVFRelationalBridgeTest.cpp
+  svf-abstract-domain-state-test
+  AbstractDomainStateTest.cpp
   Z3SoundnessChecker.cpp
   Z3SoundnessChecker.h
-  ${CMAKE_CURRENT_LIST_DIR}/../Core/SVFRelationalBridge.cpp
 )
 target_include_directories(
-  svf-relational-bridge-test PRIVATE ${CMAKE_CURRENT_LIST_DIR}
+  svf-abstract-domain-state-test PRIVATE ${CMAKE_CURRENT_LIST_DIR}
 )
 target_link_libraries(
-  svf-relational-bridge-test PRIVATE RelationalDomainCore ${Z3_LIBRARIES}
+  svf-abstract-domain-state-test PRIVATE AbstractDomainCore ${Z3_LIBRARIES}
 )
-add_test(NAME relational-domain-svf-bridge COMMAND svf-relational-bridge-test)
+add_test(NAME abstract-domain-state COMMAND svf-abstract-domain-state-test)
 
 if(TARGET SvfCore)
   add_executable(
@@ -65,20 +67,6 @@ if(TARGET SvfCore)
   )
   target_link_libraries(svf-interval-state-test PRIVATE SvfCore)
   add_test(NAME interval-state COMMAND svf-interval-state-test)
-endif()
-
-if(TARGET SvfCore AND SVF_BUILD_RELATIONAL_DOMAIN)
-  add_executable(
-    svf-interval-state-relational-test
-    SVFIntervalStateRelationalTest.cpp
-  )
-  target_link_libraries(
-    svf-interval-state-relational-test PRIVATE SvfCore
-  )
-  add_test(
-    NAME relational-domain-interval-state
-    COMMAND svf-interval-state-relational-test
-  )
 endif()
 
 if(TARGET SvfLLVM)
@@ -93,7 +81,7 @@ if(TARGET SvfLLVM)
     add_test(
       NAME ${test_name}
       COMMAND svf-ae-relational-integration-test
-              -ae-relational=true
+              -ae-dense-octagon=true
               -ae-sparsity=${sparsity}
               -stat=false
               -extapi=${CMAKE_BINARY_DIR}/lib/extapi.bc
@@ -113,7 +101,7 @@ if(TARGET SvfLLVM)
     add_test(
       NAME ${test_name}
       COMMAND svf-ae-relational-integration-test
-              -ae-relational=true
+              -ae-dense-octagon=true
               -ae-sparsity=${sparsity}
               -widen-delay=1
               -stat=false
@@ -145,27 +133,25 @@ if(APPLE)
     Z3_TEST_LIBRARY_DIRECTORY "${Z3_TEST_LIBRARY}" DIRECTORY
   )
   set(
-    relational_test_targets
+    abstract_domain_test_targets
     svf-relational-domain-test
-    svf-relational-bridge-test
+    svf-abstract-domain-state-test
   )
-  if(TARGET svf-interval-state-relational-test)
-    list(APPEND relational_test_targets svf-interval-state-relational-test)
-  endif()
   if(TARGET svf-ae-relational-integration-test)
-    list(APPEND relational_test_targets svf-ae-relational-integration-test)
+    list(APPEND abstract_domain_test_targets
+         svf-ae-relational-integration-test)
   endif()
-  foreach(relational_test_target IN LISTS relational_test_targets)
+  foreach(abstract_domain_test_target IN LISTS abstract_domain_test_targets)
     set_property(
-      TARGET ${relational_test_target}
+      TARGET ${abstract_domain_test_target}
       APPEND
       PROPERTY BUILD_RPATH "${Z3_TEST_LIBRARY_DIRECTORY}"
     )
     add_custom_command(
-      TARGET ${relational_test_target}
+      TARGET ${abstract_domain_test_target}
       POST_BUILD
       COMMAND install_name_tool -change libz3.dylib @rpath/libz3.dylib
-              "$<TARGET_FILE:${relational_test_target}>"
+              "$<TARGET_FILE:${abstract_domain_test_target}>"
       VERBATIM
     )
   endforeach()

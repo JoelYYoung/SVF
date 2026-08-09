@@ -6,7 +6,7 @@
 #include <stdexcept>
 #include <utility>
 
-using namespace SVF;
+using namespace SVF::AbstractDomain;
 
 LinearExpression::LinearExpression() = default;
 
@@ -82,7 +82,7 @@ void LinearExpression::removeZeroTerms()
     }
 }
 
-std::string LinearExpression::toString(const Environment* environment) const
+std::string LinearExpression::toString(const VariableEnvironment* environment) const
 {
     std::ostringstream output;
     bool first = true;
@@ -219,7 +219,7 @@ LinearConstraint::LinearConstraint(LinearExpression expression,
 {
 }
 
-std::string LinearConstraint::toString(const Environment* environment) const
+std::string LinearConstraint::toString(const VariableEnvironment* environment) const
 {
     const char* relation = "?";
     switch (kind_)
@@ -251,37 +251,38 @@ TreeConstraint::TreeConstraint(TreeExpression expression, ConstraintKind kind)
 {
 }
 
-LinearConstraint SVF::equal(LinearExpression lhs, LinearExpression rhs)
+LinearConstraint SVF::AbstractDomain::equal(LinearExpression lhs,
+                                            LinearExpression rhs)
 {
     return LinearConstraint(std::move(lhs) - rhs, ConstraintKind::Equal);
 }
 
-LinearConstraint SVF::notEqual(LinearExpression lhs,
-                                      LinearExpression rhs)
+LinearConstraint SVF::AbstractDomain::notEqual(LinearExpression lhs,
+                                               LinearExpression rhs)
 {
     return LinearConstraint(std::move(lhs) - rhs, ConstraintKind::NotEqual);
 }
 
-LinearConstraint SVF::lessEqual(LinearExpression lhs,
-                                       LinearExpression rhs)
+LinearConstraint SVF::AbstractDomain::lessEqual(LinearExpression lhs,
+                                                LinearExpression rhs)
 {
     return LinearConstraint(std::move(lhs) - rhs, ConstraintKind::LessEqual);
 }
 
-LinearConstraint SVF::lessThan(LinearExpression lhs,
-                                      LinearExpression rhs)
+LinearConstraint SVF::AbstractDomain::lessThan(LinearExpression lhs,
+                                               LinearExpression rhs)
 {
     return LinearConstraint(std::move(lhs) - rhs, ConstraintKind::LessThan);
 }
 
-LinearConstraint SVF::greaterEqual(LinearExpression lhs,
-                                          LinearExpression rhs)
+LinearConstraint SVF::AbstractDomain::greaterEqual(LinearExpression lhs,
+                                                   LinearExpression rhs)
 {
     return LinearConstraint(std::move(lhs) - rhs, ConstraintKind::GreaterEqual);
 }
 
-LinearConstraint SVF::greaterThan(LinearExpression lhs,
-                                         LinearExpression rhs)
+LinearConstraint SVF::AbstractDomain::greaterThan(LinearExpression lhs,
+                                                  LinearExpression rhs)
 {
     return LinearConstraint(std::move(lhs) - rhs, ConstraintKind::GreaterThan);
 }

@@ -6,7 +6,7 @@
 #include <memory>
 #include <string>
 
-namespace SVF
+namespace SVF::AbstractDomain
 {
 
 enum class CheckResult
@@ -20,9 +20,8 @@ const char* toString(CheckResult result);
 
 /// Common value-level interface implemented by every complete abstract state.
 ///
-/// It deliberately contains only lattice operations.  Transfer languages are
-/// domain-specific: IntervalState is keyed by SVF variable/object ids, whereas
-/// OctagonState consumes Environment/LinearExpression/LinearConstraint.
+/// It deliberately contains only lattice operations. Transfer functions live
+/// on more specific state interfaces such as NumericalState.
 class AbstractState
 {
 public:
@@ -31,11 +30,6 @@ public:
     virtual std::unique_ptr<AbstractState> clone() const = 0;
     virtual const char* name() const = 0;
 
-    std::unique_ptr<AbstractState> joined(const AbstractState& other) const;
-    std::unique_ptr<AbstractState> met(const AbstractState& other) const;
-    std::unique_ptr<AbstractState> widened(const AbstractState& next) const;
-    std::unique_ptr<AbstractState> narrowed(const AbstractState& next) const;
-
     void joinWith(const AbstractState& other);
     void meetWith(const AbstractState& other);
     void widenWith(const AbstractState& next);
@@ -43,8 +37,10 @@ public:
 
     bool isBottom() const;
     bool isTop() const;
-    CheckResult leq(const AbstractState& other) const;
-    CheckResult equals(const AbstractState& other) const;
+    /// Return whether every concrete state represented by this state is also
+    /// represented by `other`.
+    CheckResult isSubsetOf(const AbstractState& other) const;
+    CheckResult isEquivalentTo(const AbstractState& other) const;
     std::string toString() const;
 
 protected:
@@ -68,6 +64,6 @@ private:
     virtual std::string stateToString() const = 0;
 };
 
-} // namespace SVF
+} // namespace SVF::AbstractDomain
 
 #endif // SVF_AE_ABSTRACT_STATE_H

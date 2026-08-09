@@ -51,14 +51,9 @@
 #include "AE/Core/IntervalValue.h"
 #include "Util/GeneralType.h"
 
-#ifdef SVF_BUILD_RELATIONAL_DOMAIN
-#include "AE/Core/SVFRelationalBridge.h"
-#include <optional>
-#endif
-
 namespace SVF
 {
-class IntervalState final : public AbstractState
+class IntervalState final : public AbstractDomain::AbstractState
 {
     friend class SVFIR2AbsState;
     friend class RelationSolver;
@@ -74,16 +69,13 @@ public:
 
     /// copy constructor
     IntervalState(const IntervalState&rhs) : _varToAbsVal(rhs.getVarToVal()), _addrToAbsVal(rhs.getLocToVal()), _freedAddrs(rhs._freedAddrs)
-#ifdef SVF_BUILD_RELATIONAL_DOMAIN
-        , _relationalNumericalState(rhs._relationalNumericalState)
-#endif
     {
 
     }
 
     ~IntervalState() override = default;
 
-    std::unique_ptr<AbstractState> clone() const override
+    std::unique_ptr<AbstractDomain::AbstractState> clone() const override
     {
         return std::make_unique<IntervalState>(*this);
     }
@@ -119,9 +111,6 @@ public:
     IntervalState(IntervalState&&rhs) : _varToAbsVal(std::move(rhs._varToAbsVal)),
         _addrToAbsVal(std::move(rhs._addrToAbsVal)),
         _freedAddrs(std::move(rhs._freedAddrs))
-#ifdef SVF_BUILD_RELATIONAL_DOMAIN
-        , _relationalNumericalState(std::move(rhs._relationalNumericalState))
-#endif
     {
 
     }
@@ -135,10 +124,6 @@ public:
             if (item.second.isInterval())
                 item.second.getInterval().set_to_bottom();
         }
-#ifdef SVF_BUILD_RELATIONAL_DOMAIN
-        if (inv._relationalNumericalState)
-            inv._relationalNumericalState->setBottom();
-#endif
         return inv;
     }
 
@@ -151,10 +136,6 @@ public:
             if (item.second.isInterval())
                 item.second.getInterval().set_to_top();
         }
-#ifdef SVF_BUILD_RELATIONAL_DOMAIN
-        if (inv._relationalNumericalState)
-            inv._relationalNumericalState->setTop();
-#endif
         return inv;
     }
 
@@ -162,9 +143,6 @@ public:
     IntervalState sliceState(Set<u32_t> &sl)
     {
         IntervalState inv;
-#ifdef SVF_BUILD_RELATIONAL_DOMAIN
-        inv._relationalNumericalState = _relationalNumericalState;
-#endif
         for (u32_t id: sl)
             inv._varToAbsVal[id] = _varToAbsVal[id];
         return inv;
@@ -185,11 +163,6 @@ protected:
     VarToAbsValMap _varToAbsVal; ///< Map a variable (symbol) to its abstract value
     AddrToAbsValMap _addrToAbsVal; ///< Map a memory address to its stored abstract value
     Set<NodeID> _freedAddrs;
-#ifdef SVF_BUILD_RELATIONAL_DOMAIN
-    /// Relational numerical component of this complete program state. It is
-    /// stored here so all domains share one copy/join/fixpoint lifecycle.
-    std::optional<SVFRelationalBridge> _relationalNumericalState;
-#endif
 
 public:
 
@@ -314,53 +287,6 @@ public:
     /// domain meet with other, important! other widen this.
     void meetWith(const IntervalState&other);
 
-#ifdef SVF_BUILD_RELATIONAL_DOMAIN
-    bool hasRelationalNumericalState() const
-    {
-        return _relationalNumericalState.has_value();
-    }
-
-    const SVFRelationalBridge* getRelationalNumericalState() const
-    {
-        return _relationalNumericalState ? &*_relationalNumericalState
-                                         : nullptr;
-    }
-
-    SVFRelationalBridge* getRelationalNumericalState()
-    {
-        return _relationalNumericalState ? &*_relationalNumericalState
-                                         : nullptr;
-    }
-
-    void initializeRelationalNumericalState(
-        std::vector<TrackedRelationalVariable> variables,
-        SVF::OctagonConfig config = {})
-    {
-        if (!_relationalNumericalState)
-            _relationalNumericalState.emplace(std::move(variables),
-                                              std::move(config));
-    }
-
-    void changeRelationalNumericalEnvironment(
-        std::vector<TrackedRelationalVariable> variables,
-        bool projectNewVariables = false)
-    {
-        if (_relationalNumericalState)
-            _relationalNumericalState->changeTrackedVariables(
-                std::move(variables), projectNewVariables);
-    }
-
-    /// Used by sparse storage paths that intentionally implement a custom
-    /// interval-map join but still share the program state's relational
-    /// component lifecycle.
-    void joinRelationalComponentFrom(const IntervalState& other);
-    void meetRelationalNumericalState(const IntervalState& other);
-    void replaceRelationalComponentFrom(const IntervalState& other)
-    {
-        _relationalNumericalState = other._relationalNumericalState;
-    }
-#endif
-
     void addToFreedAddrs(NodeID addr)
     {
         _freedAddrs.insert(addr);
@@ -398,9 +324,6 @@ public:
             _varToAbsVal = rhs._varToAbsVal;
             _addrToAbsVal = rhs._addrToAbsVal;
             _freedAddrs = rhs._freedAddrs;
-#ifdef SVF_BUILD_RELATIONAL_DOMAIN
-            _relationalNumericalState = rhs._relationalNumericalState;
-#endif
         }
         return *this;
     }
@@ -413,10 +336,6 @@ public:
             _varToAbsVal = std::move(rhs._varToAbsVal);
             _addrToAbsVal = std::move(rhs._addrToAbsVal);
             _freedAddrs = std::move(rhs._freedAddrs);
-#ifdef SVF_BUILD_RELATIONAL_DOMAIN
-            _relationalNumericalState =
-                std::move(rhs._relationalNumericalState);
-#endif
         }
         return *this;
     }
@@ -425,9 +344,6 @@ public:
     {
         return  eqVarToValMap(_varToAbsVal, rhs.getVarToVal()) &&
                 eqVarToValMap(_addrToAbsVal, rhs.getLocToVal())
-#ifdef SVF_BUILD_RELATIONAL_DOMAIN
-                && relationalNumericalEquals(rhs)
-#endif
                 ;
     }
 
@@ -445,9 +361,6 @@ public:
     {
         return geqVarToValMap(_varToAbsVal, rhs.getVarToVal()) &&
                geqVarToValMap(_addrToAbsVal, rhs.getLocToVal())
-#ifdef SVF_BUILD_RELATIONAL_DOMAIN
-               && relationalNumericalGeq(rhs)
-#endif
                ;
     }
 
@@ -456,9 +369,6 @@ public:
         _addrToAbsVal.clear();
         _varToAbsVal.clear();
         _freedAddrs.clear();
-#ifdef SVF_BUILD_RELATIONAL_DOMAIN
-        _relationalNumericalState.reset();
-#endif
     }
 
     /// Drop all top-level variables (ValVars), keeping ObjVar storage and
@@ -470,21 +380,16 @@ public:
         _varToAbsVal.clear();
     }
 
-#ifdef SVF_BUILD_RELATIONAL_DOMAIN
 private:
-    bool relationalNumericalEquals(const IntervalState& other) const;
-    bool relationalNumericalGeq(const IntervalState& other) const;
-#endif
-
-private:
-    bool hasCompatibleDomain(const AbstractState& other) const override;
-    void joinState(const AbstractState& other) override;
-    void meetState(const AbstractState& other) override;
-    void widenState(const AbstractState& next) override;
-    void narrowState(const AbstractState& next) override;
+    bool hasCompatibleDomain(
+        const AbstractDomain::AbstractState& other) const override;
+    void joinState(const AbstractDomain::AbstractState& other) override;
+    void meetState(const AbstractDomain::AbstractState& other) override;
+    void widenState(const AbstractDomain::AbstractState& next) override;
+    void narrowState(const AbstractDomain::AbstractState& next) override;
     bool isBottomState() const override;
     bool isTopState() const override;
-    bool leqState(const AbstractState& other) const override;
+    bool leqState(const AbstractDomain::AbstractState& other) const override;
     std::string stateToString() const override;
 
 

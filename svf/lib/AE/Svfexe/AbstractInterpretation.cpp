@@ -28,17 +28,60 @@
 
 #include "AE/Svfexe/AbstractInterpretation.h"
 #include "AE/Svfexe/SparseAbstractInterpretation.h"
+#ifdef SVF_BUILD_ABSTRACT_DOMAINS
+#include "AE/Svfexe/DenseAbstractInterpretation.h"
+#endif
 #include "AE/Svfexe/AbsExtAPI.h"
 #include "SVFIR/SVFIR.h"
 #include "Util/Options.h"
 #include "Util/WorkList.h"
 #include "Graphs/CallGraph.h"
 #include "WPA/Andersen.h"
+#include <algorithm>
 #include <cmath>
 #include <memory>
 
 using namespace SVF;
 using namespace SVFUtil;
+
+namespace
+{
+
+#ifdef SVF_BUILD_ABSTRACT_DOMAINS
+std::size_t largestDenseEnvironment(const SVFIR& graph)
+{
+    std::size_t commonDimensions = 0;
+    Map<const FunObjVar*, std::size_t> localDimensions;
+    for (auto iterator = graph.begin(); iterator != graph.end(); ++iterator)
+    {
+        const SVFVar* variable = iterator->second;
+        if (SVFUtil::isa<ObjVar>(variable))
+        {
+            ++commonDimensions;
+            continue;
+        }
+        const auto* value = SVFUtil::dyn_cast<ValVar>(variable);
+        if (!value || value->isConstDataOrAggDataButNotNullPtr() ||
+                (value->isPointer() == false &&
+                 !SVFUtil::isa<SVFIntegerType>(value->getType())))
+            continue;
+        if (const FunObjVar* function = value->getFunction())
+            ++localDimensions[function];
+        else
+            ++commonDimensions;
+    }
+
+    std::size_t largest = commonDimensions;
+    for (const auto& [function, dimensions] : localDimensions)
+    {
+        (void)function;
+        largest = std::max(largest, commonDimensions + dimensions);
+    }
+    return largest;
+}
+#endif
+
+} // namespace
 
 
 void AbstractInterpretation::runOnModule()
@@ -68,7 +111,6 @@ AbstractInterpretation::AbstractInterpretation()
     callGraph = preAnalysis->getCallGraph();
     icfg->updateCallGraph(callGraph);
     preAnalysis->initWTO();
-    initializeRelationalEnvironments();
 }
 
 /// Factory: first call allocates the concrete subclass based on
@@ -102,7 +144,27 @@ AbstractInterpretation& AbstractInterpretation::getAEInstance()
             return new FullSparseAbstractInterpretation();
         case AESparsity::Dense:
         default:
+#ifdef SVF_BUILD_ABSTRACT_DOMAINS
+            if (Options::AEDenseOctagon())
+            {
+                const std::size_t dimensions =
+                    largestDenseEnvironment(*PAG::getPAG());
+                if (dimensions <=
+                        Options::AEDenseOctagonMaxDimensions())
+                    return new DenseAbstractInterpretation<
+                        SVF::AbstractDomain::OctagonState>();
+                SVFUtil::writeWrnMsg(
+                    "dense Octagon requested for " +
+                    std::to_string(dimensions) +
+                    " dimensions; using Box because the configured limit is " +
+                    std::to_string(
+                        Options::AEDenseOctagonMaxDimensions()));
+            }
+            return new DenseAbstractInterpretation<
+                SVF::AbstractDomain::BoxState>();
+#else
             return new AbstractInterpretation();
+#endif
         }
     }();
     return *instance;
@@ -115,6 +177,34 @@ AbstractInterpretation::~AbstractInterpretation()
     delete utils;
     delete stat;
     delete preAnalysis;
+}
+
+void AbstractInterpretation::initializeDomainState(const ICFGNode*)
+{
+}
+
+void AbstractInterpretation::assignDomainInterval(
+    const ICFGNode*, const SVFVar*, const IntervalValue&)
+{
+}
+
+void AbstractInterpretation::updateDomainOnBinary(
+    const BinaryOPStmt*, const IntervalValue&)
+{
+}
+
+void AbstractInterpretation::updateDomainOnCopy(const CopyStmt*)
+{
+}
+
+void AbstractInterpretation::updateDomainCopyValue(
+    const ICFGNode*, const SVFVar*, const SVFVar*, bool)
+{
+}
+
+void AbstractInterpretation::synchronizeDomainFromIntervalView(
+    const ICFGNode*)
+{
 }
 
 /// Collect entry point functions for analysis.
@@ -223,8 +313,7 @@ void AbstractInterpretation::analyzeFromAllProgEntries()
     {
         const FunObjVar* entryFun = entryFunctions.pop();
         const ICFGNode* funEntry = icfg->getFunEntryICFGNode(entryFun);
-        updateAbsState(funEntry, getAbsState(globalNode));
-        adaptRelationalState(funEntry, abstractTrace[funEntry]);
+        copyAbstractState(globalNode, funEntry);
         handleFunction(funEntry, nullptr);
     }
 }
@@ -243,7 +332,7 @@ void AbstractInterpretation::handleGlobalNode()
     // Use the trace's operator[] (auto-creates the entry if absent).
     IntervalState& init = abstractTrace[node];
     init = IntervalState();
-    initializeRelationalState(node);
+    initializeDomainState(node);
     // TODO: we cannot find right SVFVar for NullPtr, so we use init[NullPtr]
     // directly. Same for BlkPtr below.
     init[IRGraph::NullPtr] = AddressValue();
@@ -264,7 +353,7 @@ void AbstractInterpretation::handleGlobalNode()
 
 /// Pull-based state merge: for each predecessor that has an abstract state,
 /// copy its state, apply branch refinement for conditional IntraCFGEdges,
-/// and join all feasible states into getAbsState(node).
+/// and join all feasible states into getIntervalStateView(node).
 /// The join is dispatched through the virtual storage hook so semi-sparse can skip
 /// ValVar merging.
 /// Returns true if at least one predecessor contributed state.
@@ -273,19 +362,9 @@ bool AbstractInterpretation::mergeStatesFromPredecessors(const ICFGNode* node)
     // Collect all feasible predecessor states, then merge at the end.
     IntervalState merged;
     bool hasFeasiblePred = false;
-    auto joinPredecessor = [&](const ICFGNode* predecessor,
-                               const IntraCFGEdge* conditionalEdge)
+    auto joinPredecessor = [&](const ICFGNode* predecessor)
     {
-        IntervalState source = getAbsState(predecessor);
-        adaptRelationalState(node, source);
-        if (conditionalEdge)
-        {
-#ifdef SVF_BUILD_RELATIONAL_DOMAIN
-            if (SVFRelationalBridge* relation =
-                    source.getRelationalNumericalState())
-                assumeRelationalBranch(conditionalEdge, *relation);
-#endif
-        }
+        IntervalState source = getIntervalStateView(predecessor);
         joinStates(merged, source);
         hasFeasiblePred = true;
     };
@@ -293,42 +372,36 @@ bool AbstractInterpretation::mergeStatesFromPredecessors(const ICFGNode* node)
     for (auto& edge : node->getInEdges())
     {
         const ICFGNode* pred = edge->getSrcNode();
-        if (!hasAbsState(pred) || isRelationalStateBottom(pred))
+        if (!hasAbsState(pred))
             continue;
 
         if (const IntraCFGEdge* intraCfgEdge = SVFUtil::dyn_cast<IntraCFGEdge>(edge))
         {
             if (intraCfgEdge->getCondition())
             {
-                IntervalState predState = getAbsState(pred);
+                IntervalState predState = getIntervalStateView(pred);
                 if (isBranchEdgeFeasible(intraCfgEdge, predState))
                 {
                     collectBranchRefinement(intraCfgEdge, predState);
-                    adaptRelationalState(node, predState);
-#ifdef SVF_BUILD_RELATIONAL_DOMAIN
-                    if (SVFRelationalBridge* relation =
-                            predState.getRelationalNumericalState())
-                        assumeRelationalBranch(intraCfgEdge, *relation);
-#endif
                     joinStates(merged, predState);
                     hasFeasiblePred = true;
                 }
             }
             else
             {
-                joinPredecessor(pred, nullptr);
+                joinPredecessor(pred);
             }
         }
         else if (SVFUtil::isa<CallCFGEdge>(edge))
         {
-            joinPredecessor(pred, nullptr);
+            joinPredecessor(pred);
         }
         else if (SVFUtil::isa<RetCFGEdge>(edge))
         {
             switch (Options::HandleRecur())
             {
             case TOP:
-                joinPredecessor(pred, nullptr);
+                joinPredecessor(pred);
                 break;
             case WIDEN_ONLY:
             case WIDEN_NARROW:
@@ -337,7 +410,7 @@ bool AbstractInterpretation::mergeStatesFromPredecessors(const ICFGNode* node)
                 const CallICFGNode* callSite = returnSite->getCallICFGNode();
                 if (hasAbsState(callSite))
                 {
-                    joinPredecessor(pred, nullptr);
+                    joinPredecessor(pred);
                 }
                 break;
             }
@@ -349,8 +422,6 @@ bool AbstractInterpretation::mergeStatesFromPredecessors(const ICFGNode* node)
         return false;
 
     updateAbsState(node, merged);
-    reduceRelationalIntervals(node);
-
     return true;
 }
 
@@ -735,12 +806,12 @@ bool AbstractInterpretation::isBranchEdgeFeasible(const IntraCFGEdge* edge,
         SVFUtil::isa<CmpStmt>(*cmpVar->getInEdges().begin())
             ? isCmpBranchEdgeFeasible(edge, as)
             : isSwitchBranchEdgeFeasible(edge, as);
-    return intervalFeasible && isRelationalBranchFeasible(edge);
+    return intervalFeasible;
 }
 
 /**
  * Handle an ICFG node: execute statements on the current abstract state.
- * The node's pre-state must already be in getAbsState(node) (set by
+ * The node's pre-state must already be in getIntervalStateView(node) (set by
  * mergeStatesFromPredecessors, or by handleGlobalNode for the global node).
  * Returns true if the abstract state has changed, false if fixpoint reached or unreachable.
  */
@@ -756,13 +827,11 @@ bool AbstractInterpretation::handleICFGNode(const ICFGNode* node)
             const ICFGNode* globalNode = icfg->getGlobalICFGNode();
             if (hasAbsState(globalNode))
             {
-                updateAbsState(node, getAbsState(globalNode));
-                adaptRelationalState(node, abstractTrace[node]);
+                copyAbstractState(globalNode, node);
             }
             else
             {
-                updateAbsState(node, IntervalState());
-                initializeRelationalState(node);
+                resetAbstractState(node);
             }
         }
         else
@@ -771,10 +840,11 @@ bool AbstractInterpretation::handleICFGNode(const ICFGNode* node)
         }
     }
 
-    initializeRelationalState(node);
+    initializeDomainState(node);
 
     // Store the previous state for fixpoint detection
-    IntervalState prevState = getAbsState(node);
+    std::unique_ptr<AbstractDomain::AbstractState> previousState =
+        cloneAbstractState(node);
 
     stat->getBlockTrace()++;
     stat->getICFGNodeTrace()++;
@@ -799,7 +869,7 @@ bool AbstractInterpretation::handleICFGNode(const ICFGNode* node)
     // Track this node as analyzed (for coverage statistics across all entry points)
     allAnalyzedNodes.insert(node);
 
-    if (getAbsState(node) == prevState)
+    if (isAbstractStateEquivalent(node, *previousState))
         return false;
 
     return true;
@@ -868,11 +938,7 @@ void AbstractInterpretation::handleExtCall(const CallICFGNode *callNode)
     {
         detector->handleStubFunctions(callNode);
     }
-    // External summaries may update several interval values through paths
-    // that do not correspond to one affine SVF statement.  Rebuild the
-    // relational component from the authoritative interval component so no
-    // stale equality survives such a side effect.
-    synchronizeRelationalWithIntervals(callNode);
+    synchronizeDomainFromIntervalView(callNode);
 }
 
 /// Get callee function: directly for direct calls, via pointer analysis for indirect calls
@@ -897,7 +963,7 @@ const FunObjVar* AbstractInterpretation::getCallee(const CallICFGNode* callNode)
         return nullptr;
 
     NodeID addr = *Addrs.getAddrs().begin();
-    const SVFVar* func_var = getSVFVar(getAbsState(callNode).getIDFromAddr(addr));
+    const SVFVar* func_var = getSVFVar(getIntervalStateView(callNode).getIDFromAddr(addr));
     return SVFUtil::dyn_cast<FunObjVar>(func_var);
 }
 
@@ -921,8 +987,7 @@ void AbstractInterpretation::handleFunCall(const CallICFGNode *callNode)
         const ICFGNode* calleeEntry = icfg->getFunEntryICFGNode(callee);
         handleFunction(calleeEntry, callNode);
         const RetICFGNode* retNode = callNode->getRetICFGNode();
-        updateAbsState(retNode, getAbsState(callNode));
-        adaptRelationalState(retNode, abstractTrace[retNode]);
+        copyAbstractState(callNode, retNode);
         return;
     }
 
@@ -940,8 +1005,7 @@ void AbstractInterpretation::handleFunCall(const CallICFGNode *callNode)
         }
     }
     // Resume return node from caller's state (context-insensitive)
-    updateAbsState(retNode, getAbsState(callNode));
-    adaptRelationalState(retNode, abstractTrace[retNode]);
+    copyAbstractState(callNode, retNode);
 }
 
 // Loop / recursion handling (handleLoopOrRecursion + cycle helpers +
@@ -1007,7 +1071,7 @@ void AbstractInterpretation::handleSVFStatement(const SVFStmt *stmt)
     // (not yet auto-inserted) we treat that as "unchanged" — only check the
     // entry if it actually exists.
     {
-        const auto& vmap = getAbsState(stmt->getICFGNode()).getVarToVal();
+        const auto& vmap = getIntervalStateView(stmt->getICFGNode()).getVarToVal();
         auto it = vmap.find(IRGraph::NullPtr);
         (void)it; // Suppress warning of unused variable under release build
         assert(it == vmap.end() ||
@@ -1040,7 +1104,7 @@ void AbstractInterpretation::updateStateOnSelect(const SelectStmt *select)
         resVal.join_with(fVal);
     }
     updateAbsValue(select->getRes(), resVal, node);
-    assignRelationalInterval(node, select->getRes(), resVal.getInterval());
+    assignDomainInterval(node, select->getRes(), resVal.getInterval());
 }
 
 void AbstractInterpretation::updateStateOnPhi(const PhiStmt *phi)
@@ -1052,7 +1116,7 @@ void AbstractInterpretation::updateStateOnPhi(const PhiStmt *phi)
         const ICFGNode* opICFGNode = phi->getOpICFGNode(i);
         if (hasAbsState(opICFGNode))
         {
-            IntervalState tmpState = getAbsState(opICFGNode);
+            IntervalState tmpState = getIntervalStateView(opICFGNode);
             const AbstractValue& opVal = getAbsValue(phi->getOpVar(i), opICFGNode);
             const ICFGEdge* edge = icfg->getICFGEdge(opICFGNode, icfgNode, ICFGEdge::IntraCF);
             if (edge)
@@ -1073,7 +1137,7 @@ void AbstractInterpretation::updateStateOnPhi(const PhiStmt *phi)
         }
     }
     updateAbsValue(phi->getRes(), rhs, icfgNode);
-    assignRelationalInterval(icfgNode, phi->getRes(), rhs.getInterval());
+    assignDomainInterval(icfgNode, phi->getRes(), rhs.getInterval());
 }
 
 
@@ -1094,7 +1158,7 @@ void AbstractInterpretation::updateStateOnCall(const CallPE *callPE)
         }
     }
     updateAbsValue(res, rhs, node);
-    assignRelationalInterval(node, res, rhs.getInterval());
+    assignDomainInterval(node, res, rhs.getInterval());
 }
 
 void AbstractInterpretation::updateStateOnRet(const RetPE *retPE)
@@ -1102,7 +1166,7 @@ void AbstractInterpretation::updateStateOnRet(const RetPE *retPE)
     const ICFGNode* node = retPE->getICFGNode();
     const AbstractValue& rhsVal = getAbsValue(retPE->getRHSVar(), node);
     updateAbsValue(retPE->getLHSVar(), rhsVal, node);
-    updateRelationalCopyValue(node, retPE->getLHSVar(),
+    updateDomainCopyValue(node, retPE->getLHSVar(),
                               retPE->getRHSVar(), true);
 }
 
@@ -1112,8 +1176,9 @@ void AbstractInterpretation::updateStateOnAddr(const AddrStmt *addr)
     const ICFGNode* node = addr->getICFGNode();
     // initObjVar mutates _varToAbsVal/_addrToAbsVal directly, so we need
     // mutable access; route via the sparsity-aware state API.
-    IntervalState& as = getAbsState(node);
+    IntervalState& as = getIntervalStateView(node);
     as.initObjVar(SVFUtil::cast<ObjVar>(addr->getRHSVar()));
+    synchronizeDomainFromIntervalView(node);
     // AddrStmt: lhs(ValVar) = &rhs(ObjVar).
     // as[rhsId] stores the ObjVar's virtual address in _varToVal,
     // NOT the object contents. So we must use as[] directly for ObjVar.
@@ -1180,7 +1245,7 @@ void AbstractInterpretation::updateStateOnBinary(const BinaryOPStmt *binary)
         assert(false && "undefined binary: ");
     }
     updateAbsValue(binary->getRes(), resVal, node);
-    updateRelationalOnBinary(binary, resVal);
+    updateDomainOnBinary(binary, resVal);
 }
 
 void AbstractInterpretation::updateStateOnCmp(const CmpStmt *cmp)
@@ -1409,7 +1474,7 @@ void AbstractInterpretation::updateStateOnCmp(const CmpStmt *cmp)
     if (hasAbsValue(cmp->getRes(), node))
     {
         const AbstractValue& result = getAbsValue(cmp->getRes(), node);
-        assignRelationalInterval(node, cmp->getRes(), result.getInterval());
+        assignDomainInterval(node, cmp->getRes(), result.getInterval());
     }
 }
 
@@ -1419,7 +1484,7 @@ void AbstractInterpretation::updateStateOnLoad(const LoadStmt *load)
     AbstractValue loaded =
         loadValue(SVFUtil::cast<ValVar>(load->getRHSVar()), node);
     updateAbsValue(load->getLHSVar(), loaded, node);
-    assignRelationalInterval(node, load->getLHSVar(), loaded.getInterval());
+    assignDomainInterval(node, load->getLHSVar(), loaded.getInterval());
 }
 
 void AbstractInterpretation::updateStateOnStore(const StoreStmt *store)
@@ -1569,5 +1634,5 @@ void AbstractInterpretation::updateStateOnCopy(const CopyStmt *copy)
     }
     else
         assert(false && "undefined copy kind");
-    updateRelationalOnCopy(copy);
+    updateDomainOnCopy(copy);
 }

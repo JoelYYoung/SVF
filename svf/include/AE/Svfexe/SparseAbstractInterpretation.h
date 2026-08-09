@@ -52,14 +52,15 @@ public:
     ~SemiSparseAbstractInterpretation() override = default;
 
 protected:
-    IntervalState getFullCycleHeadState(const ICFGCycleWTO* cycle) override;
+    std::unique_ptr<AbstractDomain::AbstractState>
+    cloneCycleHeadState(const ICFGCycleWTO* cycle) override;
 
-    bool widenCycleState(const IntervalState& prev,
-                         const IntervalState& cur,
+    bool widenCycleState(const AbstractDomain::AbstractState& prev,
+                         const AbstractDomain::AbstractState& cur,
                          const ICFGCycleWTO* cycle) override;
 
-    bool narrowCycleState(const IntervalState& prev,
-                          const IntervalState& cur,
+    bool narrowCycleState(const AbstractDomain::AbstractState& prev,
+                          const AbstractDomain::AbstractState& cur,
                           const ICFGCycleWTO* cycle) override;
 
     const AbstractValue& getAbsValue(const ValVar* var, const ICFGNode* node) override;

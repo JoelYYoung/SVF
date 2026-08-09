@@ -1,9 +1,9 @@
 //===- LinearConstraint.h -- Domain-neutral linear syntax -------*- C++ -*-===//
 
-#ifndef RELATIONAL_LINEAR_CONSTRAINT_H
-#define RELATIONAL_LINEAR_CONSTRAINT_H
+#ifndef SVF_AE_LINEAR_CONSTRAINT_H
+#define SVF_AE_LINEAR_CONSTRAINT_H
 
-#include "AE/Core/RelationalEnvironment.h"
+#include "AE/Core/VariableEnvironment.h"
 
 #include <map>
 #include <memory>
@@ -11,7 +11,7 @@
 #include <string>
 #include <vector>
 
-namespace SVF
+namespace SVF::AbstractDomain
 {
 
 class LinearExpression
@@ -39,7 +39,7 @@ public:
     LinearExpression& operator-=(const LinearExpression& rhs);
     LinearExpression& operator*=(const Rational& scalar);
 
-    std::string toString(const Environment* environment = nullptr) const;
+    std::string toString(const VariableEnvironment* environment = nullptr) const;
 
     friend LinearExpression operator+(LinearExpression lhs,
                                       const LinearExpression& rhs)
@@ -183,7 +183,7 @@ public:
     {
         return kind_;
     }
-    std::string toString(const Environment* environment = nullptr) const;
+    std::string toString(const VariableEnvironment* environment = nullptr) const;
 
 private:
     LinearExpression expression_;
@@ -218,6 +218,6 @@ LinearConstraint lessThan(LinearExpression lhs, LinearExpression rhs);
 LinearConstraint greaterEqual(LinearExpression lhs, LinearExpression rhs);
 LinearConstraint greaterThan(LinearExpression lhs, LinearExpression rhs);
 
-} // namespace SVF
+} // namespace SVF::AbstractDomain
 
-#endif // RELATIONAL_LINEAR_CONSTRAINT_H
+#endif // SVF_AE_LINEAR_CONSTRAINT_H

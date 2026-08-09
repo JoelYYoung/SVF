@@ -1,9 +1,9 @@
-//===- RelationalEnvironment.h -- Variables and dimensions -----*- C++ -*-===//
+//===- VariableEnvironment.h -- Variables and dimensions ------*- C++ -*-===//
 
-#ifndef RELATIONAL_ENVIRONMENT_H
-#define RELATIONAL_ENVIRONMENT_H
+#ifndef SVF_AE_VARIABLE_ENVIRONMENT_H
+#define SVF_AE_VARIABLE_ENVIRONMENT_H
 
-#include "AE/Core/RelationalNumeric.h"
+#include "AE/Core/NumericPrimitives.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -11,7 +11,7 @@
 #include <string>
 #include <vector>
 
-namespace SVF
+namespace SVF::AbstractDomain
 {
 
 using Dimension = std::size_t;
@@ -80,11 +80,11 @@ struct VariableDeclaration
 
 /// Immutable, reference-counted mapping from public variables to dense domain
 /// dimensions.  It deliberately has no dependency on SVF NodeID or LLVM.
-class Environment
+class VariableEnvironment
 {
 public:
-    Environment();
-    explicit Environment(std::vector<VariableDeclaration> variables);
+    VariableEnvironment();
+    explicit VariableEnvironment(std::vector<VariableDeclaration> variables);
 
     std::size_t size() const;
     bool empty() const { return size() == 0; }
@@ -95,12 +95,12 @@ public:
     const std::string& nameOf(Variable variable) const;
     const std::vector<VariableDeclaration>& variables() const;
 
-    Environment add(std::vector<VariableDeclaration> variables) const;
-    Environment remove(const std::vector<Variable>& variables) const;
-    Environment merge(const Environment& other) const;
+    VariableEnvironment add(std::vector<VariableDeclaration> variables) const;
+    VariableEnvironment remove(const std::vector<Variable>& variables) const;
+    VariableEnvironment merge(const VariableEnvironment& other) const;
 
-    friend bool operator==(const Environment& lhs, const Environment& rhs);
-    friend bool operator!=(const Environment& lhs, const Environment& rhs)
+    friend bool operator==(const VariableEnvironment& lhs, const VariableEnvironment& rhs);
+    friend bool operator!=(const VariableEnvironment& lhs, const VariableEnvironment& rhs)
     {
         return !(lhs == rhs);
     }
@@ -113,8 +113,8 @@ private:
 // Keep a namespace-scope declaration in addition to the friend declaration.
 // This makes qualified out-of-line definitions well-formed without relying on
 // friend-only argument-dependent lookup behavior.
-bool operator==(const Environment& lhs, const Environment& rhs);
+bool operator==(const VariableEnvironment& lhs, const VariableEnvironment& rhs);
 
-} // namespace SVF
+} // namespace SVF::AbstractDomain
 
-#endif // RELATIONAL_ENVIRONMENT_H
+#endif // SVF_AE_VARIABLE_ENVIRONMENT_H

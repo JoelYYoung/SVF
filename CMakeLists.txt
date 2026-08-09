@@ -97,15 +97,15 @@ option(SVF_EXPORT_DYNAMIC "Export all (not only the actually used) symbols to dy
 option(SVF_ENABLE_ASSERTIONS "Always enable debugging assertions, also if the build type is a release build")
 option(SVF_ENABLE_RTTI "Adds -fno-rtti to disable runtime type information (RTTI)" ON)
 option(SVF_ENABLE_EXCEPTIONS "Adds -fno-exceptions to disable exception handling" ON)
-option(SVF_BUILD_RELATIONAL_DOMAIN
-       "Build the GMP/MPFR relational abstract-domain library" ON)
-option(SVF_BUILD_RELATIONAL_TESTS
-       "Build Z3-backed soundness tests for the relational domain"
+option(SVF_BUILD_ABSTRACT_DOMAINS
+       "Build the GMP/MPFR abstract-domain library" ON)
+option(SVF_BUILD_ABSTRACT_DOMAIN_TESTS
+       "Build Z3-backed soundness tests for the abstract-domain library"
        ${BUILD_TESTING})
 
-if(SVF_BUILD_RELATIONAL_DOMAIN AND NOT SVF_ENABLE_EXCEPTIONS)
+if(SVF_BUILD_ABSTRACT_DOMAINS AND NOT SVF_ENABLE_EXCEPTIONS)
   message(FATAL_ERROR
-          "RelationalDomainCore uses exception-based API diagnostics; "
+          "AbstractDomainCore uses exception-based API diagnostics; "
           "SVF_ENABLE_EXCEPTIONS must be ON")
 endif()
 
@@ -239,12 +239,12 @@ message(
   Z3 C++ include dirs:  ${Z3_CXX_INCLUDE_DIRS}"
 )
 
-if(SVF_BUILD_RELATIONAL_DOMAIN)
+if(SVF_BUILD_ABSTRACT_DOMAINS)
   find_package(GMP REQUIRED)
   find_package(MPFR REQUIRED)
   message(
     STATUS
-      "Using relational-domain numeric libraries:
+      "Using abstract-domain numeric libraries:
   GMP include directory:  ${GMP_INCLUDE_DIR}
   GMP C library:          ${GMP_LIBRARY}
   GMP C++ library:        ${GMPXX_LIBRARY}
@@ -313,7 +313,7 @@ endif()
 add_subdirectory(svf)
 add_subdirectory(svf-llvm)
 
-if(SVF_BUILD_RELATIONAL_DOMAIN AND SVF_BUILD_RELATIONAL_TESTS)
+if(SVF_BUILD_ABSTRACT_DOMAINS AND SVF_BUILD_ABSTRACT_DOMAIN_TESTS)
   add_subdirectory(svf/lib/AE/Test)
 endif()
 

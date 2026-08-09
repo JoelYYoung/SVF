@@ -63,7 +63,7 @@ void BufOverflowDetector::detect(const ICFGNode* node)
                 const AddressValue& objAddrs = rhsVal.getAddrs();
                 for (const auto& addr : objAddrs)
                 {
-                    NodeID objId = ae.getAbsState(node).getIDFromAddr(addr);
+                    NodeID objId = ae.getIntervalStateView(node).getIDFromAddr(addr);
                     u32_t size = 0;
                     // like `int arr[10]` which has constant size before runtime
                     if (svfir->getBaseObject(objId)->isConstantByteSize())
@@ -337,7 +337,7 @@ void BufOverflowDetector::updateGepObjOffsetFromBase(const SVF::ICFGNode* node, 
 {
     SVFIR* svfir = PAG::getPAG();
     auto& ae = AbstractInterpretation::getAEInstance();
-    const IntervalState& as = ae.getAbsState(node);
+    const IntervalState& as = ae.getIntervalStateView(node);
 
     for (const auto& objAddr : objAddrs)
     {
@@ -470,7 +470,7 @@ bool BufOverflowDetector::canSafelyAccessMemory(const SVF::ValVar* value, const 
     }
     for (const auto& addr : ptrVal.getAddrs())
     {
-        NodeID objId = ae.getAbsState(node).getIDFromAddr(addr);
+        NodeID objId = ae.getIntervalStateView(node).getIDFromAddr(addr);
         u32_t size = 0;
         // if the object is a constant size object, get the size directly
         if (svfir->getBaseObject(objId)->isConstantByteSize())
@@ -681,7 +681,7 @@ bool NullptrDerefDetector::canSafelyDerefPtr(const ValVar* value, const ICFGNode
         else if (IntervalState::isNullMem(addr))
             return false;
         // if addr is labeled freed mem, report unsafe
-        else if (ae.getAbsState(node).isFreedMem(addr))
+        else if (ae.getIntervalStateView(node).isFreedMem(addr))
             return false;
     }
     return true;

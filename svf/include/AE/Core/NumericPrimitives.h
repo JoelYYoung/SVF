@@ -1,7 +1,7 @@
-//===- RelationalNumeric.h -- Exact relational-domain numbers -*- C++ -*-===//
+//===- NumericPrimitives.h -- Exact abstract-domain numbers ---*- C++ -*-===//
 
-#ifndef RELATIONAL_NUMERIC_H
-#define RELATIONAL_NUMERIC_H
+#ifndef SVF_AE_NUMERIC_PRIMITIVES_H
+#define SVF_AE_NUMERIC_PRIMITIVES_H
 
 #include <gmpxx.h>
 #include <mpfr.h>
@@ -9,7 +9,7 @@
 #include <cstdint>
 #include <string>
 
-namespace SVF
+namespace SVF::AbstractDomain
 {
 
 class Integer
@@ -254,6 +254,6 @@ private:
                              RoundingMode rounding);
 };
 
-} // namespace SVF
+} // namespace SVF::AbstractDomain
 
-#endif // RELATIONAL_NUMERIC_H
+#endif // SVF_AE_NUMERIC_PRIMITIVES_H

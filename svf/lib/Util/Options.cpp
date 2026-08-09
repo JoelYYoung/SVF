@@ -800,12 +800,12 @@ const OptionMap<u32_t> Options::AEFunEntry(
 });
 const Option<u32_t> Options::WidenDelay(
     "widen-delay", "Loop Widen Delay", 3);
-const Option<bool> Options::AERelational(
-    "ae-relational",
-    "Enable the per-function GMP Octagon reduced product", false);
-const Option<u32_t> Options::AERelationalMaxVars(
-    "ae-relational-max-vars",
-    "Maximum integer ValVars tracked per function by the Octagon domain",
+const Option<bool> Options::AEDenseOctagon(
+    "ae-dense-octagon",
+    "Use the GMP Octagon as dense AE's numerical domain", false);
+const Option<u32_t> Options::AEDenseOctagonMaxDimensions(
+    "ae-dense-octagon-max-dimensions",
+    "Maximum dimensions allowed in a dense Octagon state",
     64);
 const OptionMap<u32_t> Options::HandleRecur(
     "handle-recur",

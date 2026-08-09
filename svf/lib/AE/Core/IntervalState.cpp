@@ -28,7 +28,6 @@
  */
 
 #include <iomanip>
-#include <stdexcept>
 #include "AE/Core/IntervalState.h"
 #include "SVFIR/SVFIR.h"
 #include "Util/SVFUtil.h"
@@ -57,14 +56,6 @@ u32_t IntervalState::hash() const
     }
     Hash<std::pair<u32_t, u32_t>> pairH;
     size_t result = pairH({h, h2});
-#ifdef SVF_BUILD_RELATIONAL_DOMAIN
-    if (_relationalNumericalState)
-    {
-        Hash<std::string> stringHash;
-        result ^= stringHash(_relationalNumericalState->state().toString()) +
-                  0x9e3779b9 + (result << 6) + (result >> 2);
-    }
-#endif
     return static_cast<u32_t>(result);
 }
 
@@ -86,18 +77,6 @@ IntervalState IntervalState::widening(const IntervalState& other)
             if (it->second.isInterval() && other._addrToAbsVal.at(key).isInterval())
                 it->second.getInterval().widen_with(other._addrToAbsVal.at(key).getInterval());
     }
-#ifdef SVF_BUILD_RELATIONAL_DOMAIN
-    if (es._relationalNumericalState && other._relationalNumericalState)
-        es._relationalNumericalState->widenWith(
-            *other._relationalNumericalState);
-    else if (!es._relationalNumericalState &&
-             other._relationalNumericalState)
-        es._relationalNumericalState = other._relationalNumericalState;
-    else if (es._relationalNumericalState &&
-             !other._relationalNumericalState)
-        throw std::invalid_argument(
-            "cannot widen initialized and absent relational components");
-#endif
     return es;
 }
 
@@ -118,18 +97,6 @@ IntervalState IntervalState::narrowing(const IntervalState& other)
             if (it->second.isInterval() && other._addrToAbsVal.at(key).isInterval())
                 it->second.getInterval().narrow_with(other._addrToAbsVal.at(key).getInterval());
     }
-#ifdef SVF_BUILD_RELATIONAL_DOMAIN
-    if (es._relationalNumericalState && other._relationalNumericalState)
-        es._relationalNumericalState->narrowWith(
-            *other._relationalNumericalState);
-    else if (!es._relationalNumericalState &&
-             other._relationalNumericalState)
-        es._relationalNumericalState = other._relationalNumericalState;
-    else if (es._relationalNumericalState &&
-             !other._relationalNumericalState)
-        throw std::invalid_argument(
-            "cannot narrow initialized and absent relational components");
-#endif
     return es;
 
 }
@@ -164,9 +131,6 @@ void IntervalState::joinWith(const IntervalState& other)
         }
     }
     _freedAddrs.insert(other._freedAddrs.begin(), other._freedAddrs.end());
-#ifdef SVF_BUILD_RELATIONAL_DOMAIN
-    joinRelationalComponentFrom(other);
-#endif
 }
 
 void IntervalState::joinVariableValue(u32_t id,
@@ -222,57 +186,7 @@ void IntervalState::meetWith(const IntervalState& other)
                           other._freedAddrs.begin(), other._freedAddrs.end(),
                           std::inserter(intersection, intersection.begin()));
     _freedAddrs = std::move(intersection);
-#ifdef SVF_BUILD_RELATIONAL_DOMAIN
-    meetRelationalNumericalState(other);
-#endif
 }
-
-#ifdef SVF_BUILD_RELATIONAL_DOMAIN
-void IntervalState::joinRelationalComponentFrom(const IntervalState& other)
-{
-    if (_relationalNumericalState && other._relationalNumericalState)
-        _relationalNumericalState->joinWith(
-            *other._relationalNumericalState);
-    else if (!_relationalNumericalState && other._relationalNumericalState)
-        _relationalNumericalState = other._relationalNumericalState;
-    else if (_relationalNumericalState && !other._relationalNumericalState)
-        throw std::invalid_argument(
-            "cannot join initialized and absent relational components");
-}
-
-void IntervalState::meetRelationalNumericalState(const IntervalState& other)
-{
-    if (_relationalNumericalState && other._relationalNumericalState)
-        _relationalNumericalState->meetWith(
-            *other._relationalNumericalState);
-    else if (!_relationalNumericalState && other._relationalNumericalState)
-        _relationalNumericalState = other._relationalNumericalState;
-    else if (_relationalNumericalState && !other._relationalNumericalState)
-        throw std::invalid_argument(
-            "cannot meet initialized and absent relational components");
-}
-
-bool IntervalState::relationalNumericalEquals(
-    const IntervalState& other) const
-{
-    if (!_relationalNumericalState || !other._relationalNumericalState)
-        return !_relationalNumericalState &&
-               !other._relationalNumericalState;
-    return _relationalNumericalState->equals(
-        *other._relationalNumericalState);
-}
-
-bool IntervalState::relationalNumericalGeq(const IntervalState& other) const
-{
-    // An absent numerical relation denotes no relational restriction (top).
-    if (!_relationalNumericalState)
-        return true;
-    if (!other._relationalNumericalState)
-        return false;
-    return other._relationalNumericalState->includedIn(
-        *_relationalNumericalState);
-}
-#endif
 
 // initObjVar
 void IntervalState::initObjVar(const ObjVar* objVar)
@@ -399,14 +313,6 @@ void IntervalState::printAbstractState() const
             SVFUtil::outs() << " Value: ⊥\n";
         }
     }
-#ifdef SVF_BUILD_RELATIONAL_DOMAIN
-    SVFUtil::outs() << "Relational: ";
-    if (_relationalNumericalState)
-        SVFUtil::outs() << _relationalNumericalState->state().toString();
-    else
-        SVFUtil::outs() << "<disabled>";
-    SVFUtil::outs() << "\n";
-#endif
     SVFUtil::outs() << "-----------------------------------------\n";
 }
 
@@ -433,14 +339,6 @@ std::string IntervalState::toString() const
         << "  AddrToAbsVal: " << _addrToAbsVal.size() << " entries ("
         << addrIntervals << " intervals, " << addrAddrs << " addresses, " << addrBottom << " bottom)\n"
         << "  FreedAddrs: " << _freedAddrs.size() << "\n";
-#ifdef SVF_BUILD_RELATIONAL_DOMAIN
-    oss << "  Relational: ";
-    if (_relationalNumericalState)
-        oss << _relationalNumericalState->state().toString();
-    else
-        oss << "<disabled>";
-    oss << "\n";
-#endif
     oss << "}";
     return oss.str();
 }
@@ -476,41 +374,37 @@ bool IntervalState::geqVarToValMap(const VarToAbsValMap&lhs, const VarToAbsValMa
     return true;
 }
 
-bool IntervalState::hasCompatibleDomain(const AbstractState& other) const
+bool IntervalState::hasCompatibleDomain(
+    const AbstractDomain::AbstractState& other) const
 {
     return dynamic_cast<const IntervalState*>(&other) != nullptr;
 }
 
-void IntervalState::joinState(const AbstractState& other)
+void IntervalState::joinState(const AbstractDomain::AbstractState& other)
 {
     joinWith(static_cast<const IntervalState&>(other));
 }
 
-void IntervalState::meetState(const AbstractState& other)
+void IntervalState::meetState(const AbstractDomain::AbstractState& other)
 {
     meetWith(static_cast<const IntervalState&>(other));
 }
 
-void IntervalState::widenState(const AbstractState& next)
+void IntervalState::widenState(const AbstractDomain::AbstractState& next)
 {
     *this = widening(static_cast<const IntervalState&>(next));
 }
 
-void IntervalState::narrowState(const AbstractState& next)
+void IntervalState::narrowState(const AbstractDomain::AbstractState& next)
 {
     *this = narrowing(static_cast<const IntervalState&>(next));
 }
 
 bool IntervalState::isBottomState() const
 {
-#ifdef SVF_BUILD_RELATIONAL_DOMAIN
-    return _relationalNumericalState &&
-           _relationalNumericalState->isBottom();
-#else
     // AE represents unreachable program points by absence from abstractTrace;
     // an allocated IntervalState therefore does not encode global bottom.
     return false;
-#endif
 }
 
 bool IntervalState::isTopState() const
@@ -518,15 +412,11 @@ bool IntervalState::isTopState() const
     if (!_varToAbsVal.empty() || !_addrToAbsVal.empty() ||
         !_freedAddrs.empty())
         return false;
-#ifdef SVF_BUILD_RELATIONAL_DOMAIN
-    return !_relationalNumericalState ||
-           _relationalNumericalState->state().isTop();
-#else
     return true;
-#endif
 }
 
-bool IntervalState::leqState(const AbstractState& other) const
+bool IntervalState::leqState(
+    const AbstractDomain::AbstractState& other) const
 {
     return static_cast<const IntervalState&>(other) >= *this;
 }

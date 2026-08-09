@@ -1,15 +1,15 @@
-//===- RelationalEnvironment.cpp -- Variables and dimensions ------------===//
+//===- VariableEnvironment.cpp -- Variables and dimensions --------------===//
 
-#include "AE/Core/RelationalEnvironment.h"
+#include "AE/Core/VariableEnvironment.h"
 
 #include <algorithm>
 #include <map>
 #include <stdexcept>
 #include <utility>
 
-using namespace SVF;
+using namespace SVF::AbstractDomain;
 
-struct Environment::Data
+struct VariableEnvironment::Data
 {
     explicit Data(std::vector<VariableDeclaration> declarations)
         : variables(std::move(declarations))
@@ -33,26 +33,26 @@ struct Environment::Data
     std::map<Variable, Dimension> dimensions;
 };
 
-Environment::Environment() : data_(std::make_shared<Data>(
+VariableEnvironment::VariableEnvironment() : data_(std::make_shared<Data>(
                                       std::vector<VariableDeclaration>{}))
 {
 }
-Environment::Environment(std::vector<VariableDeclaration> variables)
+VariableEnvironment::VariableEnvironment(std::vector<VariableDeclaration> variables)
     : data_(std::make_shared<Data>(std::move(variables)))
 {
 }
 
-std::size_t Environment::size() const
+std::size_t VariableEnvironment::size() const
 {
     return data_->variables.size();
 }
 
-bool Environment::contains(Variable variable) const
+bool VariableEnvironment::contains(Variable variable) const
 {
     return data_->dimensions.find(variable) != data_->dimensions.end();
 }
 
-Dimension Environment::dimensionOf(Variable variable) const
+Dimension VariableEnvironment::dimensionOf(Variable variable) const
 {
     const auto it = data_->dimensions.find(variable);
     if (it == data_->dimensions.end())
@@ -60,38 +60,39 @@ Dimension Environment::dimensionOf(Variable variable) const
     return it->second;
 }
 
-Variable Environment::variableOf(Dimension dimension) const
+Variable VariableEnvironment::variableOf(Dimension dimension) const
 {
     if (dimension >= size())
         throw std::out_of_range("invalid relational dimension");
     return data_->variables[dimension].variable;
 }
 
-const NumericType& Environment::typeOf(Variable variable) const
+const NumericType& VariableEnvironment::typeOf(Variable variable) const
 {
     return data_->variables[dimensionOf(variable)].type;
 }
 
-const std::string& Environment::nameOf(Variable variable) const
+const std::string& VariableEnvironment::nameOf(Variable variable) const
 {
     return data_->variables[dimensionOf(variable)].name;
 }
 
-const std::vector<VariableDeclaration>& Environment::variables() const
+const std::vector<VariableDeclaration>& VariableEnvironment::variables() const
 {
     return data_->variables;
 }
 
-Environment Environment::add(
+VariableEnvironment VariableEnvironment::add(
     std::vector<VariableDeclaration> declarations) const
 {
     std::vector<VariableDeclaration> combined = data_->variables;
-    combined.insert(combined.end(), std::make_move_iterator(declarations.begin()),
+    combined.insert(combined.end(),
+                    std::make_move_iterator(declarations.begin()),
                     std::make_move_iterator(declarations.end()));
-    return Environment(std::move(combined));
+    return VariableEnvironment(std::move(combined));
 }
 
-Environment Environment::remove(const std::vector<Variable>& removed) const
+VariableEnvironment VariableEnvironment::remove(const std::vector<Variable>& removed) const
 {
     std::vector<VariableDeclaration> remaining;
     remaining.reserve(size());
@@ -101,10 +102,10 @@ Environment Environment::remove(const std::vector<Variable>& removed) const
                 removed.end())
             remaining.push_back(declaration);
     }
-    return Environment(std::move(remaining));
+    return VariableEnvironment(std::move(remaining));
 }
 
-Environment Environment::merge(const Environment& other) const
+VariableEnvironment VariableEnvironment::merge(const VariableEnvironment& other) const
 {
     std::map<Variable, VariableDeclaration> combined;
     for (const VariableDeclaration& declaration : data_->variables)
@@ -122,10 +123,11 @@ Environment Environment::merge(const Environment& other) const
     declarations.reserve(combined.size());
     for (auto& entry : combined)
         declarations.push_back(std::move(entry.second));
-    return Environment(std::move(declarations));
+    return VariableEnvironment(std::move(declarations));
 }
 
-bool SVF::operator==(const Environment& lhs, const Environment& rhs)
+bool SVF::AbstractDomain::operator==(const VariableEnvironment& lhs,
+                                    const VariableEnvironment& rhs)
 {
     if (lhs.data_ == rhs.data_)
         return true;

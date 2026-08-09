@@ -80,9 +80,6 @@ void FullSparseAbstractInterpretation::joinStates(IntervalState& dst,
         dst.joinMemoryValue(id, val);
     }
     dst.joinFreedAddressesFrom(src);
-#ifdef SVF_BUILD_RELATIONAL_DOMAIN
-    dst.joinRelationalComponentFrom(src);
-#endif
 }
 
 void FullSparseAbstractInterpretation::storeValue(const ValVar* pointer,
@@ -95,7 +92,7 @@ void FullSparseAbstractInterpretation::storeValue(const ValVar* pointer,
     // Without this, successors inherit the stale constraint and MEET
     // it onto the pulled post-store value, erasing the store's effect.
     const AbstractValue& ptrVal = getAbsValue(pointer, node);
-    IntervalState& as = getAbsState(node);
+    IntervalState& as = getIntervalStateView(node);
     for (auto addr : ptrVal.getAddrs())
     {
         NodeID objId = as.getIDFromAddr(addr);
@@ -472,7 +469,7 @@ bool FullSparseAbstractInterpretation::isIntraEdgeBranchFeasible(
     }
     else
     {
-        IntervalState edgeState = getAbsState(src);
+        IntervalState edgeState = getIntervalStateView(src);
         feasible = isBranchEdgeFeasible(edge, edgeState);
     }
 
@@ -587,16 +584,18 @@ void FullSparseAbstractInterpretation::propagateAndApplyRefinement(
     }
 }
 
-IntervalState SemiSparseAbstractInterpretation::getFullCycleHeadState(
+std::unique_ptr<AbstractDomain::AbstractState>
+SemiSparseAbstractInterpretation::cloneCycleHeadState(
     const ICFGCycleWTO* cycle)
 {
     // Start from the dense snapshot (ObjVars + any ValVars that happen to
     // be cached at cycle_head's trace entry).
-    IntervalState snap = AbstractInterpretation::getFullCycleHeadState(cycle);
+    auto baseSnapshot = AbstractInterpretation::cloneCycleHeadState(cycle);
+    IntervalState snap = dynamic_cast<const IntervalState&>(*baseSnapshot);
 
     const Set<const ValVar*>& valVars = preAnalysis->getCycleValVars(cycle);
     if (valVars.empty())
-        return snap;  // no cycle ValVars known: nothing to pull
+        return std::make_unique<IntervalState>(std::move(snap));
 
     // Drop stale ValVar entries and pull each cycle ValVar from its
     // def-site.  ValVars without a genuine stored value are skipped to
@@ -610,11 +609,13 @@ IntervalState SemiSparseAbstractInterpretation::getFullCycleHeadState(
             continue;
         snap[v->getId()] = getAbsValue(v, defSite);
     }
-    return snap;
+    return std::make_unique<IntervalState>(std::move(snap));
 }
 
 bool SemiSparseAbstractInterpretation::widenCycleState(
-    const IntervalState& prev, const IntervalState& cur, const ICFGCycleWTO* cycle)
+    const AbstractDomain::AbstractState& prev,
+    const AbstractDomain::AbstractState& cur,
+    const ICFGCycleWTO* cycle)
 {
     // Base widens, writes trace[cycle_head], and returns fixpoint bool.
     bool fixpoint = AbstractInterpretation::widenCycleState(prev, cur, cycle);
@@ -632,7 +633,9 @@ bool SemiSparseAbstractInterpretation::widenCycleState(
 }
 
 bool SemiSparseAbstractInterpretation::narrowCycleState(
-    const IntervalState& prev, const IntervalState& cur, const ICFGCycleWTO* cycle)
+    const AbstractDomain::AbstractState& prev,
+    const AbstractDomain::AbstractState& cur,
+    const ICFGCycleWTO* cycle)
 {
     // Delegate to base.  It returns true on the two non-scatter cases
     // (narrowing disabled, or narrow fixpoint); we preserve the original
@@ -662,9 +665,6 @@ void SemiSparseAbstractInterpretation::updateAbsState(
     // must not be overwritten when the predecessor's state is merged in.
     abstractTrace[node].replaceMemoryFrom(state);
     abstractTrace[node].replaceFreedAddressesFrom(state);
-#ifdef SVF_BUILD_RELATIONAL_DOMAIN
-    abstractTrace[node].replaceRelationalComponentFrom(state);
-#endif
 }
 
 void SemiSparseAbstractInterpretation::joinStates(IntervalState& dst,
@@ -680,9 +680,6 @@ void SemiSparseAbstractInterpretation::joinStates(IntervalState& dst,
         dst.joinMemoryValue(id, val);
     }
     dst.joinFreedAddressesFrom(src);
-#ifdef SVF_BUILD_RELATIONAL_DOMAIN
-    dst.joinRelationalComponentFrom(src);
-#endif
 }
 
 const ICFGNode* SemiSparseAbstractInterpretation::getICFGNode(

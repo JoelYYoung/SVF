@@ -118,7 +118,7 @@ public:
      * @return Reference to the abstract state.
      * @throws Assertion if no trace exists for the node.
      */
-    IntervalState& getAbsState(const ICFGNode* node);
+    IntervalState& getIntervalStateView(const ICFGNode* node);
 
     void collectCheckPoint();
     void checkPointAllSet();

@@ -3,7 +3,7 @@
 #ifndef RELATIONAL_Z3_SOUNDNESS_CHECKER_H
 #define RELATIONAL_Z3_SOUNDNESS_CHECKER_H
 
-#include "AE/Core/OctagonDomain.h"
+#include "AE/Core/NumericalDomain.h"
 
 #include <z3++.h>
 
@@ -12,6 +12,8 @@
 
 namespace SVF::test
 {
+
+using namespace AbstractDomain;
 
 struct ProofResult
 {
@@ -24,42 +26,44 @@ struct ProofResult
 class Z3SoundnessChecker
 {
 public:
-    explicit Z3SoundnessChecker(const Environment& environment);
+    explicit Z3SoundnessChecker(const VariableEnvironment& environment);
 
-    ProofResult implies(const OctagonState& premise,
-                        const OctagonState& conclusion,
+    ProofResult implies(const NumericalState& premise,
+                        const NumericalState& conclusion,
                         const std::string& obligation);
-    ProofResult checkJoin(const OctagonState& lhs, const OctagonState& rhs,
-                          const OctagonState& result);
-    ProofResult checkMeet(const OctagonState& lhs, const OctagonState& rhs,
-                          const OctagonState& result);
-    ProofResult checkAssume(const OctagonState& before,
+    ProofResult checkJoin(const NumericalState& lhs,
+                          const NumericalState& rhs,
+                          const NumericalState& result);
+    ProofResult checkMeet(const NumericalState& lhs,
+                          const NumericalState& rhs,
+                          const NumericalState& result);
+    ProofResult checkAssume(const NumericalState& before,
                             const LinearConstraint& assumption,
-                            const OctagonState& result);
-    ProofResult checkAssignment(const OctagonState& before, Variable target,
+                            const NumericalState& result);
+    ProofResult checkAssignment(const NumericalState& before, Variable target,
                                 const LinearExpression& expression,
-                                const OctagonState& result);
-    ProofResult checkForget(const OctagonState& before, Variable forgotten,
-                            const OctagonState& result);
-    ProofResult checkWidening(const OctagonState& current,
-                             const OctagonState& next,
-                             const OctagonState& result);
-    ProofResult checkNarrowing(const OctagonState& current,
-                              const OctagonState& next,
-                              const OctagonState& result);
-    ProofResult checkProjection(const OctagonState& source,
-                                const OctagonState& result);
+                                const NumericalState& result);
+    ProofResult checkForget(const NumericalState& before, Variable forgotten,
+                            const NumericalState& result);
+    ProofResult checkWidening(const NumericalState& current,
+                             const NumericalState& next,
+                             const NumericalState& result);
+    ProofResult checkNarrowing(const NumericalState& current,
+                              const NumericalState& next,
+                              const NumericalState& result);
+    ProofResult checkProjection(const NumericalState& source,
+                                const NumericalState& result);
 
 private:
     z3::expr variable(Variable variable);
     z3::expr linear(const LinearExpression& expression);
     z3::expr constraint(const LinearConstraint& constraint);
-    z3::expr state(const OctagonState& state);
+    z3::expr state(const NumericalState& state);
     ProofResult prove(const z3::expr& premise, const z3::expr& conclusion,
                       const std::string& obligation);
-    void requireEnvironment(const OctagonState& state) const;
+    void requireEnvironment(const NumericalState& state) const;
 
-    Environment environment_;
+    VariableEnvironment environment_;
     z3::context context_;
     std::map<Variable, z3::expr> variables_;
 };

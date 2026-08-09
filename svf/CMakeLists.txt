@@ -1,4 +1,4 @@
-# Build the backend-neutral relational library as a separate target.  None of
+# Build the backend-neutral abstract-domain library as a separate target. None of
 # these sources includes SVF IR or LLVM headers.
 set(ABSTRACT_STATE_CORE_HEADERS
     ${CMAKE_CURRENT_LIST_DIR}/include/AE/Core/AbstractState.h
@@ -6,27 +6,36 @@ set(ABSTRACT_STATE_CORE_HEADERS
 set(ABSTRACT_STATE_CORE_SOURCES
     ${CMAKE_CURRENT_LIST_DIR}/lib/AE/Core/AbstractState.cpp
 )
-set(RELATIONAL_CORE_HEADERS
-    ${CMAKE_CURRENT_LIST_DIR}/include/AE/Core/RelationalEnvironment.h
+set(ABSTRACT_DOMAIN_CORE_HEADERS
+    ${CMAKE_CURRENT_LIST_DIR}/include/AE/Core/VariableEnvironment.h
     ${CMAKE_CURRENT_LIST_DIR}/include/AE/Core/LinearConstraint.h
+    ${CMAKE_CURRENT_LIST_DIR}/include/AE/Core/NumericalDomain.h
+    ${CMAKE_CURRENT_LIST_DIR}/include/AE/Core/BoxDomain.h
+    ${CMAKE_CURRENT_LIST_DIR}/include/AE/Core/NonRelationalDomain.h
+    ${CMAKE_CURRENT_LIST_DIR}/include/AE/Core/ConvexPolyhedraDomain.h
     ${CMAKE_CURRENT_LIST_DIR}/include/AE/Core/OctagonDomain.h
-    ${CMAKE_CURRENT_LIST_DIR}/include/AE/Core/RelationalNumeric.h
+    ${CMAKE_CURRENT_LIST_DIR}/include/AE/Core/NumericPrimitives.h
 )
-set(RELATIONAL_CORE_SOURCES
+set(ABSTRACT_DOMAIN_CORE_SOURCES
+    ${CMAKE_CURRENT_LIST_DIR}/lib/AE/Core/BoxDomain.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/lib/AE/Core/NonRelationalDomain.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/lib/AE/Core/ConvexPolyhedraDomain.cpp
     ${CMAKE_CURRENT_LIST_DIR}/lib/AE/Core/OctagonDomain.cpp
-    ${CMAKE_CURRENT_LIST_DIR}/lib/AE/Core/RelationalEnvironment.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/lib/AE/Core/VariableEnvironment.cpp
     ${CMAKE_CURRENT_LIST_DIR}/lib/AE/Core/LinearConstraint.cpp
-    ${CMAKE_CURRENT_LIST_DIR}/lib/AE/Core/RelationalNumeric.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/lib/AE/Core/NumericPrimitives.cpp
 )
-set(RELATIONAL_BRIDGE_HEADERS
-    ${CMAKE_CURRENT_LIST_DIR}/include/AE/Core/SVFRelationalBridge.h
+set(ABSTRACT_DOMAIN_INTEGRATION_HEADERS
+    ${CMAKE_CURRENT_LIST_DIR}/include/AE/Svfexe/DenseAbstractInterpretation.h
+    ${CMAKE_CURRENT_LIST_DIR}/include/AE/Svfexe/SVFIRAdapter.h
 )
-set(RELATIONAL_BRIDGE_SOURCES
-    ${CMAKE_CURRENT_LIST_DIR}/lib/AE/Core/SVFRelationalBridge.cpp
+set(ABSTRACT_DOMAIN_INTEGRATION_SOURCES
+    ${CMAKE_CURRENT_LIST_DIR}/lib/AE/Svfexe/DenseAbstractInterpretation.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/lib/AE/Svfexe/SVFIRAdapter.cpp
 )
 
 # The common state lattice has no GMP/MPFR dependency and is available even
-# when the optional relational backend is disabled.
+# when the optional GMP/MPFR domain library is disabled.
 add_library(AbstractStateCore)
 add_library(SVF::AbstractStateCore ALIAS AbstractStateCore)
 target_compile_features(AbstractStateCore PUBLIC cxx_std_17)
@@ -56,33 +65,33 @@ install(
           DESTINATION ${SVF_INSTALL_INCLUDEDIR}
 )
 
-if(SVF_BUILD_RELATIONAL_DOMAIN)
+if(SVF_BUILD_ABSTRACT_DOMAINS)
 
-  add_library(RelationalDomainCore)
-  add_library(SVF::RelationalDomainCore ALIAS RelationalDomainCore)
-  target_compile_features(RelationalDomainCore PUBLIC cxx_std_17)
+  add_library(AbstractDomainCore)
+  add_library(SVF::AbstractDomainCore ALIAS AbstractDomainCore)
+  target_compile_features(AbstractDomainCore PUBLIC cxx_std_17)
   target_sources(
-    RelationalDomainCore
+    AbstractDomainCore
     PUBLIC FILE_SET HEADERS
                     BASE_DIRS ${CMAKE_CURRENT_LIST_DIR}/include
-                    FILES ${RELATIONAL_CORE_HEADERS}
-    PRIVATE ${RELATIONAL_CORE_SOURCES}
+                    FILES ${ABSTRACT_DOMAIN_CORE_HEADERS}
+    PRIVATE ${ABSTRACT_DOMAIN_CORE_SOURCES}
   )
   target_include_directories(
-    RelationalDomainCore PUBLIC
+    AbstractDomainCore PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_LIST_DIR}/include>
   )
   target_link_libraries(
-    RelationalDomainCore PUBLIC AbstractStateCore GMP::GMPXX MPFR::MPFR
+    AbstractDomainCore PUBLIC AbstractStateCore GMP::GMPXX MPFR::MPFR
   )
   set_target_properties(
-    RelationalDomainCore PROPERTIES
+    AbstractDomainCore PROPERTIES
     VERSION ${SVF_VERSION}
     SOVERSION ${SVF_VERSION_MAJOR}
   )
 
   install(
-    TARGETS RelationalDomainCore
+    TARGETS AbstractDomainCore
     EXPORT SVFTargets
     RUNTIME DESTINATION ${SVF_INSTALL_BINDIR}
     LIBRARY DESTINATION ${SVF_INSTALL_LIBDIR}
@@ -104,15 +113,15 @@ file(GLOB_RECURSE SVF_CORE_HEADERS ${CMAKE_CURRENT_LIST_DIR}/include/*.h)
 file(GLOB_RECURSE SVF_CORE_SOURCES ${CMAKE_CURRENT_LIST_DIR}/lib/*.cpp)
 list(FILTER SVF_CORE_SOURCES EXCLUDE REGEX "/lib/AE/Test/")
 list(REMOVE_ITEM SVF_CORE_HEADERS
-     ${ABSTRACT_STATE_CORE_HEADERS} ${RELATIONAL_CORE_HEADERS})
+     ${ABSTRACT_STATE_CORE_HEADERS} ${ABSTRACT_DOMAIN_CORE_HEADERS})
 list(REMOVE_ITEM SVF_CORE_SOURCES
-     ${ABSTRACT_STATE_CORE_SOURCES} ${RELATIONAL_CORE_SOURCES})
-if(SVF_BUILD_RELATIONAL_DOMAIN)
-  target_link_libraries(SvfCore PUBLIC RelationalDomainCore)
-  target_compile_definitions(SvfCore PUBLIC SVF_BUILD_RELATIONAL_DOMAIN=1)
+     ${ABSTRACT_STATE_CORE_SOURCES} ${ABSTRACT_DOMAIN_CORE_SOURCES})
+if(SVF_BUILD_ABSTRACT_DOMAINS)
+  target_link_libraries(SvfCore PUBLIC AbstractDomainCore)
+  target_compile_definitions(SvfCore PUBLIC SVF_BUILD_ABSTRACT_DOMAINS=1)
 else()
-  list(REMOVE_ITEM SVF_CORE_HEADERS ${RELATIONAL_BRIDGE_HEADERS})
-  list(REMOVE_ITEM SVF_CORE_SOURCES ${RELATIONAL_BRIDGE_SOURCES})
+  list(REMOVE_ITEM SVF_CORE_HEADERS ${ABSTRACT_DOMAIN_INTEGRATION_HEADERS})
+  list(REMOVE_ITEM SVF_CORE_SOURCES ${ABSTRACT_DOMAIN_INTEGRATION_SOURCES})
 endif()
 target_sources(
   SvfCore

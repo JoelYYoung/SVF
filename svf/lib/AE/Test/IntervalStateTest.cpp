@@ -54,11 +54,13 @@ int main()
                     IntervalValue((s64_t)0, (s64_t)2)),
                 "whole-state join failed");
 
-        const AbstractState& genericLhs = lhs;
-        const AbstractState& genericRhs = rhs;
-        std::unique_ptr<AbstractState> genericJoined =
-            genericLhs.joined(genericRhs);
-        require(genericJoined->equals(joined) == CheckResult::True,
+        const AbstractDomain::AbstractState& genericLhs = lhs;
+        const AbstractDomain::AbstractState& genericRhs = rhs;
+        std::unique_ptr<AbstractDomain::AbstractState> genericJoined =
+            genericLhs.clone();
+        genericJoined->joinWith(genericRhs);
+        require(genericJoined->isEquivalentTo(joined) ==
+                    AbstractDomain::CheckResult::True,
                 "common lattice dispatch failed for IntervalState");
 
         IntervalState replacement;
