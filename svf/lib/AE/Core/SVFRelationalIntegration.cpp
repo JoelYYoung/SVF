@@ -11,17 +11,22 @@
 
 using namespace SVF;
 
+#ifdef SVF_BUILD_RELATIONAL_DOMAIN
+
 bool AbstractInterpretation::hasRelationalState(const ICFGNode* node) const
 {
-    const auto it = relationalTrace.find(node);
-    return it != relationalTrace.end() && it->second != nullptr;
+    const auto it = abstractTrace.find(node);
+    return it != abstractTrace.end() &&
+           it->second.hasRelationalNumericalState();
 }
 
 const SVFRelationalBridge*
 AbstractInterpretation::getRelationalState(const ICFGNode* node) const
 {
-    const auto it = relationalTrace.find(node);
-    return it == relationalTrace.end() ? nullptr : it->second.get();
+    const auto it = abstractTrace.find(node);
+    return it == abstractTrace.end()
+               ? nullptr
+               : it->second.getRelationalNumericalState();
 }
 
 bool AbstractInterpretation::isRelationalStateBottom(
@@ -36,11 +41,13 @@ bool AbstractInterpretation::isRelationalBranchFeasible(
 {
     if (!Options::AERelational())
         return true;
-    RelationalStatePtr state = snapshotRelationalState(edge->getSrcNode());
-    if (!state)
+    const SVFRelationalBridge* source =
+        getRelationalState(edge->getSrcNode());
+    if (!source)
         return true;
-    assumeRelationalBranch(edge, *state);
-    return !state->isBottom();
+    SVFRelationalBridge state(*source);
+    assumeRelationalBranch(edge, state);
+    return !state.isBottom();
 }
 
 void AbstractInterpretation::initializeRelationalEnvironments()
@@ -48,7 +55,6 @@ void AbstractInterpretation::initializeRelationalEnvironments()
     if (!Options::AERelational())
         return;
 
-    relationalDomain = relational::makeOctagonDomain();
     const std::size_t maximum = Options::AERelationalMaxVars();
     for (SVFIR::iterator it = svfir->begin(); it != svfir->end(); ++it)
     {
@@ -84,104 +90,25 @@ AbstractInterpretation::trackedRelationalVariables(
     return globalRelationalVariables;
 }
 
-AbstractInterpretation::RelationalStatePtr
-AbstractInterpretation::makeRelationalTop(const ICFGNode* node) const
-{
-    if (!Options::AERelational())
-        return nullptr;
-    return std::make_shared<SVFRelationalBridge>(
-        trackedRelationalVariables(node), relationalDomain);
-}
-
-AbstractInterpretation::RelationalStatePtr
-AbstractInterpretation::snapshotRelationalState(const ICFGNode* node) const
-{
-    const SVFRelationalBridge* state = getRelationalState(node);
-    return state ? std::make_shared<SVFRelationalBridge>(*state) : nullptr;
-}
-
 void AbstractInterpretation::initializeRelationalState(const ICFGNode* node)
 {
-    if (Options::AERelational() && !hasRelationalState(node))
-        relationalTrace[node] = makeRelationalTop(node);
+    if (!Options::AERelational())
+        return;
+    abstractTrace[node].initializeRelationalNumericalState(
+        trackedRelationalVariables(node));
 }
 
-void AbstractInterpretation::copyRelationalState(
-    const ICFGNode* destination, const ICFGNode* source)
+void AbstractInterpretation::adaptRelationalState(
+    const ICFGNode* node, AbstractState& state) const
 {
     if (!Options::AERelational())
         return;
-
-    RelationalStatePtr copy = snapshotRelationalState(source);
-    if (!copy)
-        copy = makeRelationalTop(destination);
+    if (!state.hasRelationalNumericalState())
+        state.initializeRelationalNumericalState(
+            trackedRelationalVariables(node));
     else
-        copy->changeTrackedVariables(
-            trackedRelationalVariables(destination));
-    relationalTrace[destination] = std::move(copy);
-}
-
-void AbstractInterpretation::mergeRelationalFromPredecessors(
-    const ICFGNode* node)
-{
-    if (!Options::AERelational())
-        return;
-
-    RelationalStatePtr merged;
-    auto mergeSource = [&](const ICFGNode* predecessor,
-                           const IntraCFGEdge* conditionalEdge)
-    {
-        RelationalStatePtr source = snapshotRelationalState(predecessor);
-        if (!source)
-            source = makeRelationalTop(node);
-        else
-            source->changeTrackedVariables(trackedRelationalVariables(node));
-        if (conditionalEdge)
-            assumeRelationalBranch(conditionalEdge, *source);
-        if (!merged)
-            merged = std::move(source);
-        else
-            merged->joinWith(*source);
-    };
-
-    for (ICFGEdge* edge : node->getInEdges())
-    {
-        const ICFGNode* predecessor = edge->getSrcNode();
-        if (!hasAbsState(predecessor))
-            continue;
-
-        if (const IntraCFGEdge* intra =
-                SVFUtil::dyn_cast<IntraCFGEdge>(edge))
-        {
-            if (intra->getCondition())
-            {
-                AbstractState state = getAbsState(predecessor);
-                if (isBranchEdgeFeasible(intra, state))
-                    mergeSource(predecessor, intra);
-            }
-            else
-                mergeSource(predecessor, nullptr);
-        }
-        else if (SVFUtil::isa<CallCFGEdge>(edge))
-            mergeSource(predecessor, nullptr);
-        else if (SVFUtil::isa<RetCFGEdge>(edge))
-        {
-            if (Options::HandleRecur() == TOP)
-                mergeSource(predecessor, nullptr);
-            else
-            {
-                const RetICFGNode* returnSite =
-                    SVFUtil::dyn_cast<RetICFGNode>(node);
-                const CallICFGNode* callSite =
-                    returnSite ? returnSite->getCallICFGNode() : nullptr;
-                if (callSite && hasAbsState(callSite))
-                    mergeSource(predecessor, nullptr);
-            }
-        }
-    }
-
-    relationalTrace[node] = merged ? std::move(merged)
-                                   : makeRelationalTop(node);
+        state.changeRelationalNumericalEnvironment(
+            trackedRelationalVariables(node));
 }
 
 bool AbstractInterpretation::appendRelationalOperand(
@@ -299,16 +226,17 @@ void AbstractInterpretation::assignRelationalInterval(
     if (!Options::AERelational())
         return;
     initializeRelationalState(node);
-    RelationalStatePtr& state = relationalTrace[node];
-    if (state->tracks(target->getId()))
+    SVFRelationalBridge& state =
+        *abstractTrace[node].getRelationalNumericalState();
+    if (state.tracks(target->getId()))
     {
         // SVF uses a bottom IntervalValue as its uninitialized/no-numeric
         // sentinel, not as whole-path unreachability. Forgetting is the sound
         // relational interpretation of that sentinel.
         if (interval.isBottom())
-            state->forget(target->getId());
+            state.forget(target->getId());
         else
-            state->assignInterval(target->getId(), interval);
+            state.assignInterval(target->getId(), interval);
         reduceRelationalInterval(node, target);
     }
 }
@@ -319,7 +247,8 @@ void AbstractInterpretation::synchronizeRelationalWithIntervals(
     if (!Options::AERelational())
         return;
     initializeRelationalState(node);
-    SVFRelationalBridge& state = *relationalTrace[node];
+    SVFRelationalBridge& state =
+        *abstractTrace[node].getRelationalNumericalState();
     for (const TrackedRelationalVariable& tracked :
             trackedRelationalVariables(node))
     {
@@ -369,7 +298,8 @@ void AbstractInterpretation::updateRelationalOnBinary(
         return;
     const ICFGNode* node = binary->getICFGNode();
     initializeRelationalState(node);
-    SVFRelationalBridge& state = *relationalTrace[node];
+    SVFRelationalBridge& state =
+        *abstractTrace[node].getRelationalNumericalState();
     const SVFVar* target = binary->getRes();
     if (!state.tracks(target->getId()))
         return;
@@ -454,7 +384,8 @@ void AbstractInterpretation::updateRelationalCopyValue(
     if (!Options::AERelational())
         return;
     initializeRelationalState(node);
-    SVFRelationalBridge& state = *relationalTrace[node];
+    SVFRelationalBridge& state =
+        *abstractTrace[node].getRelationalNumericalState();
     if (!state.tracks(target->getId()))
         return;
 
@@ -491,55 +422,73 @@ void AbstractInterpretation::updateRelationalOnCopy(const CopyStmt* copy)
                               copy->getRHSVar(), exact);
 }
 
-bool AbstractInterpretation::widenRelationalCycleState(
-    const RelationalStatePtr& previous, const RelationalStatePtr& current,
-    const ICFGNode* cycleHead)
+#else
+
+bool AbstractInterpretation::hasRelationalState(const ICFGNode*) const
 {
-    if (!Options::AERelational())
-        return true;
-    RelationalStatePtr oldState = previous
-                                      ? std::make_shared<SVFRelationalBridge>(
-                                            *previous)
-                                      : makeRelationalTop(cycleHead);
-    RelationalStatePtr nextState = current
-                                       ? std::make_shared<SVFRelationalBridge>(
-                                             *current)
-                                       : makeRelationalTop(cycleHead);
-    oldState->changeTrackedVariables(trackedRelationalVariables(cycleHead));
-    nextState->changeTrackedVariables(trackedRelationalVariables(cycleHead));
-    RelationalStatePtr widened =
-        std::make_shared<SVFRelationalBridge>(*oldState);
-    widened->widenWith(*nextState);
-    const bool fixpoint = widened->equals(*oldState);
-    relationalTrace[cycleHead] = std::move(widened);
-    return fixpoint;
+    return false;
 }
 
-bool AbstractInterpretation::narrowRelationalCycleState(
-    const RelationalStatePtr& previous, const RelationalStatePtr& current,
-    const ICFGNode* cycleHead)
+const SVFRelationalBridge*
+AbstractInterpretation::getRelationalState(const ICFGNode*) const
 {
-    if (!Options::AERelational())
-        return true;
-    RelationalStatePtr oldState = previous
-                                      ? std::make_shared<SVFRelationalBridge>(
-                                            *previous)
-                                      : makeRelationalTop(cycleHead);
-    RelationalStatePtr nextState = current
-                                       ? std::make_shared<SVFRelationalBridge>(
-                                             *current)
-                                       : makeRelationalTop(cycleHead);
-    oldState->changeTrackedVariables(trackedRelationalVariables(cycleHead));
-    nextState->changeTrackedVariables(trackedRelationalVariables(cycleHead));
-    if (!nextState->includedIn(*oldState))
-    {
-        relationalTrace[cycleHead] = oldState;
-        return true;
-    }
-    RelationalStatePtr narrowed =
-        std::make_shared<SVFRelationalBridge>(*oldState);
-    narrowed->narrowWith(*nextState);
-    const bool fixpoint = narrowed->equals(*oldState);
-    relationalTrace[cycleHead] = std::move(narrowed);
-    return fixpoint;
+    return nullptr;
 }
+
+void AbstractInterpretation::initializeRelationalEnvironments()
+{
+}
+
+void AbstractInterpretation::initializeRelationalState(const ICFGNode*)
+{
+}
+
+void AbstractInterpretation::adaptRelationalState(
+    const ICFGNode*, AbstractState&) const
+{
+}
+
+bool AbstractInterpretation::isRelationalStateBottom(const ICFGNode*) const
+{
+    return false;
+}
+
+bool AbstractInterpretation::isRelationalBranchFeasible(const IntraCFGEdge*)
+{
+    return true;
+}
+
+void AbstractInterpretation::assignRelationalInterval(
+    const ICFGNode*, const SVFVar*, const IntervalValue&)
+{
+}
+
+void AbstractInterpretation::synchronizeRelationalWithIntervals(
+    const ICFGNode*)
+{
+}
+
+void AbstractInterpretation::reduceRelationalInterval(
+    const ICFGNode*, const SVFVar*)
+{
+}
+
+void AbstractInterpretation::reduceRelationalIntervals(const ICFGNode*)
+{
+}
+
+void AbstractInterpretation::updateRelationalOnBinary(
+    const BinaryOPStmt*, const IntervalValue&)
+{
+}
+
+void AbstractInterpretation::updateRelationalOnCopy(const CopyStmt*)
+{
+}
+
+void AbstractInterpretation::updateRelationalCopyValue(
+    const ICFGNode*, const SVFVar*, const SVFVar*, bool)
+{
+}
+
+#endif

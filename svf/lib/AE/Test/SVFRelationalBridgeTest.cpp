@@ -15,10 +15,8 @@ int main()
 {
     try
     {
-        const auto domain = makeOctagonDomain();
         SVFRelationalBridge base({{11, NumericType::integer(), "svf_11"},
-                                  {22, NumericType::integer(), "svf_22"}},
-                                 domain);
+                                  {22, NumericType::integer(), "svf_22"}});
         base.assignConstant(11, Rational(4));
         base.assignAffine(22, {{11, Rational(1)}}, Rational(2));
         if (base.bound(22).lower().value() != Rational(6) ||
@@ -42,7 +40,7 @@ int main()
 
         base.changeTrackedVariables({{11, NumericType::integer(), "svf_11"},
                                      {22, NumericType::integer(), "svf_22"}});
-        const AbstractState beforeAffineAssignment = base.state();
+        const OctagonState beforeAffineAssignment = base.state();
         base.assignAffine(22, {{11, Rational(1)}}, Rational(2));
 
         Z3SoundnessChecker checker(base.environment());
@@ -54,7 +52,7 @@ int main()
             throw std::runtime_error(assignmentProof.detail);
 
         SVFRelationalBridge assumed = base;
-        const AbstractState beforeAssume = assumed.state();
+        const OctagonState beforeAssume = assumed.state();
         assumed.assumeAffine({{11, Rational(1)}, {22, Rational(-1)}},
                              Rational(2), ConstraintKind::LessEqual);
         LinearExpression branchExpression(Variable(11));
@@ -69,8 +67,7 @@ int main()
 
         SVFRelationalBridge reduced(
             {{11, NumericType::integer(), "svf_11"},
-             {22, NumericType::integer(), "svf_22"}},
-            domain);
+             {22, NumericType::integer(), "svf_22"}});
         reduced.assignInterval(11,
                                IntervalValue((s64_t)0, (s64_t)10));
         reduced.assignAffine(22, {{11, Rational(1)}}, Rational(2));
@@ -84,7 +81,7 @@ int main()
                 "relational bounds did not reduce the AE intervals");
 
         SVFRelationalBridge strictInteger(
-            {{11, NumericType::integer(), "svf_11"}}, domain);
+            {{11, NumericType::integer(), "svf_11"}});
         strictInteger.assumeAffine({{11, Rational(1)}}, Rational("-3/2"),
                                    ConstraintKind::LessThan);
         if (!strictInteger.projectInterval(11).equals(IntervalValue(
@@ -93,7 +90,7 @@ int main()
                 "strict rational bounds were not rounded for integer AE");
 
         SVFRelationalBridge infeasible(
-            {{11, NumericType::integer(), "svf_11"}}, domain);
+            {{11, NumericType::integer(), "svf_11"}});
         infeasible.assignConstant(11, Rational(1));
         infeasible.assumeAffine({{11, Rational(1)}}, Rational(-1),
                                 ConstraintKind::LessThan);
@@ -103,7 +100,7 @@ int main()
                 "relational bottom did not project to AE bottom");
 
         SVFRelationalBridge outsideSigned64(
-            {{11, NumericType::integer(), "svf_11"}}, domain);
+            {{11, NumericType::integer(), "svf_11"}});
         outsideSigned64.assignConstant(11,
                                        Rational("9223372036854775808"));
         if (!outsideSigned64.projectInterval(11).isTop())
@@ -122,14 +119,12 @@ int main()
             throw std::runtime_error(proof.detail);
 
         SVFRelationalBridge firstRange({{11, NumericType::integer(), "svf_11"},
-                                        {22, NumericType::integer(), "svf_22"}},
-                                       domain);
+                                        {22, NumericType::integer(), "svf_22"}});
         firstRange.assignInterval(11, IntervalValue((s64_t)0, (s64_t)1));
         firstRange.assignAffine(22, {{11, Rational(1)}}, Rational(1));
         SVFRelationalBridge secondRange(
             {{11, NumericType::integer(), "svf_11"},
-             {22, NumericType::integer(), "svf_22"}},
-            domain);
+             {22, NumericType::integer(), "svf_22"}});
         secondRange.assignInterval(11, IntervalValue((s64_t)0, (s64_t)2));
         secondRange.assignAffine(22, {{11, Rational(1)}}, Rational(1));
         SVFRelationalBridge widened = firstRange;

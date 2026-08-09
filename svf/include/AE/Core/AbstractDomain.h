@@ -1,4 +1,4 @@
-//===- AbstractDomain.h -- Abstract relational-domain API ------*- C++ -*-===//
+//===- AbstractDomain.h -- Abstract relational-state API -------*- C++ -*-===//
 
 #ifndef RELATIONAL_ABSTRACT_DOMAIN_H
 #define RELATIONAL_ABSTRACT_DOMAIN_H
@@ -12,10 +12,6 @@
 
 namespace relational
 {
-
-class DomainState;
-class AbstractDomain;
-class AbstractState;
 
 enum class CheckResult
 {
@@ -86,104 +82,25 @@ enum class ConversionQuality
     SoundButLossy
 };
 
-/// Type-erased internal representation of one element of an abstract domain.
-/// Clients manipulate the value-semantic AbstractState facade instead.
-class DomainState
-{
-public:
-    virtual ~DomainState() = default;
-    virtual std::unique_ptr<DomainState> clone() const = 0;
-};
-
-/// Common interface implemented by concrete relational domains.
+/// One element of a numerical abstract domain.
 ///
-/// An AbstractDomain owns the algorithms and configuration for a family of
-/// AbstractState values.  Concrete domains such as OctagonDomain implement
-/// the representation-specific lattice and transfer operations below.
-class AbstractDomain : public std::enable_shared_from_this<AbstractDomain>
-{
-public:
-    virtual ~AbstractDomain();
-
-    virtual const char* name() const = 0;
-    virtual DomainCapabilities capabilities() const = 0;
-
-    AbstractState top(const Environment& environment) const;
-    AbstractState bottom(const Environment& environment) const;
-    AbstractState fromBox(const Environment& environment, const Box& box) const;
-    AbstractState fromConstraints(const Environment& environment,
-                                  const LinearConstraintSet& constraints) const;
-
-protected:
-    explicit AbstractDomain(std::shared_ptr<DiagnosticSink> diagnostics = {});
-
-private:
-    friend class AbstractState;
-
-    void report(OperationKind operation, ApproximationKind approximation,
-                std::string reason) const;
-
-    virtual std::unique_ptr<DomainState> makeTop(
-        const Environment& environment) const = 0;
-    virtual std::unique_ptr<DomainState> makeBottom(
-        const Environment& environment) const = 0;
-
-    virtual ApproximationKind assignState(
-        DomainState& state, const Environment& environment, Variable target,
-        const LinearExpression& expression) const = 0;
-    virtual ApproximationKind assumeState(
-        DomainState& state, const Environment& environment,
-        const LinearConstraint& constraint) const = 0;
-    virtual void forgetState(DomainState& state, const Environment& environment,
-                             Variable variable) const = 0;
-
-    virtual std::unique_ptr<DomainState> joinStates(
-        const DomainState& lhs, const DomainState& rhs) const = 0;
-    virtual std::unique_ptr<DomainState> meetStates(
-        const DomainState& lhs, const DomainState& rhs) const = 0;
-    virtual std::unique_ptr<DomainState> widenStates(
-        const DomainState& current, const DomainState& next,
-        const WideningPolicy& policy) const = 0;
-    virtual std::unique_ptr<DomainState> narrowStates(
-        const DomainState& current, const DomainState& next) const = 0;
-    virtual std::unique_ptr<DomainState> projectLowerBoundsState(
-        const DomainState& state) const = 0;
-    virtual std::unique_ptr<DomainState> changeEnvironmentState(
-        const DomainState& state, const Environment& oldEnvironment,
-        const Environment& newEnvironment, bool projectNewVariables) const = 0;
-
-    virtual bool isBottomState(const DomainState& state) const = 0;
-    virtual bool isTopState(const DomainState& state) const = 0;
-    virtual bool leqStates(const DomainState& lhs,
-                           const DomainState& rhs) const = 0;
-    virtual Interval boundState(const DomainState& state,
-                                const Environment& environment,
-                                Variable variable) const = 0;
-    virtual LinearConstraintSet constraintsState(
-        const DomainState& state, const Environment& environment) const = 0;
-    virtual std::string stateToString(const DomainState& state,
-                                      const Environment& environment) const = 0;
-
-    std::shared_ptr<DiagnosticSink> diagnostics_;
-};
-
-/// Copyable value facade for one element of a concrete AbstractDomain.
+/// Concrete states own both their representation and their domain-specific
+/// algorithms.  This base supplies the common tree-expression fallback,
+/// lattice plumbing, compatibility checks, entailment, and exports.  The file
+/// retains its historical name because SVF already has AE/Core/AbstractState.h
+/// for the full program state.
 class AbstractState
 {
 public:
-    AbstractState(const AbstractState& rhs);
-    AbstractState(AbstractState&& rhs) noexcept;
-    AbstractState& operator=(const AbstractState& rhs);
-    AbstractState& operator=(AbstractState&& rhs) noexcept;
-    ~AbstractState();
+    virtual ~AbstractState();
+
+    virtual std::unique_ptr<AbstractState> clone() const = 0;
+    virtual const char* name() const = 0;
+    virtual DomainCapabilities capabilities() const = 0;
 
     const Environment& environment() const
     {
         return environment_;
-    }
-    const std::shared_ptr<const AbstractDomain>& domain() const
-    {
-        return domain_;
     }
 
     void assign(Variable target, const LinearExpression& expression);
@@ -192,14 +109,16 @@ public:
     void assume(const TreeConstraint& constraint);
     void forget(Variable variable);
 
-    AbstractState joined(const AbstractState& other) const;
-    AbstractState met(const AbstractState& other) const;
-    AbstractState widened(const AbstractState& next,
-                          const WideningPolicy& policy = {}) const;
-    AbstractState narrowed(const AbstractState& next) const;
-    AbstractState projectLowerBounds() const;
-    AbstractState changedEnvironment(const Environment& environment,
-                                     bool projectNewVariables = false) const;
+    std::unique_ptr<AbstractState> joined(const AbstractState& other) const;
+    std::unique_ptr<AbstractState> met(const AbstractState& other) const;
+    std::unique_ptr<AbstractState> widened(
+        const AbstractState& next,
+        const WideningPolicy& policy = {}) const;
+    std::unique_ptr<AbstractState> narrowed(const AbstractState& next) const;
+    std::unique_ptr<AbstractState> projectLowerBounds() const;
+    std::unique_ptr<AbstractState> changedEnvironment(
+        const Environment& environment,
+        bool projectNewVariables = false) const;
 
     void joinWith(const AbstractState& other);
     void meetWith(const AbstractState& other);
@@ -220,19 +139,46 @@ public:
     LinearConstraintSet toConstraints() const;
     std::string toString() const;
 
-private:
-    friend class AbstractDomain;
-    AbstractState(std::shared_ptr<const AbstractDomain> domain,
-                  Environment environment, std::unique_ptr<DomainState> state);
-    const AbstractDomain& implementation() const
-    {
-        return *domain_;
-    }
-    void requireCompatible(const AbstractState& other) const;
+protected:
+    explicit AbstractState(Environment environment);
+    AbstractState(const AbstractState&) = default;
+    AbstractState(AbstractState&&) noexcept = default;
+    AbstractState& operator=(const AbstractState&) = default;
+    AbstractState& operator=(AbstractState&&) noexcept = default;
 
-    std::shared_ptr<const AbstractDomain> domain_;
+    void requireCompatible(const AbstractState& other) const;
+    void report(OperationKind operation, ApproximationKind approximation,
+                std::string reason) const;
+
+private:
+    virtual DiagnosticSink* diagnosticSink() const = 0;
+    virtual bool hasCompatibleDomain(const AbstractState& other) const = 0;
+
+    virtual ApproximationKind assignState(
+        Variable target, const LinearExpression& expression) = 0;
+    virtual ApproximationKind assumeState(
+        const LinearConstraint& constraint) = 0;
+    virtual void forgetState(Variable variable) = 0;
+
+    virtual void joinState(const AbstractState& other) = 0;
+    virtual void meetState(const AbstractState& other) = 0;
+    virtual void widenState(const AbstractState& next,
+                            const WideningPolicy& policy) = 0;
+    virtual void narrowState(const AbstractState& next) = 0;
+    virtual void projectLowerBoundsState() = 0;
+    virtual void changeEnvironmentState(
+        const Environment& oldEnvironment,
+        const Environment& newEnvironment,
+        bool projectNewVariables) = 0;
+
+    virtual bool isBottomState() const = 0;
+    virtual bool isTopState() const = 0;
+    virtual bool leqState(const AbstractState& other) const = 0;
+    virtual Interval boundState(Variable variable) const = 0;
+    virtual LinearConstraintSet constraintsState() const = 0;
+    virtual std::string stateToString() const = 0;
+
     Environment environment_;
-    std::unique_ptr<DomainState> state_;
 };
 
 } // namespace relational

@@ -17,7 +17,7 @@ using namespace SVF;
 namespace
 {
 
-const SVFVar* findValue(const SVFIR& graph, const std::string& name)
+const SVFVar* findValueIfPresent(const SVFIR& graph, const std::string& name)
 {
     for (SVFIR::const_iterator it = graph.begin(); it != graph.end(); ++it)
     {
@@ -26,6 +26,13 @@ const SVFVar* findValue(const SVFIR& graph, const std::string& name)
         if (valueName == name || valueName.rfind(name + " ", 0) == 0)
             return value;
     }
+    return nullptr;
+}
+
+const SVFVar* requireValue(const SVFIR& graph, const std::string& name)
+{
+    if (const SVFVar* value = findValueIfPresent(graph, name))
+        return value;
     std::cerr << "available named SVF values:";
     for (SVFIR::const_iterator it = graph.begin(); it != graph.end(); ++it)
     {
@@ -35,6 +42,168 @@ const SVFVar* findValue(const SVFIR& graph, const std::string& name)
     }
     std::cerr << '\n';
     throw std::runtime_error("missing SVF value: " + name);
+}
+
+void validateReducedProductFixture(const SVFIR& graph,
+                                   AbstractInterpretation& analysis)
+{
+    const SVFVar* input = requireValue(graph, "x");
+    const SVFVar* affine = requireValue(graph, "y");
+    const SVFVar* result = requireValue(graph, "z");
+    const SVFVar* impossible = requireValue(graph, "bad");
+    bool sawReducedInterval = false;
+    bool sawReducedRelation = false;
+    bool analyzedImpossibleValue = false;
+
+    for (const auto& [node, state] : analysis.getTrace())
+    {
+        (void)state;
+        if (analysis.hasAbsValue(impossible, node))
+            analyzedImpossibleValue = true;
+        if (!analysis.hasAbsValue(result, node))
+            continue;
+
+        const AbstractValue& value = analysis.getAbsValue(result, node);
+        if (value.isInterval() && value.getInterval().equals(
+                IntervalValue((s64_t)1, (s64_t)6)))
+            sawReducedInterval = true;
+
+        const SVFRelationalBridge* relational =
+            analysis.getRelationalState(node);
+        if (relational && relational->tracks(result->getId()) &&
+                relational->projectInterval(result->getId()).equals(
+                    IntervalValue((s64_t)1, (s64_t)6)))
+            sawReducedRelation = true;
+    }
+
+    if (!sawReducedInterval || !sawReducedRelation ||
+            analyzedImpossibleValue)
+    {
+        std::cerr << "relational integration trace:\n";
+        for (const auto& [node, state] : analysis.getTrace())
+        {
+            (void)state;
+            bool wroteNode = false;
+            for (const SVFVar* value :
+                    {input, affine, result, impossible})
+            {
+                const SVFRelationalBridge* relational =
+                    analysis.getRelationalState(node);
+                const bool hasInterval = analysis.hasAbsValue(value, node);
+                const bool hasRelation =
+                    relational && relational->tracks(value->getId());
+                if (!hasInterval && !hasRelation)
+                    continue;
+                if (!wroteNode)
+                {
+                    std::cerr << "  node " << node->getId() << ":\n";
+                    wroteNode = true;
+                }
+                std::cerr << "    " << value->getValueName() << " AE=";
+                if (hasInterval)
+                    std::cerr << analysis.getAbsValue(value, node)
+                                     .getInterval().toString();
+                else
+                    std::cerr << "<absent>";
+                std::cerr << " Octagon=";
+                if (hasRelation)
+                    std::cerr << relational->projectInterval(
+                                         value->getId()).toString();
+                else
+                    std::cerr << "<untracked>";
+                std::cerr << '\n';
+            }
+        }
+    }
+
+    if (!sawReducedInterval)
+        throw std::runtime_error(
+            "Octagon bounds were not reduced into the AE interval trace");
+    if (!sawReducedRelation)
+        throw std::runtime_error(
+            "AE transfers did not reach the Octagon trace");
+    if (analyzedImpossibleValue)
+        throw std::runtime_error(
+            "a relationally infeasible CFG edge remained reachable");
+
+    std::cout
+        << "AE_RELATIONAL_OBSERVATION fixture=reduced-product"
+        << " reduced_interval=1 reduced_relation=1 impossible_reachable=0\n";
+}
+
+void validateLoopFixture(const SVFIR& graph,
+                         AbstractInterpretation& analysis)
+{
+    const SVFVar* induction = requireValue(graph, "i");
+    const SVFVar* result = requireValue(graph, "loop_result");
+    const SVFVar* impossible = requireValue(graph, "loop_bad");
+    const IntervalValue expectedInductionRelation(
+        BoundedInt(4), IntervalValue::plus_infinity());
+    bool sawTopResultInterval = false;
+    bool sawExitRelation = false;
+    bool analyzedImpossibleValue = false;
+
+    for (const auto& [node, state] : analysis.getTrace())
+    {
+        (void)state;
+        if (analysis.hasAbsValue(impossible, node))
+            analyzedImpossibleValue = true;
+        if (!analysis.hasAbsValue(result, node))
+            continue;
+        const AbstractValue& value = analysis.getAbsValue(result, node);
+        if (value.isInterval() && value.getInterval().isTop())
+            sawTopResultInterval = true;
+        const SVFRelationalBridge* relational =
+            analysis.getRelationalState(node);
+        if (relational && relational->tracks(induction->getId()) &&
+                relational->projectInterval(induction->getId()).equals(
+                    expectedInductionRelation))
+            sawExitRelation = true;
+    }
+
+    if (!sawTopResultInterval || !sawExitRelation ||
+            analyzedImpossibleValue)
+    {
+        std::cerr << "loop integration trace:\n";
+        for (const auto& [node, state] : analysis.getTrace())
+        {
+            (void)state;
+            const SVFRelationalBridge* relational =
+                analysis.getRelationalState(node);
+            std::cerr << "  node " << node->getId() << ':';
+            for (const SVFVar* value : {induction, result, impossible})
+            {
+                std::cerr << ' ' << value->getValueName() << "=";
+                if (analysis.hasAbsValue(value, node))
+                    std::cerr << analysis.getAbsValue(value, node)
+                                     .getInterval().toString();
+                else
+                    std::cerr << "<absent>";
+                std::cerr << '/';
+                if (relational && relational->tracks(value->getId()))
+                    std::cerr << relational->projectInterval(
+                                         value->getId()).toString();
+                else
+                    std::cerr << "<untracked>";
+            }
+            std::cerr << '\n';
+        }
+    }
+
+    if (!sawTopResultInterval)
+        throw std::runtime_error(
+            "loop result interval changed from the conservative top result");
+    if (!sawExitRelation)
+        throw std::runtime_error(
+            "loop exit did not preserve the Octagon lower bound [4, +oo]");
+    if (analyzedImpossibleValue)
+        throw std::runtime_error(
+            "post-loop infeasible branch remained reachable");
+
+    std::cout
+        << "AE_RELATIONAL_OBSERVATION fixture=loop"
+        << " result_interval=top induction_relation=[4,+oo]"
+        << " impossible_reachable=0\n";
 }
 
 } // namespace
@@ -60,84 +229,10 @@ int main(int argc, char** argv)
             AbstractInterpretation::getAEInstance();
         analysis.runOnModule();
 
-        const SVFVar* input = findValue(*graph, "x");
-        const SVFVar* affine = findValue(*graph, "y");
-        const SVFVar* result = findValue(*graph, "z");
-        const SVFVar* impossible = findValue(*graph, "bad");
-        bool sawReducedInterval = false;
-        bool sawReducedRelation = false;
-        bool analyzedImpossibleValue = false;
-
-        for (const auto& [node, state] : analysis.getTrace())
-        {
-            (void)state;
-            if (analysis.hasAbsValue(impossible, node))
-                analyzedImpossibleValue = true;
-            if (!analysis.hasAbsValue(result, node))
-                continue;
-
-            const AbstractValue& value = analysis.getAbsValue(result, node);
-            if (value.isInterval() && value.getInterval().equals(
-                    IntervalValue((s64_t)1, (s64_t)6)))
-                sawReducedInterval = true;
-
-            const SVFRelationalBridge* relational =
-                analysis.getRelationalState(node);
-            if (relational && relational->tracks(result->getId()) &&
-                    relational->projectInterval(result->getId()).equals(
-                        IntervalValue((s64_t)1, (s64_t)6)))
-                sawReducedRelation = true;
-        }
-
-        if (!sawReducedInterval || !sawReducedRelation ||
-                analyzedImpossibleValue)
-        {
-            std::cerr << "relational integration trace:\n";
-            for (const auto& [node, state] : analysis.getTrace())
-            {
-                (void)state;
-                bool wroteNode = false;
-                for (const SVFVar* value :
-                        {input, affine, result, impossible})
-                {
-                    const SVFRelationalBridge* relational =
-                        analysis.getRelationalState(node);
-                    const bool hasInterval = analysis.hasAbsValue(value, node);
-                    const bool hasRelation =
-                        relational && relational->tracks(value->getId());
-                    if (!hasInterval && !hasRelation)
-                        continue;
-                    if (!wroteNode)
-                    {
-                        std::cerr << "  node " << node->getId() << ":\n";
-                        wroteNode = true;
-                    }
-                    std::cerr << "    " << value->getValueName() << " AE=";
-                    if (hasInterval)
-                        std::cerr << analysis.getAbsValue(value, node)
-                                         .getInterval().toString();
-                    else
-                        std::cerr << "<absent>";
-                    std::cerr << " Octagon=";
-                    if (hasRelation)
-                        std::cerr << relational->projectInterval(
-                                             value->getId()).toString();
-                    else
-                        std::cerr << "<untracked>";
-                    std::cerr << '\n';
-                }
-            }
-        }
-
-        if (!sawReducedInterval)
-            throw std::runtime_error(
-                "Octagon bounds were not reduced into the AE interval trace");
-        if (!sawReducedRelation)
-            throw std::runtime_error(
-                "AE transfers did not reach the Octagon trace");
-        if (analyzedImpossibleValue)
-            throw std::runtime_error(
-                "a relationally infeasible CFG edge remained reachable");
+        if (findValueIfPresent(*graph, "loop_result"))
+            validateLoopFixture(*graph, analysis);
+        else
+            validateReducedProductFixture(*graph, analysis);
 
         AndersenWaveDiff::releaseAndersenWaveDiff();
         LLVMModuleSet::releaseLLVMModuleSet();

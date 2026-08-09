@@ -71,7 +71,7 @@ void AbstractInterpretation::skipRecursionWithTop(const CallICFGNode *callNode)
     {
         synchronizeRelationalWithIntervals(callNode);
         updateAbsState(retNode, getAbsState(callNode));
-        copyRelationalState(retNode, callNode);
+        adaptRelationalState(retNode, abstractTrace[retNode]);
         return;
     }
     for (const SVFBasicBlock* bb : callNode->getCalledFunction()->getReachableBBs())
@@ -101,7 +101,7 @@ void AbstractInterpretation::skipRecursionWithTop(const CallICFGNode *callNode)
     // 3. Copy callNode's state to retNode
     synchronizeRelationalWithIntervals(callNode);
     updateAbsState(retNode, getAbsState(callNode));
-    copyRelationalState(retNode, callNode);
+    adaptRelationalState(retNode, abstractTrace[retNode]);
 }
 
 /// Check if caller and callee are in the same CallGraph SCC (i.e. a recursive callsite)
@@ -258,22 +258,16 @@ void AbstractInterpretation::handleLoopOrRecursion(const ICFGCycleWTO* cycle, co
             // getFullCycleHeadState handles dense (returns trace[cycle_head])
             // and semi-sparse (collects ValVars from def-sites) uniformly.
             AbstractState prev = getFullCycleHeadState(cycle);
-            RelationalStatePtr previousRelational =
-                snapshotRelationalState(cycle_head);
 
             if (mergeStatesFromPredecessors(cycle_head))
                 handleICFGNode(cycle_head);
             AbstractState cur = getFullCycleHeadState(cycle);
-            RelationalStatePtr currentRelational =
-                snapshotRelationalState(cycle_head);
 
             if (increasing)
             {
-                const bool intervalFixpoint =
+                const bool stateFixpoint =
                     widenCycleState(prev, cur, cycle);
-                const bool relationalFixpoint = widenRelationalCycleState(
-                    previousRelational, currentRelational, cycle_head);
-                if (intervalFixpoint && relationalFixpoint)
+                if (stateFixpoint)
                 {
                     increasing = false;
                     continue;
@@ -281,11 +275,9 @@ void AbstractInterpretation::handleLoopOrRecursion(const ICFGCycleWTO* cycle, co
             }
             else
             {
-                const bool intervalFixpoint =
+                const bool stateFixpoint =
                     narrowCycleState(prev, cur, cycle);
-                const bool relationalFixpoint = narrowRelationalCycleState(
-                    previousRelational, currentRelational, cycle_head);
-                if (intervalFixpoint && relationalFixpoint)
+                if (stateFixpoint)
                     break;
             }
         }

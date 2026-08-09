@@ -32,8 +32,7 @@ public:
 
     explicit SVFRelationalBridge(
         std::vector<TrackedRelationalVariable> variables,
-        std::shared_ptr<relational::AbstractDomain> domain =
-            relational::makeOctagonDomain());
+        relational::OctagonConfig config = {});
 
     bool tracks(NodeID id) const;
     relational::Variable variable(NodeID id) const;
@@ -41,6 +40,8 @@ public:
     void changeTrackedVariables(
         std::vector<TrackedRelationalVariable> variables,
         bool projectNewVariables = false);
+    void setTop();
+    void setBottom();
 
     void assignConstant(NodeID target, relational::Rational constant);
     void assignAffine(NodeID target, std::vector<AffineTerm> terms,
@@ -66,11 +67,11 @@ public:
     /// representation. Unsupported numeric kinds or unrepresentable finite
     /// endpoints conservatively project to top.
     IntervalValue projectInterval(NodeID id) const;
-    const relational::AbstractState& state() const
+    const relational::OctagonState& state() const
     {
         return state_;
     }
-    relational::AbstractState& state()
+    relational::OctagonState& state()
     {
         return state_;
     }
@@ -82,9 +83,8 @@ private:
     void requireCompatible(const SVFRelationalBridge& other) const;
     void constrainInterval(NodeID target, const IntervalValue& interval);
 
-    std::shared_ptr<relational::AbstractDomain> domain_;
     relational::Environment environment_;
-    relational::AbstractState state_;
+    relational::OctagonState state_;
 };
 
 } // namespace SVF

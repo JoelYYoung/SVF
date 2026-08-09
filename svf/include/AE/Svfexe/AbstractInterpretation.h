@@ -31,7 +31,9 @@
 #pragma once
 #include "AE/Core/AbstractState.h"
 #include "AE/Core/ICFGWTO.h"
+#ifdef SVF_BUILD_RELATIONAL_DOMAIN
 #include "AE/Core/SVFRelationalBridge.h"
+#endif
 #include "AE/Svfexe/AEDetector.h"
 #include "AE/Svfexe/AEWTO.h"
 #include "AE/Svfexe/AbsExtAPI.h"
@@ -49,6 +51,7 @@ class AbsExtAPI;
 class AEStat;
 class AEAPI;
 class AndersenWaveDiff;
+class SVFRelationalBridge;
 
 template<typename T> class FILOWorkList;
 
@@ -169,7 +172,7 @@ public:
 
     bool hasAbsState(const ICFGNode* node);
 
-    /// Optional parallel relational trace used by -ae-relational.
+    /// Optional relational component owned by the program-point state.
     bool hasRelationalState(const ICFGNode* node) const;
     const SVFRelationalBridge* getRelationalState(const ICFGNode* node) const;
 
@@ -345,34 +348,35 @@ protected:
 
     bool shouldApplyNarrowing(const FunObjVar* fun);
 
-    // ---- Optional relational reduced product -------------------------
-    using RelationalStatePtr = std::shared_ptr<SVFRelationalBridge>;
-
+    // ---- Relational component of the unified program state -----------
     void initializeRelationalEnvironments();
+#ifdef SVF_BUILD_RELATIONAL_DOMAIN
     const std::vector<TrackedRelationalVariable>&
     trackedRelationalVariables(const ICFGNode* node) const;
-    RelationalStatePtr makeRelationalTop(const ICFGNode* node) const;
-    RelationalStatePtr snapshotRelationalState(const ICFGNode* node) const;
+#endif
     void initializeRelationalState(const ICFGNode* node);
-    void copyRelationalState(const ICFGNode* destination,
-                             const ICFGNode* source);
-    void mergeRelationalFromPredecessors(const ICFGNode* node);
+    void adaptRelationalState(const ICFGNode* node,
+                              AbstractState& state) const;
     bool isRelationalStateBottom(const ICFGNode* node) const;
     bool isRelationalBranchFeasible(const IntraCFGEdge* edge);
+#ifdef SVF_BUILD_RELATIONAL_DOMAIN
     void assumeRelationalBranch(const IntraCFGEdge* edge,
                                 SVFRelationalBridge& state);
+#endif
     void assignRelationalInterval(const ICFGNode* node, const SVFVar* target,
                                   const IntervalValue& interval);
     void synchronizeRelationalWithIntervals(const ICFGNode* node);
     void reduceRelationalInterval(const ICFGNode* node,
                                   const SVFVar* variable);
     void reduceRelationalIntervals(const ICFGNode* node);
+#ifdef SVF_BUILD_RELATIONAL_DOMAIN
     bool appendRelationalOperand(
         const ICFGNode* node, const SVFVar* operand,
         const relational::Rational& multiplier,
         SVFRelationalBridge& state,
         std::vector<SVFRelationalBridge::AffineTerm>& terms,
         relational::Rational& constant);
+#endif
     void updateRelationalOnBinary(const BinaryOPStmt* binary,
                                   const IntervalValue& result);
     void updateRelationalOnCopy(const CopyStmt* copy);
@@ -380,17 +384,10 @@ protected:
                                    const SVFVar* target,
                                    const SVFVar* source,
                                    bool exactMathematicalCopy);
-    bool widenRelationalCycleState(const RelationalStatePtr& previous,
-                                   const RelationalStatePtr& current,
-                                   const ICFGNode* cycleHead);
-    bool narrowRelationalCycleState(const RelationalStatePtr& previous,
-                                    const RelationalStatePtr& current,
-                                    const ICFGNode* cycleHead);
-
-    std::shared_ptr<relational::AbstractDomain> relationalDomain;
+#ifdef SVF_BUILD_RELATIONAL_DOMAIN
     Map<const FunObjVar*, std::vector<TrackedRelationalVariable>>
         relationalVariablesByFunction;
     std::vector<TrackedRelationalVariable> globalRelationalVariables;
-    Map<const ICFGNode*, RelationalStatePtr> relationalTrace;
+#endif
 };
 } // namespace SVF

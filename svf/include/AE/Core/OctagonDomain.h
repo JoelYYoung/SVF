@@ -1,4 +1,4 @@
-//===- OctagonDomain.h -- Exact-rational Octagon domain --------*- C++ -*-===//
+//===- OctagonDomain.h -- Exact-rational Octagon state ---------*- C++ -*-===//
 
 #ifndef RELATIONAL_OCTAGON_DOMAIN_H
 #define RELATIONAL_OCTAGON_DOMAIN_H
@@ -10,77 +10,102 @@
 namespace relational
 {
 
-struct OctagonOptions
+struct OctagonConfig
 {
     bool strongClosure = true;
     bool integerTightening = true;
     std::shared_ptr<DiagnosticSink> diagnostics;
+
+    /// Diagnostics affect observation only, not abstract-state semantics.
+    bool operationCompatible(const OctagonConfig& other) const
+    {
+        return strongClosure == other.strongClosure &&
+               integerTightening == other.integerTightening;
+    }
 };
 
-/// Concrete AbstractDomain for constraints of the form +/-x +/-y <= c.
-class OctagonDomain final : public AbstractDomain
+/// One Octagon abstract element for constraints +/-x +/-y <= c.
+///
+/// Unlike APRON's manager/value split, this object owns its environment,
+/// configuration, DBM representation, and algorithms.  Copies are deep value
+/// copies; clone() supplies polymorphic ownership when a caller needs the
+/// AbstractState interface.
+class OctagonState final : public AbstractState
 {
 public:
-    ~OctagonDomain() override;
+    static OctagonState top(const Environment& environment,
+                            const OctagonConfig& config = {});
+    static OctagonState bottom(const Environment& environment,
+                               const OctagonConfig& config = {});
+    static OctagonState fromBox(const Environment& environment,
+                                const Box& box,
+                                const OctagonConfig& config = {});
+    static OctagonState fromConstraints(
+        const Environment& environment,
+        const LinearConstraintSet& constraints,
+        const OctagonConfig& config = {});
 
+    OctagonState(const OctagonState& other);
+    OctagonState(OctagonState&& other) noexcept;
+    OctagonState& operator=(const OctagonState& other);
+    OctagonState& operator=(OctagonState&& other) noexcept;
+    ~OctagonState() override;
+
+    std::unique_ptr<AbstractState> clone() const override;
     const char* name() const override;
     DomainCapabilities capabilities() const override;
 
+    const OctagonConfig& config() const;
+
+    /// Explicitly converts the operation policy while retaining the represented
+    /// concrete set. Enabling stronger normalization may improve precision;
+    /// disabling it keeps existing facts but changes subsequent scheduling.
+    OctagonState reconfigured(const OctagonConfig& config) const;
+
+    OctagonState joinedOctagon(const OctagonState& other) const;
+    OctagonState metOctagon(const OctagonState& other) const;
+    OctagonState widenedOctagon(
+        const OctagonState& next,
+        const WideningPolicy& policy = {}) const;
+    OctagonState narrowedOctagon(const OctagonState& next) const;
+    OctagonState lowerBoundsProjection() const;
+    OctagonState changedEnvironmentOctagon(
+        const Environment& environment,
+        bool projectNewVariables = false) const;
+
 private:
-    friend std::shared_ptr<OctagonDomain> makeOctagonDomain(
-        const OctagonOptions& options);
-
-    explicit OctagonDomain(const OctagonOptions& options);
-
-    std::unique_ptr<DomainState> makeTop(
-        const Environment& environment) const override;
-    std::unique_ptr<DomainState> makeBottom(
-        const Environment& environment) const override;
-
-    ApproximationKind assignState(
-        DomainState& state, const Environment& environment, Variable target,
-        const LinearExpression& expression) const override;
-    ApproximationKind assumeState(
-        DomainState& state, const Environment& environment,
-        const LinearConstraint& constraint) const override;
-    void forgetState(DomainState& state, const Environment& environment,
-                     Variable variable) const override;
-
-    std::unique_ptr<DomainState> joinStates(
-        const DomainState& lhs, const DomainState& rhs) const override;
-    std::unique_ptr<DomainState> meetStates(
-        const DomainState& lhs, const DomainState& rhs) const override;
-    std::unique_ptr<DomainState> widenStates(
-        const DomainState& current, const DomainState& next,
-        const WideningPolicy& policy) const override;
-    std::unique_ptr<DomainState> narrowStates(
-        const DomainState& current, const DomainState& next) const override;
-    std::unique_ptr<DomainState> projectLowerBoundsState(
-        const DomainState& state) const override;
-    std::unique_ptr<DomainState> changeEnvironmentState(
-        const DomainState& state, const Environment& oldEnvironment,
-        const Environment& newEnvironment,
-        bool projectNewVariables) const override;
-
-    bool isBottomState(const DomainState& state) const override;
-    bool isTopState(const DomainState& state) const override;
-    bool leqStates(const DomainState& lhs,
-                   const DomainState& rhs) const override;
-    Interval boundState(const DomainState& state,
-                        const Environment& environment,
-                        Variable variable) const override;
-    LinearConstraintSet constraintsState(
-        const DomainState& state,
-        const Environment& environment) const override;
-    std::string stateToString(const DomainState& state,
-                              const Environment& environment) const override;
-
     class Impl;
+
+    OctagonState(Environment environment, OctagonConfig config, bool bottom);
+    OctagonState(Environment environment, std::unique_ptr<Impl> impl);
+
+    DiagnosticSink* diagnosticSink() const override;
+    bool hasCompatibleDomain(const AbstractState& other) const override;
+    ApproximationKind assignState(
+        Variable target, const LinearExpression& expression) override;
+    ApproximationKind assumeState(
+        const LinearConstraint& constraint) override;
+    void forgetState(Variable variable) override;
+    void joinState(const AbstractState& other) override;
+    void meetState(const AbstractState& other) override;
+    void widenState(const AbstractState& next,
+                    const WideningPolicy& policy) override;
+    void narrowState(const AbstractState& next) override;
+    void projectLowerBoundsState() override;
+    void changeEnvironmentState(const Environment& oldEnvironment,
+                                const Environment& newEnvironment,
+                                bool projectNewVariables) override;
+    bool isBottomState() const override;
+    bool isTopState() const override;
+    bool leqState(const AbstractState& other) const override;
+    Interval boundState(Variable variable) const override;
+    LinearConstraintSet constraintsState() const override;
+    std::string stateToString() const override;
+
+    const OctagonState& requireOctagon(const AbstractState& other) const;
+
     std::unique_ptr<Impl> impl_;
 };
-
-std::shared_ptr<OctagonDomain> makeOctagonDomain(
-    const OctagonOptions& options = {});
 
 } // namespace relational
 

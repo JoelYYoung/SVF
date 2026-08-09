@@ -1,4 +1,4 @@
-//===- AbstractDomain.cpp -- Abstract relational-domain API -------------===//
+//===- AbstractDomain.cpp -- Abstract relational-state API -------------===//
 
 #include "AE/Core/AbstractDomain.h"
 
@@ -21,129 +21,43 @@ const char* relational::toString(CheckResult result)
     return "unknown";
 }
 
-AbstractDomain::AbstractDomain(std::shared_ptr<DiagnosticSink> diagnostics)
-    : diagnostics_(std::move(diagnostics))
+AbstractState::AbstractState(Environment environment)
+    : environment_(std::move(environment))
 {
 }
-
-AbstractDomain::~AbstractDomain() = default;
-
-AbstractState AbstractDomain::top(const Environment& environment) const
-{
-    return AbstractState(shared_from_this(), environment, makeTop(environment));
-}
-
-AbstractState AbstractDomain::bottom(const Environment& environment) const
-{
-    return AbstractState(shared_from_this(), environment,
-                         makeBottom(environment));
-}
-
-AbstractState AbstractDomain::fromBox(const Environment& environment,
-                                      const Box& box) const
-{
-    AbstractState state = top(environment);
-    for (const auto& [variable, interval] : box.bounds)
-    {
-        if (!environment.contains(variable))
-            throw std::invalid_argument("box contains an unknown variable");
-        if (interval.isBottom())
-            return bottom(environment);
-        if (interval.lower().isFinite())
-        {
-            LinearExpression expression(variable);
-            expression.setConstant(-interval.lower().value());
-            state.assume(LinearConstraint(std::move(expression),
-                                          interval.lower().isStrict()
-                                              ? ConstraintKind::GreaterThan
-                                              : ConstraintKind::GreaterEqual));
-        }
-        if (interval.upper().isFinite())
-        {
-            LinearExpression expression(variable);
-            expression.setConstant(-interval.upper().value());
-            state.assume(LinearConstraint(std::move(expression),
-                                          interval.upper().isStrict()
-                                              ? ConstraintKind::LessThan
-                                              : ConstraintKind::LessEqual));
-        }
-    }
-    return state;
-}
-
-AbstractState AbstractDomain::fromConstraints(
-    const Environment& environment,
-    const LinearConstraintSet& constraints) const
-{
-    AbstractState state = top(environment);
-    for (const LinearConstraint& constraint : constraints)
-        state.assume(constraint);
-    return state;
-}
-
-void AbstractDomain::report(OperationKind operation,
-                            ApproximationKind approximation,
-                            std::string reason) const
-{
-    if (diagnostics_ && approximation != ApproximationKind::Exact &&
-        approximation != ApproximationKind::BestAbstraction)
-        diagnostics_->report({operation, approximation, std::move(reason)});
-}
-
-AbstractState::AbstractState(std::shared_ptr<const AbstractDomain> domain,
-                             Environment environment,
-                             std::unique_ptr<DomainState> state)
-    : domain_(std::move(domain)), environment_(std::move(environment)),
-      state_(std::move(state))
-{
-    if (!domain_ || !state_)
-        throw std::invalid_argument(
-            "relational state requires a domain and domain state");
-}
-
-AbstractState::AbstractState(const AbstractState& rhs)
-    : domain_(rhs.domain_), environment_(rhs.environment_),
-      state_(rhs.state_->clone())
-{
-}
-
-AbstractState::AbstractState(AbstractState&& rhs) noexcept = default;
-
-AbstractState& AbstractState::operator=(const AbstractState& rhs)
-{
-    if (this == &rhs)
-        return *this;
-    domain_ = rhs.domain_;
-    environment_ = rhs.environment_;
-    state_ = rhs.state_->clone();
-    return *this;
-}
-
-AbstractState& AbstractState::operator=(AbstractState&& rhs) noexcept = default;
 
 AbstractState::~AbstractState() = default;
 
+void AbstractState::report(OperationKind operation,
+                           ApproximationKind approximation,
+                           std::string reason) const
+{
+    DiagnosticSink* sink = diagnosticSink();
+    if (sink && approximation != ApproximationKind::Exact &&
+        approximation != ApproximationKind::BestAbstraction)
+        sink->report({operation, approximation, std::move(reason)});
+}
+
 void AbstractState::requireCompatible(const AbstractState& other) const
 {
-    if (domain_.get() != other.domain_.get())
+    if (!hasCompatibleDomain(other))
         throw std::invalid_argument(
-            "relational states belong to different abstract domains");
+            "relational states use incompatible domains or configurations");
     if (environment_ != other.environment_)
         throw std::invalid_argument(
             "relational states use different environments");
 }
 
-void AbstractState::assign(Variable target, const LinearExpression& expression)
+void AbstractState::assign(Variable target,
+                           const LinearExpression& expression)
 {
-    const ApproximationKind approximation =
-        implementation().assignState(*state_, environment_, target, expression);
-    domain_->report(
-        OperationKind::Assignment, approximation,
-        approximation == ApproximationKind::UnsupportedFallback
-            ? std::string(domain_->name()) +
-                  " forgot a target assigned an unsupported linear expression"
-            : std::string(domain_->name()) +
-                  " approximated a linear assignment");
+    const ApproximationKind approximation = assignState(target, expression);
+    report(OperationKind::Assignment, approximation,
+           approximation == ApproximationKind::UnsupportedFallback
+               ? std::string(name()) +
+                     " forgot a target assigned an unsupported linear expression"
+               : std::string(name()) +
+                     " approximated a linear assignment");
 }
 
 void AbstractState::assign(Variable target, const TreeExpression& expression)
@@ -154,20 +68,18 @@ void AbstractState::assign(Variable target, const TreeExpression& expression)
         return;
     }
     forget(target);
-    domain_->report(OperationKind::Assignment,
-                    ApproximationKind::UnsupportedFallback,
-                    std::string(domain_->name()) +
-                        " forgot a target assigned a nonlinear or floating "
-                        "tree expression");
+    report(OperationKind::Assignment,
+           ApproximationKind::UnsupportedFallback,
+           std::string(name()) +
+               " forgot a target assigned a nonlinear or floating tree expression");
 }
 
 void AbstractState::assume(const LinearConstraint& constraint)
 {
-    const ApproximationKind approximation =
-        implementation().assumeState(*state_, environment_, constraint);
-    domain_->report(OperationKind::Assumption, approximation,
-                    std::string(domain_->name()) +
-                        " ignored or approximated an unsupported constraint");
+    const ApproximationKind approximation = assumeState(constraint);
+    report(OperationKind::Assumption, approximation,
+           std::string(name()) +
+               " ignored or approximated an unsupported constraint");
 }
 
 void AbstractState::assume(const TreeConstraint& constraint)
@@ -177,117 +89,121 @@ void AbstractState::assume(const TreeConstraint& constraint)
         assume(LinearConstraint(*linear, constraint.kind()));
         return;
     }
-    domain_->report(OperationKind::Assumption,
-                    ApproximationKind::UnsupportedFallback,
-                    std::string(domain_->name()) +
-                        " ignored a nonlinear or floating assumption");
+    report(OperationKind::Assumption,
+           ApproximationKind::UnsupportedFallback,
+           std::string(name()) +
+               " ignored a nonlinear or floating assumption");
 }
 
 void AbstractState::forget(Variable variable)
 {
-    implementation().forgetState(*state_, environment_, variable);
+    forgetState(variable);
 }
 
-AbstractState AbstractState::joined(const AbstractState& other) const
+std::unique_ptr<AbstractState>
+AbstractState::joined(const AbstractState& other) const
 {
-    requireCompatible(other);
-    return AbstractState(domain_, environment_,
-                         implementation().joinStates(*state_, *other.state_));
+    std::unique_ptr<AbstractState> result = clone();
+    result->joinWith(other);
+    return result;
 }
 
-AbstractState AbstractState::met(const AbstractState& other) const
+std::unique_ptr<AbstractState> AbstractState::met(
+    const AbstractState& other) const
 {
-    requireCompatible(other);
-    return AbstractState(domain_, environment_,
-                         implementation().meetStates(*state_, *other.state_));
+    std::unique_ptr<AbstractState> result = clone();
+    result->meetWith(other);
+    return result;
 }
 
-AbstractState AbstractState::widened(const AbstractState& next,
-                                     const WideningPolicy& policy) const
+std::unique_ptr<AbstractState> AbstractState::widened(
+    const AbstractState& next, const WideningPolicy& policy) const
 {
-    requireCompatible(next);
-    return AbstractState(
-        domain_, environment_,
-        implementation().widenStates(*state_, *next.state_, policy));
+    std::unique_ptr<AbstractState> result = clone();
+    result->widenWith(next, policy);
+    return result;
 }
 
-AbstractState AbstractState::narrowed(const AbstractState& next) const
+std::unique_ptr<AbstractState> AbstractState::narrowed(
+    const AbstractState& next) const
 {
-    requireCompatible(next);
-    if (!implementation().leqStates(*next.state_, *state_))
-        throw std::invalid_argument(
-            "narrowing requires next to be included in current");
-    return AbstractState(domain_, environment_,
-                         implementation().narrowStates(*state_, *next.state_));
+    std::unique_ptr<AbstractState> result = clone();
+    result->narrowWith(next);
+    return result;
 }
 
-AbstractState AbstractState::projectLowerBounds() const
+std::unique_ptr<AbstractState> AbstractState::projectLowerBounds() const
 {
-    return AbstractState(domain_, environment_,
-                         implementation().projectLowerBoundsState(*state_));
+    std::unique_ptr<AbstractState> result = clone();
+    result->projectLowerBoundsState();
+    return result;
 }
 
-AbstractState AbstractState::changedEnvironment(const Environment& environment,
-                                                bool projectNewVariables) const
+std::unique_ptr<AbstractState> AbstractState::changedEnvironment(
+    const Environment& environment, bool projectNewVariables) const
 {
-    return AbstractState(
-        domain_, environment,
-        implementation().changeEnvironmentState(
-            *state_, environment_, environment, projectNewVariables));
+    std::unique_ptr<AbstractState> result = clone();
+    result->changeEnvironment(environment, projectNewVariables);
+    return result;
 }
 
 void AbstractState::joinWith(const AbstractState& other)
 {
-    *this = joined(other);
+    requireCompatible(other);
+    joinState(other);
 }
 
 void AbstractState::meetWith(const AbstractState& other)
 {
-    *this = met(other);
+    requireCompatible(other);
+    meetState(other);
 }
 
 void AbstractState::widenWith(const AbstractState& next,
                               const WideningPolicy& policy)
 {
-    *this = widened(next, policy);
+    requireCompatible(next);
+    widenState(next, policy);
 }
 
 void AbstractState::narrowWith(const AbstractState& next)
 {
-    *this = narrowed(next);
+    requireCompatible(next);
+    if (!next.leqState(*this))
+        throw std::invalid_argument(
+            "narrowing requires next to be included in current");
+    narrowState(next);
 }
 
 void AbstractState::changeEnvironment(const Environment& environment,
                                       bool projectNewVariables)
 {
-    *this = changedEnvironment(environment, projectNewVariables);
+    const Environment oldEnvironment = environment_;
+    changeEnvironmentState(oldEnvironment, environment, projectNewVariables);
+    environment_ = environment;
 }
 
 bool AbstractState::isBottom() const
 {
-    return implementation().isBottomState(*state_);
+    return isBottomState();
 }
 
 bool AbstractState::isTop() const
 {
-    return implementation().isTopState(*state_);
+    return isTopState();
 }
 
 CheckResult AbstractState::leq(const AbstractState& other) const
 {
     requireCompatible(other);
-    return implementation().leqStates(*state_, *other.state_)
-               ? CheckResult::True
-               : CheckResult::False;
+    return leqState(other) ? CheckResult::True : CheckResult::False;
 }
 
 CheckResult AbstractState::equals(const AbstractState& other) const
 {
     requireCompatible(other);
-    return implementation().leqStates(*state_, *other.state_) &&
-                   implementation().leqStates(*other.state_, *state_)
-               ? CheckResult::True
-               : CheckResult::False;
+    return leqState(other) && other.leqState(*this) ? CheckResult::True
+                                                    : CheckResult::False;
 }
 
 CheckResult AbstractState::entails(const LinearConstraint& constraint) const
@@ -309,14 +225,14 @@ CheckResult AbstractState::entails(const LinearConstraint& constraint) const
 
     if (constraint.kind() == ConstraintKind::NotEqual)
     {
-        AbstractState equalityWitness(*this);
-        equalityWitness.assume(
+        std::unique_ptr<AbstractState> equalityWitness = clone();
+        equalityWitness->assume(
             LinearConstraint(constraint.expression(), ConstraintKind::Equal));
-        return equalityWitness.isBottom() ? CheckResult::True
-                                          : CheckResult::False;
+        return equalityWitness->isBottom() ? CheckResult::True
+                                           : CheckResult::False;
     }
 
-    AbstractState counterexample(*this);
+    std::unique_ptr<AbstractState> counterexample = clone();
     ConstraintKind negated;
     switch (constraint.kind())
     {
@@ -336,13 +252,15 @@ CheckResult AbstractState::entails(const LinearConstraint& constraint) const
         negated = ConstraintKind::LessThan;
         break;
     }
-    counterexample.assume(LinearConstraint(constraint.expression(), negated));
-    return counterexample.isBottom() ? CheckResult::True : CheckResult::False;
+    counterexample->assume(
+        LinearConstraint(constraint.expression(), negated));
+    return counterexample->isBottom() ? CheckResult::True
+                                      : CheckResult::False;
 }
 
 Interval AbstractState::bound(Variable variable) const
 {
-    return implementation().boundState(*state_, environment_, variable);
+    return boundState(variable);
 }
 
 Box AbstractState::toBox() const
@@ -355,10 +273,10 @@ Box AbstractState::toBox() const
 
 LinearConstraintSet AbstractState::toConstraints() const
 {
-    return implementation().constraintsState(*state_, environment_);
+    return constraintsState();
 }
 
 std::string AbstractState::toString() const
 {
-    return implementation().stateToString(*state_, environment_);
+    return stateToString();
 }

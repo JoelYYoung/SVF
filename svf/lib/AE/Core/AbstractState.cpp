@@ -28,6 +28,7 @@
  */
 
 #include <iomanip>
+#include <stdexcept>
 #include "AE/Core/AbstractState.h"
 #include "SVFIR/SVFIR.h"
 #include "Util/SVFUtil.h"
@@ -55,7 +56,16 @@ u32_t AbstractState::hash() const
         h2 ^= hf(t.first) + 0x9e3779b9 + (h2 << 6) + (h2 >> 2);
     }
     Hash<std::pair<u32_t, u32_t>> pairH;
-    return pairH({h, h2});
+    size_t result = pairH({h, h2});
+#ifdef SVF_BUILD_RELATIONAL_DOMAIN
+    if (_relationalNumericalState)
+    {
+        Hash<std::string> stringHash;
+        result ^= stringHash(_relationalNumericalState->state().toString()) +
+                  0x9e3779b9 + (result << 6) + (result >> 2);
+    }
+#endif
+    return static_cast<u32_t>(result);
 }
 
 AbstractState AbstractState::widening(const AbstractState& other)
@@ -76,6 +86,18 @@ AbstractState AbstractState::widening(const AbstractState& other)
             if (it->second.isInterval() && other._addrToAbsVal.at(key).isInterval())
                 it->second.getInterval().widen_with(other._addrToAbsVal.at(key).getInterval());
     }
+#ifdef SVF_BUILD_RELATIONAL_DOMAIN
+    if (es._relationalNumericalState && other._relationalNumericalState)
+        es._relationalNumericalState->widenWith(
+            *other._relationalNumericalState);
+    else if (!es._relationalNumericalState &&
+             other._relationalNumericalState)
+        es._relationalNumericalState = other._relationalNumericalState;
+    else if (es._relationalNumericalState &&
+             !other._relationalNumericalState)
+        throw std::invalid_argument(
+            "cannot widen initialized and absent relational components");
+#endif
     return es;
 }
 
@@ -96,6 +118,18 @@ AbstractState AbstractState::narrowing(const AbstractState& other)
             if (it->second.isInterval() && other._addrToAbsVal.at(key).isInterval())
                 it->second.getInterval().narrow_with(other._addrToAbsVal.at(key).getInterval());
     }
+#ifdef SVF_BUILD_RELATIONAL_DOMAIN
+    if (es._relationalNumericalState && other._relationalNumericalState)
+        es._relationalNumericalState->narrowWith(
+            *other._relationalNumericalState);
+    else if (!es._relationalNumericalState &&
+             other._relationalNumericalState)
+        es._relationalNumericalState = other._relationalNumericalState;
+    else if (es._relationalNumericalState &&
+             !other._relationalNumericalState)
+        throw std::invalid_argument(
+            "cannot narrow initialized and absent relational components");
+#endif
     return es;
 
 }
@@ -130,6 +164,9 @@ void AbstractState::joinWith(const AbstractState& other)
         }
     }
     _freedAddrs.insert(other._freedAddrs.begin(), other._freedAddrs.end());
+#ifdef SVF_BUILD_RELATIONAL_DOMAIN
+    joinRelationalNumericalState(other);
+#endif
 }
 
 /// domain meet with other, important! other widen this.
@@ -158,7 +195,57 @@ void AbstractState::meetWith(const AbstractState& other)
                           other._freedAddrs.begin(), other._freedAddrs.end(),
                           std::inserter(intersection, intersection.begin()));
     _freedAddrs = std::move(intersection);
+#ifdef SVF_BUILD_RELATIONAL_DOMAIN
+    meetRelationalNumericalState(other);
+#endif
 }
+
+#ifdef SVF_BUILD_RELATIONAL_DOMAIN
+void AbstractState::joinRelationalNumericalState(const AbstractState& other)
+{
+    if (_relationalNumericalState && other._relationalNumericalState)
+        _relationalNumericalState->joinWith(
+            *other._relationalNumericalState);
+    else if (!_relationalNumericalState && other._relationalNumericalState)
+        _relationalNumericalState = other._relationalNumericalState;
+    else if (_relationalNumericalState && !other._relationalNumericalState)
+        throw std::invalid_argument(
+            "cannot join initialized and absent relational components");
+}
+
+void AbstractState::meetRelationalNumericalState(const AbstractState& other)
+{
+    if (_relationalNumericalState && other._relationalNumericalState)
+        _relationalNumericalState->meetWith(
+            *other._relationalNumericalState);
+    else if (!_relationalNumericalState && other._relationalNumericalState)
+        _relationalNumericalState = other._relationalNumericalState;
+    else if (_relationalNumericalState && !other._relationalNumericalState)
+        throw std::invalid_argument(
+            "cannot meet initialized and absent relational components");
+}
+
+bool AbstractState::relationalNumericalEquals(
+    const AbstractState& other) const
+{
+    if (!_relationalNumericalState || !other._relationalNumericalState)
+        return !_relationalNumericalState &&
+               !other._relationalNumericalState;
+    return _relationalNumericalState->equals(
+        *other._relationalNumericalState);
+}
+
+bool AbstractState::relationalNumericalGeq(const AbstractState& other) const
+{
+    // An absent numerical relation denotes no relational restriction (top).
+    if (!_relationalNumericalState)
+        return true;
+    if (!other._relationalNumericalState)
+        return false;
+    return other._relationalNumericalState->includedIn(
+        *_relationalNumericalState);
+}
+#endif
 
 // initObjVar
 void AbstractState::initObjVar(const ObjVar* objVar)
@@ -285,6 +372,14 @@ void AbstractState::printAbstractState() const
             SVFUtil::outs() << " Value: ⊥\n";
         }
     }
+#ifdef SVF_BUILD_RELATIONAL_DOMAIN
+    SVFUtil::outs() << "Relational: ";
+    if (_relationalNumericalState)
+        SVFUtil::outs() << _relationalNumericalState->state().toString();
+    else
+        SVFUtil::outs() << "<disabled>";
+    SVFUtil::outs() << "\n";
+#endif
     SVFUtil::outs() << "-----------------------------------------\n";
 }
 
@@ -310,8 +405,16 @@ std::string AbstractState::toString() const
         << varIntervals << " intervals, " << varAddrs << " addresses, " << varBottom << " bottom)\n"
         << "  AddrToAbsVal: " << _addrToAbsVal.size() << " entries ("
         << addrIntervals << " intervals, " << addrAddrs << " addresses, " << addrBottom << " bottom)\n"
-        << "  FreedAddrs: " << _freedAddrs.size() << "\n"
-        << "}";
+        << "  FreedAddrs: " << _freedAddrs.size() << "\n";
+#ifdef SVF_BUILD_RELATIONAL_DOMAIN
+    oss << "  Relational: ";
+    if (_relationalNumericalState)
+        oss << _relationalNumericalState->state().toString();
+    else
+        oss << "<disabled>";
+    oss << "\n";
+#endif
+    oss << "}";
     return oss.str();
 }
 

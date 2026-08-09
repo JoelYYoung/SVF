@@ -58,6 +58,20 @@ target_link_libraries(
 )
 add_test(NAME relational-domain-svf-bridge COMMAND svf-relational-bridge-test)
 
+if(TARGET SvfCore)
+  add_executable(
+    svf-program-state-relational-test
+    SVFProgramStateRelationalTest.cpp
+  )
+  target_link_libraries(
+    svf-program-state-relational-test PRIVATE SvfCore
+  )
+  add_test(
+    NAME relational-domain-program-state
+    COMMAND svf-program-state-relational-test
+  )
+endif()
+
 if(TARGET SvfLLVM)
   add_executable(
     svf-ae-relational-integration-test
@@ -86,6 +100,27 @@ if(TARGET SvfLLVM)
   add_relational_ae_integration_test(
     relational-domain-ae-integration-sparse sparse
   )
+  function(add_relational_ae_loop_test test_name sparsity)
+    add_test(
+      NAME ${test_name}
+      COMMAND svf-ae-relational-integration-test
+              -ae-relational=true
+              -ae-sparsity=${sparsity}
+              -widen-delay=1
+              -stat=false
+              -extapi=${CMAKE_BINARY_DIR}/lib/extapi.bc
+              ${CMAKE_CURRENT_LIST_DIR}/RelationalLoop.ll
+    )
+  endfunction()
+  add_relational_ae_loop_test(
+    relational-domain-ae-loop dense
+  )
+  add_relational_ae_loop_test(
+    relational-domain-ae-loop-semi-sparse semi-sparse
+  )
+  add_relational_ae_loop_test(
+    relational-domain-ae-loop-sparse sparse
+  )
 endif()
 
 # Some standalone macOS Z3 packages use the bare install name
@@ -105,6 +140,9 @@ if(APPLE)
     svf-relational-domain-test
     svf-relational-bridge-test
   )
+  if(TARGET svf-program-state-relational-test)
+    list(APPEND relational_test_targets svf-program-state-relational-test)
+  endif()
   if(TARGET svf-ae-relational-integration-test)
     list(APPEND relational_test_targets svf-ae-relational-integration-test)
   endif()

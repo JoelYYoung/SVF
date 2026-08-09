@@ -85,6 +85,9 @@ void FullSparseAbstractInterpretation::joinStates(AbstractState& dst,
     }
     for (NodeID a : src.getFreedAddrs())
         dst.addToFreedAddrs(a);
+#ifdef SVF_BUILD_RELATIONAL_DOMAIN
+    dst.joinRelationalNumericalState(src);
+#endif
 }
 
 void FullSparseAbstractInterpretation::storeValue(const ValVar* pointer,
@@ -663,6 +666,9 @@ void SemiSparseAbstractInterpretation::updateAbsState(
     // Only replace ObjVar state.  ValVars live at their def-sites and
     // must not be overwritten when the predecessor's state is merged in.
     abstractTrace[node].updateAddrStateOnly(state);
+#ifdef SVF_BUILD_RELATIONAL_DOMAIN
+    abstractTrace[node].updateRelationalNumericalStateOnly(state);
+#endif
 }
 
 void SemiSparseAbstractInterpretation::joinStates(AbstractState& dst,
@@ -683,6 +689,9 @@ void SemiSparseAbstractInterpretation::joinStates(AbstractState& dst,
     }
     for (NodeID a : src.getFreedAddrs())
         dst.addToFreedAddrs(a);
+#ifdef SVF_BUILD_RELATIONAL_DOMAIN
+    dst.joinRelationalNumericalState(src);
+#endif
 }
 
 const ICFGNode* SemiSparseAbstractInterpretation::getICFGNode(

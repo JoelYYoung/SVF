@@ -25,15 +25,6 @@ relational::Environment makeEnvironment(
     return relational::Environment(std::move(declarations));
 }
 
-std::shared_ptr<relational::AbstractDomain> requireDomain(
-    std::shared_ptr<relational::AbstractDomain> domain)
-{
-    if (!domain)
-        throw std::invalid_argument(
-            "SVF relational bridge needs an abstract domain");
-    return domain;
-}
-
 std::optional<s64_t> exactSigned64(const relational::Rational& value)
 {
     const std::string text = value.toString();
@@ -55,10 +46,9 @@ std::optional<s64_t> exactSigned64(const relational::Rational& value)
 
 SVFRelationalBridge::SVFRelationalBridge(
     std::vector<TrackedRelationalVariable> variables,
-    std::shared_ptr<relational::AbstractDomain> domain)
-    : domain_(requireDomain(std::move(domain))),
-      environment_(makeEnvironment(variables)),
-      state_(domain_->top(environment_))
+    relational::OctagonConfig config)
+    : environment_(makeEnvironment(variables)),
+      state_(relational::OctagonState::top(environment_, config))
 {
 }
 
@@ -86,6 +76,16 @@ void SVFRelationalBridge::changeTrackedVariables(
     relational::Environment nextEnvironment = makeEnvironment(variables);
     state_.changeEnvironment(nextEnvironment, projectNewVariables);
     environment_ = std::move(nextEnvironment);
+}
+
+void SVFRelationalBridge::setTop()
+{
+    state_ = relational::OctagonState::top(environment_, state_.config());
+}
+
+void SVFRelationalBridge::setBottom()
+{
+    state_ = relational::OctagonState::bottom(environment_, state_.config());
 }
 
 void SVFRelationalBridge::assignConstant(NodeID target,
@@ -127,7 +127,7 @@ void SVFRelationalBridge::constrainInterval(NodeID target,
 {
     if (interval.isBottom())
     {
-        state_ = domain_->bottom(environment_);
+        state_ = relational::OctagonState::bottom(environment_, state_.config());
         return;
     }
     if (!interval.lb().is_minus_infinity())
@@ -165,7 +165,7 @@ void SVFRelationalBridge::forget(NodeID id)
 void SVFRelationalBridge::requireCompatible(
     const SVFRelationalBridge& other) const
 {
-    if (domain_.get() != other.domain_.get() ||
+    if (!state_.config().operationCompatible(other.state_.config()) ||
         environment_ != other.environment_)
         throw std::invalid_argument(
             "SVF relational bridges have incompatible domains or layouts");

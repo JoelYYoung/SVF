@@ -224,7 +224,7 @@ void AbstractInterpretation::analyzeFromAllProgEntries()
         const FunObjVar* entryFun = entryFunctions.pop();
         const ICFGNode* funEntry = icfg->getFunEntryICFGNode(entryFun);
         updateAbsState(funEntry, getAbsState(globalNode));
-        copyRelationalState(funEntry, globalNode);
+        adaptRelationalState(funEntry, abstractTrace[funEntry]);
         handleFunction(funEntry, nullptr);
     }
 }
@@ -240,7 +240,7 @@ void AbstractInterpretation::handleGlobalNode()
     // Global init is one of the few legitimate direct-mutation sites:
     // updateAbsState filters out ValVars in semi-sparse mode, but NullPtr/
     // BlkPtr have no SVFVar so we cannot route them through updateAbsValue.
-    // Use the manager's operator[] (auto-creates the entry if absent).
+    // Use the trace's operator[] (auto-creates the entry if absent).
     AbstractState& init = abstractTrace[node];
     init = AbstractState();
     initializeRelationalState(node);
@@ -265,7 +265,7 @@ void AbstractInterpretation::handleGlobalNode()
 /// Pull-based state merge: for each predecessor that has an abstract state,
 /// copy its state, apply branch refinement for conditional IntraCFGEdges,
 /// and join all feasible states into getAbsState(node).
-/// The join is dispatched through the manager so semi-sparse can skip
+/// The join is dispatched through the virtual storage hook so semi-sparse can skip
 /// ValVar merging.
 /// Returns true if at least one predecessor contributed state.
 bool AbstractInterpretation::mergeStatesFromPredecessors(const ICFGNode* node)
@@ -273,6 +273,22 @@ bool AbstractInterpretation::mergeStatesFromPredecessors(const ICFGNode* node)
     // Collect all feasible predecessor states, then merge at the end.
     AbstractState merged;
     bool hasFeasiblePred = false;
+    auto joinPredecessor = [&](const ICFGNode* predecessor,
+                               const IntraCFGEdge* conditionalEdge)
+    {
+        AbstractState source = getAbsState(predecessor);
+        adaptRelationalState(node, source);
+        if (conditionalEdge)
+        {
+#ifdef SVF_BUILD_RELATIONAL_DOMAIN
+            if (SVFRelationalBridge* relation =
+                    source.getRelationalNumericalState())
+                assumeRelationalBranch(conditionalEdge, *relation);
+#endif
+        }
+        joinStates(merged, source);
+        hasFeasiblePred = true;
+    };
 
     for (auto& edge : node->getInEdges())
     {
@@ -288,28 +304,31 @@ bool AbstractInterpretation::mergeStatesFromPredecessors(const ICFGNode* node)
                 if (isBranchEdgeFeasible(intraCfgEdge, predState))
                 {
                     collectBranchRefinement(intraCfgEdge, predState);
+                    adaptRelationalState(node, predState);
+#ifdef SVF_BUILD_RELATIONAL_DOMAIN
+                    if (SVFRelationalBridge* relation =
+                            predState.getRelationalNumericalState())
+                        assumeRelationalBranch(intraCfgEdge, *relation);
+#endif
                     joinStates(merged, predState);
                     hasFeasiblePred = true;
                 }
             }
             else
             {
-                joinStates(merged, getAbsState(pred));
-                hasFeasiblePred = true;
+                joinPredecessor(pred, nullptr);
             }
         }
         else if (SVFUtil::isa<CallCFGEdge>(edge))
         {
-            joinStates(merged, getAbsState(pred));
-            hasFeasiblePred = true;
+            joinPredecessor(pred, nullptr);
         }
         else if (SVFUtil::isa<RetCFGEdge>(edge))
         {
             switch (Options::HandleRecur())
             {
             case TOP:
-                joinStates(merged, getAbsState(pred));
-                hasFeasiblePred = true;
+                joinPredecessor(pred, nullptr);
                 break;
             case WIDEN_ONLY:
             case WIDEN_NARROW:
@@ -318,8 +337,7 @@ bool AbstractInterpretation::mergeStatesFromPredecessors(const ICFGNode* node)
                 const CallICFGNode* callSite = returnSite->getCallICFGNode();
                 if (hasAbsState(callSite))
                 {
-                    joinStates(merged, getAbsState(pred));
-                    hasFeasiblePred = true;
+                    joinPredecessor(pred, nullptr);
                 }
                 break;
             }
@@ -331,7 +349,6 @@ bool AbstractInterpretation::mergeStatesFromPredecessors(const ICFGNode* node)
         return false;
 
     updateAbsState(node, merged);
-    mergeRelationalFromPredecessors(node);
     reduceRelationalIntervals(node);
 
     return true;
@@ -740,7 +757,7 @@ bool AbstractInterpretation::handleICFGNode(const ICFGNode* node)
             if (hasAbsState(globalNode))
             {
                 updateAbsState(node, getAbsState(globalNode));
-                copyRelationalState(node, globalNode);
+                adaptRelationalState(node, abstractTrace[node]);
             }
             else
             {
@@ -758,7 +775,6 @@ bool AbstractInterpretation::handleICFGNode(const ICFGNode* node)
 
     // Store the previous state for fixpoint detection
     AbstractState prevState = getAbsState(node);
-    RelationalStatePtr prevRelationalState = snapshotRelationalState(node);
 
     stat->getBlockTrace()++;
     stat->getICFGNodeTrace()++;
@@ -783,13 +799,7 @@ bool AbstractInterpretation::handleICFGNode(const ICFGNode* node)
     // Track this node as analyzed (for coverage statistics across all entry points)
     allAnalyzedNodes.insert(node);
 
-    const RelationalStatePtr currentRelationalState =
-        snapshotRelationalState(node);
-    const bool relationalUnchanged =
-        (!prevRelationalState && !currentRelationalState) ||
-        (prevRelationalState && currentRelationalState &&
-         currentRelationalState->equals(*prevRelationalState));
-    if (getAbsState(node) == prevState && relationalUnchanged)
+    if (getAbsState(node) == prevState)
         return false;
 
     return true;
@@ -912,7 +922,7 @@ void AbstractInterpretation::handleFunCall(const CallICFGNode *callNode)
         handleFunction(calleeEntry, callNode);
         const RetICFGNode* retNode = callNode->getRetICFGNode();
         updateAbsState(retNode, getAbsState(callNode));
-        copyRelationalState(retNode, callNode);
+        adaptRelationalState(retNode, abstractTrace[retNode]);
         return;
     }
 
@@ -931,7 +941,7 @@ void AbstractInterpretation::handleFunCall(const CallICFGNode *callNode)
     }
     // Resume return node from caller's state (context-insensitive)
     updateAbsState(retNode, getAbsState(callNode));
-    copyRelationalState(retNode, callNode);
+    adaptRelationalState(retNode, abstractTrace[retNode]);
 }
 
 // Loop / recursion handling (handleLoopOrRecursion + cycle helpers +
@@ -1101,7 +1111,7 @@ void AbstractInterpretation::updateStateOnAddr(const AddrStmt *addr)
 {
     const ICFGNode* node = addr->getICFGNode();
     // initObjVar mutates _varToAbsVal/_addrToAbsVal directly, so we need
-    // mutable access; route via the manager.
+    // mutable access; route via the sparsity-aware state API.
     AbstractState& as = getAbsState(node);
     as.initObjVar(SVFUtil::cast<ObjVar>(addr->getRHSVar()));
     // AddrStmt: lhs(ValVar) = &rhs(ObjVar).

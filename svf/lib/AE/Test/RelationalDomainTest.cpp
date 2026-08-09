@@ -119,6 +119,79 @@ void testExactNumericLayer()
             "the same increment must remain exact at binary64 precision");
 }
 
+void testPolymorphicStateContract()
+{
+    const Variable x(1);
+    const Variable y(2);
+    const Environment environment({{x, NumericType::integer(), "x"}});
+    const Environment extended(
+        {{x, NumericType::integer(), "x"},
+         {y, NumericType::integer(), "y"}});
+
+    OctagonState current = OctagonState::top(environment);
+    current.assume(atLeast(x, Rational(0)));
+    current.assume(atMost(x, Rational(1)));
+    OctagonState next = OctagonState::top(environment);
+    next.assume(atLeast(x, Rational(0)));
+    next.assume(atMost(x, Rational(2)));
+
+    const AbstractState& genericCurrent = current;
+    const AbstractState& genericNext = next;
+    std::unique_ptr<AbstractState> cloned = genericCurrent.clone();
+    require(cloned->equals(genericCurrent) == CheckResult::True,
+            "polymorphic clone must preserve the state");
+
+    std::unique_ptr<AbstractState> joined =
+        genericCurrent.joined(genericNext);
+    require(joined->equals(genericNext) == CheckResult::True,
+            "polymorphic join must dispatch to Octagon");
+    std::unique_ptr<AbstractState> met = genericCurrent.met(genericNext);
+    require(met->equals(genericCurrent) == CheckResult::True,
+            "polymorphic meet must dispatch to Octagon");
+
+    std::unique_ptr<AbstractState> widened =
+        genericCurrent.widened(genericNext);
+    require(widened->bound(x).lower().value() == Rational(0) &&
+                widened->bound(x).upper().isPlusInfinity(),
+            "polymorphic widening must dispatch to Octagon");
+    std::unique_ptr<AbstractState> narrowed = widened->narrowed(genericNext);
+    require(narrowed->equals(genericNext) == CheckResult::True,
+            "polymorphic narrowing must dispatch to Octagon");
+
+    std::unique_ptr<AbstractState> projected =
+        genericNext.projectLowerBounds();
+    require(projected->bound(x).lower().value() == Rational(0) &&
+                projected->bound(x).upper().isPlusInfinity(),
+            "polymorphic projection must dispatch to Octagon");
+    std::unique_ptr<AbstractState> changed =
+        genericCurrent.changedEnvironment(extended);
+    require(changed->environment() == extended && changed->bound(y).isTop(),
+            "polymorphic environment change must introduce y unconstrained");
+
+    OctagonState treeState = OctagonState::top(environment);
+    TreeExpression xTree =
+        TreeExpression::variable(x, NumericType::integer());
+    TreeExpression three =
+        TreeExpression::constant(Rational(3), NumericType::integer());
+    treeState.assume(TreeConstraint(
+        TreeExpression::binary(BinaryOperator::Subtract, xTree, three,
+                               NumericType::integer()),
+        ConstraintKind::LessEqual));
+    require(treeState.bound(x).upper().value() == Rational(3),
+            "linear tree assumptions must use the common fallback");
+
+    OctagonState singleton = OctagonState::top(environment);
+    singleton.assume(equalsConstant(x, Rational(1)));
+    require(singleton.entails(LinearConstraint(
+                LinearExpression(x) - LinearExpression(Rational(2)),
+                ConstraintKind::NotEqual)) == CheckResult::True,
+            "not-equal entailment must use an equality counterexample");
+    require(std::string(toString(CheckResult::False)) == "false" &&
+                std::string(toString(CheckResult::True)) == "true" &&
+                std::string(toString(CheckResult::Unknown)) == "unknown",
+            "CheckResult formatting must cover every result");
+}
+
 void testEnvironment()
 {
     const Variable x(7);
@@ -133,15 +206,16 @@ void testEnvironment()
 
 void testPublicDomainArchitecture()
 {
-    static_assert(std::is_base_of_v<AbstractDomain, OctagonDomain>);
+    static_assert(std::is_base_of_v<AbstractState, OctagonState>);
 
     const Variable x(1);
     const Variable y(2);
     const Environment environment(
         {{x, NumericType::real(), "x"}, {y, NumericType::real(), "y"}});
-    std::shared_ptr<AbstractDomain> domain = makeOctagonDomain();
-    require(std::string(domain->name()) == "gmp-octagon",
-            "OctagonDomain must be usable through AbstractDomain");
+    OctagonState state = OctagonState::top(environment);
+    const AbstractState& abstractState = state;
+    require(std::string(abstractState.name()) == "gmp-octagon",
+            "OctagonState must be usable through AbstractState");
 
     LinearExpression lhs(x);
     lhs.setCoefficient(y, Rational(-1));
@@ -154,10 +228,10 @@ void testPublicDomainArchitecture()
             "structured constraint construction must normalize lhs <= rhs "
             "to lhs - rhs <= 0");
 
-    AbstractState state =
-        domain->fromConstraints(environment, LinearConstraintSet{constraint});
+    state = OctagonState::fromConstraints(
+        environment, LinearConstraintSet{constraint});
     require(state.entails(constraint) == CheckResult::True,
-            "AbstractDomain must consume structured linear constraints");
+            "OctagonState must consume structured linear constraints");
 }
 
 void testAssumeClosureAndAssignment()
@@ -166,12 +240,11 @@ void testAssumeClosureAndAssignment()
     const Variable y(2);
     const Environment environment(
         {{x, NumericType::integer(), "x"}, {y, NumericType::integer(), "y"}});
-    const auto domain = makeOctagonDomain();
     Z3SoundnessChecker checker(environment);
 
-    AbstractState state = domain->top(environment);
+    OctagonState state = OctagonState::top(environment);
     const LinearConstraint nonnegative = atLeast(x, Rational(0));
-    AbstractState beforeAssume = state;
+    OctagonState beforeAssume = state;
     state.assume(nonnegative);
     requireProof(checker.checkAssume(beforeAssume, nonnegative, state));
     state.assume(atMost(x, Rational(10)));
@@ -183,11 +256,11 @@ void testAssumeClosureAndAssignment()
                 CheckResult::True,
             "the state must entail an explicitly assumed equality");
 
-    AbstractState assigned = domain->top(environment);
+    OctagonState assigned = OctagonState::top(environment);
     assigned.assume(equalsConstant(x, Rational(2)));
     LinearExpression xPlusThree(x);
     xPlusThree.setConstant(Rational(3));
-    AbstractState beforeAssignment = assigned;
+    OctagonState beforeAssignment = assigned;
     assigned.assign(y, xPlusThree);
     requireProof(
         checker.checkAssignment(beforeAssignment, y, xPlusThree, assigned));
@@ -231,7 +304,7 @@ void testStrictIntegerAndRealBounds()
     const Variable integer(1);
     const Environment integers(
         {{integer, NumericType::integer(), "integer_value"}});
-    AbstractState integerState = makeOctagonDomain()->top(integers);
+    OctagonState integerState = OctagonState::top(integers);
     integerState.assume(below(integer, Rational("3/2")));
     const Interval integerBound = integerState.bound(integer);
     require(integerBound.upper().value() == Rational(1) &&
@@ -240,7 +313,7 @@ void testStrictIntegerAndRealBounds()
 
     const Variable real(2);
     const Environment reals({{real, NumericType::real(), "real_value"}});
-    AbstractState realState = makeOctagonDomain()->top(reals);
+    OctagonState realState = OctagonState::top(reals);
     realState.assume(below(real, Rational("3/2")));
     const Interval realBound = realState.bound(real);
     require(realBound.upper().value() == Rational("3/2") &&
@@ -259,18 +332,17 @@ void testEnvironmentChanges()
         {{x, NumericType::integer(), "x"}, {y, NumericType::integer(), "y"}});
     const Environment changed(
         {{x, NumericType::integer(), "x"}, {z, NumericType::integer(), "z"}});
-    const auto domain = makeOctagonDomain();
-    AbstractState state = domain->top(original);
+    OctagonState state = OctagonState::top(original);
     state.assume(equalsConstant(x, Rational(7)));
     state.assume(equalsConstant(y, Rational(9)));
 
-    AbstractState unconstrained = state.changedEnvironment(changed);
+    OctagonState unconstrained = state.changedEnvironmentOctagon(changed);
     require(unconstrained.bound(x).lower().value() == Rational(7) &&
                 unconstrained.bound(z).isTop(),
             "environment change must project removed variables and add top "
             "dimensions");
 
-    AbstractState projected = state.changedEnvironment(changed, true);
+    OctagonState projected = state.changedEnvironmentOctagon(changed, true);
     require(projected.bound(z).lower().value() == Rational(0) &&
                 projected.bound(z).upper().value() == Rational(0),
             "projected new environment dimensions must be initialized to zero");
@@ -282,55 +354,54 @@ void testLatticeAndZ3Soundness()
     const Variable y(2);
     const Environment environment(
         {{x, NumericType::integer(), "x"}, {y, NumericType::integer(), "y"}});
-    const auto domain = makeOctagonDomain();
     Z3SoundnessChecker checker(environment);
 
-    AbstractState zero = domain->top(environment);
+    OctagonState zero = OctagonState::top(environment);
     zero.assume(equalsConstant(x, Rational(0)));
     zero.assume(equalsConstant(y, Rational(0)));
-    AbstractState one = domain->top(environment);
+    OctagonState one = OctagonState::top(environment);
     one.assume(equalsConstant(x, Rational(1)));
     one.assume(equalsConstant(y, Rational(1)));
 
-    AbstractState joined = zero.joined(one);
+    OctagonState joined = zero.joinedOctagon(one);
     requireProof(checker.checkJoin(zero, one, joined));
     require(joined.entails(differenceEquals(x, y, Rational(0))) ==
                 CheckResult::True,
             "octagon join must preserve the common x == y relation");
 
-    AbstractState xRange = domain->top(environment);
+    OctagonState xRange = OctagonState::top(environment);
     xRange.assume(atLeast(x, Rational(0)));
     xRange.assume(atMost(x, Rational(2)));
-    AbstractState equality = domain->top(environment);
+    OctagonState equality = OctagonState::top(environment);
     equality.assume(differenceEquals(x, y, Rational(0)));
-    AbstractState met = xRange.met(equality);
+    OctagonState met = xRange.metOctagon(equality);
     requireProof(checker.checkMeet(xRange, equality, met));
 
-    AbstractState current = domain->top(environment);
+    OctagonState current = OctagonState::top(environment);
     current.assume(atLeast(x, Rational(0)));
     current.assume(atMost(x, Rational(1)));
-    AbstractState next = domain->top(environment);
+    OctagonState next = OctagonState::top(environment);
     next.assume(atLeast(x, Rational(0)));
     next.assume(atMost(x, Rational(2)));
-    AbstractState widened = current.widened(next);
+    OctagonState widened = current.widenedOctagon(next);
     requireProof(checker.checkWidening(current, next, widened));
     require(widened.bound(x).lower().value() == Rational(0) &&
                 widened.bound(x).upper().isPlusInfinity(),
             "widening must retain the stable lower bound and drop a growing "
             "upper bound");
 
-    AbstractState thresholdWidened =
-        current.widened(next, WideningPolicy{{Rational(10)}});
+    OctagonState thresholdWidened =
+        current.widenedOctagon(next, WideningPolicy{{Rational(10)}});
     require(thresholdWidened.bound(x).upper().value() == Rational(10),
             "threshold widening must use user-visible unary constants");
     requireProof(checker.checkWidening(current, next, thresholdWidened));
 
-    AbstractState narrowed = widened.narrowed(next);
+    OctagonState narrowed = widened.narrowedOctagon(next);
     requireProof(checker.checkNarrowing(widened, next, narrowed));
     require(narrowed.bound(x).upper().value() == Rational(2),
             "narrowing must recover a finite bound lost by widening");
 
-    AbstractState projected = next.projectLowerBounds();
+    OctagonState projected = next.lowerBoundsProjection();
     requireProof(checker.checkProjection(next, projected));
     require(projected.bound(x).lower().value() == Rational(0) &&
                 projected.bound(x).upper().isPlusInfinity(),
@@ -344,16 +415,15 @@ void testTopBottomIdentitiesAndQueries()
     const Variable unknown(99);
     const Environment environment(
         {{x, NumericType::integer(), "x"}, {y, NumericType::real(), "y"}});
-    const auto domain = makeOctagonDomain();
-    const DomainCapabilities capabilities = domain->capabilities();
+    OctagonState top = OctagonState::top(environment);
+    const DomainCapabilities capabilities = top.capabilities();
     require(capabilities.strictInequalities &&
                 capabilities.integerTightening &&
                 capabilities.thresholdWidening && capabilities.narrowing &&
                 !capabilities.treeExpressions,
             "Octagon capabilities must describe the enabled implementation");
 
-    AbstractState top = domain->top(environment);
-    AbstractState bottom = domain->bottom(environment);
+    OctagonState bottom = OctagonState::bottom(environment);
     require(top.isTop() && !top.isBottom() && top.toString() == "top",
             "top queries must agree");
     require(bottom.isBottom() && !bottom.isTop() &&
@@ -363,7 +433,7 @@ void testTopBottomIdentitiesAndQueries()
     require(top.toBox().bounds.size() == 2 && top.bound(x).isTop(),
             "box export must include every top dimension");
 
-    AbstractState constrained = top;
+    OctagonState constrained = top;
     constrained.assume(atLeast(x, Rational(0)));
     constrained.assume(atMost(x, Rational(4)));
     constrained.assume(signedSumAtMost(x, 1, y, -1, Rational(2)));
@@ -371,13 +441,13 @@ void testTopBottomIdentitiesAndQueries()
                 constrained.toString().find("&&") != std::string::npos,
             "non-top states must export their relational constraints");
 
-    require(bottom.joined(constrained).equals(constrained) ==
+    require(bottom.joinedOctagon(constrained).equals(constrained) ==
                 CheckResult::True &&
-                constrained.joined(bottom).equals(constrained) ==
+                constrained.joinedOctagon(bottom).equals(constrained) ==
                     CheckResult::True,
             "bottom must be the join identity");
-    require(bottom.met(constrained).isBottom() &&
-                constrained.met(bottom).isBottom(),
+    require(bottom.metOctagon(constrained).isBottom() &&
+                constrained.metOctagon(bottom).isBottom(),
             "bottom must absorb meet");
     require(bottom.leq(top) == CheckResult::True &&
                 top.leq(bottom) == CheckResult::False &&
@@ -385,7 +455,7 @@ void testTopBottomIdentitiesAndQueries()
                 top.leq(constrained) == CheckResult::False,
             "subset checks must handle top and bottom");
 
-    AbstractState mutated = bottom;
+    OctagonState mutated = bottom;
     mutated.joinWith(constrained);
     require(mutated.equals(constrained) == CheckResult::True,
             "in-place join must match value join");
@@ -406,12 +476,15 @@ void testTopBottomIdentitiesAndQueries()
     requireThrows([&] { top.assume(atMost(unknown, Rational(0))); },
                   "assuming an unknown variable must throw");
 
-    AbstractState otherDomain = makeOctagonDomain()->top(environment);
-    requireThrows([&] { (void)top.joined(otherDomain); },
-                  "states from distinct domain instances must not mix");
+    OctagonConfig relaxedConfig;
+    relaxedConfig.integerTightening = false;
+    OctagonState otherConfiguration =
+        OctagonState::top(environment, relaxedConfig);
+    requireThrows([&] { (void)top.joinedOctagon(otherConfiguration); },
+                  "states with distinct configurations must not mix");
     const Environment smaller({{x, NumericType::integer(), "x"}});
-    AbstractState otherEnvironment = domain->top(smaller);
-    requireThrows([&] { (void)top.joined(otherEnvironment); },
+    OctagonState otherEnvironment = OctagonState::top(smaller);
+    requireThrows([&] { (void)top.joinedOctagon(otherEnvironment); },
                   "states with distinct environments must not mix");
 }
 
@@ -425,11 +498,9 @@ void testFallbacksConstantsAndOptions()
          {y, NumericType::integer(), "y"},
          {z, NumericType::integer(), "z"}});
     auto diagnostics = std::make_shared<RecordingDiagnosticSink>();
-    OctagonOptions options;
+    OctagonConfig options;
     options.diagnostics = diagnostics;
-    const auto domain = makeOctagonDomain(options);
-
-    AbstractState assigned = domain->top(environment);
+    OctagonState assigned = OctagonState::top(environment, options);
     assigned.assign(x, LinearExpression(Rational(4)));
     require(assigned.bound(x).lower().value() == Rational(4) &&
                 assigned.bound(x).upper().value() == Rational(4),
@@ -443,35 +514,35 @@ void testFallbacksConstantsAndOptions()
     require(assigned.bound(y).isTop(),
             "unsupported multi-variable assignment must forget its target");
 
-    AbstractState assumptions = domain->top(environment);
+    OctagonState assumptions = OctagonState::top(environment, options);
     assumptions.assume(
         LinearConstraint(LinearExpression(Rational(-1)),
                          ConstraintKind::LessEqual));
     require(!assumptions.isBottom(), "a true constant condition must be kept");
-    AbstractState falseConstant = assumptions;
+    OctagonState falseConstant = assumptions;
     falseConstant.assume(
         LinearConstraint(LinearExpression(Rational(1)),
                          ConstraintKind::LessEqual));
     require(falseConstant.isBottom(),
             "a false constant condition must produce bottom");
-    AbstractState strictFalse = assumptions;
+    OctagonState strictFalse = assumptions;
     strictFalse.assume(
         LinearConstraint(LinearExpression(Rational(0)),
                          ConstraintKind::LessThan));
     require(strictFalse.isBottom(), "0 < 0 must produce bottom");
 
-    AbstractState nonzeroTrue = assumptions;
+    OctagonState nonzeroTrue = assumptions;
     nonzeroTrue.assume(
         LinearConstraint(LinearExpression(Rational(1)),
                          ConstraintKind::NotEqual));
     require(!nonzeroTrue.isBottom(), "1 != 0 must be true");
-    AbstractState nonzeroFalse = assumptions;
+    OctagonState nonzeroFalse = assumptions;
     nonzeroFalse.assume(
         LinearConstraint(LinearExpression(Rational(0)),
                          ConstraintKind::NotEqual));
     require(nonzeroFalse.isBottom(), "0 != 0 must produce bottom");
 
-    AbstractState unsupported = assumptions;
+    OctagonState unsupported = assumptions;
     unsupported.assume(
         LinearConstraint(LinearExpression(x), ConstraintKind::NotEqual));
     LinearExpression unequalCoefficients(x);
@@ -498,13 +569,13 @@ void testFallbacksConstantsAndOptions()
     require(assigned.bound(z).isTop(),
             "a nonlinear tree assignment must conservatively forget");
 
-    OctagonOptions relaxedOptions;
+    OctagonConfig relaxedOptions;
     relaxedOptions.strongClosure = false;
     relaxedOptions.integerTightening = false;
-    const auto relaxed = makeOctagonDomain(relaxedOptions);
-    require(!relaxed->capabilities().integerTightening,
+    OctagonState untightened =
+        OctagonState::top(environment, relaxedOptions);
+    require(!untightened.capabilities().integerTightening,
             "capabilities must reflect disabled integer tightening");
-    AbstractState untightened = relaxed->top(environment);
     untightened.assume(below(x, Rational("3/2")));
     require(untightened.bound(x).upper().value() == Rational("3/2") &&
                 untightened.bound(x).upper().isStrict(),
@@ -513,11 +584,58 @@ void testFallbacksConstantsAndOptions()
     const Variable fp(10);
     const Environment floating(
         {{fp, NumericType::ieee(FloatFormat::binary32()), "fp"}});
-    AbstractState floatingState = domain->top(floating);
+    OctagonState floatingState = OctagonState::top(floating, options);
     floatingState.assume(atMost(fp, Rational(1)));
     floatingState.assign(fp, LinearExpression(Rational(1)));
     require(floatingState.bound(fp).isTop(),
             "IEEE operations must currently use conservative fallback");
+}
+
+void testPersistentPerStateConfiguration()
+{
+    const Variable x(1);
+    const Variable y(2);
+    const Environment environment(
+        {{x, NumericType::integer(), "x"},
+         {y, NumericType::integer(), "y"}});
+
+    OctagonConfig cheapConfig;
+    cheapConfig.strongClosure = false;
+    cheapConfig.integerTightening = false;
+    const OctagonConfig preciseConfig;
+
+    // This state remains the fact for the ordinary predecessor while a copy
+    // enters a locally refined suspicious region.
+    OctagonState cheap = OctagonState::top(environment, cheapConfig);
+    cheap.assume(below(x, Rational("3/2")));
+    OctagonState precise = cheap.reconfigured(preciseConfig);
+
+    LinearExpression xPlusOne(x);
+    xPlusOne.setConstant(Rational(1));
+    precise.assign(y, xPlusOne);
+
+    require(cheap.bound(x).upper().value() == Rational("3/2") &&
+                cheap.bound(x).upper().isStrict() &&
+                !cheap.config().integerTightening,
+            "refining a branch must not retroactively change the retained "
+            "cheap predecessor state");
+    require(precise.bound(x).upper().value() == Rational(1) &&
+                !precise.bound(x).upper().isStrict() &&
+                precise.bound(y).upper().value() == Rational(2),
+            "the refined state must apply integer tightening and continue "
+            "transfer functions under its own configuration");
+
+    requireThrows([&] { (void)cheap.joinedOctagon(precise); },
+                  "a mixed-configuration merge must require explicit "
+                  "conversion");
+
+    OctagonState converted = cheap.reconfigured(preciseConfig);
+    Z3SoundnessChecker checker(environment);
+    requireProof(checker.implies(
+        cheap, converted,
+        "reconfigure: integer source implies precisely normalized state"));
+    OctagonState merged = converted.joinedOctagon(precise);
+    requireProof(checker.checkJoin(converted, precise, merged));
 }
 
 void testJoinClosureLawsAndRandomSoundness()
@@ -530,7 +648,6 @@ void testJoinClosureLawsAndRandomSoundness()
         {{x, NumericType::integer(), "x"},
          {y, NumericType::integer(), "y"},
          {z, NumericType::integer(), "z"}});
-    const auto domain = makeOctagonDomain();
     Z3SoundnessChecker checker(environment);
 
     std::uint32_t random = 0x5eed1234U;
@@ -539,7 +656,7 @@ void testJoinClosureLawsAndRandomSoundness()
         return random;
     };
     auto makeState = [&]() {
-        AbstractState state = domain->top(environment);
+        OctagonState state = OctagonState::top(environment);
         for (unsigned constraintIndex = 0; constraintIndex < 5;
              ++constraintIndex)
         {
@@ -559,23 +676,23 @@ void testJoinClosureLawsAndRandomSoundness()
 
     for (unsigned iteration = 0; iteration < 32; ++iteration)
     {
-        const AbstractState lhs = makeState();
-        const AbstractState rhs = makeState();
-        const AbstractState third = makeState();
-        const AbstractState joined = lhs.joined(rhs);
+        const OctagonState lhs = makeState();
+        const OctagonState rhs = makeState();
+        const OctagonState third = makeState();
+        const OctagonState joined = lhs.joinedOctagon(rhs);
         requireProof(checker.checkJoin(lhs, rhs, joined));
         require(lhs.leq(joined) == CheckResult::True &&
                     rhs.leq(joined) == CheckResult::True,
                 "join must contain both randomized operands");
-        require(joined.equals(rhs.joined(lhs)) == CheckResult::True,
+        require(joined.equals(rhs.joinedOctagon(lhs)) == CheckResult::True,
                 "join must be commutative");
-        require(lhs.joined(lhs).equals(lhs) == CheckResult::True,
+        require(lhs.joinedOctagon(lhs).equals(lhs) == CheckResult::True,
                 "join must be idempotent");
-        require(lhs.joined(rhs).joined(third).equals(
-                    lhs.joined(rhs.joined(third))) == CheckResult::True,
+        require(lhs.joinedOctagon(rhs).joinedOctagon(third).equals(
+                    lhs.joinedOctagon(rhs.joinedOctagon(third))) == CheckResult::True,
                 "join must be associative");
-        const AbstractState independentlyClosed =
-            joined.met(domain->top(environment));
+        const OctagonState independentlyClosed =
+            joined.metOctagon(OctagonState::top(environment));
         require(joined.equals(independentlyClosed) == CheckResult::True,
                 "join's closed flag must agree with independent closure");
 
@@ -586,11 +703,11 @@ void testJoinClosureLawsAndRandomSoundness()
         (void)joined.toConstraints();
     }
 
-    AbstractState strict = domain->top(environment);
+    OctagonState strict = OctagonState::top(environment);
     strict.assume(below(x, Rational("3/2")));
-    AbstractState closed = domain->top(environment);
+    OctagonState closed = OctagonState::top(environment);
     closed.assume(atMost(x, Rational(2)));
-    const AbstractState integerJoin = strict.joined(closed);
+    const OctagonState integerJoin = strict.joinedOctagon(closed);
     require(integerJoin.bound(x).upper().value() == Rational(2) &&
                 !integerJoin.bound(x).upper().isStrict(),
             "join must preserve integer-tight unary closure");
@@ -614,9 +731,8 @@ void testUniversalJoinConfigurations()
                  "i" + std::to_string(dimension)});
         }
         const Environment environment(std::move(declarations));
-        const auto domain = makeOctagonDomain();
-        AbstractState lhs = domain->top(environment);
-        AbstractState rhs = domain->top(environment);
+        OctagonState lhs = OctagonState::top(environment);
+        OctagonState rhs = OctagonState::top(environment);
         for (std::size_t dimension = 0; dimension < dimensionCount;
              ++dimension)
         {
@@ -627,12 +743,12 @@ void testUniversalJoinConfigurations()
             rhs.assume(equalsConstant(
                 variable, Rational(static_cast<std::int64_t>(dimension) + 2)));
         }
-        const AbstractState joined = lhs.joined(rhs);
+        const OctagonState joined = lhs.joinedOctagon(rhs);
         Z3SoundnessChecker checker(environment);
         requireProof(checker.checkJoin(lhs, rhs, joined));
-        require(joined.equals(rhs.joined(lhs)) == CheckResult::True,
+        require(joined.equals(rhs.joinedOctagon(lhs)) == CheckResult::True,
                 "join must be dimension-independent");
-        require(joined.equals(joined.met(domain->top(environment))) ==
+        require(joined.equals(joined.metOctagon(OctagonState::top(environment))) ==
                     CheckResult::True,
                 "closed join must equal an independently normalized copy");
         if (dimensionCount == 0)
@@ -658,13 +774,12 @@ void testUniversalJoinConfigurations()
     {
         for (bool integerTightening : {false, true})
         {
-            OctagonOptions options;
+            OctagonConfig options;
             options.strongClosure = strongClosure;
             options.integerTightening = integerTightening;
-            const auto domain = makeOctagonDomain(options);
             Z3SoundnessChecker checker(mixed);
 
-            AbstractState lhs = domain->top(mixed);
+            OctagonState lhs = OctagonState::top(mixed, options);
             LinearExpression strictRelation(integer);
             strictRelation.setCoefficient(real, Rational(-1));
             strictRelation.setConstant(Rational("-1/3"));
@@ -674,7 +789,7 @@ void testUniversalJoinConfigurations()
             lhs.assume(signedSumAtMost(otherInteger, 1, real, 1,
                                        Rational("7/2")));
 
-            AbstractState rhs = domain->top(mixed);
+            OctagonState rhs = OctagonState::top(mixed, options);
             LinearExpression closedRelation(integer);
             closedRelation.setCoefficient(real, Rational(-1));
             closedRelation.setConstant(Rational("-2/3"));
@@ -684,13 +799,14 @@ void testUniversalJoinConfigurations()
             rhs.assume(signedSumAtMost(otherInteger, 1, real, 1,
                                        Rational(4)));
 
-            const AbstractState joined = lhs.joined(rhs);
+            const OctagonState joined = lhs.joinedOctagon(rhs);
             requireProof(checker.checkJoin(lhs, rhs, joined));
-            require(joined.equals(rhs.joined(lhs)) == CheckResult::True &&
-                        joined.joined(joined).equals(joined) ==
+            require(joined.equals(rhs.joinedOctagon(lhs)) == CheckResult::True &&
+                        joined.joinedOctagon(joined).equals(joined) ==
                             CheckResult::True,
                     "join laws must hold for every closure/tightening option");
-            require(joined.equals(joined.met(domain->top(mixed))) ==
+            require(joined.equals(joined.metOctagon(
+                        OctagonState::top(mixed, options))) ==
                         CheckResult::True,
                     "join closure must hold for every option configuration");
         }
@@ -698,12 +814,11 @@ void testUniversalJoinConfigurations()
 
     const Variable value(20);
     const Environment reals({{value, NumericType::real(), "value"}});
-    const auto realDomain = makeOctagonDomain();
-    AbstractState strict = realDomain->top(reals);
+    OctagonState strict = OctagonState::top(reals);
     strict.assume(below(value, Rational("1/3")));
-    AbstractState closed = realDomain->top(reals);
+    OctagonState closed = OctagonState::top(reals);
     closed.assume(atMost(value, Rational("2/3")));
-    const AbstractState realJoin = strict.joined(closed);
+    const OctagonState realJoin = strict.joinedOctagon(closed);
     requireProof(Z3SoundnessChecker(reals).checkJoin(strict, closed, realJoin));
     require(realJoin.bound(value).upper().value() == Rational("2/3") &&
                 !realJoin.bound(value).upper().isStrict(),
@@ -714,32 +829,31 @@ void testBottomFixpointAndEnvironmentPaths()
 {
     const Variable x(1);
     const Environment environment({{x, NumericType::integer(), "x"}});
-    const auto domain = makeOctagonDomain();
-    AbstractState bottom = domain->bottom(environment);
-    AbstractState finite = domain->top(environment);
+    OctagonState bottom = OctagonState::bottom(environment);
+    OctagonState finite = OctagonState::top(environment);
     finite.assume(equalsConstant(x, Rational(1)));
 
-    require(bottom.widened(finite).equals(finite) == CheckResult::True &&
-                finite.widened(bottom).equals(finite) == CheckResult::True,
+    require(bottom.widenedOctagon(finite).equals(finite) == CheckResult::True &&
+                finite.widenedOctagon(bottom).equals(finite) == CheckResult::True,
             "widening must handle bottom operands");
-    require(bottom.narrowed(bottom).isBottom() &&
-                finite.narrowed(bottom).isBottom(),
+    require(bottom.narrowedOctagon(bottom).isBottom() &&
+                finite.narrowedOctagon(bottom).isBottom(),
             "narrowing must handle bottom operands");
-    require(bottom.projectLowerBounds().isBottom(),
+    require(bottom.lowerBoundsProjection().isBottom(),
             "projecting bottom must retain bottom");
 
     const Environment extended(
         {{x, NumericType::integer(), "x"},
          {Variable(2), NumericType::integer(), "y"}});
-    require(bottom.changedEnvironment(extended).isBottom(),
+    require(bottom.changedEnvironmentOctagon(extended).isBottom(),
             "changing a bottom environment must retain bottom");
     const Environment changedType({{x, NumericType::real(), "x"}});
-    requireThrows([&] { (void)finite.changedEnvironment(changedType); },
+    requireThrows([&] { (void)finite.changedEnvironmentOctagon(changedType); },
                   "environment changes must reject type changes");
 
-    AbstractState widened = domain->top(environment);
+    OctagonState widened = OctagonState::top(environment);
     widened.assume(atMost(x, Rational(1)));
-    AbstractState next = domain->top(environment);
+    OctagonState next = OctagonState::top(environment);
     next.assume(atMost(x, Rational(2)));
     widened.widenWith(next);
     widened.forget(x);
@@ -754,6 +868,7 @@ int main()
     try
     {
         testExactNumericLayer();
+        testPolymorphicStateContract();
         testEnvironment();
         testPublicDomainArchitecture();
         testAssumeClosureAndAssignment();
@@ -762,6 +877,7 @@ int main()
         testLatticeAndZ3Soundness();
         testTopBottomIdentitiesAndQueries();
         testFallbacksConstantsAndOptions();
+        testPersistentPerStateConfiguration();
         testJoinClosureLawsAndRandomSoundness();
         testUniversalJoinConfigurations();
         testBottomFixpointAndEnvironmentPaths();
