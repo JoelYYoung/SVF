@@ -29,7 +29,7 @@
 // 46th International Conference on Software Engineering. (ICSE24)
 //
 #pragma once
-#include "AE/Core/AbstractState.h"
+#include "AE/Core/IntervalState.h"
 #include "AE/Core/ICFGWTO.h"
 #ifdef SVF_BUILD_RELATIONAL_DOMAIN
 #include "AE/Core/SVFRelationalBridge.h"
@@ -160,15 +160,15 @@ public:
 
     // ---- State Access -------------------------------------------------
 
-    AbstractState& getAbsState(const ICFGNode* node);
+    IntervalState& getAbsState(const ICFGNode* node);
 
     /// Replace the state at `node`.  Sparse subclasses replace only the
     /// ObjVar map (ValVars live at def-sites).
-    virtual void updateAbsState(const ICFGNode* node, const AbstractState& state);
+    virtual void updateAbsState(const ICFGNode* node, const IntervalState& state);
 
     /// Join `src` into `dst` with sparsity-aware semantics.  Dense merges
     /// everything; semi-sparse skips ValVars.
-    virtual void joinStates(AbstractState& dst, const AbstractState& src);
+    virtual void joinStates(IntervalState& dst, const IntervalState& src);
 
     bool hasAbsState(const ICFGNode* node);
 
@@ -176,9 +176,9 @@ public:
     bool hasRelationalState(const ICFGNode* node) const;
     const SVFRelationalBridge* getRelationalState(const ICFGNode* node) const;
 
-    void getAbsState(const Set<const ValVar*>& vars, AbstractState& result, const ICFGNode* node);
-    void getAbsState(const Set<const ObjVar*>& vars, AbstractState& result, const ICFGNode* node);
-    void getAbsState(const Set<const SVFVar*>& vars, AbstractState& result, const ICFGNode* node);
+    void getAbsState(const Set<const ValVar*>& vars, IntervalState& result, const ICFGNode* node);
+    void getAbsState(const Set<const ObjVar*>& vars, IntervalState& result, const ICFGNode* node);
+    void getAbsState(const Set<const SVFVar*>& vars, IntervalState& result, const ICFGNode* node);
 
     // ---- GEP / Load-Store / Type Helpers ------------------------------
 
@@ -197,11 +197,11 @@ public:
 
     // ---- Direct Trace Access ------------------------------------------
 
-    Map<const ICFGNode*, AbstractState>& getTrace()
+    Map<const ICFGNode*, IntervalState>& getTrace()
     {
         return abstractTrace;
     }
-    AbstractState& operator[](const ICFGNode* node)
+    IntervalState& operator[](const ICFGNode* node)
     {
         return abstractTrace[node];
     }
@@ -215,20 +215,20 @@ protected:
     // The dense versions write only to trace[cycle_head].  The semi-sparse
     // subclass adds def-site scatter on top for body ValVars.
 
-    /// Build a full cycle-head AbstractState.  Dense default: trace[cycle_head]
+    /// Build a full cycle-head IntervalState.  Dense default: trace[cycle_head]
     /// as-is.  Semi-sparse subclass: also pull cycle ValVars from def-sites.
-    virtual AbstractState getFullCycleHeadState(const ICFGCycleWTO* cycle);
+    virtual IntervalState getFullCycleHeadState(const ICFGCycleWTO* cycle);
 
     /// Widen prev with cur; write the widened state to trace[cycle_head].
     /// Returns true when next == prev (fixpoint).  Semi-sparse subclass
     /// additionally scatters ValVars to their def-sites.
-    virtual bool widenCycleState(const AbstractState& prev, const AbstractState& cur,
+    virtual bool widenCycleState(const IntervalState& prev, const IntervalState& cur,
                                  const ICFGCycleWTO* cycle);
 
     /// Narrow prev with cur; write the narrowed state back.  Returns true
     /// when narrowing is disabled or the narrowed state equals prev.
     /// Semi-sparse subclass scatters the narrowed ValVars on non-fixpoint.
-    virtual bool narrowCycleState(const AbstractState& prev, const AbstractState& cur,
+    virtual bool narrowCycleState(const IntervalState& prev, const IntervalState& cur,
                                   const ICFGCycleWTO* cycle);
 
 protected:
@@ -241,11 +241,11 @@ protected:
 
     /// Returns true if the branch edge is reachable under the current state.
     /// Pure query: does not update `as` or branch refinement traces.
-    bool isBranchEdgeFeasible(const IntraCFGEdge* edge, AbstractState& as);
+    bool isBranchEdgeFeasible(const IntraCFGEdge* edge, IntervalState& as);
 
     /// Collect branch-induced interval refinement after a feasible edge has
     /// been selected for normal CFG-state merging.
-    void collectBranchRefinement(const IntraCFGEdge* edge, AbstractState& as);
+    void collectBranchRefinement(const IntraCFGEdge* edge, IntervalState& as);
 
     /// Hook called by collectBranchRefinement for each obj that the
     /// branch narrows.  Default (dense/semi): MEET `narrowed` onto
@@ -255,7 +255,7 @@ protected:
     /// capture into refinementTrace[succ] instead.
     virtual void recordBranchRefinement(NodeID objId,
                                         const IntervalValue& narrowed,
-                                        AbstractState& as,
+                                        IntervalState& as,
                                         const ICFGNode* loadIcfg,
                                         const ICFGNode* succ);
 
@@ -280,11 +280,11 @@ private:
     virtual void handleSVFStatement(const SVFStmt* stmt);
 
     /// Returns true if the cmp-conditional branch is feasible.
-    bool isCmpBranchEdgeFeasible(const IntraCFGEdge* edge, AbstractState& as);
+    bool isCmpBranchEdgeFeasible(const IntraCFGEdge* edge, IntervalState& as);
 
     /// Returns true if the switch branch is feasible.
     bool isSwitchBranchEdgeFeasible(const IntraCFGEdge* edge,
-                                    AbstractState& as);
+                                    IntervalState& as);
 
     void updateStateOnAddr(const AddrStmt *addr);
 
@@ -344,7 +344,7 @@ protected:
     /// Data and helpers reachable from SparseAbstractInterpretation.
     SVFIR* svfir{nullptr};
     AEWTO* preAnalysis{nullptr};
-    Map<const ICFGNode*, AbstractState> abstractTrace; ///< per-node trace; owned here
+    Map<const ICFGNode*, IntervalState> abstractTrace; ///< per-node trace; owned here
 
     bool shouldApplyNarrowing(const FunObjVar* fun);
 
@@ -356,7 +356,7 @@ protected:
 #endif
     void initializeRelationalState(const ICFGNode* node);
     void adaptRelationalState(const ICFGNode* node,
-                              AbstractState& state) const;
+                              IntervalState& state) const;
     bool isRelationalStateBottom(const ICFGNode* node) const;
     bool isRelationalBranchFeasible(const IntraCFGEdge* edge);
 #ifdef SVF_BUILD_RELATIONAL_DOMAIN
@@ -372,10 +372,10 @@ protected:
 #ifdef SVF_BUILD_RELATIONAL_DOMAIN
     bool appendRelationalOperand(
         const ICFGNode* node, const SVFVar* operand,
-        const relational::Rational& multiplier,
+        const SVF::Rational& multiplier,
         SVFRelationalBridge& state,
         std::vector<SVFRelationalBridge::AffineTerm>& terms,
-        relational::Rational& constant);
+        SVF::Rational& constant);
 #endif
     void updateRelationalOnBinary(const BinaryOPStmt* binary,
                                   const IntervalValue& result);

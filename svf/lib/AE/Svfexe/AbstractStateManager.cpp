@@ -41,7 +41,7 @@ using namespace SVF;
 //  subclasses override the virtuals below.
 // =====================================================================
 
-AbstractState& AbstractInterpretation::getAbsState(const ICFGNode* node)
+IntervalState& AbstractInterpretation::getAbsState(const ICFGNode* node)
 {
     if (abstractTrace.count(node) == 0)
     {
@@ -51,12 +51,12 @@ AbstractState& AbstractInterpretation::getAbsState(const ICFGNode* node)
     return abstractTrace[node];
 }
 
-void AbstractInterpretation::updateAbsState(const ICFGNode* node, const AbstractState& state)
+void AbstractInterpretation::updateAbsState(const ICFGNode* node, const IntervalState& state)
 {
     abstractTrace[node] = state;
 }
 
-void AbstractInterpretation::joinStates(AbstractState& dst, const AbstractState& src)
+void AbstractInterpretation::joinStates(IntervalState& dst, const IntervalState& src)
 {
     dst.joinWith(src);
 }
@@ -80,7 +80,7 @@ bool AbstractInterpretation::hasAbsState(const ICFGNode* node)
 const AbstractValue& AbstractInterpretation::getAbsValue(const ValVar* var, const ICFGNode* node)
 {
     u32_t id = var->getId();
-    AbstractState& as = abstractTrace[node];
+    IntervalState& as = abstractTrace[node];
     if (as.getVarToVal().count(id))
         return as[id];
     as[id] = IntervalValue::top();
@@ -89,8 +89,8 @@ const AbstractValue& AbstractInterpretation::getAbsValue(const ValVar* var, cons
 
 const AbstractValue& AbstractInterpretation::getAbsValue(const ObjVar* var, const ICFGNode* node)
 {
-    AbstractState& as = getAbsState(node);
-    u32_t addr = AbstractState::getVirtualMemAddress(var->getId());
+    IntervalState& as = getAbsState(node);
+    u32_t addr = IntervalState::getVirtualMemAddress(var->getId());
     return as.load(addr);
 }
 
@@ -140,8 +140,8 @@ void AbstractInterpretation::updateAbsValue(const ValVar* var, const AbstractVal
 
 void AbstractInterpretation::updateAbsValue(const ObjVar* var, const AbstractValue& val, const ICFGNode* node)
 {
-    AbstractState& as = getAbsState(node);
-    u32_t addr = AbstractState::getVirtualMemAddress(var->getId());
+    IntervalState& as = getAbsState(node);
+    u32_t addr = IntervalState::getVirtualMemAddress(var->getId());
     as.store(addr, val);
 }
 
@@ -155,9 +155,9 @@ void AbstractInterpretation::updateAbsValue(const SVFVar* var, const AbstractVal
         assert(false && "Unknown SVFVar kind");
 }
 
-void AbstractInterpretation::getAbsState(const Set<const ValVar*>& vars, AbstractState& result, const ICFGNode* node)
+void AbstractInterpretation::getAbsState(const Set<const ValVar*>& vars, IntervalState& result, const ICFGNode* node)
 {
-    AbstractState& as = getAbsState(node);
+    IntervalState& as = getAbsState(node);
     for (const ValVar* var : vars)
     {
         u32_t id = var->getId();
@@ -165,19 +165,19 @@ void AbstractInterpretation::getAbsState(const Set<const ValVar*>& vars, Abstrac
     }
 }
 
-void AbstractInterpretation::getAbsState(const Set<const ObjVar*>& vars, AbstractState& result, const ICFGNode* node)
+void AbstractInterpretation::getAbsState(const Set<const ObjVar*>& vars, IntervalState& result, const ICFGNode* node)
 {
-    AbstractState& as = getAbsState(node);
+    IntervalState& as = getAbsState(node);
     for (const ObjVar* var : vars)
     {
-        u32_t addr = AbstractState::getVirtualMemAddress(var->getId());
+        u32_t addr = IntervalState::getVirtualMemAddress(var->getId());
         result.store(addr, as.load(addr));
     }
 }
 
-void AbstractInterpretation::getAbsState(const Set<const SVFVar*>& vars, AbstractState& result, const ICFGNode* node)
+void AbstractInterpretation::getAbsState(const Set<const SVFVar*>& vars, IntervalState& result, const ICFGNode* node)
 {
-    AbstractState& as = getAbsState(node);
+    IntervalState& as = getAbsState(node);
     for (const SVFVar* var : vars)
     {
         if (const ValVar* valVar = SVFUtil::dyn_cast<ValVar>(var))
@@ -187,7 +187,7 @@ void AbstractInterpretation::getAbsState(const Set<const SVFVar*>& vars, Abstrac
         }
         else if (const ObjVar* objVar = SVFUtil::dyn_cast<ObjVar>(var))
         {
-            u32_t addr = AbstractState::getVirtualMemAddress(objVar->getId());
+            u32_t addr = IntervalState::getVirtualMemAddress(objVar->getId());
             result.store(addr, as.load(addr));
         }
     }
@@ -314,7 +314,7 @@ AddressValue AbstractInterpretation::getGepObjAddrs(const ValVar* pointer, Inter
 {
     const ICFGNode* node = pointer->getICFGNode();
     AddressValue gepAddrs;
-    AbstractState& as = getAbsState(node);
+    IntervalState& as = getAbsState(node);
     APOffset lb = offset.lb().getIntNumeral() < Options::MaxFieldLimit() ? offset.lb().getIntNumeral()
                   : Options::MaxFieldLimit();
     APOffset ub = offset.ub().getIntNumeral() < Options::MaxFieldLimit() ? offset.ub().getIntNumeral()
@@ -327,8 +327,8 @@ AddressValue AbstractInterpretation::getGepObjAddrs(const ValVar* pointer, Inter
             s64_t baseObj = as.getIDFromAddr(addr);
             assert(SVFUtil::isa<ObjVar>(svfir->getSVFVar(baseObj)) && "Fail to get the base object address!");
             NodeID gepObj = svfir->getGepObjVar(baseObj, i);
-            as[gepObj] = AddressValue(AbstractState::getVirtualMemAddress(gepObj));
-            gepAddrs.insert(AbstractState::getVirtualMemAddress(gepObj));
+            as[gepObj] = AddressValue(IntervalState::getVirtualMemAddress(gepObj));
+            gepAddrs.insert(IntervalState::getVirtualMemAddress(gepObj));
         }
     }
     return gepAddrs;
@@ -337,7 +337,7 @@ AddressValue AbstractInterpretation::getGepObjAddrs(const ValVar* pointer, Inter
 AbstractValue AbstractInterpretation::loadValue(const ValVar* pointer, const ICFGNode* node)
 {
     const AbstractValue& ptrVal = getAbsValue(pointer, node);
-    AbstractState& as = getAbsState(node);
+    IntervalState& as = getAbsState(node);
     AbstractValue res;
     for (auto addr : ptrVal.getAddrs())
     {
@@ -350,7 +350,7 @@ AbstractValue AbstractInterpretation::loadValue(const ValVar* pointer, const ICF
 void AbstractInterpretation::storeValue(const ValVar* pointer, const AbstractValue& val, const ICFGNode* node)
 {
     const AbstractValue& ptrVal = getAbsValue(pointer, node);
-    AbstractState& as = getAbsState(node);
+    IntervalState& as = getAbsState(node);
     for (auto addr : ptrVal.getAddrs())
         updateAbsValue(svfir->getSVFVar(as.getIDFromAddr(addr)), val, node);
 }

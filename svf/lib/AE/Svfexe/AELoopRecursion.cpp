@@ -88,7 +88,7 @@ void AbstractInterpretation::skipRecursionWithTop(const CallICFGNode *callNode)
                         const AbstractValue& addrs = getAbsValue(store->getLHSVar(), callNode);
                         if (addrs.isAddr())
                         {
-                            AbstractState& as = getAbsState(callNode);
+                            IntervalState& as = getAbsState(callNode);
                             for (const auto& addr : addrs.getAddrs())
                                 as.store(addr, IntervalValue::top());
                         }
@@ -163,20 +163,20 @@ bool AbstractInterpretation::shouldApplyNarrowing(const FunObjVar* fun)
 //  pull/scatter cycle ValVars from/to their def-sites.
 // =====================================================================
 
-AbstractState AbstractInterpretation::getFullCycleHeadState(const ICFGCycleWTO* cycle)
+IntervalState AbstractInterpretation::getFullCycleHeadState(const ICFGCycleWTO* cycle)
 {
     const ICFGNode* cycle_head = cycle->head()->getICFGNode();
-    AbstractState snap;
+    IntervalState snap;
     if (hasAbsState(cycle_head))
         snap = getAbsState(cycle_head);
     return snap;
 }
 
 bool AbstractInterpretation::widenCycleState(
-    const AbstractState& prev, const AbstractState& cur, const ICFGCycleWTO* cycle)
+    const IntervalState& prev, const IntervalState& cur, const ICFGCycleWTO* cycle)
 {
-    AbstractState prev_copy = prev;
-    AbstractState next = prev_copy.widening(cur);
+    IntervalState prev_copy = prev;
+    IntervalState next = prev_copy.widening(cur);
     // Always write back (even at fixpoint) so cycle_head's trace holds the
     // widened state for the upcoming narrowing phase.
     const ICFGNode* cycle_head = cycle->head()->getICFGNode();
@@ -185,13 +185,13 @@ bool AbstractInterpretation::widenCycleState(
 }
 
 bool AbstractInterpretation::narrowCycleState(
-    const AbstractState& prev, const AbstractState& cur, const ICFGCycleWTO* cycle)
+    const IntervalState& prev, const IntervalState& cur, const ICFGCycleWTO* cycle)
 {
     const ICFGNode* cycle_head = cycle->head()->getICFGNode();
     if (!shouldApplyNarrowing(cycle_head->getFun()))
         return true;
-    AbstractState prev_copy = prev;
-    AbstractState next = prev_copy.narrowing(cur);
+    IntervalState prev_copy = prev;
+    IntervalState next = prev_copy.narrowing(cur);
     if (next == prev)
         return true;  // fixpoint
     abstractTrace[cycle_head] = next;
@@ -257,11 +257,11 @@ void AbstractInterpretation::handleLoopOrRecursion(const ICFGCycleWTO* cycle, co
         {
             // getFullCycleHeadState handles dense (returns trace[cycle_head])
             // and semi-sparse (collects ValVars from def-sites) uniformly.
-            AbstractState prev = getFullCycleHeadState(cycle);
+            IntervalState prev = getFullCycleHeadState(cycle);
 
             if (mergeStatesFromPredecessors(cycle_head))
                 handleICFGNode(cycle_head);
-            AbstractState cur = getFullCycleHeadState(cycle);
+            IntervalState cur = getFullCycleHeadState(cycle);
 
             if (increasing)
             {

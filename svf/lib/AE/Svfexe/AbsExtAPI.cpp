@@ -122,7 +122,7 @@ void AbsExtAPI::initExtFunMap()
     auto svf_set_value = [&](const CallICFGNode* callNode)
     {
         if (callNode->arg_size() < 2) return;
-        AbstractState&as = getAbsState(callNode);
+        IntervalState&as = getAbsState(callNode);
         const AbstractValue& lbVal = ae->getAbsValue(callNode->getArgument(1), callNode);
         const AbstractValue& ubVal = ae->getAbsValue(callNode->getArgument(2), callNode);
         assert(lbVal.getInterval().is_numeral() && ubVal.getInterval().is_numeral());
@@ -231,11 +231,11 @@ void AbsExtAPI::initExtFunMap()
     auto sse_free = [&](const CallICFGNode *callNode)
     {
         if (callNode->arg_size() < 1) return;
-        AbstractState& as = getAbsState(callNode);
+        IntervalState& as = getAbsState(callNode);
         const AbstractValue& ptrVal = ae->getAbsValue(callNode->getArgument(0), callNode);
         for (auto addr: ptrVal.getAddrs())
         {
-            if (AbstractState::isBlackHoleObjAddr(addr))
+            if (IntervalState::isBlackHoleObjAddr(addr))
             {
             }
             else
@@ -259,7 +259,7 @@ void AbsExtAPI::initExtFunMap()
     }
 };
 
-AbstractState& AbsExtAPI::getAbsState(const SVF::ICFGNode* node)
+IntervalState& AbsExtAPI::getAbsState(const SVF::ICFGNode* node)
 {
     return ae->getAbsState(node);
 }
@@ -321,7 +321,7 @@ void AbsExtAPI::checkPointAllSet()
 
 std::string AbsExtAPI::strRead(const ValVar* rhs, const ICFGNode* node)
 {
-    AbstractState& as = getAbsState(node);
+    IntervalState& as = getAbsState(node);
     std::string str0;
 
     for (u32_t index = 0; index < Options::MaxFieldLimit(); index++)
@@ -449,7 +449,7 @@ bool AbsExtAPI::isValidLength(const IntervalValue& len)
 /// Returns an IntervalValue: exact length if '\0' found, otherwise [0, MaxFieldLimit].
 IntervalValue AbsExtAPI::getStrlen(const ValVar *strValue, const ICFGNode* node)
 {
-    AbstractState& as = getAbsState(node);
+    IntervalState& as = getAbsState(node);
     // Step 1: determine the buffer size (in bytes) backing this pointer
     u32_t dst_size = 0;
     const AbstractValue& ptrVal = ae->getAbsValue(strValue, node);
@@ -547,7 +547,7 @@ void AbsExtAPI::handleMemcpy(const ValVar *dst,
                              u32_t start_idx, const ICFGNode* node)
 {
     if (!isValidLength(len)) return;
-    AbstractState& as = getAbsState(node);
+    IntervalState& as = getAbsState(node);
 
     u32_t elemSize = getElementSize(dst);
     u32_t size = std::min((u32_t)Options::MaxFieldLimit(),
@@ -586,7 +586,7 @@ void AbsExtAPI::handleMemset(const ValVar *dst,
                              const IntervalValue& elem, const IntervalValue& len, const ICFGNode* node)
 {
     if (!isValidLength(len)) return;
-    AbstractState& as = getAbsState(node);
+    IntervalState& as = getAbsState(node);
 
     u32_t elemSize = 1;
     if (dst->getType()->isArrayTy())

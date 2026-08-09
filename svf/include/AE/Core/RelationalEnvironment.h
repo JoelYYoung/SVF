@@ -11,7 +11,7 @@
 #include <string>
 #include <vector>
 
-namespace relational
+namespace SVF
 {
 
 using Dimension = std::size_t;
@@ -115,6 +115,6 @@ private:
 // friend-only argument-dependent lookup behavior.
 bool operator==(const Environment& lhs, const Environment& rhs);
 
-} // namespace relational
+} // namespace SVF
 
 #endif // RELATIONAL_ENVIRONMENT_H

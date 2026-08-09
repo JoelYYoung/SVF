@@ -3,14 +3,14 @@
 #ifndef RELATIONAL_Z3_SOUNDNESS_CHECKER_H
 #define RELATIONAL_Z3_SOUNDNESS_CHECKER_H
 
-#include "AE/Core/AbstractDomain.h"
+#include "AE/Core/OctagonDomain.h"
 
 #include <z3++.h>
 
 #include <map>
 #include <string>
 
-namespace relational::test
+namespace SVF::test
 {
 
 struct ProofResult
@@ -26,44 +26,44 @@ class Z3SoundnessChecker
 public:
     explicit Z3SoundnessChecker(const Environment& environment);
 
-    ProofResult implies(const AbstractState& premise,
-                        const AbstractState& conclusion,
+    ProofResult implies(const OctagonState& premise,
+                        const OctagonState& conclusion,
                         const std::string& obligation);
-    ProofResult checkJoin(const AbstractState& lhs, const AbstractState& rhs,
-                          const AbstractState& result);
-    ProofResult checkMeet(const AbstractState& lhs, const AbstractState& rhs,
-                          const AbstractState& result);
-    ProofResult checkAssume(const AbstractState& before,
+    ProofResult checkJoin(const OctagonState& lhs, const OctagonState& rhs,
+                          const OctagonState& result);
+    ProofResult checkMeet(const OctagonState& lhs, const OctagonState& rhs,
+                          const OctagonState& result);
+    ProofResult checkAssume(const OctagonState& before,
                             const LinearConstraint& assumption,
-                            const AbstractState& result);
-    ProofResult checkAssignment(const AbstractState& before, Variable target,
+                            const OctagonState& result);
+    ProofResult checkAssignment(const OctagonState& before, Variable target,
                                 const LinearExpression& expression,
-                                const AbstractState& result);
-    ProofResult checkForget(const AbstractState& before, Variable forgotten,
-                            const AbstractState& result);
-    ProofResult checkWidening(const AbstractState& current,
-                             const AbstractState& next,
-                             const AbstractState& result);
-    ProofResult checkNarrowing(const AbstractState& current,
-                              const AbstractState& next,
-                              const AbstractState& result);
-    ProofResult checkProjection(const AbstractState& source,
-                                const AbstractState& result);
+                                const OctagonState& result);
+    ProofResult checkForget(const OctagonState& before, Variable forgotten,
+                            const OctagonState& result);
+    ProofResult checkWidening(const OctagonState& current,
+                             const OctagonState& next,
+                             const OctagonState& result);
+    ProofResult checkNarrowing(const OctagonState& current,
+                              const OctagonState& next,
+                              const OctagonState& result);
+    ProofResult checkProjection(const OctagonState& source,
+                                const OctagonState& result);
 
 private:
     z3::expr variable(Variable variable);
     z3::expr linear(const LinearExpression& expression);
     z3::expr constraint(const LinearConstraint& constraint);
-    z3::expr state(const AbstractState& state);
+    z3::expr state(const OctagonState& state);
     ProofResult prove(const z3::expr& premise, const z3::expr& conclusion,
                       const std::string& obligation);
-    void requireEnvironment(const AbstractState& state) const;
+    void requireEnvironment(const OctagonState& state) const;
 
     Environment environment_;
     z3::context context_;
     std::map<Variable, z3::expr> variables_;
 };
 
-} // namespace relational::test
+} // namespace SVF::test
 
 #endif // RELATIONAL_Z3_SOUNDNESS_CHECKER_H

@@ -9,7 +9,7 @@
 #include <cstdint>
 #include <string>
 
-namespace relational
+namespace SVF
 {
 
 class Integer
@@ -254,6 +254,6 @@ private:
                              RoundingMode rounding);
 };
 
-} // namespace relational
+} // namespace SVF
 
 #endif // RELATIONAL_NUMERIC_H

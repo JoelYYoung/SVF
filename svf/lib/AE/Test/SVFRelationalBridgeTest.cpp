@@ -7,8 +7,8 @@
 #include <iostream>
 #include <stdexcept>
 
-using namespace relational;
-using namespace relational::test;
+using namespace SVF;
+using namespace SVF::test;
 using namespace SVF;
 
 int main()

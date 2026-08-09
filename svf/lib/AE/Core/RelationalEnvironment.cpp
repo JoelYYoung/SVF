@@ -7,7 +7,7 @@
 #include <stdexcept>
 #include <utility>
 
-using namespace relational;
+using namespace SVF;
 
 struct Environment::Data
 {
@@ -125,7 +125,7 @@ Environment Environment::merge(const Environment& other) const
     return Environment(std::move(declarations));
 }
 
-bool relational::operator==(const Environment& lhs, const Environment& rhs)
+bool SVF::operator==(const Environment& lhs, const Environment& rhs)
 {
     if (lhs.data_ == rhs.data_)
         return true;

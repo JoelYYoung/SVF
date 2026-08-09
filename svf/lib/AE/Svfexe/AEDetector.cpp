@@ -337,7 +337,7 @@ void BufOverflowDetector::updateGepObjOffsetFromBase(const SVF::ICFGNode* node, 
 {
     SVFIR* svfir = PAG::getPAG();
     auto& ae = AbstractInterpretation::getAEInstance();
-    const AbstractState& as = ae.getAbsState(node);
+    const IntervalState& as = ae.getAbsState(node);
 
     for (const auto& objAddr : objAddrs)
     {
@@ -358,7 +358,7 @@ void BufOverflowDetector::updateGepObjOffsetFromBase(const SVF::ICFGNode* node, 
                 }
                 else
                 {
-                    assert(AbstractState::isBlackHoleObjAddr(gepAddr) && "GEP object is neither a GepObjVar nor an invalid memory address");
+                    assert(IntervalState::isBlackHoleObjAddr(gepAddr) && "GEP object is neither a GepObjVar nor an invalid memory address");
                 }
             }
         }
@@ -389,7 +389,7 @@ void BufOverflowDetector::updateGepObjOffsetFromBase(const SVF::ICFGNode* node, 
                 }
                 else
                 {
-                    assert(AbstractState::isBlackHoleObjAddr(gepAddr) && "GEP object is neither a GepObjVar nor an invalid memory address");
+                    assert(IntervalState::isBlackHoleObjAddr(gepAddr) && "GEP object is neither a GepObjVar nor an invalid memory address");
                 }
             }
         }
@@ -675,10 +675,10 @@ bool NullptrDerefDetector::canSafelyDerefPtr(const ValVar* value, const ICFGNode
     for (const auto &addr: AbsVal.getAddrs())
     {
         // if the addr itself is invalid mem, report unsafe
-        if (AbstractState::isBlackHoleObjAddr(addr))
+        if (IntervalState::isBlackHoleObjAddr(addr))
             return false;
         // if nullptr is detected, return unsafe
-        else if (AbstractState::isNullMem(addr))
+        else if (IntervalState::isNullMem(addr))
             return false;
         // if addr is labeled freed mem, report unsafe
         else if (ae.getAbsState(node).isFreedMem(addr))

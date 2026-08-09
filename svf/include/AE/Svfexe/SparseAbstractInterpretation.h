@@ -52,14 +52,14 @@ public:
     ~SemiSparseAbstractInterpretation() override = default;
 
 protected:
-    AbstractState getFullCycleHeadState(const ICFGCycleWTO* cycle) override;
+    IntervalState getFullCycleHeadState(const ICFGCycleWTO* cycle) override;
 
-    bool widenCycleState(const AbstractState& prev,
-                         const AbstractState& cur,
+    bool widenCycleState(const IntervalState& prev,
+                         const IntervalState& cur,
                          const ICFGCycleWTO* cycle) override;
 
-    bool narrowCycleState(const AbstractState& prev,
-                          const AbstractState& cur,
+    bool narrowCycleState(const IntervalState& prev,
+                          const IntervalState& cur,
                           const ICFGCycleWTO* cycle) override;
 
     const AbstractValue& getAbsValue(const ValVar* var, const ICFGNode* node) override;
@@ -71,9 +71,9 @@ protected:
     void updateAbsValue(const ValVar* var, const AbstractValue& val, const ICFGNode* node) override;
     using AbstractInterpretation::updateAbsValue;
 
-    void updateAbsState(const ICFGNode* node, const AbstractState& state) override;
+    void updateAbsState(const ICFGNode* node, const IntervalState& state) override;
 
-    void joinStates(AbstractState& dst, const AbstractState& src) override;
+    void joinStates(IntervalState& dst, const IntervalState& src) override;
 
     const ICFGNode* getICFGNode(const ValVar* var) const;
 };
@@ -100,7 +100,7 @@ protected:
     /// and `_freedAddrs`.  Base/Dummy ObjVars are populated later by
     /// pullObjValueFlows from SVFG indirect in-edges; ValVars stay at their
     /// def-sites.
-    void joinStates(AbstractState& dst, const AbstractState& src) override;
+    void joinStates(IntervalState& dst, const IntervalState& src) override;
 
     /// After a store overwrites an ObjVar, clear any branch refinement
     /// for that ObjVar at the store's node so stale branch constraints
@@ -121,7 +121,7 @@ protected:
     /// narrowing to refinementTrace and let propagateAndApplyRefinement
     /// bake it into trace at the end of mergeStatesFromPredecessors.
     void recordBranchRefinement(NodeID objId, const IntervalValue& narrowed,
-                                AbstractState& as, const ICFGNode* loadIcfg,
+                                IntervalState& as, const ICFGNode* loadIcfg,
                                 const ICFGNode* succ) override;
 
 private:

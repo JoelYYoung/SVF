@@ -12,20 +12,20 @@ using namespace SVF;
 namespace
 {
 
-relational::Environment makeEnvironment(
+SVF::Environment makeEnvironment(
     const std::vector<TrackedRelationalVariable>& variables)
 {
-    std::vector<relational::VariableDeclaration> declarations;
+    std::vector<SVF::VariableDeclaration> declarations;
     declarations.reserve(variables.size());
     for (const TrackedRelationalVariable& variable : variables)
     {
         declarations.push_back(
-            {relational::Variable(variable.id), variable.type, variable.name});
+            {SVF::Variable(variable.id), variable.type, variable.name});
     }
-    return relational::Environment(std::move(declarations));
+    return SVF::Environment(std::move(declarations));
 }
 
-std::optional<s64_t> exactSigned64(const relational::Rational& value)
+std::optional<s64_t> exactSigned64(const SVF::Rational& value)
 {
     const std::string text = value.toString();
     std::size_t consumed = 0;
@@ -46,26 +46,26 @@ std::optional<s64_t> exactSigned64(const relational::Rational& value)
 
 SVFRelationalBridge::SVFRelationalBridge(
     std::vector<TrackedRelationalVariable> variables,
-    relational::OctagonConfig config)
+    SVF::OctagonConfig config)
     : environment_(makeEnvironment(variables)),
-      state_(relational::OctagonState::top(environment_, config))
+      state_(SVF::OctagonState::top(environment_, config))
 {
 }
 
 bool SVFRelationalBridge::tracks(NodeID id) const
 {
-    return environment_.contains(relational::Variable(id));
+    return environment_.contains(SVF::Variable(id));
 }
 
-relational::Variable SVFRelationalBridge::variable(NodeID id) const
+SVF::Variable SVFRelationalBridge::variable(NodeID id) const
 {
-    const relational::Variable result(id);
+    const SVF::Variable result(id);
     if (!environment_.contains(result))
         throw std::invalid_argument("SVF NodeID is not relationally tracked");
     return result;
 }
 
-const relational::Environment& SVFRelationalBridge::environment() const
+const SVF::Environment& SVFRelationalBridge::environment() const
 {
     return environment_;
 }
@@ -73,35 +73,35 @@ const relational::Environment& SVFRelationalBridge::environment() const
 void SVFRelationalBridge::changeTrackedVariables(
     std::vector<TrackedRelationalVariable> variables, bool projectNewVariables)
 {
-    relational::Environment nextEnvironment = makeEnvironment(variables);
+    SVF::Environment nextEnvironment = makeEnvironment(variables);
     state_.changeEnvironment(nextEnvironment, projectNewVariables);
     environment_ = std::move(nextEnvironment);
 }
 
 void SVFRelationalBridge::setTop()
 {
-    state_ = relational::OctagonState::top(environment_, state_.config());
+    state_ = SVF::OctagonState::top(environment_, state_.config());
 }
 
 void SVFRelationalBridge::setBottom()
 {
-    state_ = relational::OctagonState::bottom(environment_, state_.config());
+    state_ = SVF::OctagonState::bottom(environment_, state_.config());
 }
 
 void SVFRelationalBridge::assignConstant(NodeID target,
-                                         relational::Rational constant)
+                                         SVF::Rational constant)
 {
     state_.assign(variable(target),
-                  relational::LinearExpression(std::move(constant)));
+                  SVF::LinearExpression(std::move(constant)));
 }
 
-relational::LinearExpression SVFRelationalBridge::expression(
-    const std::vector<AffineTerm>& terms, relational::Rational constant) const
+SVF::LinearExpression SVFRelationalBridge::expression(
+    const std::vector<AffineTerm>& terms, SVF::Rational constant) const
 {
-    relational::LinearExpression result(std::move(constant));
+    SVF::LinearExpression result(std::move(constant));
     for (const auto& [id, coefficient] : terms)
     {
-        const relational::Variable value = variable(id);
+        const SVF::Variable value = variable(id);
         result.setCoefficient(value, result.coefficient(value) + coefficient);
     }
     return result;
@@ -109,16 +109,16 @@ relational::LinearExpression SVFRelationalBridge::expression(
 
 void SVFRelationalBridge::assignAffine(NodeID target,
                                        std::vector<AffineTerm> terms,
-                                       relational::Rational constant)
+                                       SVF::Rational constant)
 {
     state_.assign(variable(target), expression(terms, std::move(constant)));
 }
 
 void SVFRelationalBridge::assumeAffine(std::vector<AffineTerm> terms,
-                                       relational::Rational constant,
-                                       relational::ConstraintKind kind)
+                                       SVF::Rational constant,
+                                       SVF::ConstraintKind kind)
 {
-    state_.assume(relational::LinearConstraint(
+    state_.assume(SVF::LinearConstraint(
         expression(terms, std::move(constant)), kind));
 }
 
@@ -127,20 +127,20 @@ void SVFRelationalBridge::constrainInterval(NodeID target,
 {
     if (interval.isBottom())
     {
-        state_ = relational::OctagonState::bottom(environment_, state_.config());
+        state_ = SVF::OctagonState::bottom(environment_, state_.config());
         return;
     }
     if (!interval.lb().is_minus_infinity())
     {
-        assumeAffine({{target, relational::Rational(1)}},
-                     relational::Rational(-interval.lb().getIntNumeral()),
-                     relational::ConstraintKind::GreaterEqual);
+        assumeAffine({{target, SVF::Rational(1)}},
+                     SVF::Rational(-interval.lb().getIntNumeral()),
+                     SVF::ConstraintKind::GreaterEqual);
     }
     if (!interval.ub().is_plus_infinity())
     {
-        assumeAffine({{target, relational::Rational(1)}},
-                     relational::Rational(-interval.ub().getIntNumeral()),
-                     relational::ConstraintKind::LessEqual);
+        assumeAffine({{target, SVF::Rational(1)}},
+                     SVF::Rational(-interval.ub().getIntNumeral()),
+                     SVF::ConstraintKind::LessEqual);
     }
 }
 
@@ -184,10 +184,10 @@ void SVFRelationalBridge::meetWith(const SVFRelationalBridge& other)
 }
 
 void SVFRelationalBridge::widenWith(const SVFRelationalBridge& next,
-                                    const relational::WideningPolicy& policy)
+                                    const SVF::WideningPolicy& policy)
 {
     requireCompatible(next);
-    state_.widenWith(next.state_, policy);
+    state_ = state_.widenedOctagon(next.state_, policy);
 }
 
 void SVFRelationalBridge::narrowWith(const SVFRelationalBridge& next)
@@ -199,13 +199,13 @@ void SVFRelationalBridge::narrowWith(const SVFRelationalBridge& next)
 bool SVFRelationalBridge::equals(const SVFRelationalBridge& other) const
 {
     requireCompatible(other);
-    return state_.equals(other.state_) == relational::CheckResult::True;
+    return state_.equals(other.state_) == SVF::CheckResult::True;
 }
 
 bool SVFRelationalBridge::includedIn(const SVFRelationalBridge& other) const
 {
     requireCompatible(other);
-    return state_.leq(other.state_) == relational::CheckResult::True;
+    return state_.leq(other.state_) == SVF::CheckResult::True;
 }
 
 bool SVFRelationalBridge::isBottom() const
@@ -213,18 +213,18 @@ bool SVFRelationalBridge::isBottom() const
     return state_.isBottom();
 }
 
-relational::Interval SVFRelationalBridge::bound(NodeID id) const
+SVF::Interval SVFRelationalBridge::bound(NodeID id) const
 {
     return state_.bound(variable(id));
 }
 
 IntervalValue SVFRelationalBridge::projectInterval(NodeID id) const
 {
-    const relational::Variable value = variable(id);
-    if (environment_.typeOf(value).kind != relational::NumericKind::Integer)
+    const SVF::Variable value = variable(id);
+    if (environment_.typeOf(value).kind != SVF::NumericKind::Integer)
         return IntervalValue::top();
 
-    const relational::Interval projected = state_.bound(value);
+    const SVF::Interval projected = state_.bound(value);
     if (projected.isBottom())
         return IntervalValue::bottom();
 
@@ -232,9 +232,9 @@ IntervalValue SVFRelationalBridge::projectInterval(NodeID id) const
     BoundedInt upper = BoundedInt::plus_infinity();
     if (projected.lower().isFinite())
     {
-        const relational::Rational integerLower =
+        const SVF::Rational integerLower =
             projected.lower().isStrict()
-                ? projected.lower().value().floor() + relational::Rational(1)
+                ? projected.lower().value().floor() + SVF::Rational(1)
                 : projected.lower().value().ceil();
         const std::optional<s64_t> converted = exactSigned64(integerLower);
         if (!converted)
@@ -243,9 +243,9 @@ IntervalValue SVFRelationalBridge::projectInterval(NodeID id) const
     }
     if (projected.upper().isFinite())
     {
-        const relational::Rational integerUpper =
+        const SVF::Rational integerUpper =
             projected.upper().isStrict()
-                ? projected.upper().value().ceil() - relational::Rational(1)
+                ? projected.upper().value().ceil() - SVF::Rational(1)
                 : projected.upper().value().floor();
         const std::optional<s64_t> converted = exactSigned64(integerUpper);
         if (!converted)

@@ -241,8 +241,8 @@ void AbstractInterpretation::handleGlobalNode()
     // updateAbsState filters out ValVars in semi-sparse mode, but NullPtr/
     // BlkPtr have no SVFVar so we cannot route them through updateAbsValue.
     // Use the trace's operator[] (auto-creates the entry if absent).
-    AbstractState& init = abstractTrace[node];
-    init = AbstractState();
+    IntervalState& init = abstractTrace[node];
+    init = IntervalState();
     initializeRelationalState(node);
     // TODO: we cannot find right SVFVar for NullPtr, so we use init[NullPtr]
     // directly. Same for BlkPtr below.
@@ -271,12 +271,12 @@ void AbstractInterpretation::handleGlobalNode()
 bool AbstractInterpretation::mergeStatesFromPredecessors(const ICFGNode* node)
 {
     // Collect all feasible predecessor states, then merge at the end.
-    AbstractState merged;
+    IntervalState merged;
     bool hasFeasiblePred = false;
     auto joinPredecessor = [&](const ICFGNode* predecessor,
                                const IntraCFGEdge* conditionalEdge)
     {
-        AbstractState source = getAbsState(predecessor);
+        IntervalState source = getAbsState(predecessor);
         adaptRelationalState(node, source);
         if (conditionalEdge)
         {
@@ -300,7 +300,7 @@ bool AbstractInterpretation::mergeStatesFromPredecessors(const ICFGNode* node)
         {
             if (intraCfgEdge->getCondition())
             {
-                AbstractState predState = getAbsState(pred);
+                IntervalState predState = getAbsState(pred);
                 if (isBranchEdgeFeasible(intraCfgEdge, predState))
                 {
                     collectBranchRefinement(intraCfgEdge, predState);
@@ -511,7 +511,7 @@ static IntervalValue computeCmpConstraint(s32_t predicate, s64_t succ,
 }
 
 bool AbstractInterpretation::isCmpBranchEdgeFeasible(const IntraCFGEdge* edge,
-        AbstractState& as)
+        IntervalState& as)
 {
     const ICFGNode* pred = edge->getSrcNode();
     s64_t succ = edge->getSuccessorCondValue();
@@ -542,7 +542,7 @@ bool AbstractInterpretation::isCmpBranchEdgeFeasible(const IntraCFGEdge* edge,
 }
 
 bool AbstractInterpretation::isSwitchBranchEdgeFeasible(
-    const IntraCFGEdge* edge, AbstractState& as)
+    const IntraCFGEdge* edge, IntervalState& as)
 {
     const ICFGNode* pred = edge->getSrcNode();
     s64_t succ = edge->getSuccessorCondValue();
@@ -557,7 +557,7 @@ bool AbstractInterpretation::isSwitchBranchEdgeFeasible(
 }
 
 void AbstractInterpretation::collectBranchRefinement(const IntraCFGEdge* edge,
-        AbstractState& as)
+        IntervalState& as)
 {
     const SVFVar* cond = edge->getCondition();
     const ICFGNode* pred = edge->getSrcNode();
@@ -694,7 +694,7 @@ void AbstractInterpretation::collectBranchRefinement(const IntraCFGEdge* edge,
 }
 
 void AbstractInterpretation::recordBranchRefinement(
-    NodeID objId, const IntervalValue& narrowed, AbstractState& as,
+    NodeID objId, const IntervalValue& narrowed, IntervalState& as,
     const ICFGNode* loadIcfg, const ICFGNode* /*succ*/)
 {
     // Default (dense / semi-sparse): MEET narrowed onto obj's current
@@ -708,7 +708,7 @@ void AbstractInterpretation::recordBranchRefinement(
     // with `succ` as the node would land in trace[succ] but get
     // clobbered by the subsequent `updateAbsState(succ, merged)`; with
     // `loadIcfg` it would corrupt the obj's authoritative value at its
-    // load site.  AbstractState::store on the transient `as` is the
+    // load site.  IntervalState::store on the transient `as` is the
     // only sound primitive — and recordBranchRefinement itself is the
     // virtual customisation point (FullSparse routes to
     // refinementTrace instead of touching `as`).
@@ -720,14 +720,14 @@ void AbstractInterpretation::recordBranchRefinement(
         {
             IntervalValue itv = cur.getInterval();
             itv.meet_with(narrowed);
-            u32_t addr = AbstractState::getVirtualMemAddress(objId);
+            u32_t addr = IntervalState::getVirtualMemAddress(objId);
             as.store(addr, AbstractValue(itv));
         }
     }
 }
 
 bool AbstractInterpretation::isBranchEdgeFeasible(const IntraCFGEdge* edge,
-        AbstractState& as)
+        IntervalState& as)
 {
     const SVFVar* cmpVar = edge->getCondition();
     assert(!cmpVar->getInEdges().empty() && "branch condition has no defining edge?");
@@ -761,7 +761,7 @@ bool AbstractInterpretation::handleICFGNode(const ICFGNode* node)
             }
             else
             {
-                updateAbsState(node, AbstractState());
+                updateAbsState(node, IntervalState());
                 initializeRelationalState(node);
             }
         }
@@ -774,7 +774,7 @@ bool AbstractInterpretation::handleICFGNode(const ICFGNode* node)
     initializeRelationalState(node);
 
     // Store the previous state for fixpoint detection
-    AbstractState prevState = getAbsState(node);
+    IntervalState prevState = getAbsState(node);
 
     stat->getBlockTrace()++;
     stat->getICFGNodeTrace()++;
@@ -1052,7 +1052,7 @@ void AbstractInterpretation::updateStateOnPhi(const PhiStmt *phi)
         const ICFGNode* opICFGNode = phi->getOpICFGNode(i);
         if (hasAbsState(opICFGNode))
         {
-            AbstractState tmpState = getAbsState(opICFGNode);
+            IntervalState tmpState = getAbsState(opICFGNode);
             const AbstractValue& opVal = getAbsValue(phi->getOpVar(i), opICFGNode);
             const ICFGEdge* edge = icfg->getICFGEdge(opICFGNode, icfgNode, ICFGEdge::IntraCF);
             if (edge)
@@ -1112,7 +1112,7 @@ void AbstractInterpretation::updateStateOnAddr(const AddrStmt *addr)
     const ICFGNode* node = addr->getICFGNode();
     // initObjVar mutates _varToAbsVal/_addrToAbsVal directly, so we need
     // mutable access; route via the sparsity-aware state API.
-    AbstractState& as = getAbsState(node);
+    IntervalState& as = getAbsState(node);
     as.initObjVar(SVFUtil::cast<ObjVar>(addr->getRHSVar()));
     // AddrStmt: lhs(ValVar) = &rhs(ObjVar).
     // as[rhsId] stores the ObjVar's virtual address in _varToVal,

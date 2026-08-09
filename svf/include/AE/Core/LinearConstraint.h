@@ -11,7 +11,7 @@
 #include <string>
 #include <vector>
 
-namespace relational
+namespace SVF
 {
 
 class LinearExpression
@@ -218,6 +218,6 @@ LinearConstraint lessThan(LinearExpression lhs, LinearExpression rhs);
 LinearConstraint greaterEqual(LinearExpression lhs, LinearExpression rhs);
 LinearConstraint greaterThan(LinearExpression lhs, LinearExpression rhs);
 
-} // namespace relational
+} // namespace SVF
 
 #endif // RELATIONAL_LINEAR_CONSTRAINT_H

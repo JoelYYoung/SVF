@@ -5,7 +5,7 @@
 #include <stdexcept>
 #include <utility>
 
-using namespace relational;
+using namespace SVF;
 
 Integer::Integer() : value_(0) {}
 

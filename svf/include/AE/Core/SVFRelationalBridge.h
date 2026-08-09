@@ -17,7 +17,7 @@ namespace SVF
 struct TrackedRelationalVariable
 {
     NodeID id;
-    relational::NumericType type;
+    SVF::NumericType type;
     std::string name;
 };
 
@@ -28,27 +28,27 @@ struct TrackedRelationalVariable
 class SVFRelationalBridge
 {
 public:
-    using AffineTerm = std::pair<NodeID, relational::Rational>;
+    using AffineTerm = std::pair<NodeID, SVF::Rational>;
 
     explicit SVFRelationalBridge(
         std::vector<TrackedRelationalVariable> variables,
-        relational::OctagonConfig config = {});
+        SVF::OctagonConfig config = {});
 
     bool tracks(NodeID id) const;
-    relational::Variable variable(NodeID id) const;
-    const relational::Environment& environment() const;
+    SVF::Variable variable(NodeID id) const;
+    const SVF::Environment& environment() const;
     void changeTrackedVariables(
         std::vector<TrackedRelationalVariable> variables,
         bool projectNewVariables = false);
     void setTop();
     void setBottom();
 
-    void assignConstant(NodeID target, relational::Rational constant);
+    void assignConstant(NodeID target, SVF::Rational constant);
     void assignAffine(NodeID target, std::vector<AffineTerm> terms,
-                      relational::Rational constant = relational::Rational());
+                      SVF::Rational constant = SVF::Rational());
     void assumeAffine(std::vector<AffineTerm> terms,
-                      relational::Rational constant,
-                      relational::ConstraintKind kind);
+                      SVF::Rational constant,
+                      SVF::ConstraintKind kind);
     void assignInterval(NodeID target, const IntervalValue& interval);
     void meetInterval(NodeID target, const IntervalValue& interval);
     void forget(NodeID id);
@@ -56,35 +56,35 @@ public:
     void joinWith(const SVFRelationalBridge& other);
     void meetWith(const SVFRelationalBridge& other);
     void widenWith(const SVFRelationalBridge& next,
-                   const relational::WideningPolicy& policy = {});
+                   const SVF::WideningPolicy& policy = {});
     void narrowWith(const SVFRelationalBridge& next);
     bool equals(const SVFRelationalBridge& other) const;
     bool includedIn(const SVFRelationalBridge& other) const;
     bool isBottom() const;
 
-    relational::Interval bound(NodeID id) const;
+    SVF::Interval bound(NodeID id) const;
     /// Project an integer Octagon bound into AE's signed 64-bit interval
     /// representation. Unsupported numeric kinds or unrepresentable finite
     /// endpoints conservatively project to top.
     IntervalValue projectInterval(NodeID id) const;
-    const relational::OctagonState& state() const
+    const SVF::OctagonState& state() const
     {
         return state_;
     }
-    relational::OctagonState& state()
+    SVF::OctagonState& state()
     {
         return state_;
     }
 
 private:
-    relational::LinearExpression expression(
+    SVF::LinearExpression expression(
         const std::vector<AffineTerm>& terms,
-        relational::Rational constant) const;
+        SVF::Rational constant) const;
     void requireCompatible(const SVFRelationalBridge& other) const;
     void constrainInterval(NodeID target, const IntervalValue& interval);
 
-    relational::Environment environment_;
-    relational::OctagonState state_;
+    SVF::Environment environment_;
+    SVF::OctagonState state_;
 };
 
 } // namespace SVF

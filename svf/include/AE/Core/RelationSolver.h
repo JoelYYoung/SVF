@@ -37,7 +37,7 @@
 namespace SVF
 {
 
-class AbstractState;
+class IntervalState;
 
 class RelationSolver
 {
@@ -48,17 +48,17 @@ public:
     IntervalESBase (the last element of inputs) for RSY or bilateral solver */
 
     /// Return Z3Expr according to valToValMap
-    Z3Expr gamma_hat(const AbstractState&exeState) const;
+    Z3Expr gamma_hat(const IntervalState&exeState) const;
 
     /// Return Z3Expr according to another valToValMap
-    Z3Expr gamma_hat(const AbstractState&alpha, const AbstractState&exeState) const;
+    Z3Expr gamma_hat(const IntervalState&alpha, const IntervalState&exeState) const;
 
     /// Return Z3Expr from a NodeID
-    Z3Expr gamma_hat(u32_t id, const AbstractState&exeState) const;
+    Z3Expr gamma_hat(u32_t id, const IntervalState&exeState) const;
 
-    AbstractState abstract_consequence(const AbstractState&lower, const AbstractState&upper, const AbstractState&domain) const;
+    IntervalState abstract_consequence(const IntervalState&lower, const IntervalState&upper, const IntervalState&domain) const;
 
-    AbstractState beta(const Map<u32_t, s32_t> &sigma, const AbstractState&exeState) const;
+    IntervalState beta(const Map<u32_t, s32_t> &sigma, const IntervalState&exeState) const;
 
 
     /// Return Z3 expression lazily based on SVFVar ID
@@ -78,13 +78,13 @@ public:
 
     /* two optional solvers: RSY and bilateral */
 
-    AbstractState bilateral(const AbstractState& domain, const Z3Expr &phi, u32_t descend_check = 0);
+    IntervalState bilateral(const IntervalState& domain, const Z3Expr &phi, u32_t descend_check = 0);
 
-    AbstractState RSY(const AbstractState& domain, const Z3Expr &phi);
+    IntervalState RSY(const IntervalState& domain, const Z3Expr &phi);
 
     Map<u32_t, s32_t> BoxedOptSolver(const Z3Expr& phi, Map<u32_t, s32_t>& ret, Map<u32_t, s32_t>& low_values, Map<u32_t, s32_t>& high_values);
 
-    AbstractState BS(const AbstractState& domain, const Z3Expr &phi);
+    IntervalState BS(const IntervalState& domain, const Z3Expr &phi);
 
     void updateMap(Map<u32_t, s32_t>& map, u32_t key, const s32_t& value);
 

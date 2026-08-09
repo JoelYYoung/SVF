@@ -71,7 +71,7 @@ void AbstractInterpretation::initializeRelationalEnvironments()
         if (variables.size() >= maximum)
             continue;
         variables.push_back(
-            {value->getId(), relational::NumericType::integer(),
+            {value->getId(), SVF::NumericType::integer(),
              "svf_" + std::to_string(value->getId())});
     }
 }
@@ -99,7 +99,7 @@ void AbstractInterpretation::initializeRelationalState(const ICFGNode* node)
 }
 
 void AbstractInterpretation::adaptRelationalState(
-    const ICFGNode* node, AbstractState& state) const
+    const ICFGNode* node, IntervalState& state) const
 {
     if (!Options::AERelational())
         return;
@@ -113,9 +113,9 @@ void AbstractInterpretation::adaptRelationalState(
 
 bool AbstractInterpretation::appendRelationalOperand(
     const ICFGNode* node, const SVFVar* operand,
-    const relational::Rational& multiplier, SVFRelationalBridge& state,
+    const SVF::Rational& multiplier, SVFRelationalBridge& state,
     std::vector<SVFRelationalBridge::AffineTerm>& terms,
-    relational::Rational& constant)
+    SVF::Rational& constant)
 {
     if (state.tracks(operand->getId()))
     {
@@ -126,14 +126,14 @@ bool AbstractInterpretation::appendRelationalOperand(
             SVFUtil::dyn_cast<ConstIntValVar>(operand))
     {
         constant += multiplier *
-                    relational::Rational(integer->getSExtValue());
+                    SVF::Rational(integer->getSExtValue());
         return true;
     }
 
     const AbstractValue& value = getAbsValue(operand, node);
     if (value.isInterval() && value.getInterval().is_numeral())
     {
-        constant += multiplier * relational::Rational(
+        constant += multiplier * SVF::Rational(
                                      value.getInterval().getIntNumeral());
         return true;
     }
@@ -180,40 +180,40 @@ void AbstractInterpretation::assumeRelationalBranch(
         }
     }
 
-    relational::ConstraintKind kind;
+    SVF::ConstraintKind kind;
     switch (predicate)
     {
     case CmpStmt::ICMP_EQ:
-        kind = relational::ConstraintKind::Equal;
+        kind = SVF::ConstraintKind::Equal;
         break;
     case CmpStmt::ICMP_NE:
-        kind = relational::ConstraintKind::NotEqual;
+        kind = SVF::ConstraintKind::NotEqual;
         break;
     case CmpStmt::ICMP_SGT:
-        kind = relational::ConstraintKind::GreaterThan;
+        kind = SVF::ConstraintKind::GreaterThan;
         break;
     case CmpStmt::ICMP_SGE:
-        kind = relational::ConstraintKind::GreaterEqual;
+        kind = SVF::ConstraintKind::GreaterEqual;
         break;
     case CmpStmt::ICMP_SLT:
-        kind = relational::ConstraintKind::LessThan;
+        kind = SVF::ConstraintKind::LessThan;
         break;
     case CmpStmt::ICMP_SLE:
-        kind = relational::ConstraintKind::LessEqual;
+        kind = SVF::ConstraintKind::LessEqual;
         break;
     default:
         return;
     }
 
     std::vector<SVFRelationalBridge::AffineTerm> terms;
-    relational::Rational constant;
+    SVF::Rational constant;
     const ICFGNode* predecessor = edge->getSrcNode();
     if (!appendRelationalOperand(predecessor, comparison->getOpVar(0),
-                                 relational::Rational(1), state, terms,
+                                 SVF::Rational(1), state, terms,
                                  constant) ||
             !appendRelationalOperand(predecessor,
                                      comparison->getOpVar(1),
-                                     relational::Rational(-1), state, terms,
+                                     SVF::Rational(-1), state, terms,
                                      constant))
         return;
     state.assumeAffine(std::move(terms), std::move(constant), kind);
@@ -335,20 +335,20 @@ void AbstractInterpretation::updateRelationalOnBinary(
                       !typeRange.isBottom() && !typeRange.is_infinite();
     if (noOverflow)
     {
-        const relational::Rational mathematicalLower =
-            relational::Rational(lhs.lb().getIntNumeral()) +
+        const SVF::Rational mathematicalLower =
+            SVF::Rational(lhs.lb().getIntNumeral()) +
             (binary->getOpcode() == BinaryOPStmt::Add
-                 ? relational::Rational(rhs.lb().getIntNumeral())
-                 : -relational::Rational(rhs.ub().getIntNumeral()));
-        const relational::Rational mathematicalUpper =
-            relational::Rational(lhs.ub().getIntNumeral()) +
+                 ? SVF::Rational(rhs.lb().getIntNumeral())
+                 : -SVF::Rational(rhs.ub().getIntNumeral()));
+        const SVF::Rational mathematicalUpper =
+            SVF::Rational(lhs.ub().getIntNumeral()) +
             (binary->getOpcode() == BinaryOPStmt::Add
-                 ? relational::Rational(rhs.ub().getIntNumeral())
-                 : -relational::Rational(rhs.lb().getIntNumeral()));
+                 ? SVF::Rational(rhs.ub().getIntNumeral())
+                 : -SVF::Rational(rhs.lb().getIntNumeral()));
         noOverflow =
-            mathematicalLower >= relational::Rational(
+            mathematicalLower >= SVF::Rational(
                                      typeRange.lb().getIntNumeral()) &&
-            mathematicalUpper <= relational::Rational(
+            mathematicalUpper <= SVF::Rational(
                                      typeRange.ub().getIntNumeral());
     }
     if (!affineOpcode || !noOverflow)
@@ -358,11 +358,11 @@ void AbstractInterpretation::updateRelationalOnBinary(
     }
 
     std::vector<SVFRelationalBridge::AffineTerm> terms;
-    relational::Rational constant;
-    const relational::Rational rhsSign(
+    SVF::Rational constant;
+    const SVF::Rational rhsSign(
         binary->getOpcode() == BinaryOPStmt::Add ? 1 : -1);
     if (!appendRelationalOperand(node, binary->getOpVar(0),
-                                 relational::Rational(1), state, terms,
+                                 SVF::Rational(1), state, terms,
                                  constant) ||
             !appendRelationalOperand(node, binary->getOpVar(1), rhsSign,
                                      state, terms, constant))
@@ -398,9 +398,9 @@ void AbstractInterpretation::updateRelationalCopyValue(
     if (exactMathematicalCopy)
     {
         std::vector<SVFRelationalBridge::AffineTerm> terms;
-        relational::Rational constant;
+        SVF::Rational constant;
         if (appendRelationalOperand(node, source,
-                                    relational::Rational(1), state, terms,
+                                    SVF::Rational(1), state, terms,
                                     constant))
         {
             state.assignAffine(target->getId(), std::move(terms),
@@ -444,7 +444,7 @@ void AbstractInterpretation::initializeRelationalState(const ICFGNode*)
 }
 
 void AbstractInterpretation::adaptRelationalState(
-    const ICFGNode*, AbstractState&) const
+    const ICFGNode*, IntervalState&) const
 {
 }
 

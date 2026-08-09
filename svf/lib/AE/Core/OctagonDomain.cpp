@@ -8,7 +8,7 @@
 #include <stdexcept>
 #include <utility>
 
-using namespace relational;
+using namespace SVF;
 
 namespace
 {
@@ -157,7 +157,7 @@ Bound tightenIntegerUnary(const Bound& bound)
 
 } // namespace
 
-class relational::OctagonState::Impl final
+class SVF::OctagonState::Impl final
 {
 public:
     Impl(const Environment& environment, OctagonConfig options, bool bottom)
@@ -1139,18 +1139,18 @@ private:
     OctagonStorage state_;
 };
 
-namespace relational
+namespace SVF
 {
 
 OctagonState::OctagonState(Environment environment, OctagonConfig config,
                            bool bottom)
-    : AbstractState(environment),
-      impl_(std::make_unique<Impl>(environment, std::move(config), bottom))
+    : environment_(std::move(environment)),
+      impl_(std::make_unique<Impl>(environment_, std::move(config), bottom))
 {
 }
 
 OctagonState::OctagonState(Environment environment, std::unique_ptr<Impl> impl)
-    : AbstractState(std::move(environment)), impl_(std::move(impl))
+    : environment_(std::move(environment)), impl_(std::move(impl))
 {
 }
 
@@ -1211,7 +1211,8 @@ OctagonState OctagonState::fromConstraints(
 }
 
 OctagonState::OctagonState(const OctagonState& other)
-    : AbstractState(other), impl_(std::make_unique<Impl>(*other.impl_))
+    : AbstractState(other), environment_(other.environment_),
+      impl_(std::make_unique<Impl>(*other.impl_))
 {
 }
 
@@ -1222,6 +1223,7 @@ OctagonState& OctagonState::operator=(const OctagonState& other)
     if (this == &other)
         return *this;
     AbstractState::operator=(other);
+    environment_ = other.environment_;
     impl_ = std::make_unique<Impl>(*other.impl_);
     return *this;
 }
@@ -1243,6 +1245,147 @@ const char* OctagonState::name() const
 DomainCapabilities OctagonState::capabilities() const
 {
     return impl_->capabilities();
+}
+
+void OctagonState::report(OperationKind operation,
+                          ApproximationKind approximation,
+                          std::string reason) const
+{
+    DiagnosticSink* sink = diagnosticSink();
+    if (sink && approximation != ApproximationKind::Exact &&
+        approximation != ApproximationKind::BestAbstraction)
+        sink->report({operation, approximation, std::move(reason)});
+}
+
+void OctagonState::assign(Variable target,
+                          const LinearExpression& expression)
+{
+    const ApproximationKind approximation = assignState(target, expression);
+    report(OperationKind::Assignment, approximation,
+           approximation == ApproximationKind::UnsupportedFallback
+               ? std::string(name()) +
+                     " forgot a target assigned an unsupported linear expression"
+               : std::string(name()) +
+                     " approximated a linear assignment");
+}
+
+void OctagonState::assign(Variable target, const TreeExpression& expression)
+{
+    if (const auto linear = expression.asLinear())
+    {
+        assign(target, *linear);
+        return;
+    }
+    forget(target);
+    report(OperationKind::Assignment,
+           ApproximationKind::UnsupportedFallback,
+           std::string(name()) +
+               " forgot a target assigned a nonlinear or floating tree expression");
+}
+
+void OctagonState::assume(const LinearConstraint& constraint)
+{
+    const ApproximationKind approximation = assumeState(constraint);
+    report(OperationKind::Assumption, approximation,
+           std::string(name()) +
+               " ignored or approximated an unsupported constraint");
+}
+
+void OctagonState::assume(const TreeConstraint& constraint)
+{
+    if (const auto linear = constraint.expression().asLinear())
+    {
+        assume(LinearConstraint(*linear, constraint.kind()));
+        return;
+    }
+    report(OperationKind::Assumption,
+           ApproximationKind::UnsupportedFallback,
+           std::string(name()) +
+               " ignored a nonlinear or floating assumption");
+}
+
+void OctagonState::forget(Variable variable)
+{
+    forgetState(variable);
+}
+
+void OctagonState::projectLowerBounds()
+{
+    projectLowerBoundsState();
+}
+
+void OctagonState::changeEnvironment(const Environment& environment,
+                                     bool projectNewVariables)
+{
+    const Environment oldEnvironment = environment_;
+    changeEnvironmentState(oldEnvironment, environment, projectNewVariables);
+    environment_ = environment;
+}
+
+CheckResult OctagonState::entails(const LinearConstraint& constraint) const
+{
+    if (constraint.kind() == ConstraintKind::Equal)
+    {
+        const CheckResult le = entails(LinearConstraint(
+            constraint.expression(), ConstraintKind::LessEqual));
+        const CheckResult ge = entails(LinearConstraint(
+            constraint.expression(), ConstraintKind::GreaterEqual));
+        if (le == CheckResult::True && ge == CheckResult::True)
+            return CheckResult::True;
+        if (le == CheckResult::False || ge == CheckResult::False)
+            return CheckResult::False;
+        return CheckResult::Unknown;
+    }
+
+    if (constraint.kind() == ConstraintKind::NotEqual)
+    {
+        OctagonState witness(*this);
+        witness.assume(LinearConstraint(constraint.expression(),
+                                        ConstraintKind::Equal));
+        return witness.isBottom() ? CheckResult::True : CheckResult::False;
+    }
+
+    ConstraintKind negated;
+    switch (constraint.kind())
+    {
+    case ConstraintKind::LessThan:
+        negated = ConstraintKind::GreaterEqual;
+        break;
+    case ConstraintKind::LessEqual:
+        negated = ConstraintKind::GreaterThan;
+        break;
+    case ConstraintKind::GreaterThan:
+        negated = ConstraintKind::LessEqual;
+        break;
+    case ConstraintKind::GreaterEqual:
+        negated = ConstraintKind::LessThan;
+        break;
+    case ConstraintKind::Equal:
+    case ConstraintKind::NotEqual:
+        throw std::logic_error("equality entailment was not normalized");
+    }
+    OctagonState counterexample(*this);
+    counterexample.assume(
+        LinearConstraint(constraint.expression(), negated));
+    return counterexample.isBottom() ? CheckResult::True : CheckResult::False;
+}
+
+Interval OctagonState::bound(Variable variable) const
+{
+    return boundState(variable);
+}
+
+Box OctagonState::toBox() const
+{
+    Box box;
+    for (const VariableDeclaration& declaration : environment_.variables())
+        box.bounds.emplace(declaration.variable, bound(declaration.variable));
+    return box;
+}
+
+LinearConstraintSet OctagonState::toConstraints() const
+{
+    return constraintsState();
 }
 
 const OctagonConfig& OctagonState::config() const
@@ -1316,7 +1459,7 @@ const OctagonState& OctagonState::requireOctagon(
 bool OctagonState::hasCompatibleDomain(const AbstractState& other) const
 {
     const auto* octagon = dynamic_cast<const OctagonState*>(&other);
-    return octagon &&
+    return octagon && environment_ == octagon->environment_ &&
            config().operationCompatible(octagon->config());
 }
 
@@ -1347,10 +1490,9 @@ void OctagonState::meetState(const AbstractState& other)
     impl_->meetCurrent(*requireOctagon(other).impl_);
 }
 
-void OctagonState::widenState(const AbstractState& next,
-                              const WideningPolicy& policy)
+void OctagonState::widenState(const AbstractState& next)
 {
-    impl_->widenCurrent(*requireOctagon(next).impl_, policy);
+    impl_->widenCurrent(*requireOctagon(next).impl_, {});
 }
 
 void OctagonState::narrowState(const AbstractState& next)
@@ -1401,4 +1543,4 @@ std::string OctagonState::stateToString() const
     return impl_->toStringCurrent(environment());
 }
 
-} // namespace relational
+} // namespace SVF

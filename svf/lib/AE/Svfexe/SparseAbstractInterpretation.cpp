@@ -61,8 +61,8 @@ void FullSparseAbstractInterpretation::buildSVFG()
 //  ObjVars are handled by pullObjValueFlows, not by ICFG-edge joins.
 // =====================================================================
 
-void FullSparseAbstractInterpretation::joinStates(AbstractState& dst,
-        const AbstractState& src)
+void FullSparseAbstractInterpretation::joinStates(IntervalState& dst,
+        const IntervalState& src)
 {
     // Propagate GepObjVar entries along ICFG edges.  Kill semantics
     // come from handleNode's as.store(addr, val) overwriting trace at
@@ -77,16 +77,11 @@ void FullSparseAbstractInterpretation::joinStates(AbstractState& dst,
     {
         if (!SVFUtil::isa<GepObjVar>(svfir->getGNode(id)))
             continue;
-        u32_t addr = AbstractState::getVirtualMemAddress(id);
-        if (dst.getLocToVal().count(id))
-            dst.load(addr).join_with(val);
-        else
-            dst.store(addr, val);
+        dst.joinMemoryValue(id, val);
     }
-    for (NodeID a : src.getFreedAddrs())
-        dst.addToFreedAddrs(a);
+    dst.joinFreedAddressesFrom(src);
 #ifdef SVF_BUILD_RELATIONAL_DOMAIN
-    dst.joinRelationalNumericalState(src);
+    dst.joinRelationalComponentFrom(src);
 #endif
 }
 
@@ -100,7 +95,7 @@ void FullSparseAbstractInterpretation::storeValue(const ValVar* pointer,
     // Without this, successors inherit the stale constraint and MEET
     // it onto the pulled post-store value, erasing the store's effect.
     const AbstractValue& ptrVal = getAbsValue(pointer, node);
-    AbstractState& as = getAbsState(node);
+    IntervalState& as = getAbsState(node);
     for (auto addr : ptrVal.getAddrs())
     {
         NodeID objId = as.getIDFromAddr(addr);
@@ -477,7 +472,7 @@ bool FullSparseAbstractInterpretation::isIntraEdgeBranchFeasible(
     }
     else
     {
-        AbstractState edgeState = getAbsState(src);
+        IntervalState edgeState = getAbsState(src);
         feasible = isBranchEdgeFeasible(edge, edgeState);
     }
 
@@ -485,7 +480,7 @@ bool FullSparseAbstractInterpretation::isIntraEdgeBranchFeasible(
 }
 
 void FullSparseAbstractInterpretation::recordBranchRefinement(
-    NodeID objId, const IntervalValue& narrowed, AbstractState&,
+    NodeID objId, const IntervalValue& narrowed, IntervalState&,
     const ICFGNode*, const ICFGNode* succ)
 {
     if (narrowed.isBottom())
@@ -580,24 +575,24 @@ void FullSparseAbstractInterpretation::propagateAndApplyRefinement(
     auto nit = refinementTrace.find(node);
     if (nit != refinementTrace.end())
     {
-        AbstractState& trace = abstractTrace[node];
+        IntervalState& trace = abstractTrace[node];
         for (const auto& [id, constraint] : nit->second)
         {
             if (trace.inAddrToValTable(id))
             {
-                u32_t addr = AbstractState::getVirtualMemAddress(id);
+                u32_t addr = IntervalState::getVirtualMemAddress(id);
                 trace.load(addr).getInterval().meet_with(constraint);
             }
         }
     }
 }
 
-AbstractState SemiSparseAbstractInterpretation::getFullCycleHeadState(
+IntervalState SemiSparseAbstractInterpretation::getFullCycleHeadState(
     const ICFGCycleWTO* cycle)
 {
     // Start from the dense snapshot (ObjVars + any ValVars that happen to
     // be cached at cycle_head's trace entry).
-    AbstractState snap = AbstractInterpretation::getFullCycleHeadState(cycle);
+    IntervalState snap = AbstractInterpretation::getFullCycleHeadState(cycle);
 
     const Set<const ValVar*>& valVars = preAnalysis->getCycleValVars(cycle);
     if (valVars.empty())
@@ -607,7 +602,7 @@ AbstractState SemiSparseAbstractInterpretation::getFullCycleHeadState(
     // def-site.  ValVars without a genuine stored value are skipped to
     // avoid getAbsValue's top-fallback contaminating body def-sites on
     // the subsequent widen/narrow scatter.
-    snap.clearValVars();
+    snap.clearVariableValues();
     for (const ValVar* v : valVars)
     {
         const ICFGNode* defSite = v->getICFGNode();
@@ -619,7 +614,7 @@ AbstractState SemiSparseAbstractInterpretation::getFullCycleHeadState(
 }
 
 bool SemiSparseAbstractInterpretation::widenCycleState(
-    const AbstractState& prev, const AbstractState& cur, const ICFGCycleWTO* cycle)
+    const IntervalState& prev, const IntervalState& cur, const ICFGCycleWTO* cycle)
 {
     // Base widens, writes trace[cycle_head], and returns fixpoint bool.
     bool fixpoint = AbstractInterpretation::widenCycleState(prev, cur, cycle);
@@ -630,14 +625,14 @@ bool SemiSparseAbstractInterpretation::widenCycleState(
     // widening fixpoint (see the narrowing-starts-with-stale-body issue
     // fixed by always writing widened state back).
     const ICFGNode* cycle_head = cycle->head()->getICFGNode();
-    const AbstractState& next = abstractTrace[cycle_head];
+    const IntervalState& next = abstractTrace[cycle_head];
     for (const auto& [id, val] : next.getVarToVal())
         updateAbsValue(svfir->getSVFVar(id), val, cycle_head);
     return fixpoint;
 }
 
 bool SemiSparseAbstractInterpretation::narrowCycleState(
-    const AbstractState& prev, const AbstractState& cur, const ICFGCycleWTO* cycle)
+    const IntervalState& prev, const IntervalState& cur, const ICFGCycleWTO* cycle)
 {
     // Delegate to base.  It returns true on the two non-scatter cases
     // (narrowing disabled, or narrow fixpoint); we preserve the original
@@ -649,7 +644,7 @@ bool SemiSparseAbstractInterpretation::narrowCycleState(
     // Non-fixpoint: base wrote the narrowed state to trace.  Scatter the
     // narrowed ValVars back to def-sites.
     const ICFGNode* cycle_head = cycle->head()->getICFGNode();
-    const AbstractState& next = abstractTrace[cycle_head];
+    const IntervalState& next = abstractTrace[cycle_head];
     for (const auto& [id, val] : next.getVarToVal())
         updateAbsValue(svfir->getSVFVar(id), val, cycle_head);
     return false;
@@ -661,18 +656,19 @@ bool SemiSparseAbstractInterpretation::narrowCycleState(
 // =====================================================================
 
 void SemiSparseAbstractInterpretation::updateAbsState(
-    const ICFGNode* node, const AbstractState& state)
+    const ICFGNode* node, const IntervalState& state)
 {
     // Only replace ObjVar state.  ValVars live at their def-sites and
     // must not be overwritten when the predecessor's state is merged in.
-    abstractTrace[node].updateAddrStateOnly(state);
+    abstractTrace[node].replaceMemoryFrom(state);
+    abstractTrace[node].replaceFreedAddressesFrom(state);
 #ifdef SVF_BUILD_RELATIONAL_DOMAIN
-    abstractTrace[node].updateRelationalNumericalStateOnly(state);
+    abstractTrace[node].replaceRelationalComponentFrom(state);
 #endif
 }
 
-void SemiSparseAbstractInterpretation::joinStates(AbstractState& dst,
-        const AbstractState& src)
+void SemiSparseAbstractInterpretation::joinStates(IntervalState& dst,
+        const IntervalState& src)
 {
     // ValVars live at def-sites in semi-sparse mode; they don't flow
     // through state merges.  Iterate src's ObjVar (_addrToAbsVal) entries
@@ -681,16 +677,11 @@ void SemiSparseAbstractInterpretation::joinStates(AbstractState& dst,
     // ICFG edges — there is no SVFG-level encoding of free events.
     for (const auto& [id, val] : src.getLocToVal())
     {
-        u32_t addr = AbstractState::getVirtualMemAddress(id);
-        if (dst.getLocToVal().count(id))
-            dst.load(addr).join_with(val);
-        else
-            dst.store(addr, val);
+        dst.joinMemoryValue(id, val);
     }
-    for (NodeID a : src.getFreedAddrs())
-        dst.addToFreedAddrs(a);
+    dst.joinFreedAddressesFrom(src);
 #ifdef SVF_BUILD_RELATIONAL_DOMAIN
-    dst.joinRelationalNumericalState(src);
+    dst.joinRelationalComponentFrom(src);
 #endif
 }
 

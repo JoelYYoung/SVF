@@ -13,7 +13,7 @@ if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
   add_library(
     RelationalDomainCore
     ${RELATIONAL_STANDALONE_ROOT}/lib/AE/Core/OctagonDomain.cpp
-    ${RELATIONAL_STANDALONE_ROOT}/lib/AE/Core/AbstractDomain.cpp
+    ${RELATIONAL_STANDALONE_ROOT}/lib/AE/Core/AbstractState.cpp
     ${RELATIONAL_STANDALONE_ROOT}/lib/AE/Core/RelationalEnvironment.cpp
     ${RELATIONAL_STANDALONE_ROOT}/lib/AE/Core/LinearConstraint.cpp
     ${RELATIONAL_STANDALONE_ROOT}/lib/AE/Core/RelationalNumeric.cpp
@@ -60,15 +60,24 @@ add_test(NAME relational-domain-svf-bridge COMMAND svf-relational-bridge-test)
 
 if(TARGET SvfCore)
   add_executable(
-    svf-program-state-relational-test
-    SVFProgramStateRelationalTest.cpp
+    svf-interval-state-test
+    IntervalStateTest.cpp
+  )
+  target_link_libraries(svf-interval-state-test PRIVATE SvfCore)
+  add_test(NAME interval-state COMMAND svf-interval-state-test)
+endif()
+
+if(TARGET SvfCore AND SVF_BUILD_RELATIONAL_DOMAIN)
+  add_executable(
+    svf-interval-state-relational-test
+    SVFIntervalStateRelationalTest.cpp
   )
   target_link_libraries(
-    svf-program-state-relational-test PRIVATE SvfCore
+    svf-interval-state-relational-test PRIVATE SvfCore
   )
   add_test(
-    NAME relational-domain-program-state
-    COMMAND svf-program-state-relational-test
+    NAME relational-domain-interval-state
+    COMMAND svf-interval-state-relational-test
   )
 endif()
 
@@ -140,8 +149,8 @@ if(APPLE)
     svf-relational-domain-test
     svf-relational-bridge-test
   )
-  if(TARGET svf-program-state-relational-test)
-    list(APPEND relational_test_targets svf-program-state-relational-test)
+  if(TARGET svf-interval-state-relational-test)
+    list(APPEND relational_test_targets svf-interval-state-relational-test)
   endif()
   if(TARGET svf-ae-relational-integration-test)
     list(APPEND relational_test_targets svf-ae-relational-integration-test)

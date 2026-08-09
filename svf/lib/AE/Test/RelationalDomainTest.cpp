@@ -13,8 +13,8 @@
 #include <utility>
 #include <vector>
 
-using namespace relational;
-using namespace relational::test;
+using namespace SVF;
+using namespace SVF::test;
 
 namespace
 {
@@ -151,22 +151,22 @@ void testPolymorphicStateContract()
 
     std::unique_ptr<AbstractState> widened =
         genericCurrent.widened(genericNext);
-    require(widened->bound(x).lower().value() == Rational(0) &&
-                widened->bound(x).upper().isPlusInfinity(),
+    const auto& widenedOctagon =
+        dynamic_cast<const OctagonState&>(*widened);
+    require(widenedOctagon.bound(x).lower().value() == Rational(0) &&
+                widenedOctagon.bound(x).upper().isPlusInfinity(),
             "polymorphic widening must dispatch to Octagon");
     std::unique_ptr<AbstractState> narrowed = widened->narrowed(genericNext);
     require(narrowed->equals(genericNext) == CheckResult::True,
             "polymorphic narrowing must dispatch to Octagon");
 
-    std::unique_ptr<AbstractState> projected =
-        genericNext.projectLowerBounds();
-    require(projected->bound(x).lower().value() == Rational(0) &&
-                projected->bound(x).upper().isPlusInfinity(),
-            "polymorphic projection must dispatch to Octagon");
-    std::unique_ptr<AbstractState> changed =
-        genericCurrent.changedEnvironment(extended);
-    require(changed->environment() == extended && changed->bound(y).isTop(),
-            "polymorphic environment change must introduce y unconstrained");
+    OctagonState projected = next.lowerBoundsProjection();
+    require(projected.bound(x).lower().value() == Rational(0) &&
+                projected.bound(x).upper().isPlusInfinity(),
+            "Octagon projection must discard upper bounds");
+    OctagonState changed = current.changedEnvironmentOctagon(extended);
+    require(changed.environment() == extended && changed.bound(y).isTop(),
+            "Octagon environment change must introduce y unconstrained");
 
     OctagonState treeState = OctagonState::top(environment);
     TreeExpression xTree =

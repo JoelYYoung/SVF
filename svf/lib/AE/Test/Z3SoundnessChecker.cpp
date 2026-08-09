@@ -5,8 +5,8 @@
 #include <sstream>
 #include <stdexcept>
 
-using namespace relational;
-using namespace relational::test;
+using namespace SVF;
+using namespace SVF::test;
 
 Z3SoundnessChecker::Z3SoundnessChecker(const Environment& environment)
     : environment_(environment)
@@ -70,7 +70,7 @@ z3::expr Z3SoundnessChecker::constraint(
     throw std::logic_error("unknown relational constraint kind");
 }
 
-z3::expr Z3SoundnessChecker::state(const AbstractState& value)
+z3::expr Z3SoundnessChecker::state(const OctagonState& value)
 {
     requireEnvironment(value);
     if (value.isBottom())
@@ -101,31 +101,31 @@ ProofResult Z3SoundnessChecker::prove(const z3::expr& premise,
     return {false, detail.str()};
 }
 
-void Z3SoundnessChecker::requireEnvironment(const AbstractState& value) const
+void Z3SoundnessChecker::requireEnvironment(const OctagonState& value) const
 {
     if (value.environment() != environment_)
         throw std::invalid_argument(
             "Z3 soundness obligation uses a different environment");
 }
 
-ProofResult Z3SoundnessChecker::implies(const AbstractState& premise,
-                                        const AbstractState& conclusion,
+ProofResult Z3SoundnessChecker::implies(const OctagonState& premise,
+                                        const OctagonState& conclusion,
                                         const std::string& obligation)
 {
     return prove(state(premise), state(conclusion), obligation);
 }
 
-ProofResult Z3SoundnessChecker::checkJoin(const AbstractState& lhs,
-                                          const AbstractState& rhs,
-                                          const AbstractState& result)
+ProofResult Z3SoundnessChecker::checkJoin(const OctagonState& lhs,
+                                          const OctagonState& rhs,
+                                          const OctagonState& result)
 {
     return prove(state(lhs) || state(rhs), state(result),
                  "join: (lhs or rhs) implies result");
 }
 
-ProofResult Z3SoundnessChecker::checkMeet(const AbstractState& lhs,
-                                          const AbstractState& rhs,
-                                          const AbstractState& result)
+ProofResult Z3SoundnessChecker::checkMeet(const OctagonState& lhs,
+                                          const OctagonState& rhs,
+                                          const OctagonState& result)
 {
     z3::expr intersection = state(lhs) && state(rhs);
     z3::expr resultFormula = state(result);
@@ -141,16 +141,16 @@ ProofResult Z3SoundnessChecker::checkMeet(const AbstractState& lhs,
 }
 
 ProofResult Z3SoundnessChecker::checkAssume(
-    const AbstractState& before, const LinearConstraint& assumption,
-    const AbstractState& result)
+    const OctagonState& before, const LinearConstraint& assumption,
+    const OctagonState& result)
 {
     return prove(state(before) && constraint(assumption), state(result),
                  "assume: before and condition imply result");
 }
 
 ProofResult Z3SoundnessChecker::checkAssignment(
-    const AbstractState& before, Variable target,
-    const LinearExpression& expression, const AbstractState& result)
+    const OctagonState& before, Variable target,
+    const LinearExpression& expression, const OctagonState& result)
 {
     requireEnvironment(before);
     requireEnvironment(result);
@@ -209,9 +209,9 @@ ProofResult Z3SoundnessChecker::checkAssignment(
                  "assign: old state and transition imply result");
 }
 
-ProofResult Z3SoundnessChecker::checkForget(const AbstractState& before,
+ProofResult Z3SoundnessChecker::checkForget(const OctagonState& before,
                                             Variable forgotten,
-                                            const AbstractState& result)
+                                            const OctagonState& result)
 {
     requireEnvironment(before);
     requireEnvironment(result);
@@ -231,16 +231,16 @@ ProofResult Z3SoundnessChecker::checkForget(const AbstractState& before,
 }
 
 ProofResult Z3SoundnessChecker::checkWidening(
-    const AbstractState& current, const AbstractState& next,
-    const AbstractState& result)
+    const OctagonState& current, const OctagonState& next,
+    const OctagonState& result)
 {
     return prove(state(current) || state(next), state(result),
                  "widening: (current or next) implies result");
 }
 
 ProofResult Z3SoundnessChecker::checkNarrowing(
-    const AbstractState& current, const AbstractState& next,
-    const AbstractState& result)
+    const OctagonState& current, const OctagonState& next,
+    const OctagonState& result)
 {
     ProofResult lower = prove(state(next), state(result),
                               "narrowing: next implies result");
@@ -254,7 +254,7 @@ ProofResult Z3SoundnessChecker::checkNarrowing(
 }
 
 ProofResult Z3SoundnessChecker::checkProjection(
-    const AbstractState& source, const AbstractState& result)
+    const OctagonState& source, const OctagonState& result)
 {
     return prove(state(source), state(result),
                  "projection: source implies result");

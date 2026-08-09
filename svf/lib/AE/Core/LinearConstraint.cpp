@@ -6,7 +6,7 @@
 #include <stdexcept>
 #include <utility>
 
-using namespace relational;
+using namespace SVF;
 
 LinearExpression::LinearExpression() = default;
 
@@ -251,36 +251,36 @@ TreeConstraint::TreeConstraint(TreeExpression expression, ConstraintKind kind)
 {
 }
 
-LinearConstraint relational::equal(LinearExpression lhs, LinearExpression rhs)
+LinearConstraint SVF::equal(LinearExpression lhs, LinearExpression rhs)
 {
     return LinearConstraint(std::move(lhs) - rhs, ConstraintKind::Equal);
 }
 
-LinearConstraint relational::notEqual(LinearExpression lhs,
+LinearConstraint SVF::notEqual(LinearExpression lhs,
                                       LinearExpression rhs)
 {
     return LinearConstraint(std::move(lhs) - rhs, ConstraintKind::NotEqual);
 }
 
-LinearConstraint relational::lessEqual(LinearExpression lhs,
+LinearConstraint SVF::lessEqual(LinearExpression lhs,
                                        LinearExpression rhs)
 {
     return LinearConstraint(std::move(lhs) - rhs, ConstraintKind::LessEqual);
 }
 
-LinearConstraint relational::lessThan(LinearExpression lhs,
+LinearConstraint SVF::lessThan(LinearExpression lhs,
                                       LinearExpression rhs)
 {
     return LinearConstraint(std::move(lhs) - rhs, ConstraintKind::LessThan);
 }
 
-LinearConstraint relational::greaterEqual(LinearExpression lhs,
+LinearConstraint SVF::greaterEqual(LinearExpression lhs,
                                           LinearExpression rhs)
 {
     return LinearConstraint(std::move(lhs) - rhs, ConstraintKind::GreaterEqual);
 }
 
-LinearConstraint relational::greaterThan(LinearExpression lhs,
+LinearConstraint SVF::greaterThan(LinearExpression lhs,
                                          LinearExpression rhs)
 {
     return LinearConstraint(std::move(lhs) - rhs, ConstraintKind::GreaterThan);
