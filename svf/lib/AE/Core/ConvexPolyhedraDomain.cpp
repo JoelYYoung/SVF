@@ -28,6 +28,8 @@ std::vector<Inequality> project(
 bool feasible(std::vector<Inequality> inequalities, std::size_t dimensions);
 bool entails(const std::vector<Inequality>& premises, std::size_t dimensions,
              const Inequality& conclusion);
+std::vector<Inequality> irredundant(std::vector<Inequality> inequalities,
+                                    std::size_t dimensions);
 
 bool falseConstant(const Inequality& inequality)
 {
@@ -853,7 +855,11 @@ void ConvexPolyhedraState::normalize()
     {
         impl_->bottom = true;
         impl_->inequalities.clear();
+        return;
     }
+    if (!impl_->bottom)
+        impl_->inequalities =
+            irredundant(std::move(impl_->inequalities), environment_.size());
 }
 
 void ConvexPolyhedraState::report(OperationKind operation,
@@ -875,10 +881,45 @@ std::vector<Inequality> project(
     const std::size_t width =
         inequalities.empty() ? 0 : inequalities.front().coefficients.size();
     std::vector<std::size_t> order = dimensions;
-    std::sort(order.rbegin(), order.rend());
+    std::sort(order.begin(), order.end());
     order.erase(std::unique(order.begin(), order.end()), order.end());
-    for (std::size_t dimension : order)
+
+    // The caller fixes which dimensions go, not the order they go in, and one
+    // elimination step emits #positive * #negative rows. Taking the cheapest
+    // dimension first (the Cha-Chan-Loo rule) keeps the intermediate systems
+    // small, which matters far more than the step count.
+    const auto stepCost = [&](std::size_t dimension)
     {
+        std::size_t positive = 0;
+        std::size_t negative = 0;
+        for (const Inequality& inequality : inequalities)
+        {
+            const int sign = inequality.coefficients[dimension].sign();
+            if (sign > 0)
+                ++positive;
+            else if (sign < 0)
+                ++negative;
+        }
+        return positive * negative;
+    };
+
+    while (!order.empty())
+    {
+        auto cheapest = order.begin();
+        std::size_t best = stepCost(*cheapest);
+        for (auto candidate = std::next(order.begin()); candidate != order.end();
+             ++candidate)
+        {
+            const std::size_t cost = stepCost(*candidate);
+            if (cost < best)
+            {
+                best = cost;
+                cheapest = candidate;
+            }
+        }
+        const std::size_t dimension = *cheapest;
+        order.erase(cheapest);
+
         inequalities = eliminate(std::move(inequalities), dimension);
         bool bottom = false;
         inequalities = normalized(std::move(inequalities), bottom);
@@ -889,22 +930,292 @@ std::vector<Inequality> project(
             contradiction.bound = Rational(-1);
             return {std::move(contradiction)};
         }
+        // Reduce between elimination steps, not only at the end: each step
+        // costs one row per (upper, lower) pair of the previous step, so
+        // carrying implied rows forward is what makes the elimination
+        // superexponential rather than merely exponential. Reduction itself
+        // costs one linear program per row, so it only pays once a step can
+        // actually produce a large product; below that the next elimination is
+        // cheaper than the test would be.
+        constexpr std::size_t reductionThreshold = 16;
+        if (inequalities.size() > reductionThreshold)
+            inequalities = irredundant(std::move(inequalities), width);
     }
     return inequalities;
 }
 
+// ---------------------------------------------------------------------------
+// Exact rational simplex.
+//
+// Feasibility used to be decided by running Fourier-Motzkin to completion,
+// which costs one row per (upper, lower) pair at every step. That is fine as a
+// definition and unusable as a subroutine: the redundancy test below calls it
+// once per candidate row, so an exponential feasibility check makes redundancy
+// removal cost more than the redundancy it removes. A two-phase primal simplex
+// over GMP rationals decides the same question exactly, with Bland's rule for
+// guaranteed termination.
+// ---------------------------------------------------------------------------
+
+/// Tableau: `rows` equality rows plus one objective row, `columns` variable
+/// columns plus one right-hand-side column. `basis[i]` is the column basic in
+/// row i. Maximizes the objective; returns false when it is unbounded.
+class Tableau
+{
+public:
+    Tableau(std::size_t rows, std::size_t columns)
+        : columns_(columns), cells_(rows + 1,
+                                    std::vector<mpq_class>(columns + 1)),
+          basis_(rows)
+    {
+    }
+
+    std::size_t rows() const { return basis_.size(); }
+    std::size_t columns() const { return columns_; }
+    mpq_class& at(std::size_t row, std::size_t column)
+    {
+        return cells_[row][column];
+    }
+    const mpq_class& at(std::size_t row, std::size_t column) const
+    {
+        return cells_[row][column];
+    }
+    mpq_class& rhs(std::size_t row) { return cells_[row][columns_]; }
+    const mpq_class& rhs(std::size_t row) const { return cells_[row][columns_]; }
+    std::size_t& basis(std::size_t row) { return basis_[row]; }
+    std::size_t basis(std::size_t row) const { return basis_[row]; }
+    /// The objective row lives one past the last constraint row.
+    std::size_t objective() const { return basis_.size(); }
+
+    void pivot(std::size_t row, std::size_t column)
+    {
+        const mpq_class inverse = 1 / cells_[row][column];
+        for (mpq_class& cell : cells_[row])
+            cell *= inverse;
+        for (std::size_t other = 0; other < cells_.size(); ++other)
+        {
+            if (other == row || cells_[other][column] == 0)
+                continue;
+            const mpq_class factor = cells_[other][column];
+            for (std::size_t index = 0; index <= columns_; ++index)
+                cells_[other][index] -= factor * cells_[row][index];
+        }
+        basis_[row] = column;
+    }
+
+    /// Primal simplex with Bland's rule: always take the lowest eligible
+    /// entering column and break ratio ties on the lowest basic column index,
+    /// which makes cycling impossible.
+    bool maximize()
+    {
+        const std::size_t last = objective();
+        while (true)
+        {
+            std::size_t entering = columns_;
+            for (std::size_t column = 0; column < columns_; ++column)
+            {
+                if (cells_[last][column] > 0)
+                {
+                    entering = column;
+                    break;
+                }
+            }
+            if (entering == columns_)
+                return true;
+
+            std::size_t leaving = basis_.size();
+            mpq_class best;
+            for (std::size_t row = 0; row < basis_.size(); ++row)
+            {
+                if (cells_[row][entering] <= 0)
+                    continue;
+                const mpq_class ratio =
+                    cells_[row][columns_] / cells_[row][entering];
+                if (leaving == basis_.size() || ratio < best ||
+                    (ratio == best && basis_[row] < basis_[leaving]))
+                {
+                    best = ratio;
+                    leaving = row;
+                }
+            }
+            if (leaving == basis_.size())
+                return false;
+            pivot(leaving, entering);
+        }
+    }
+
+    /// Maximized objective value.
+    mpq_class value() const { return -cells_[basis_.size()][columns_]; }
+
+    /// Discard the trailing columns and every row still basic on one of them.
+    ///
+    /// Phase I's artificial variables must not merely be kept out of the
+    /// basis for phase II: an artificial that is still basic sits at zero but
+    /// grows again as soon as an entering column has a negative entry in its
+    /// row, because the ratio test only bounds rows with positive entries. A
+    /// phase II run over such a tableau optimizes a relaxation of the original
+    /// system. Deleting the columns removes the variables outright. A row
+    /// whose artificial cannot be pivoted out has no support outside them, so
+    /// it is the redundant equality 0 = 0 and goes with them.
+    void dropTrailing(std::size_t keep)
+    {
+        std::vector<std::vector<mpq_class>> cells;
+        std::vector<std::size_t> basis;
+        const auto compact = [&](const std::vector<mpq_class>& row)
+        {
+            std::vector<mpq_class> result(row.begin(), row.begin() + keep);
+            result.push_back(row[columns_]);
+            return result;
+        };
+        for (std::size_t row = 0; row < basis_.size(); ++row)
+        {
+            if (basis_[row] >= keep)
+                continue;
+            cells.push_back(compact(cells_[row]));
+            basis.push_back(basis_[row]);
+        }
+        cells.push_back(compact(cells_.back()));
+        cells_ = std::move(cells);
+        basis_ = std::move(basis);
+        columns_ = keep;
+    }
+
+private:
+    std::size_t columns_;
+    std::vector<std::vector<mpq_class>> cells_;
+    std::vector<std::size_t> basis_;
+};
+
 bool feasible(std::vector<Inequality> inequalities, std::size_t dimensions)
 {
-    for (std::size_t dimension = dimensions; dimension-- > 0;)
+    // Drop rows that carry no information, and fail fast on `0 <= negative`.
+    std::vector<Inequality> rows;
+    rows.reserve(inequalities.size());
+    for (Inequality& inequality : inequalities)
     {
-        inequalities = eliminate(std::move(inequalities), dimension);
-        bool bottom = false;
-        inequalities = normalized(std::move(inequalities), bottom);
-        if (bottom)
+        if (falseConstant(inequality))
             return false;
+        if (trueConstant(inequality))
+            continue;
+        rows.push_back(std::move(inequality));
     }
-    return std::none_of(inequalities.begin(), inequalities.end(),
-                        falseConstant);
+    if (rows.empty())
+        return true;
+
+    const bool anyStrict =
+        std::any_of(rows.begin(), rows.end(),
+                    [](const Inequality& row) { return row.strict; });
+
+    // Projection zeroes a dimension's column but keeps its width, and the join
+    // lift triples the width before eliminating most of it. Carrying those
+    // dead columns into the tableau costs two simplex variables each for no
+    // information, so map only the live ones.
+    std::vector<std::size_t> live;
+    for (std::size_t dimension = 0; dimension < dimensions; ++dimension)
+    {
+        const bool used = std::any_of(
+            rows.begin(), rows.end(), [&](const Inequality& row)
+            { return !row.coefficients[dimension].isZero(); });
+        if (used)
+            live.push_back(dimension);
+    }
+    dimensions = live.size();
+
+    // Each free x_j becomes u_j - v_j with u, v >= 0. A strict row a.x < b
+    // becomes a.x + epsilon <= b, and the system is strictly feasible exactly
+    // when max epsilon > 0 under the extra row epsilon <= 1.
+    const std::size_t constraintCount = rows.size() + (anyStrict ? 1 : 0);
+    const std::size_t positivePart = 0;
+    const std::size_t negativePart = dimensions;
+    const std::size_t epsilonColumn = 2 * dimensions;
+    const std::size_t slackBase = epsilonColumn + (anyStrict ? 1 : 0);
+    const std::size_t artificialBase = slackBase + constraintCount;
+    const std::size_t columns = artificialBase + constraintCount;
+
+    Tableau tableau(constraintCount, columns);
+    for (std::size_t row = 0; row < rows.size(); ++row)
+    {
+        for (std::size_t dimension = 0; dimension < dimensions; ++dimension)
+        {
+            const mpq_class& coefficient =
+                rows[row].coefficients[live[dimension]].value();
+            tableau.at(row, positivePart + dimension) = coefficient;
+            tableau.at(row, negativePart + dimension) = -coefficient;
+        }
+        if (anyStrict && rows[row].strict)
+            tableau.at(row, epsilonColumn) = 1;
+        tableau.at(row, slackBase + row) = 1;
+        tableau.rhs(row) = rows[row].bound.value();
+    }
+    if (anyStrict)
+    {
+        const std::size_t row = rows.size();
+        tableau.at(row, epsilonColumn) = 1;
+        tableau.at(row, slackBase + row) = 1;
+        tableau.rhs(row) = 1;
+    }
+
+    // Phase I needs a non-negative right-hand side and a starting basis.
+    for (std::size_t row = 0; row < constraintCount; ++row)
+    {
+        if (tableau.rhs(row) < 0)
+        {
+            for (std::size_t column = 0; column <= columns; ++column)
+                tableau.at(row, column) = -tableau.at(row, column);
+        }
+        tableau.at(row, artificialBase + row) = 1;
+        tableau.basis(row) = artificialBase + row;
+    }
+
+    // Maximize -(sum of artificials); the system is feasible iff that is 0.
+    const std::size_t objective = tableau.objective();
+    for (std::size_t row = 0; row < constraintCount; ++row)
+    {
+        for (std::size_t column = 0; column <= columns; ++column)
+            tableau.at(objective, column) += tableau.at(row, column);
+    }
+    for (std::size_t row = 0; row < constraintCount; ++row)
+        tableau.at(objective, artificialBase + row) = 0;
+
+    tableau.maximize();
+    if (tableau.value() < 0)
+        return false;
+    if (!anyStrict)
+        return true;
+
+    // Phase II. First pivot every artificial out of the basis where the row
+    // has any other support, then delete the artificial columns entirely.
+    for (std::size_t row = 0; row < constraintCount; ++row)
+    {
+        if (tableau.basis(row) < artificialBase)
+            continue;
+        for (std::size_t column = 0; column < artificialBase; ++column)
+        {
+            if (tableau.at(row, column) != 0)
+            {
+                tableau.pivot(row, column);
+                break;
+            }
+        }
+    }
+    tableau.dropTrailing(artificialBase);
+
+    // The system is strictly feasible exactly when epsilon can be made
+    // positive, so maximize it over what phase I left behind.
+    const std::size_t phaseTwo = tableau.objective();
+    for (std::size_t column = 0; column <= tableau.columns(); ++column)
+        tableau.at(phaseTwo, column) = 0;
+    tableau.at(phaseTwo, epsilonColumn) = 1;
+    for (std::size_t row = 0; row < tableau.rows(); ++row)
+    {
+        const mpq_class factor = tableau.at(phaseTwo, tableau.basis(row));
+        if (factor == 0)
+            continue;
+        for (std::size_t column = 0; column <= tableau.columns(); ++column)
+            tableau.at(phaseTwo, column) -= factor * tableau.at(row, column);
+    }
+
+    tableau.maximize();
+    return tableau.value() > 0;
 }
 
 bool entails(const std::vector<Inequality>& premises, std::size_t dimensions,
@@ -913,6 +1224,39 @@ bool entails(const std::vector<Inequality>& premises, std::size_t dimensions,
     std::vector<Inequality> counterexample = premises;
     counterexample.push_back(negateForCounterexample(conclusion));
     return !feasible(std::move(counterexample), dimensions);
+}
+
+/// Drop every row implied by the others.
+///
+/// Fourier-Motzkin elimination produces one row per (upper, lower) pair, so
+/// the vast majority of what it emits is implied by the rest of the system.
+/// `normalized` only merges rows whose scaled coefficient vectors are
+/// identical, which leaves that redundancy in place: the join of two rational
+/// points in the plane keeps 42 rows for a segment that needs three. The rows
+/// are all correct, but the next operation's cost is driven by how many of
+/// them survive, so the count compounds multiplicatively across joins and the
+/// domain stops terminating at three dimensions.
+///
+/// Each candidate is tested against every row that is still in the system --
+/// those already kept plus those not yet examined -- so dropping one row never
+/// invalidates a later test.
+std::vector<Inequality> irredundant(std::vector<Inequality> inequalities,
+                                    std::size_t dimensions)
+{
+    if (inequalities.size() < 2)
+        return inequalities;
+
+    std::vector<Inequality> kept;
+    kept.reserve(inequalities.size());
+    for (std::size_t index = 0; index < inequalities.size(); ++index)
+    {
+        std::vector<Inequality> rest = kept;
+        rest.insert(rest.end(), inequalities.begin() + index + 1,
+                    inequalities.end());
+        if (!entails(rest, dimensions, inequalities[index]))
+            kept.push_back(std::move(inequalities[index]));
+    }
+    return kept;
 }
 
 } // namespace
