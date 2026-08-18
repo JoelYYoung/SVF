@@ -3,6 +3,8 @@
 #include "AE/Core/OctagonDomain.h"
 
 #include <algorithm>
+#include <map>
+#include <vector>
 #include <optional>
 #include <sstream>
 #include <stdexcept>
@@ -244,9 +246,49 @@ public:
         }
 
         // Strong-update soundness requires killing every old relation of the
-        // target before falling back.  Unary recovery can be added later.
+        // target first. What follows is the recovery, which used to be absent:
+        // the target was simply forgotten.
+        //
+        // The right-hand side has to be measured before the update, because
+        // the update destroys what it is measured against. That matters even
+        // when the recovery is the equality below: if the expression reads the
+        // target, as in `x := 2*x + y`, then asserting `target = expression`
+        // after the strong update is not a weaker fact, it is a false one --
+        // the `target` in the expression is the old value and is already gone.
+        const Interval assigned =
+            evaluateInterval(state, environment, expression);
+        const bool readsTarget = !expression.coefficient(target).isZero();
+
         forget(state, targetDimension);
-        return ApproximationKind::UnsupportedFallback;
+        if (!readsTarget)
+        {
+            LinearExpression equality(target);
+            equality -= expression;
+            const bool exact = addConstraint(
+                state, environment,
+                LinearConstraint(std::move(equality), ConstraintKind::Equal));
+            normalize(state, environment);
+            return exact ? ApproximationKind::Exact
+                         : ApproximationKind::SoundOverApproximation;
+        }
+
+        if (assigned.upper().isFinite())
+        {
+            LinearExpression upper(target);
+            upper.setConstant(-assigned.upper().value());
+            addLessEqual(state, environment, upper, assigned.upper().isStrict(),
+                         false);
+        }
+        if (assigned.lower().isFinite())
+        {
+            LinearExpression lower;
+            lower.setCoefficient(target, Rational(-1));
+            lower.setConstant(assigned.lower().value());
+            addLessEqual(state, environment, lower, assigned.lower().isStrict(),
+                         false);
+        }
+        normalize(state, environment);
+        return ApproximationKind::SoundOverApproximation;
     }
 
     ApproximationKind assume(OctagonStorage& genericState,
@@ -263,11 +305,10 @@ public:
                 return ApproximationKind::UnsupportedFallback;
         }
 
-        const bool supported = addConstraint(state, environment, constraint);
-        if (supported)
-            normalize(state, environment);
-        return supported ? ApproximationKind::Exact
-                         : ApproximationKind::UnsupportedFallback;
+        const bool exact = addConstraint(state, environment, constraint);
+        normalize(state, environment);
+        return exact ? ApproximationKind::Exact
+                     : ApproximationKind::SoundOverApproximation;
     }
 
     void forget(OctagonStorage& genericState, const VariableEnvironment& environment,
@@ -903,7 +944,8 @@ private:
     }
 
     bool addLessEqual(OctagonStorage& state, const VariableEnvironment& environment,
-                      const LinearExpression& expression, bool strict) const
+                      const LinearExpression& expression, bool strict,
+                      bool allowLinearization = true) const
     {
         const auto& terms = expression.terms();
         if (terms.empty())
@@ -957,7 +999,141 @@ private:
                         Bound::finite(value, strict));
             return true;
         }
+
+        if (allowLinearization)
+            addLinearized(state, environment, expression, strict);
         return false;
+    }
+
+    /// Interval of a linear expression under the current per-variable bounds.
+    Interval evaluateInterval(const OctagonStorage& state,
+                              const VariableEnvironment& environment,
+                              const LinearExpression& expression) const
+    {
+        Rational low = expression.constant();
+        Rational high = expression.constant();
+        bool lowFinite = true;
+        bool highFinite = true;
+        bool lowStrict = false;
+        bool highStrict = false;
+        for (const auto& [variable, coefficient] : expression.terms())
+        {
+            if (coefficient.isZero())
+                continue;
+            const Interval interval = bound(state, environment, variable);
+            const Bound& least =
+                coefficient.sign() > 0 ? interval.lower() : interval.upper();
+            const Bound& greatest =
+                coefficient.sign() > 0 ? interval.upper() : interval.lower();
+            if (lowFinite && least.isFinite())
+            {
+                low += least.value() * coefficient;
+                lowStrict = lowStrict || least.isStrict();
+            }
+            else
+            {
+                lowFinite = false;
+            }
+            if (highFinite && greatest.isFinite())
+            {
+                high += greatest.value() * coefficient;
+                highStrict = highStrict || greatest.isStrict();
+            }
+            else
+            {
+                highFinite = false;
+            }
+        }
+        return Interval(lowFinite ? Bound::finite(low, lowStrict)
+                                  : Bound::minusInfinity(),
+                        highFinite ? Bound::finite(high, highStrict)
+                                   : Bound::plusInfinity());
+    }
+
+    /// Strongest octagonal consequences of a constraint that is not itself
+    /// octagonal.
+    ///
+    /// A DBM cannot store `sum a_i x_i + k <= 0` once it has three terms, or
+    /// two terms of different magnitude. Dropping it is sound and needlessly
+    /// weak: replacing the terms that cannot be stored by their current bounds
+    /// leaves a constraint over one or two variables that can be. That is
+    /// Mine's interval linearization, restricted to the sub-expressions this
+    /// domain represents exactly, and it is what makes a guard such as
+    /// `2*i + 3*j <= 10` narrow anything at all here.
+    void addLinearized(OctagonStorage& state,
+                       const VariableEnvironment& environment,
+                       const LinearExpression& expression, bool strict) const
+    {
+        normalize(state, environment);
+        if (state.bottom)
+            return;
+
+        std::vector<Variable> variables;
+        for (const auto& [variable, coefficient] : expression.terms())
+        {
+            if (!coefficient.isZero())
+                variables.push_back(variable);
+        }
+        if (variables.size() < 2)
+            return;
+
+        // Derive every bound from the same pre-constraint snapshot, so the
+        // result does not depend on the order the sub-constraints are applied.
+        std::map<Variable, Interval> intervals;
+        for (Variable variable : variables)
+            intervals.emplace(variable, bound(state, environment, variable));
+
+        // Least value the terms outside `kept` can take.
+        const auto restMinimum = [&](const std::vector<Variable>& kept,
+                                     Rational& total, bool& totalStrict)
+        {
+            total = Rational();
+            totalStrict = false;
+            for (const auto& [variable, coefficient] : expression.terms())
+            {
+                if (coefficient.isZero())
+                    continue;
+                if (std::find(kept.begin(), kept.end(), variable) != kept.end())
+                    continue;
+                const Interval& interval = intervals.at(variable);
+                const Bound& endpoint = coefficient.sign() > 0
+                                            ? interval.lower()
+                                            : interval.upper();
+                if (!endpoint.isFinite())
+                    return false;
+                total += endpoint.value() * coefficient;
+                totalStrict = totalStrict || endpoint.isStrict();
+            }
+            return true;
+        };
+
+        const auto apply = [&](const std::vector<Variable>& kept)
+        {
+            Rational rest;
+            bool restStrict = false;
+            if (!restMinimum(kept, rest, restStrict))
+                return;
+            LinearExpression reduced(expression.constant() + rest);
+            for (Variable variable : kept)
+                reduced.setCoefficient(variable,
+                                       expression.coefficient(variable));
+            addLessEqual(state, environment, reduced, strict || restStrict,
+                         false);
+        };
+
+        for (std::size_t first = 0; first < variables.size(); ++first)
+        {
+            apply({variables[first]});
+            const Rational firstMagnitude =
+                absolute(expression.coefficient(variables[first]));
+            for (std::size_t second = first + 1; second < variables.size();
+                 ++second)
+            {
+                if (firstMagnitude ==
+                    absolute(expression.coefficient(variables[second])))
+                    apply({variables[first], variables[second]});
+            }
+        }
     }
 
     void selfAssign(OctagonStorage& state, const VariableEnvironment& environment,
