@@ -84,6 +84,16 @@ public:
         const VariableEnvironment& environment,
         bool initializeNewVariablesToZero = false) = 0;
 
+    /// Assume every constraint, letting them propagate into each other until
+    /// the state stops moving.
+    ///
+    /// Assuming them one at a time is weaker than a client of a guard such as
+    /// `a && b && c` expects: a bound learned from the last constraint cannot
+    /// flow back into the first. A domain that is exact on linear constraints
+    /// settles in one pass and pays only the comparison; a non-relational or
+    /// octagonal domain is the reason this exists.
+    void assumeAll(const LinearConstraintSet& constraints);
+
     virtual CheckResult entails(const LinearConstraint& constraint) const = 0;
     virtual Interval bound(Variable variable) const = 0;
     virtual IntervalBox toBox() const = 0;

@@ -1,6 +1,7 @@
 //===- AbstractState.cpp -- Common abstract-state lattice API -----------===//
 
 #include "AE/Core/AbstractState.h"
+#include "AE/Core/NumericalDomain.h"
 
 #include <stdexcept>
 
@@ -83,3 +84,28 @@ std::string AbstractState::toString() const
 {
     return stateToString();
 }
+
+void NumericalState::assumeAll(const LinearConstraintSet& constraints)
+{
+    if (constraints.size() < 2)
+    {
+        for (const LinearConstraint& constraint : constraints)
+            assume(constraint);
+        return;
+    }
+
+    // One pass per constraint and dimension bounds any propagation chain that
+    // terminates at all; the equivalence test stops earlier in practice, and
+    // immediately for a domain that is exact on linear constraints.
+    const std::size_t limit =
+        constraints.size() * (environment().size() + 1) + 1;
+    for (std::size_t pass = 0; pass < limit; ++pass)
+    {
+        const std::unique_ptr<AbstractState> before = clone();
+        for (const LinearConstraint& constraint : constraints)
+            assume(constraint);
+        if (isBottom() || isEquivalentTo(*before) == CheckResult::True)
+            return;
+    }
+}
+
