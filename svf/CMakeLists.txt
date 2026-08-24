@@ -23,6 +23,7 @@ set(ABSTRACT_DOMAIN_CORE_SOURCES
     ${CMAKE_CURRENT_LIST_DIR}/lib/AE/Core/OctagonDomain.cpp
     ${CMAKE_CURRENT_LIST_DIR}/lib/AE/Core/VariableEnvironment.cpp
     ${CMAKE_CURRENT_LIST_DIR}/lib/AE/Core/LinearConstraint.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/lib/AE/Core/NumericalDomain.cpp
     ${CMAKE_CURRENT_LIST_DIR}/lib/AE/Core/NumericPrimitives.cpp
 )
 set(ABSTRACT_DOMAIN_INTEGRATION_HEADERS

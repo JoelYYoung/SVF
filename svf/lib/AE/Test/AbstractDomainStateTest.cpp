@@ -6,6 +6,7 @@
 #include "AE/Core/OctagonDomain.h"
 #include "Z3SoundnessChecker.h"
 
+#include <cstdint>
 #include <cstdlib>
 #include <iostream>
 #include <memory>
@@ -116,8 +117,7 @@ void testBoxState()
             "a strict upper bound must entail the corresponding closed bound");
 
     const VariableEnvironment changedType(
-        {{x, NumericType::integer(), "x"},
-         {y, NumericType::real(), "y"}});
+        {{x, NumericType::integer(), "x"}, {y, NumericType::real(), "y"}});
     requireThrows([&] { state.changeEnvironment(changedType); },
                   "Box environment changes must reject numeric type changes");
 }
@@ -127,12 +127,10 @@ void testBoxLatticeAndFallbacks()
     const Variable x(1);
     const Variable y(2);
     const VariableEnvironment integers(
-        {{x, NumericType::integer(), "x"},
-         {y, NumericType::integer(), "y"}});
+        {{x, NumericType::integer(), "x"}, {y, NumericType::integer(), "y"}});
     IntervalBox initial;
-    initial.bounds.emplace(
-        x, Interval(Bound::finite(Rational("1/2")),
-                    Bound::finite(Rational("7/2"))));
+    initial.bounds.emplace(x, Interval(Bound::finite(Rational("1/2")),
+                                       Bound::finite(Rational("7/2"))));
     BoxState finite = BoxState::fromBox(integers, initial);
     require(finite.bound(x).lower().value() == Rational(1) &&
                 finite.bound(x).upper().value() == Rational(3),
@@ -141,7 +139,8 @@ void testBoxLatticeAndFallbacks()
     BoxState top = BoxState::top(integers);
     BoxState bottom = BoxState::bottom(integers);
     require(top.isTop() && bottom.isBottom() &&
-                bottom.join(finite).isEquivalentTo(finite) == CheckResult::True &&
+                bottom.join(finite).isEquivalentTo(finite) ==
+                    CheckResult::True &&
                 top.meet(finite).isEquivalentTo(finite) == CheckResult::True,
             "Box top/bottom lattice identities must hold");
     require(finite.toConstraints().size() == 2 &&
@@ -178,10 +177,9 @@ void testBoxLatticeAndFallbacks()
             "nonlinear Box operations must report their sound fallbacks");
 
     const Variable z(3);
-    const VariableEnvironment extended(
-        {{x, NumericType::integer(), "x"},
-         {y, NumericType::integer(), "y"},
-         {z, NumericType::integer(), "z"}});
+    const VariableEnvironment extended({{x, NumericType::integer(), "x"},
+                                        {y, NumericType::integer(), "y"},
+                                        {z, NumericType::integer(), "z"}});
     fallback.changeEnvironment(extended, true);
     require(fallback.bound(z).lower().value() == Rational(0) &&
                 fallback.bound(z).upper().value() == Rational(0),
@@ -229,7 +227,7 @@ void testConvexPolyhedraState()
     const ConvexPolyhedraState hull = origin.join(endpoint);
     requireProof(checker.checkJoin(origin, endpoint, hull));
     require(hull.entails(equal(LinearExpression(x), LinearExpression(y))) ==
-                CheckResult::True &&
+                    CheckResult::True &&
                 hull.bound(x).lower().value() == Rational(0) &&
                 hull.bound(x).upper().value() == Rational(2),
             "Polyhedra join must compute the convex hull of two points");
@@ -241,8 +239,7 @@ void testConvexPolyhedraState()
             "Polyhedra forget must existentially eliminate the variable");
 
     const VariableEnvironment changedType(
-        {{x, NumericType::integer(), "x"},
-         {y, NumericType::real(), "y"}});
+        {{x, NumericType::integer(), "x"}, {y, NumericType::real(), "y"}});
     requireThrows([&] { state.changeEnvironment(changedType); },
                   "Polyhedra environment changes must reject type changes");
 }
@@ -294,25 +291,20 @@ void testPolyhedraLatticeAndFallbacks()
     require(fallback.bound(x).isTop() && diagnostics->diagnostics.size() == 3,
             "non-convex/nonlinear Polyhedra operations must report fallbacks");
 
-    ConvexPolyhedraState contradiction =
-        ConvexPolyhedraState::top(environment);
+    ConvexPolyhedraState contradiction = ConvexPolyhedraState::top(environment);
     contradiction.assume(atMost(x, Rational(0)));
-    contradiction.assume(greaterThan(LinearExpression(x),
-                                     LinearExpression(Rational(0))));
+    contradiction.assume(
+        greaterThan(LinearExpression(x), LinearExpression(Rational(0))));
     require(contradiction.isBottom() &&
                 contradiction.toConstraints().size() == 1,
             "Polyhedra feasibility must detect contradictory constraints");
 
     LinearExpression sum(x);
     sum.setCoefficient(y, Rational(1));
-    ConvexPolyhedraState current =
-        ConvexPolyhedraState::top(environment);
-    current.assume(
-        lessEqual(sum, LinearExpression(Rational(0))));
-    ConvexPolyhedraState following =
-        ConvexPolyhedraState::top(environment);
-    following.assume(
-        lessEqual(sum, LinearExpression(Rational(1))));
+    ConvexPolyhedraState current = ConvexPolyhedraState::top(environment);
+    current.assume(lessEqual(sum, LinearExpression(Rational(0))));
+    ConvexPolyhedraState following = ConvexPolyhedraState::top(environment);
+    following.assume(lessEqual(sum, LinearExpression(Rational(1))));
     const LinearConstraint threshold =
         lessEqual(sum, LinearExpression(Rational(10)));
     WideningPolicy policy;
@@ -320,34 +312,31 @@ void testPolyhedraLatticeAndFallbacks()
     policy.linearThresholds.push_back(
         lessEqual(sum, LinearExpression(Rational(0))));
     const ConvexPolyhedraState standard = current.widen(following);
-    const ConvexPolyhedraState thresholded =
-        current.widen(following, policy);
+    const ConvexPolyhedraState thresholded = current.widen(following, policy);
     Z3SoundnessChecker checker(environment);
     requireProof(checker.checkWidening(current, following, thresholded));
     require(current.capabilities().thresholdWidening &&
                 standard.entails(threshold) != CheckResult::True &&
                 thresholded.entails(threshold) == CheckResult::True &&
-                thresholded.entails(
-                    lessEqual(sum, LinearExpression(Rational(0)))) !=
-                    CheckResult::True &&
+                thresholded.entails(lessEqual(
+                    sum, LinearExpression(Rational(0)))) != CheckResult::True &&
                 following.isSubsetOf(thresholded) == CheckResult::True,
             "Polyhedra threshold widening must retain exactly applicable "
             "linear thresholds and contain the next state");
 
-    ConvexPolyhedraState scalarCurrent =
-        ConvexPolyhedraState::top(environment);
+    ConvexPolyhedraState scalarCurrent = ConvexPolyhedraState::top(environment);
     scalarCurrent.assume(atMost(x, Rational(1)));
     ConvexPolyhedraState scalarFollowing =
         ConvexPolyhedraState::top(environment);
     scalarFollowing.assume(atMost(x, Rational(2)));
-    const ConvexPolyhedraState scalarThresholded = scalarCurrent.widen(
-        scalarFollowing, WideningPolicy{{Rational(10)}});
+    const ConvexPolyhedraState scalarThresholded =
+        scalarCurrent.widen(scalarFollowing, WideningPolicy{{Rational(10)}});
     require(scalarThresholded.entails(atMost(x, Rational(10))) ==
                 CheckResult::True,
             "Polyhedra threshold widening must support shared scalar "
             "threshold policies");
-    requireProof(checker.checkWidening(
-        scalarCurrent, scalarFollowing, scalarThresholded));
+    requireProof(checker.checkWidening(scalarCurrent, scalarFollowing,
+                                       scalarThresholded));
 }
 
 template <typename StateT>
@@ -356,29 +345,24 @@ void checkParallelAssignmentFor(const char* domainName)
     const Variable x(1);
     const Variable y(2);
     const Variable z(3);
-    const VariableEnvironment environment(
-        {{x, NumericType::integer(), "x"},
-         {y, NumericType::integer(), "y"},
-         {z, NumericType::integer(), "z"}});
+    const VariableEnvironment environment({{x, NumericType::integer(), "x"},
+                                           {y, NumericType::integer(), "y"},
+                                           {z, NumericType::integer(), "z"}});
     Z3SoundnessChecker checker(environment);
 
     StateT state = StateT::top(environment);
-    state.assumeAll(
-        {equalsValue(x, Rational(1)), equalsValue(y, Rational(2)),
-         equalsValue(z, Rational(9))});
+    state.assumeAll({equalsValue(x, Rational(1)), equalsValue(y, Rational(2)),
+                     equalsValue(z, Rational(9))});
     const StateT before = state;
 
     LinearExpression difference(x);
     difference.setCoefficient(y, Rational(-1));
     const LinearAssignmentList assignments{
-        {x, LinearExpression(y)},
-        {y, LinearExpression(x)},
-        {z, difference}};
+        {x, LinearExpression(y)}, {y, LinearExpression(x)}, {z, difference}};
     NumericalState& numerical = state;
     numerical.assignParallel(assignments);
 
-    requireProof(
-        checker.checkParallelAssignment(before, assignments, state));
+    requireProof(checker.checkParallelAssignment(before, assignments, state));
     require(state.capabilities().parallelAssignments &&
                 state.environment() == environment &&
                 state.bound(x).lower().value() == Rational(2) &&
@@ -409,26 +393,164 @@ void testParallelAssignments()
     const Variable x(1);
     const Variable y(2);
     const VariableEnvironment environment(
-        {{x, NumericType::integer(), "x"},
-         {y, NumericType::integer(), "y"}});
+        {{x, NumericType::integer(), "x"}, {y, NumericType::integer(), "y"}});
     BoxState state = BoxState::top(environment);
     NumericalState& numerical = state;
     requireThrows(
-        [&]
-        {
+        [&] {
             numerical.assignParallel(LinearAssignmentList{
                 {x, LinearExpression(y)}, {x, LinearExpression(x)}});
         },
         "parallel assignment must reject duplicate targets");
 
-    state.assumeAll(
-        {equalsValue(x, Rational(1)), equalsValue(y, Rational(2))});
+    state.assumeAll({equalsValue(x, Rational(1)), equalsValue(y, Rational(2))});
     state.assignParallel(TreeAssignmentList{
         {x, TreeExpression::variable(y, NumericType::integer())},
         {y, TreeExpression::variable(x, NumericType::integer())}});
     require(state.bound(x).lower().value() == Rational(2) &&
                 state.bound(y).lower().value() == Rational(1),
             "affine tree parallel assignment must use simultaneous semantics");
+}
+
+template <typename StateT>
+void checkRawRoundTrip(const StateT& state, const char* domainName)
+{
+    const NumericalState::RawBuffer first = state.serializeRaw();
+    const NumericalState::RawBuffer second = state.serializeRaw();
+    require(first == second, std::string(domainName) +
+                                 " raw serialization must be deterministic");
+
+    std::unique_ptr<NumericalState> decoded =
+        NumericalState::deserializeRaw(first);
+    const auto* restored = dynamic_cast<const StateT*>(decoded.get());
+    require(restored != nullptr,
+            std::string(domainName) +
+                " raw deserialization must restore the concrete domain");
+    require(restored->environment() == state.environment() &&
+                restored->isEquivalentTo(state) == CheckResult::True &&
+                state.isEquivalentTo(*restored) == CheckResult::True,
+            std::string(domainName) +
+                " raw round-trip must preserve environment and semantics");
+    require(restored->hash() == state.hash() &&
+                restored->serializeRaw() == first,
+            std::string(domainName) +
+                " raw round-trip must preserve canonical bytes and hash");
+}
+
+void testNumericalHashAndRawSerialization()
+{
+    const Variable x(1);
+    const Variable y(2);
+    const Variable ieee(3);
+    const VariableEnvironment environment(
+        {{x, NumericType::integer(), std::string("x\0raw", 5)},
+         {y, NumericType::real(), "y"},
+         {ieee, NumericType::ieee(FloatFormat::binary32()), "ieee"}});
+
+    BoxConfig boxConfig;
+    boxConfig.integerTightening = false;
+    BoxState box = BoxState::top(environment, boxConfig);
+    box.assume(atLeast(x, Rational("1/2")));
+    box.assume(
+        lessThan(LinearExpression(y), LinearExpression(Rational("7/3"))));
+    checkRawRoundTrip(box, "Box");
+    checkRawRoundTrip(BoxState::bottom(environment, boxConfig), "Box bottom");
+
+    OctagonConfig octagonConfig;
+    octagonConfig.strongClosure = false;
+    octagonConfig.integerTightening = false;
+    LinearExpression difference(x);
+    difference.setCoefficient(y, Rational(-1));
+    LinearExpression sum(x);
+    sum.setCoefficient(y, Rational(1));
+    OctagonState octagon = OctagonState::top(environment, octagonConfig);
+    octagon.assume(lessEqual(difference, LinearExpression(Rational(3))));
+    octagon.assume(lessThan(sum, LinearExpression(Rational(5))));
+    checkRawRoundTrip(octagon, "Octagon");
+    checkRawRoundTrip(OctagonState::bottom(environment, octagonConfig),
+                      "Octagon bottom");
+
+    OctagonState wideningCurrent =
+        OctagonState::top(environment, octagonConfig);
+    wideningCurrent.assume(atMost(x, Rational(0)));
+    OctagonState wideningNext = OctagonState::top(environment, octagonConfig);
+    wideningNext.assume(atMost(x, Rational(1)));
+    checkRawRoundTrip(wideningCurrent.widen(wideningNext),
+                      "raw widened Octagon");
+
+    std::unique_ptr<NumericalState> restoredOctagon =
+        NumericalState::deserializeRaw(octagon.serializeRaw());
+    const auto* restoredOctagonState =
+        dynamic_cast<const OctagonState*>(restoredOctagon.get());
+    require(restoredOctagonState &&
+                !restoredOctagonState->config().strongClosure &&
+                !restoredOctagonState->config().integerTightening,
+            "Octagon raw serialization must preserve operation configuration");
+    requireThrows(
+        [&] {
+            OctagonState incompatible = OctagonState::top(environment);
+            incompatible.joinWith(*restoredOctagonState);
+        },
+        "deserialized Octagon configuration must remain "
+        "compatibility-relevant");
+
+    ConvexPolyhedraState polyhedron = ConvexPolyhedraState::top(environment);
+    LinearExpression general;
+    general.setCoefficient(x, Rational(2));
+    general.setCoefficient(y, Rational(3));
+    polyhedron.assume(lessEqual(general, LinearExpression(Rational("11/2"))));
+    polyhedron.assume(atLeast(x, Rational(-2)));
+    checkRawRoundTrip(polyhedron, "Convex Polyhedra");
+    checkRawRoundTrip(ConvexPolyhedraState::bottom(environment),
+                      "Convex Polyhedra bottom");
+
+    BoxState boxEquivalent = BoxState::top(environment, boxConfig);
+    boxEquivalent.assume(
+        lessThan(LinearExpression(y), LinearExpression(Rational("7/3"))));
+    boxEquivalent.assume(atLeast(x, Rational("1/2")));
+    boxEquivalent.assume(atLeast(x, Rational(-10)));
+    require(box.isEquivalentTo(boxEquivalent) == CheckResult::True &&
+                box.hash() == boxEquivalent.hash(),
+            "equivalent Box construction histories must have equal hashes");
+
+    OctagonState octagonEquivalent =
+        OctagonState::top(environment, octagonConfig);
+    octagonEquivalent.assume(lessThan(sum, LinearExpression(Rational(5))));
+    octagonEquivalent.assume(
+        lessEqual(difference, LinearExpression(Rational(4))));
+    octagonEquivalent.assume(
+        lessEqual(difference, LinearExpression(Rational(3))));
+    require(octagon.isEquivalentTo(octagonEquivalent) == CheckResult::True &&
+                octagon.hash() == octagonEquivalent.hash(),
+            "equivalent Octagon construction histories must have equal hashes");
+
+    ConvexPolyhedraState polyhedronEquivalent =
+        ConvexPolyhedraState::top(environment);
+    LinearExpression scaledGeneral = general * Rational(2);
+    polyhedronEquivalent.assume(atLeast(x, Rational(-2)));
+    polyhedronEquivalent.assume(
+        lessEqual(scaledGeneral, LinearExpression(Rational(11))));
+    polyhedronEquivalent.assume(
+        lessEqual(general, LinearExpression(Rational(100))));
+    require(polyhedron.isEquivalentTo(polyhedronEquivalent) ==
+                    CheckResult::True &&
+                polyhedron.hash() == polyhedronEquivalent.hash(),
+            "equivalent Polyhedra representations must have equal hashes");
+
+    NumericalState::RawBuffer corrupt = polyhedron.serializeRaw();
+    corrupt[12] ^= 0x40U;
+    requireThrows([&] { (void)NumericalState::deserializeRaw(corrupt); },
+                  "raw deserialization must reject checksum corruption");
+
+    NumericalState::RawBuffer truncated = polyhedron.serializeRaw();
+    truncated.resize(truncated.size() - 3);
+    requireThrows([&] { (void)NumericalState::deserializeRaw(truncated); },
+                  "raw deserialization must reject truncation");
+    requireThrows(
+        [&] {
+            (void)NumericalState::deserializeRaw(NumericalState::RawBuffer{});
+        },
+        "raw deserialization must reject an empty buffer");
 }
 
 void testRandomizedNumericalSoundness()
@@ -617,6 +739,7 @@ int main()
         testConvexPolyhedraState();
         testPolyhedraLatticeAndFallbacks();
         testParallelAssignments();
+        testNumericalHashAndRawSerialization();
         testRandomizedNumericalSoundness();
         testNonRelationalState();
         std::cout << "abstract-domain state tests: PASS\n";

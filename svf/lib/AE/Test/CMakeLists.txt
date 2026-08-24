@@ -19,6 +19,7 @@ if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
     ${ABSTRACT_DOMAIN_SOURCE_ROOT}/lib/AE/Core/AbstractState.cpp
     ${ABSTRACT_DOMAIN_SOURCE_ROOT}/lib/AE/Core/VariableEnvironment.cpp
     ${ABSTRACT_DOMAIN_SOURCE_ROOT}/lib/AE/Core/LinearConstraint.cpp
+    ${ABSTRACT_DOMAIN_SOURCE_ROOT}/lib/AE/Core/NumericalDomain.cpp
     ${ABSTRACT_DOMAIN_SOURCE_ROOT}/lib/AE/Core/NumericPrimitives.cpp
   )
   target_compile_features(AbstractDomainCore PUBLIC cxx_std_17)

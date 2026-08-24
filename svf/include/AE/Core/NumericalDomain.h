@@ -6,6 +6,7 @@
 #include "AE/Core/AbstractState.h"
 #include "AE/Core/LinearConstraint.h"
 
+#include <cstdint>
 #include <map>
 #include <memory>
 #include <string>
@@ -105,7 +106,24 @@ using TreeAssignmentList = std::vector<TreeAssignment>;
 class NumericalState : public AbstractState
 {
 public:
+    using RawBuffer = std::vector<std::uint8_t>;
+
     ~NumericalState() override = default;
+
+    /// Return a deterministic semantic hash. Compatible states that are
+    /// equivalent according to isEquivalentTo() have the same hash. Hash
+    /// equality is not a substitute for an exact equivalence check.
+    std::uint64_t hash() const;
+
+    /// Serialize the domain kind, operation-relevant configuration,
+    /// environment, and canonical mathematical state into a versioned binary
+    /// buffer. Diagnostic sinks are observational and are not serialized.
+    RawBuffer serializeRaw() const;
+
+    /// Restore a Box, Octagon, or Convex Polyhedra state from serializeRaw().
+    /// Malformed, truncated, corrupt, or unsupported data is rejected.
+    static std::unique_ptr<NumericalState> deserializeRaw(
+        const RawBuffer& buffer);
 
     virtual DomainCapabilities capabilities() const = 0;
     virtual const VariableEnvironment& environment() const = 0;
