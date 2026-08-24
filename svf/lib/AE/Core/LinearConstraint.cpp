@@ -71,6 +71,22 @@ LinearExpression& LinearExpression::operator*=(const Rational& scalar)
     return *this;
 }
 
+LinearExpression LinearExpression::substituted(
+    const std::map<Variable, LinearExpression>& replacements) const
+{
+    LinearExpression result(constant_);
+    for (const auto& [variable, coefficient] : terms_)
+    {
+        const auto replacement = replacements.find(variable);
+        if (replacement == replacements.end())
+            result.setCoefficient(
+                variable, result.coefficient(variable) + coefficient);
+        else
+            result += replacement->second * coefficient;
+    }
+    return result;
+}
+
 void LinearExpression::removeZeroTerms()
 {
     for (auto it = terms_.begin(); it != terms_.end();)

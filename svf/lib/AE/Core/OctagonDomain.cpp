@@ -187,6 +187,10 @@ public:
         result.thresholdWidening = true;
         result.narrowing = true;
         result.parallelAssignments = true;
+        result.expressionBounds = true;
+        result.backwardAssignments = true;
+        result.topologicalClosure = true;
+        result.canonicalization = true;
         result.nonlinearTreeExpressions = false;
         return result;
     }
@@ -745,6 +749,11 @@ public:
         forget(state_, environment, variable);
     }
 
+    void canonicalizeCurrent()
+    {
+        normalize(state_);
+    }
+
     void joinCurrent(const Impl& other)
     {
         state_ = std::move(*join(state_, other.state_));
@@ -838,6 +847,13 @@ public:
                           Variable variable) const
     {
         return bound(state_, environment, variable);
+    }
+
+    Interval boundExpressionCurrent(
+        const VariableEnvironment& environment,
+        const LinearExpression& expression) const
+    {
+        return boundExpression(state_, environment, expression);
     }
 
     LinearConstraintSet constraintsCurrent(
@@ -1051,6 +1067,63 @@ private:
                                   : Bound::minusInfinity(),
                         highFinite ? Bound::finite(high, highStrict)
                                    : Bound::plusInfinity());
+    }
+
+    Interval boundExpression(const OctagonStorage& state,
+                             const VariableEnvironment& environment,
+                             const LinearExpression& expression) const
+    {
+        requireVariables(environment, expression);
+        if (state.bottom)
+            return Interval(Bound::plusInfinity(), Bound::minusInfinity());
+        if (expression.terms().size() != 2)
+            return evaluateInterval(state, environment, expression);
+
+        auto term = expression.terms().begin();
+        const Variable firstVariable = term->first;
+        const Rational firstCoefficient = term->second;
+        ++term;
+        const Variable secondVariable = term->first;
+        const Rational secondCoefficient = term->second;
+        const Rational magnitude = absolute(firstCoefficient);
+        if (magnitude.isZero() ||
+            magnitude != absolute(secondCoefficient))
+            return evaluateInterval(state, environment, expression);
+
+        std::optional<OctagonStorage> normalizedStorage;
+        const OctagonStorage& source = normalized(state, normalizedStorage);
+        const auto signedSumUpper = [&](bool negate) -> Bound
+        {
+            const int firstSign =
+                (negate ? -firstCoefficient : firstCoefficient).sign();
+            const int secondSign =
+                (negate ? -secondCoefficient : secondCoefficient).sign();
+            const std::size_t row =
+                firstSign > 0
+                    ? positiveNode(environment.dimensionOf(firstVariable))
+                    : negativeNode(environment.dimensionOf(firstVariable));
+            const std::size_t column =
+                secondSign > 0
+                    ? negativeNode(environment.dimensionOf(secondVariable))
+                    : positiveNode(environment.dimensionOf(secondVariable));
+            return source.at(row, column);
+        };
+
+        const Bound positive = signedSumUpper(false);
+        const Bound negative = signedSumUpper(true);
+        const Bound lower = negative.isFinite()
+                                ? Bound::finite(
+                                      expression.constant() -
+                                          magnitude * negative.value(),
+                                      negative.isStrict())
+                                : Bound::minusInfinity();
+        const Bound upper = positive.isFinite()
+                                ? Bound::finite(
+                                      expression.constant() +
+                                          magnitude * positive.value(),
+                                      positive.isStrict())
+                                : Bound::plusInfinity();
+        return Interval(lower, upper);
     }
 
     /// Strongest octagonal consequences of a constraint that is not itself
@@ -1384,8 +1457,7 @@ OctagonState OctagonState::fromConstraints(
     const OctagonConfig& config)
 {
     OctagonState state = top(environment, config);
-    for (const LinearConstraint& constraint : constraints)
-        state.assume(constraint);
+    state.assumeAll(constraints);
     return state;
 }
 
@@ -1459,6 +1531,45 @@ void OctagonState::assign(Variable target, const TreeExpression& expression)
            ApproximationKind::UnsupportedFallback,
            std::string(name()) +
                " forgot a target assigned a nonlinear or floating tree expression");
+}
+
+void OctagonState::substitute(Variable target,
+                              const LinearExpression& expression)
+{
+    substituteParallel({{target, expression}});
+}
+
+void OctagonState::substituteParallel(
+    const LinearAssignmentList& assignments)
+{
+    std::map<Variable, LinearExpression> replacements;
+    for (const LinearAssignment& assignment : assignments)
+    {
+        if (!environment_.contains(assignment.target))
+            throw std::invalid_argument(
+                "substitution target is not in environment");
+        if (!replacements.emplace(assignment.target, assignment.expression)
+                 .second)
+            throw std::invalid_argument(
+                "parallel substitution contains a duplicate target");
+        for (const auto& [variable, coefficient] :
+             assignment.expression.terms())
+        {
+            (void)coefficient;
+            if (!environment_.contains(variable))
+                throw std::invalid_argument(
+                    "substitution expression uses an unknown variable");
+        }
+    }
+    if (assignments.empty() || isBottom())
+        return;
+
+    LinearConstraintSet preimage;
+    for (const LinearConstraint& constraint : toConstraints())
+        preimage.emplace_back(
+            constraint.expression().substituted(replacements),
+            constraint.kind());
+    *this = fromConstraints(environment_, preimage, config());
 }
 
 void OctagonState::assume(const LinearConstraint& constraint)
@@ -1553,6 +1664,11 @@ Interval OctagonState::bound(Variable variable) const
     return boundState(variable);
 }
 
+Interval OctagonState::bound(const LinearExpression& expression) const
+{
+    return impl_->boundExpressionCurrent(environment_, expression);
+}
+
 IntervalBox OctagonState::toBox() const
 {
     IntervalBox box;
@@ -1564,6 +1680,28 @@ IntervalBox OctagonState::toBox() const
 LinearConstraintSet OctagonState::toConstraints() const
 {
     return constraintsState();
+}
+
+void OctagonState::close()
+{
+    if (isBottom())
+        return;
+    LinearConstraintSet closed;
+    for (const LinearConstraint& constraint : toConstraints())
+    {
+        ConstraintKind kind = constraint.kind();
+        if (kind == ConstraintKind::LessThan)
+            kind = ConstraintKind::LessEqual;
+        else if (kind == ConstraintKind::GreaterThan)
+            kind = ConstraintKind::GreaterEqual;
+        closed.emplace_back(constraint.expression(), kind);
+    }
+    *this = fromConstraints(environment_, closed, config());
+}
+
+void OctagonState::canonicalize()
+{
+    impl_->canonicalizeCurrent();
 }
 
 const OctagonConfig& OctagonState::config() const
@@ -1594,7 +1732,14 @@ OctagonState OctagonState::widen(
     const OctagonState& next, const WideningPolicy& policy) const
 {
     requireCompatible(next);
-    return OctagonState(environment(), impl_->widened(*next.impl_, policy));
+    OctagonState result(environment(), impl_->widened(*next.impl_, policy));
+    for (const LinearConstraint& threshold : policy.linearThresholds)
+    {
+        if (entails(threshold) == CheckResult::True &&
+            next.entails(threshold) == CheckResult::True)
+            result.assume(threshold);
+    }
+    return result;
 }
 
 OctagonState OctagonState::narrow(const OctagonState& next) const

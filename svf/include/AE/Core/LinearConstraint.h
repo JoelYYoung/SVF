@@ -39,6 +39,12 @@ public:
     LinearExpression& operator-=(const LinearExpression& rhs);
     LinearExpression& operator*=(const Rational& scalar);
 
+    /// Simultaneously replace variables in this expression. Replacement
+    /// expressions are inserted verbatim: variables occurring inside a
+    /// replacement are pre-state variables and are not recursively replaced.
+    LinearExpression substituted(
+        const std::map<Variable, LinearExpression>& replacements) const;
+
     std::string toString(const VariableEnvironment* environment = nullptr) const;
 
     friend LinearExpression operator+(LinearExpression lhs,

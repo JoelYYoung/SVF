@@ -50,6 +50,10 @@ struct DomainCapabilities
     bool thresholdWidening = false;
     bool narrowing = false;
     bool parallelAssignments = false;
+    bool expressionBounds = false;
+    bool backwardAssignments = false;
+    bool topologicalClosure = false;
+    bool canonicalization = false;
     /// True only when nonlinear TreeExpression operations retain domain facts
     /// instead of applying a sound forget/ignore fallback.
     bool nonlinearTreeExpressions = false;
@@ -137,6 +141,15 @@ public:
     /// override it with a representation-native implementation.
     virtual void assignParallel(const LinearAssignmentList& assignments);
     virtual void assignParallel(const TreeAssignmentList& assignments);
+    /// Compute the preimage of this post-state under target := expression.
+    /// This is APRON's substitute operation, not a forward strong update.
+    virtual void substitute(Variable target,
+                            const LinearExpression& expression) = 0;
+    void substitute(Variable target, const TreeExpression& expression);
+    /// Simultaneous backward substitution. Every replacement is interpreted
+    /// over the same pre-state, including cyclic replacements.
+    virtual void substituteParallel(const LinearAssignmentList& assignments) = 0;
+    void substituteParallel(const TreeAssignmentList& assignments);
     virtual void assume(const LinearConstraint& constraint) = 0;
     virtual void assume(const TreeConstraint& constraint) = 0;
     virtual void forget(Variable variable) = 0;
@@ -156,8 +169,33 @@ public:
 
     virtual CheckResult entails(const LinearConstraint& constraint) const = 0;
     virtual Interval bound(Variable variable) const = 0;
+    /// Bound a complete affine expression using the relational backend, not
+    /// merely interval arithmetic over its individual variables.
+    virtual Interval bound(const LinearExpression& expression) const = 0;
+    /// Affine integer/real trees use bound(LinearExpression); unsupported
+    /// nonlinear or machine-semantic trees conservatively return top.
+    Interval bound(const TreeExpression& expression) const;
     virtual IntervalBox toBox() const = 0;
     virtual LinearConstraintSet toConstraints() const = 0;
+
+    /// Replace strict boundaries by non-strict boundaries. This is the
+    /// topological closure operation, not DBM/polyhedral normalization.
+    virtual void close() = 0;
+    /// Materialize the backend's canonical representation and remove semantic
+    /// redundancy where the representation supports it.
+    virtual void canonicalize() = 0;
+    /// Dense native representations use canonicalization as their minimize
+    /// operation; Polyhedra additionally removes redundant constraints.
+    void minimize()
+    {
+        canonicalize();
+    }
+
+    /// Align both states to the union variable schema in one API-level
+    /// operation. Lattice compatibility is still checked later.
+    VariableEnvironment unifyEnvironmentWith(
+        NumericalState& other,
+        bool initializeNewVariablesToZero = false);
 };
 
 } // namespace SVF::AbstractDomain

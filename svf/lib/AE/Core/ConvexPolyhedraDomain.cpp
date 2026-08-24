@@ -229,6 +229,58 @@ LinearConstraint rowConstraint(const VariableEnvironment& environment,
                                               : ConstraintKind::LessEqual);
 }
 
+void tightenIntegerRow(Inequality& inequality,
+                       const VariableEnvironment& environment)
+{
+    mpz_class scale = 1;
+    bool hasVariable = false;
+    for (Dimension dimension = 0; dimension < environment.size(); ++dimension)
+    {
+        if (inequality.coefficients[dimension].isZero())
+            continue;
+        hasVariable = true;
+        if (environment.typeOf(environment.variableOf(dimension)).kind !=
+            NumericKind::Integer)
+            return;
+        const mpz_class denominator =
+            inequality.coefficients[dimension].value().get_den();
+        mpz_lcm(scale.get_mpz_t(), scale.get_mpz_t(),
+                denominator.get_mpz_t());
+    }
+    if (!hasVariable)
+        return;
+    const mpz_class boundDenominator = inequality.bound.value().get_den();
+    mpz_lcm(scale.get_mpz_t(), scale.get_mpz_t(),
+            boundDenominator.get_mpz_t());
+
+    mpz_class divisor = 0;
+    for (const Rational& coefficient : inequality.coefficients)
+    {
+        if (coefficient.isZero())
+            continue;
+        const mpq_class scaledCoefficient = coefficient.value() * scale;
+        const mpz_class integerCoefficient = scaledCoefficient.get_num();
+        mpz_gcd(divisor.get_mpz_t(), divisor.get_mpz_t(),
+                integerCoefficient.get_mpz_t());
+    }
+    if (divisor == 0)
+        return;
+    if (divisor < 0)
+        divisor = -divisor;
+
+    const mpq_class scaledBound = inequality.bound.value() * scale;
+    const mpz_class integerBound = scaledBound.get_num();
+    mpz_class quotient;
+    mpz_fdiv_q(quotient.get_mpz_t(), integerBound.get_mpz_t(),
+               divisor.get_mpz_t());
+    mpz_class tightened = quotient * divisor;
+    if (inequality.strict && tightened == integerBound)
+        tightened -= divisor;
+
+    inequality.bound = Rational::fromRaw(mpq_class(tightened, scale));
+    inequality.strict = false;
+}
+
 } // namespace
 
 class ConvexPolyhedraState::Impl
@@ -294,8 +346,21 @@ ConvexPolyhedraState ConvexPolyhedraState::fromConstraints(
     const ConvexPolyhedraConfig& config)
 {
     ConvexPolyhedraState result = top(environment, config);
+    LinearConstraintSet disequalities;
     for (const LinearConstraint& constraint : constraints)
-        result.assume(constraint);
+    {
+        if (constraint.kind() == ConstraintKind::NotEqual)
+            disequalities.push_back(constraint);
+        else
+            result.addConstraint(constraint);
+    }
+    // Batch construction performs feasibility and redundancy elimination
+    // once instead of once per input row. Disequalities are checked after the
+    // convex conjunction is complete so x != 0, x = 0 is detected in either
+    // input order even though a general disequality is non-convex.
+    result.normalize();
+    for (const LinearConstraint& disequality : disequalities)
+        result.assume(disequality);
     return result;
 }
 
@@ -340,10 +405,14 @@ DomainCapabilities ConvexPolyhedraState::capabilities() const
 {
     DomainCapabilities result;
     result.strictInequalities = true;
-    result.integerTightening = false;
+    result.integerTightening = config_.integerTightening;
     result.thresholdWidening = true;
     result.narrowing = true;
     result.parallelAssignments = true;
+    result.expressionBounds = true;
+    result.backwardAssignments = true;
+    result.topologicalClosure = true;
+    result.canonicalization = true;
     result.nonlinearTreeExpressions = false;
     return result;
 }
@@ -431,6 +500,45 @@ void ConvexPolyhedraState::assignParallel(
         inequality.coefficients.resize(dimensions);
     impl_->inequalities = std::move(extended);
     normalize();
+}
+
+void ConvexPolyhedraState::substitute(
+    Variable target, const LinearExpression& expression)
+{
+    substituteParallel({{target, expression}});
+}
+
+void ConvexPolyhedraState::substituteParallel(
+    const LinearAssignmentList& assignments)
+{
+    std::map<Variable, LinearExpression> replacements;
+    for (const LinearAssignment& assignment : assignments)
+    {
+        if (!environment_.contains(assignment.target))
+            throw std::invalid_argument(
+                "substitution target is not in environment");
+        if (!replacements.emplace(assignment.target, assignment.expression)
+                 .second)
+            throw std::invalid_argument(
+                "parallel substitution contains a duplicate target");
+        for (const auto& [variable, coefficient] :
+             assignment.expression.terms())
+        {
+            (void)coefficient;
+            if (!environment_.contains(variable))
+                throw std::invalid_argument(
+                    "substitution expression uses an unknown variable");
+        }
+    }
+    if (assignments.empty() || impl_->bottom)
+        return;
+
+    LinearConstraintSet preimage;
+    for (const LinearConstraint& constraint : toConstraints())
+        preimage.emplace_back(
+            constraint.expression().substituted(replacements),
+            constraint.kind());
+    *this = fromConstraints(environment_, preimage, config_);
 }
 
 void ConvexPolyhedraState::assign(Variable target,
@@ -631,6 +739,69 @@ Interval ConvexPolyhedraState::bound(Variable variable) const
     return Interval(lower, upper);
 }
 
+Interval ConvexPolyhedraState::bound(
+    const LinearExpression& expression) const
+{
+    for (const auto& [variable, coefficient] : expression.terms())
+    {
+        (void)coefficient;
+        if (!environment_.contains(variable))
+            throw std::invalid_argument(
+                "bounded expression uses an unknown variable");
+    }
+    if (impl_->bottom)
+        return Interval(Bound::plusInfinity(), Bound::minusInfinity());
+    if (expression.terms().empty())
+        return Interval::singleton(expression.constant());
+
+    const std::size_t dimensions = environment_.size();
+    const std::size_t valueDimension = dimensions;
+    std::vector<Inequality> extended = impl_->inequalities;
+    for (Inequality& inequality : extended)
+        inequality.coefficients.resize(dimensions + 1);
+
+    Inequality equality;
+    equality.coefficients.resize(dimensions + 1);
+    equality.coefficients[valueDimension] = Rational(1);
+    for (const auto& [variable, coefficient] : expression.terms())
+        equality.coefficients[environment_.dimensionOf(variable)] =
+            -coefficient;
+    equality.bound = expression.constant();
+    extended.push_back(equality);
+    for (Rational& coefficient : equality.coefficients)
+        coefficient = -coefficient;
+    equality.bound = -equality.bound;
+    extended.push_back(std::move(equality));
+
+    std::vector<std::size_t> removed(dimensions);
+    std::iota(removed.begin(), removed.end(), 0);
+    const std::vector<Inequality> projected =
+        project(std::move(extended), removed);
+    Bound lower = Bound::minusInfinity();
+    Bound upper = Bound::plusInfinity();
+    for (const Inequality& inequality : projected)
+    {
+        const Rational coefficient =
+            inequality.coefficients[valueDimension];
+        if (coefficient.sign() > 0)
+        {
+            upper = Bound::min(
+                upper, Bound::finite(inequality.bound / coefficient,
+                                     inequality.strict));
+        }
+        else if (coefficient.sign() < 0)
+        {
+            const Bound candidate = Bound::finite(
+                inequality.bound / coefficient, inequality.strict);
+            if (lower.isMinusInfinity() || lower.value() < candidate.value() ||
+                (lower.value() == candidate.value() && candidate.isStrict() &&
+                 !lower.isStrict()))
+                lower = candidate;
+        }
+    }
+    return Interval(lower, upper);
+}
+
 IntervalBox ConvexPolyhedraState::toBox() const
 {
     IntervalBox result;
@@ -653,6 +824,20 @@ LinearConstraintSet ConvexPolyhedraState::toConstraints() const
     for (const Inequality& inequality : impl_->inequalities)
         result.push_back(rowConstraint(environment_, inequality));
     return result;
+}
+
+void ConvexPolyhedraState::close()
+{
+    if (impl_->bottom)
+        return;
+    for (Inequality& inequality : impl_->inequalities)
+        inequality.strict = false;
+    normalize();
+}
+
+void ConvexPolyhedraState::canonicalize()
+{
+    normalize();
 }
 
 ConvexPolyhedraState ConvexPolyhedraState::join(
@@ -898,6 +1083,13 @@ void ConvexPolyhedraState::normalize()
     }
     impl_->inequalities =
         normalized(std::move(impl_->inequalities), impl_->bottom);
+    if (!impl_->bottom && config_.integerTightening)
+    {
+        for (Inequality& inequality : impl_->inequalities)
+            tightenIntegerRow(inequality, environment_);
+        impl_->inequalities =
+            normalized(std::move(impl_->inequalities), impl_->bottom);
+    }
     if (!impl_->bottom && !feasible(impl_->inequalities, environment_.size()))
     {
         impl_->bottom = true;

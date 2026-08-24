@@ -178,8 +178,7 @@ BoxState BoxState::fromConstraints(const VariableEnvironment& environment,
                                    const BoxConfig& config)
 {
     BoxState result = top(environment, config);
-    for (const LinearConstraint& constraint : constraints)
-        result.assume(constraint);
+    result.assumeAll(constraints);
     return result;
 }
 
@@ -201,6 +200,10 @@ DomainCapabilities BoxState::capabilities() const
     result.thresholdWidening = true;
     result.narrowing = true;
     result.parallelAssignments = true;
+    result.expressionBounds = true;
+    result.backwardAssignments = true;
+    result.topologicalClosure = true;
+    result.canonicalization = true;
     result.nonlinearTreeExpressions = false;
     return result;
 }
@@ -265,6 +268,45 @@ void BoxState::assignParallel(const LinearAssignmentList& assignments)
                              evaluate(*this, assignment.expression));
     for (auto& [dimension, value] : updates)
         setBound(dimension, std::move(value));
+}
+
+void BoxState::substitute(Variable target,
+                          const LinearExpression& expression)
+{
+    substituteParallel({{target, expression}});
+}
+
+void BoxState::substituteParallel(
+    const LinearAssignmentList& assignments)
+{
+    std::map<Variable, LinearExpression> replacements;
+    for (const LinearAssignment& assignment : assignments)
+    {
+        if (!environment_.contains(assignment.target))
+            throw std::invalid_argument(
+                "substitution target is not in environment");
+        if (!replacements.emplace(assignment.target, assignment.expression)
+                 .second)
+            throw std::invalid_argument(
+                "parallel substitution contains a duplicate target");
+        for (const auto& [variable, coefficient] :
+             assignment.expression.terms())
+        {
+            (void)coefficient;
+            if (!environment_.contains(variable))
+                throw std::invalid_argument(
+                    "substitution expression uses an unknown variable");
+        }
+    }
+    if (assignments.empty() || bottom_)
+        return;
+
+    LinearConstraintSet preimage;
+    for (const LinearConstraint& constraint : toConstraints())
+        preimage.emplace_back(
+            constraint.expression().substituted(replacements),
+            constraint.kind());
+    *this = fromConstraints(environment_, preimage, config_);
 }
 
 void BoxState::assume(const LinearConstraint& constraint)
@@ -466,6 +508,20 @@ Interval BoxState::bound(Variable variable) const
     return bounds_[environment_.dimensionOf(variable)];
 }
 
+Interval BoxState::bound(const LinearExpression& expression) const
+{
+    for (const auto& [variable, coefficient] : expression.terms())
+    {
+        (void)coefficient;
+        if (!environment_.contains(variable))
+            throw std::invalid_argument(
+                "bounded expression uses an unknown variable");
+    }
+    if (bottom_)
+        return Interval(Bound::plusInfinity(), Bound::minusInfinity());
+    return evaluate(*this, expression);
+}
+
 IntervalBox BoxState::toBox() const
 {
     IntervalBox result;
@@ -508,6 +564,29 @@ LinearConstraintSet BoxState::toConstraints() const
         }
     }
     return result;
+}
+
+void BoxState::close()
+{
+    if (bottom_)
+        return;
+    for (Dimension dimension = 0; dimension < environment_.size(); ++dimension)
+    {
+        const Interval& interval = bounds_[dimension];
+        const Bound lower = interval.lower().isFinite()
+                                ? Bound::finite(interval.lower().value())
+                                : interval.lower();
+        const Bound upper = interval.upper().isFinite()
+                                ? Bound::finite(interval.upper().value())
+                                : interval.upper();
+        setBound(dimension, Interval(lower, upper));
+    }
+}
+
+void BoxState::canonicalize()
+{
+    for (Dimension dimension = 0; dimension < environment_.size(); ++dimension)
+        canonicalize(dimension);
 }
 
 BoxState BoxState::join(const BoxState& other) const
@@ -566,6 +645,12 @@ BoxState BoxState::widen(const BoxState& next,
             }
         }
         result.setBound(dimension, Interval(lower, upper));
+    }
+    for (const LinearConstraint& threshold : policy.linearThresholds)
+    {
+        if (entails(threshold) == CheckResult::True &&
+            next.entails(threshold) == CheckResult::True)
+            result.assume(threshold);
     }
     return result;
 }

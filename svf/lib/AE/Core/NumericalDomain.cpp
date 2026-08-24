@@ -283,7 +283,11 @@ std::uint8_t configurationFlags(const NumericalState& state, DomainTag tag)
                (octagon.config().strongClosure ? 2U : 0U);
     }
     case DomainTag::ConvexPolyhedra:
-        return 0;
+        return static_cast<const ConvexPolyhedraState&>(state)
+                       .config()
+                       .integerTightening
+                   ? 1U
+                   : 0U;
     }
     throw std::logic_error("unknown raw state domain tag");
 }
@@ -436,10 +440,11 @@ std::unique_ptr<NumericalState> restore(DomainTag tag, std::uint8_t flags,
         return std::make_unique<OctagonState>(std::move(state));
     }
     case DomainTag::ConvexPolyhedra: {
-        if (flags != 0)
+        if ((flags & ~1U) != 0)
             throw std::invalid_argument(
                 "raw Convex Polyhedra state has invalid flags");
         ConvexPolyhedraConfig config;
+        config.integerTightening = (flags & 1U) != 0;
         ConvexPolyhedraState state =
             bottom ? ConvexPolyhedraState::bottom(environment, config)
                    : ConvexPolyhedraState::fromConstraints(environment,
@@ -465,6 +470,68 @@ NumericalState::RawBuffer NumericalState::serializeRaw() const
     writeConstraints(writer,
                      isBottom() ? LinearConstraintSet{} : toConstraints());
     return writer.finish();
+}
+
+void NumericalState::substitute(Variable target,
+                                const TreeExpression& expression)
+{
+    if (const std::optional<LinearExpression> linear = expression.asLinear())
+    {
+        substitute(target, *linear);
+        return;
+    }
+    // Existentially eliminate the unknown post-value. No fact involving that
+    // value can soundly constrain the pre-state without nonlinear/machine
+    // semantics for the right-hand side.
+    forget(target);
+}
+
+void NumericalState::substituteParallel(
+    const TreeAssignmentList& assignments)
+{
+    std::set<Variable> targets;
+    LinearAssignmentList affine;
+    std::vector<Variable> unsupported;
+    affine.reserve(assignments.size());
+    unsupported.reserve(assignments.size());
+    for (const TreeAssignment& assignment : assignments)
+    {
+        if (!environment().contains(assignment.target))
+            throw std::invalid_argument(
+                "parallel substitution target is not in environment");
+        if (!targets.insert(assignment.target).second)
+            throw std::invalid_argument(
+                "parallel substitution contains a duplicate target");
+        if (const std::optional<LinearExpression> linear =
+                assignment.expression.asLinear())
+            affine.push_back({assignment.target, *linear});
+        else
+            unsupported.push_back(assignment.target);
+    }
+
+    // Unknown output dimensions are existentially projected before the
+    // remaining simultaneous affine preimage is formed.
+    for (Variable target : unsupported)
+        forget(target);
+    substituteParallel(affine);
+}
+
+Interval NumericalState::bound(const TreeExpression& expression) const
+{
+    if (const std::optional<LinearExpression> linear = expression.asLinear())
+        return bound(*linear);
+    if (isBottom())
+        return Interval(Bound::plusInfinity(), Bound::minusInfinity());
+    return Interval::top();
+}
+
+VariableEnvironment NumericalState::unifyEnvironmentWith(
+    NumericalState& other, bool initializeNewVariablesToZero)
+{
+    const VariableEnvironment merged = environment().merge(other.environment());
+    changeEnvironment(merged, initializeNewVariablesToZero);
+    other.changeEnvironment(merged, initializeNewVariablesToZero);
+    return merged;
 }
 
 std::uint64_t NumericalState::hash() const

@@ -424,6 +424,10 @@ void testTopBottomIdentitiesAndQueries()
                 capabilities.integerTightening &&
                 capabilities.thresholdWidening && capabilities.narrowing &&
                 capabilities.parallelAssignments &&
+                capabilities.expressionBounds &&
+                capabilities.backwardAssignments &&
+                capabilities.topologicalClosure &&
+                capabilities.canonicalization &&
                 !capabilities.nonlinearTreeExpressions,
             "Octagon capabilities must describe the enabled implementation");
 

@@ -34,6 +34,10 @@ struct OctagonConfig
 class OctagonState final : public NumericalState
 {
 public:
+    using NumericalState::bound;
+    using NumericalState::substitute;
+    using NumericalState::substituteParallel;
+
     static OctagonState top(const VariableEnvironment& environment,
                             const OctagonConfig& config = {});
     static OctagonState bottom(const VariableEnvironment& environment,
@@ -64,6 +68,10 @@ public:
     void assign(Variable target,
                 const LinearExpression& expression) override;
     void assign(Variable target, const TreeExpression& expression) override;
+    void substitute(Variable target,
+                    const LinearExpression& expression) override;
+    void substituteParallel(
+        const LinearAssignmentList& assignments) override;
     void assume(const LinearConstraint& constraint) override;
     void assume(const TreeConstraint& constraint) override;
     void forget(Variable variable) override;
@@ -73,8 +81,11 @@ public:
 
     CheckResult entails(const LinearConstraint& constraint) const override;
     Interval bound(Variable variable) const override;
+    Interval bound(const LinearExpression& expression) const override;
     IntervalBox toBox() const override;
     LinearConstraintSet toConstraints() const override;
+    void close() override;
+    void canonicalize() override;
 
     const OctagonConfig& config() const;
 

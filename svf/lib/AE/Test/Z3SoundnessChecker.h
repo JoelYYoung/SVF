@@ -47,6 +47,10 @@ public:
         const NumericalState& before,
         const LinearAssignmentList& assignments,
         const NumericalState& result);
+    ProofResult checkParallelSubstitution(
+        const NumericalState& post,
+        const LinearAssignmentList& assignments,
+        const NumericalState& preimage);
     ProofResult checkForget(const NumericalState& before, Variable forgotten,
                             const NumericalState& result);
     ProofResult checkWidening(const NumericalState& current,

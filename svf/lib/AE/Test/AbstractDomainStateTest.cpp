@@ -188,6 +188,208 @@ void testBoxLatticeAndFallbacks()
                   "Box must reject unknown variables");
 }
 
+template <typename State>
+void checkExpressionBoundsAndSubstitution(State state, Variable x, Variable y)
+{
+    state.assume(equalsValue(x, Rational(1)));
+    state.assume(equalsValue(y, Rational(4)));
+    LinearExpression expression(x);
+    expression.setCoefficient(y, Rational(1));
+    expression.setConstant(Rational(2));
+    const Interval expressionBound = state.bound(expression);
+    require(expressionBound.lower().value() == Rational(7) &&
+                expressionBound.upper().value() == Rational(7),
+            std::string(state.name()) +
+                " must bound a complete affine expression");
+
+    const TreeExpression affineTree = TreeExpression::binary(
+        BinaryOperator::Add,
+        TreeExpression::variable(x, NumericType::real()),
+        TreeExpression::constant(Rational(2), NumericType::real()),
+        NumericType::real());
+    require(state.bound(affineTree).lower().value() == Rational(3) &&
+                state.bound(affineTree).upper().value() == Rational(3),
+            std::string(state.name()) +
+                " must lower affine tree bounds through the same path");
+    const TreeExpression nonlinearTree = TreeExpression::binary(
+        BinaryOperator::Multiply,
+        TreeExpression::variable(x, NumericType::real()),
+        TreeExpression::variable(y, NumericType::real()),
+        NumericType::real());
+    require(state.bound(nonlinearTree).isTop(),
+            std::string(state.name()) +
+                " must return top for an unsupported nonlinear bound");
+    State unsupportedPreimage = state;
+    unsupportedPreimage.substitute(x, nonlinearTree);
+    require(unsupportedPreimage.bound(x).isTop() &&
+                unsupportedPreimage.entails(equalsValue(y, Rational(4))) ==
+                    CheckResult::True,
+            std::string(state.name()) +
+                " must project only the unknown nonlinear output in a "
+                "backward transfer");
+
+    State backward = State::top(state.environment(), state.config());
+    backward.assume(equalsValue(x, Rational(10)));
+    const State backwardPost = backward;
+    LinearExpression yPlusOne(y);
+    yPlusOne.setConstant(Rational(1));
+    backward.substitute(x, yPlusOne);
+    Z3SoundnessChecker checker(state.environment());
+    requireProof(checker.checkParallelSubstitution(
+        backwardPost, {{x, yPlusOne}}, backward));
+    require(backward.entails(equalsValue(y, Rational(9))) == CheckResult::True,
+            std::string(state.name()) +
+                " must compute the affine assignment preimage");
+
+    State parallel = State::top(state.environment(), state.config());
+    parallel.assume(equalsValue(x, Rational(1)));
+    parallel.assume(equalsValue(y, Rational(2)));
+    const State parallelPost = parallel;
+    const LinearAssignmentList replacements{
+        {x, LinearExpression(y)}, {y, LinearExpression(x)}};
+    parallel.substituteParallel(replacements);
+    requireProof(checker.checkParallelSubstitution(
+        parallelPost, replacements, parallel));
+    require(parallel.entails(equalsValue(x, Rational(2))) == CheckResult::True &&
+                parallel.entails(equalsValue(y, Rational(1))) ==
+                    CheckResult::True,
+            std::string(state.name()) +
+                " must make backward parallel substitution simultaneous");
+}
+
+void testCompletedNumericalSurface()
+{
+    const Variable x(1);
+    const Variable y(2);
+    const VariableEnvironment reals(
+        {{x, NumericType::real(), "x"}, {y, NumericType::real(), "y"}});
+
+    checkExpressionBoundsAndSubstitution(BoxState::top(reals), x, y);
+    checkExpressionBoundsAndSubstitution(OctagonState::top(reals), x, y);
+    checkExpressionBoundsAndSubstitution(
+        ConvexPolyhedraState::top(reals), x, y);
+
+    LinearExpression relationalSum(x);
+    relationalSum.setCoefficient(y, Rational(1));
+    OctagonState relationalOctagon = OctagonState::top(reals);
+    relationalOctagon.assume(
+        equal(relationalSum, LinearExpression(Rational(5))));
+    const Interval octagonalSum = relationalOctagon.bound(relationalSum);
+    require(octagonalSum.lower().value() == Rational(5) &&
+                octagonalSum.upper().value() == Rational(5),
+            "Octagon expression bounds must read a directly represented "
+            "signed-sum DBM edge");
+    ConvexPolyhedraState relationalPolyhedra =
+        ConvexPolyhedraState::top(reals);
+    relationalPolyhedra.assume(
+        equal(relationalSum, LinearExpression(Rational(5))));
+    const Interval polyhedralSum = relationalPolyhedra.bound(relationalSum);
+    require(polyhedralSum.lower().value() == Rational(5) &&
+                polyhedralSum.upper().value() == Rational(5),
+            "Polyhedra expression bounds must optimize the full affine "
+            "objective without intervalizing its variables");
+
+    const auto checkClosure = [&](auto state)
+    {
+        state.assume(
+            lessThan(LinearExpression(x), LinearExpression(Rational(1))));
+        require(state.bound(x).upper().isStrict(),
+                std::string(state.name()) +
+                    " must retain an open boundary before closure");
+        state.close();
+        state.canonicalize();
+        state.minimize();
+        require(state.bound(x).upper().value() == Rational(1) &&
+                    !state.bound(x).upper().isStrict(),
+                std::string(state.name()) +
+                    " topological closure must close strict boundaries");
+    };
+    checkClosure(BoxState::top(reals));
+    checkClosure(OctagonState::top(reals));
+    checkClosure(ConvexPolyhedraState::top(reals));
+
+    BoxState left = BoxState::top(
+        VariableEnvironment({{x, NumericType::real(), "x"}}));
+    BoxState right = BoxState::top(
+        VariableEnvironment({{y, NumericType::real(), "y"}}));
+    left.assume(equalsValue(x, Rational(1)));
+    right.assume(equalsValue(y, Rational(2)));
+    const VariableEnvironment unified = left.unifyEnvironmentWith(right);
+    require(unified.size() == 2 && left.environment() == unified &&
+                right.environment() == unified && left.bound(y).isTop() &&
+                right.bound(x).isTop(),
+            "one-call environment unification must lift both states");
+    const BoxState combined = left.meet(right);
+    require(combined.entails(equalsValue(x, Rational(1))) == CheckResult::True &&
+                combined.entails(equalsValue(y, Rational(2))) ==
+                    CheckResult::True,
+            "aligned states must compose without another remap");
+
+    LinearExpression sum(x);
+    sum.setCoefficient(y, Rational(1));
+    const LinearConstraint linearThreshold =
+        lessEqual(sum, LinearExpression(Rational(10)));
+    BoxState boxCurrent = BoxState::top(reals);
+    boxCurrent.assume(atLeast(x, Rational(0)));
+    boxCurrent.assume(atLeast(y, Rational(0)));
+    boxCurrent.assume(atMost(x, Rational(1)));
+    boxCurrent.assume(atMost(y, Rational(1)));
+    BoxState boxNext = BoxState::top(reals);
+    boxNext.assume(atLeast(x, Rational(0)));
+    boxNext.assume(atLeast(y, Rational(0)));
+    boxNext.assume(atMost(x, Rational(2)));
+    boxNext.assume(atMost(y, Rational(2)));
+    const BoxState boxThreshold = boxCurrent.widen(
+        boxNext, WideningPolicy({}, {linearThreshold}));
+    require(boxThreshold.bound(x).upper().value() == Rational(10) &&
+                boxThreshold.bound(y).upper().value() == Rational(10),
+            "Box must retain the representable interval consequence of a "
+            "general linear widening threshold");
+
+    OctagonState octCurrent = OctagonState::top(reals);
+    octCurrent.assume(lessEqual(sum, LinearExpression(Rational(1))));
+    OctagonState octNext = OctagonState::top(reals);
+    octNext.assume(lessEqual(sum, LinearExpression(Rational(2))));
+    const OctagonState octThreshold = octCurrent.widen(
+        octNext, WideningPolicy({}, {linearThreshold}));
+    require(octThreshold.entails(linearThreshold) == CheckResult::True,
+            "Octagon must retain a representable general linear threshold");
+
+    const VariableEnvironment integers(
+        {{x, NumericType::integer(), "x"}});
+    ConvexPolyhedraState tightened = ConvexPolyhedraState::top(integers);
+    LinearExpression twiceX(x);
+    twiceX *= Rational(2);
+    tightened.assume(
+        lessEqual(twiceX, LinearExpression(Rational(3))));
+    require(tightened.bound(x).upper().value() == Rational(1) &&
+                !tightened.bound(x).upper().isStrict() &&
+                tightened.capabilities().integerTightening,
+            "integer Polyhedra must apply per-row gcd tightening");
+
+    ConvexPolyhedraConfig rationalConfig;
+    rationalConfig.integerTightening = false;
+    ConvexPolyhedraState untightened =
+        ConvexPolyhedraState::top(integers, rationalConfig);
+    untightened.assume(
+        lessEqual(twiceX, LinearExpression(Rational(3))));
+    require(untightened.bound(x).upper().value() == Rational("3/2") &&
+                !untightened.capabilities().integerTightening,
+            "Polyhedra integer tightening must remain an explicit policy");
+    std::unique_ptr<NumericalState> restored =
+        NumericalState::deserializeRaw(untightened.serializeRaw());
+    require(!restored->capabilities().integerTightening &&
+                restored->isEquivalentTo(untightened) == CheckResult::True,
+            "raw serialization must preserve the Polyhedra tightening policy");
+
+    const DomainCapabilities capabilities = tightened.capabilities();
+    require(capabilities.expressionBounds &&
+                capabilities.backwardAssignments &&
+                capabilities.topologicalClosure &&
+                capabilities.canonicalization,
+            "capabilities must expose the completed numerical surface");
+}
+
 void testConvexPolyhedraState()
 {
     const Variable x(1);
@@ -739,6 +941,7 @@ int main()
         testConvexPolyhedraState();
         testPolyhedraLatticeAndFallbacks();
         testParallelAssignments();
+        testCompletedNumericalSurface();
         testNumericalHashAndRawSerialization();
         testRandomizedNumericalSoundness();
         testNonRelationalState();

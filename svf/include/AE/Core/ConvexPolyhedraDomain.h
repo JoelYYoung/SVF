@@ -15,10 +15,11 @@ namespace SVF::AbstractDomain
 struct ConvexPolyhedraConfig
 {
     std::shared_ptr<DiagnosticSink> diagnostics;
+    bool integerTightening = true;
 
-    bool operationCompatible(const ConvexPolyhedraConfig&) const
+    bool operationCompatible(const ConvexPolyhedraConfig& other) const
     {
-        return true;
+        return integerTightening == other.integerTightening;
     }
 };
 
@@ -29,6 +30,9 @@ class ConvexPolyhedraState final : public NumericalState
 {
 public:
     using NumericalState::assignParallel;
+    using NumericalState::bound;
+    using NumericalState::substitute;
+    using NumericalState::substituteParallel;
 
     static ConvexPolyhedraState top(
         const VariableEnvironment& environment,
@@ -67,6 +71,10 @@ public:
                 const LinearExpression& expression) override;
     void assign(Variable target, const TreeExpression& expression) override;
     void assignParallel(const LinearAssignmentList& assignments) override;
+    void substitute(Variable target,
+                    const LinearExpression& expression) override;
+    void substituteParallel(
+        const LinearAssignmentList& assignments) override;
     void assume(const LinearConstraint& constraint) override;
     void assume(const TreeConstraint& constraint) override;
     void forget(Variable variable) override;
@@ -75,8 +83,11 @@ public:
 
     CheckResult entails(const LinearConstraint& constraint) const override;
     Interval bound(Variable variable) const override;
+    Interval bound(const LinearExpression& expression) const override;
     IntervalBox toBox() const override;
     LinearConstraintSet toConstraints() const override;
+    void close() override;
+    void canonicalize() override;
 
     ConvexPolyhedraState join(
         const ConvexPolyhedraState& other) const;
