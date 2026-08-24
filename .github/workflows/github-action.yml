@@ -42,6 +42,12 @@ jobs:
           sudo apt-get update
           sudo apt-get install cmake gcc g++ nodejs doxygen graphviz lcov libncurses5-dev libtinfo6 libzstd-dev astyle
 
+      - name: check-code-format
+        if: runner.os == 'Linux'
+        run: |
+          astyle --style=allman -n -r "*.h" "*.cpp"
+          git diff --exit-code
+
       # build-svf
       - name: build-svf
         run: |
