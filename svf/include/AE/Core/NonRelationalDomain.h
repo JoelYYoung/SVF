@@ -4,7 +4,7 @@
 #define SVF_AE_NON_RELATIONAL_DOMAIN_H
 
 #include "AE/Core/AbstractState.h"
-#include "AE/Core/LinearConstraint.h"
+#include "AE/Core/NumericalDomain.h"
 
 #include <cstdint>
 #include <map>
@@ -259,6 +259,20 @@ public:
     {
         numerical_.assign(target, expression);
         addresses_.assign(target, AddressSet::bottom());
+    }
+
+    void assignNumericParallel(const LinearAssignmentList& assignments)
+    {
+        numerical_.assignParallel(assignments);
+        for (const LinearAssignment& assignment : assignments)
+            addresses_.assign(assignment.target, AddressSet::bottom());
+    }
+
+    void assignNumericParallel(const TreeAssignmentList& assignments)
+    {
+        numerical_.assignParallel(assignments);
+        for (const TreeAssignment& assignment : assignments)
+            addresses_.assign(assignment.target, AddressSet::bottom());
     }
 
     void assume(const LinearConstraint& constraint)

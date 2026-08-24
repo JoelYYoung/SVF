@@ -423,6 +423,7 @@ void testTopBottomIdentitiesAndQueries()
     require(capabilities.strictInequalities &&
                 capabilities.integerTightening &&
                 capabilities.thresholdWidening && capabilities.narrowing &&
+                capabilities.parallelAssignments &&
                 !capabilities.nonlinearTreeExpressions,
             "Octagon capabilities must describe the enabled implementation");
 

@@ -3,6 +3,7 @@
 #include "AE/Core/BoxDomain.h"
 
 #include <algorithm>
+#include <set>
 #include <sstream>
 #include <stdexcept>
 #include <utility>
@@ -194,7 +195,14 @@ const char* BoxState::name() const
 
 DomainCapabilities BoxState::capabilities() const
 {
-    return {true, config_.integerTightening, true, true, false};
+    DomainCapabilities result;
+    result.strictInequalities = true;
+    result.integerTightening = config_.integerTightening;
+    result.thresholdWidening = true;
+    result.narrowing = true;
+    result.parallelAssignments = true;
+    result.nonlinearTreeExpressions = false;
+    return result;
 }
 
 void BoxState::assign(Variable target, const LinearExpression& expression)
@@ -225,6 +233,38 @@ void BoxState::assign(Variable target, const TreeExpression& expression)
     report(OperationKind::Assignment,
            ApproximationKind::UnsupportedFallback,
            "non-affine tree assignment forgets the target");
+}
+
+void BoxState::assignParallel(const LinearAssignmentList& assignments)
+{
+    std::set<Variable> targets;
+    for (const LinearAssignment& assignment : assignments)
+    {
+        if (!environment_.contains(assignment.target))
+            throw std::invalid_argument(
+                "parallel assignment target is not in environment");
+        if (!targets.insert(assignment.target).second)
+            throw std::invalid_argument(
+                "parallel assignment contains a duplicate target");
+        for (const auto& [variable, coefficient] :
+             assignment.expression.terms())
+        {
+            (void)coefficient;
+            if (!environment_.contains(variable))
+                throw std::invalid_argument(
+                    "parallel assignment expression uses an unknown variable");
+        }
+    }
+    if (bottom_)
+        return;
+
+    std::vector<std::pair<Dimension, Interval>> updates;
+    updates.reserve(assignments.size());
+    for (const LinearAssignment& assignment : assignments)
+        updates.emplace_back(environment_.dimensionOf(assignment.target),
+                             evaluate(*this, assignment.expression));
+    for (auto& [dimension, value] : updates)
+        setBound(dimension, std::move(value));
 }
 
 void BoxState::assume(const LinearConstraint& constraint)

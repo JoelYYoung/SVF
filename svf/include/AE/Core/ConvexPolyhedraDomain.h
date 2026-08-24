@@ -28,6 +28,8 @@ struct ConvexPolyhedraConfig
 class ConvexPolyhedraState final : public NumericalState
 {
 public:
+    using NumericalState::assignParallel;
+
     static ConvexPolyhedraState top(
         const VariableEnvironment& environment,
         const ConvexPolyhedraConfig& config = {});
@@ -64,6 +66,7 @@ public:
     void assign(Variable target,
                 const LinearExpression& expression) override;
     void assign(Variable target, const TreeExpression& expression) override;
+    void assignParallel(const LinearAssignmentList& assignments) override;
     void assume(const LinearConstraint& constraint) override;
     void assume(const TreeConstraint& constraint) override;
     void forget(Variable variable) override;
@@ -80,7 +83,8 @@ public:
     ConvexPolyhedraState meet(
         const ConvexPolyhedraState& other) const;
     ConvexPolyhedraState widen(
-        const ConvexPolyhedraState& next) const;
+        const ConvexPolyhedraState& next,
+        const WideningPolicy& policy = {}) const;
     ConvexPolyhedraState narrow(
         const ConvexPolyhedraState& next) const;
 

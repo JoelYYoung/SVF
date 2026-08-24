@@ -181,11 +181,14 @@ public:
 
     DomainCapabilities capabilities() const
     {
-        return {/*strictInequalities=*/true,
-                /*integerTightening=*/options_.integerTightening,
-                /*thresholdWidening=*/true,
-                /*narrowing=*/true,
-                /*nonlinearTreeExpressions=*/false};
+        DomainCapabilities result;
+        result.strictInequalities = true;
+        result.integerTightening = options_.integerTightening;
+        result.thresholdWidening = true;
+        result.narrowing = true;
+        result.parallelAssignments = true;
+        result.nonlinearTreeExpressions = false;
+        return result;
     }
 
     ApproximationKind assign(OctagonStorage& genericState,

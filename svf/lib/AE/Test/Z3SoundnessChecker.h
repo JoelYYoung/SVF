@@ -43,6 +43,10 @@ public:
     ProofResult checkAssignment(const NumericalState& before, Variable target,
                                 const LinearExpression& expression,
                                 const NumericalState& result);
+    ProofResult checkParallelAssignment(
+        const NumericalState& before,
+        const LinearAssignmentList& assignments,
+        const NumericalState& result);
     ProofResult checkForget(const NumericalState& before, Variable forgotten,
                             const NumericalState& result);
     ProofResult checkWidening(const NumericalState& current,

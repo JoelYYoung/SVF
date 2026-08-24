@@ -28,6 +28,8 @@ struct BoxConfig
 class BoxState final : public NumericalState
 {
 public:
+    using NumericalState::assignParallel;
+
     static BoxState top(const VariableEnvironment& environment,
                         const BoxConfig& config = {});
     static BoxState bottom(const VariableEnvironment& environment,
@@ -56,6 +58,7 @@ public:
     void assign(Variable target,
                 const LinearExpression& expression) override;
     void assign(Variable target, const TreeExpression& expression) override;
+    void assignParallel(const LinearAssignmentList& assignments) override;
     void assume(const LinearConstraint& constraint) override;
     void assume(const TreeConstraint& constraint) override;
     void forget(Variable variable) override;

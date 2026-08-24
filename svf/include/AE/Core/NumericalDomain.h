@@ -9,6 +9,7 @@
 #include <map>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace SVF::AbstractDomain
@@ -47,6 +48,7 @@ struct DomainCapabilities
     bool integerTightening = false;
     bool thresholdWidening = false;
     bool narrowing = false;
+    bool parallelAssignments = false;
     /// True only when nonlinear TreeExpression operations retain domain facts
     /// instead of applying a sound forget/ignore fallback.
     bool nonlinearTreeExpressions = false;
@@ -59,9 +61,43 @@ struct IntervalBox
 
 struct WideningPolicy
 {
+    WideningPolicy() = default;
+
+    explicit WideningPolicy(std::vector<Rational> thresholdValues)
+        : thresholds(std::move(thresholdValues))
+    {
+    }
+
+    WideningPolicy(std::vector<Rational> thresholdValues,
+                   LinearConstraintSet linearThresholdValues)
+        : thresholds(std::move(thresholdValues)),
+          linearThresholds(std::move(linearThresholdValues))
+    {
+    }
+
     /// Constants used to delay a bound's jump to infinity.
     std::vector<Rational> thresholds;
+    /// General linear thresholds retained by a widening when both operands
+    /// entail them. Domains that cannot represent a threshold may ignore it
+    /// conservatively; ConvexPolyhedraState supports this set directly.
+    LinearConstraintSet linearThresholds;
 };
+
+struct LinearAssignment
+{
+    Variable target;
+    LinearExpression expression;
+};
+
+using LinearAssignmentList = std::vector<LinearAssignment>;
+
+struct TreeAssignment
+{
+    Variable target;
+    TreeExpression expression;
+};
+
+using TreeAssignmentList = std::vector<TreeAssignment>;
 
 /// Common interface for numerical abstract states. The representation and
 /// lattice algorithms remain domain-specific; clients such as the SVF adapter
@@ -77,6 +113,12 @@ public:
     virtual void assign(Variable target,
                         const LinearExpression& expression) = 0;
     virtual void assign(Variable target, const TreeExpression& expression) = 0;
+    /// Assign every target simultaneously. Every right-hand side reads the
+    /// same incoming state, including old values of all assigned targets.
+    /// The default implementation uses temporary dimensions; domains may
+    /// override it with a representation-native implementation.
+    virtual void assignParallel(const LinearAssignmentList& assignments);
+    virtual void assignParallel(const TreeAssignmentList& assignments);
     virtual void assume(const LinearConstraint& constraint) = 0;
     virtual void assume(const TreeConstraint& constraint) = 0;
     virtual void forget(Variable variable) = 0;

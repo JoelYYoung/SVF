@@ -3,6 +3,7 @@
 #include "AE/Core/BoxDomain.h"
 #include "AE/Core/ConvexPolyhedraDomain.h"
 #include "AE/Core/NonRelationalDomain.h"
+#include "AE/Core/OctagonDomain.h"
 #include "Z3SoundnessChecker.h"
 
 #include <cstdlib>
@@ -301,6 +302,133 @@ void testPolyhedraLatticeAndFallbacks()
     require(contradiction.isBottom() &&
                 contradiction.toConstraints().size() == 1,
             "Polyhedra feasibility must detect contradictory constraints");
+
+    LinearExpression sum(x);
+    sum.setCoefficient(y, Rational(1));
+    ConvexPolyhedraState current =
+        ConvexPolyhedraState::top(environment);
+    current.assume(
+        lessEqual(sum, LinearExpression(Rational(0))));
+    ConvexPolyhedraState following =
+        ConvexPolyhedraState::top(environment);
+    following.assume(
+        lessEqual(sum, LinearExpression(Rational(1))));
+    const LinearConstraint threshold =
+        lessEqual(sum, LinearExpression(Rational(10)));
+    WideningPolicy policy;
+    policy.linearThresholds.push_back(threshold);
+    policy.linearThresholds.push_back(
+        lessEqual(sum, LinearExpression(Rational(0))));
+    const ConvexPolyhedraState standard = current.widen(following);
+    const ConvexPolyhedraState thresholded =
+        current.widen(following, policy);
+    Z3SoundnessChecker checker(environment);
+    requireProof(checker.checkWidening(current, following, thresholded));
+    require(current.capabilities().thresholdWidening &&
+                standard.entails(threshold) != CheckResult::True &&
+                thresholded.entails(threshold) == CheckResult::True &&
+                thresholded.entails(
+                    lessEqual(sum, LinearExpression(Rational(0)))) !=
+                    CheckResult::True &&
+                following.isSubsetOf(thresholded) == CheckResult::True,
+            "Polyhedra threshold widening must retain exactly applicable "
+            "linear thresholds and contain the next state");
+
+    ConvexPolyhedraState scalarCurrent =
+        ConvexPolyhedraState::top(environment);
+    scalarCurrent.assume(atMost(x, Rational(1)));
+    ConvexPolyhedraState scalarFollowing =
+        ConvexPolyhedraState::top(environment);
+    scalarFollowing.assume(atMost(x, Rational(2)));
+    const ConvexPolyhedraState scalarThresholded = scalarCurrent.widen(
+        scalarFollowing, WideningPolicy{{Rational(10)}});
+    require(scalarThresholded.entails(atMost(x, Rational(10))) ==
+                CheckResult::True,
+            "Polyhedra threshold widening must support shared scalar "
+            "threshold policies");
+    requireProof(checker.checkWidening(
+        scalarCurrent, scalarFollowing, scalarThresholded));
+}
+
+template <typename StateT>
+void checkParallelAssignmentFor(const char* domainName)
+{
+    const Variable x(1);
+    const Variable y(2);
+    const Variable z(3);
+    const VariableEnvironment environment(
+        {{x, NumericType::integer(), "x"},
+         {y, NumericType::integer(), "y"},
+         {z, NumericType::integer(), "z"}});
+    Z3SoundnessChecker checker(environment);
+
+    StateT state = StateT::top(environment);
+    state.assumeAll(
+        {equalsValue(x, Rational(1)), equalsValue(y, Rational(2)),
+         equalsValue(z, Rational(9))});
+    const StateT before = state;
+
+    LinearExpression difference(x);
+    difference.setCoefficient(y, Rational(-1));
+    const LinearAssignmentList assignments{
+        {x, LinearExpression(y)},
+        {y, LinearExpression(x)},
+        {z, difference}};
+    NumericalState& numerical = state;
+    numerical.assignParallel(assignments);
+
+    requireProof(
+        checker.checkParallelAssignment(before, assignments, state));
+    require(state.capabilities().parallelAssignments &&
+                state.environment() == environment &&
+                state.bound(x).lower().value() == Rational(2) &&
+                state.bound(x).upper().value() == Rational(2) &&
+                state.bound(y).lower().value() == Rational(1) &&
+                state.bound(y).upper().value() == Rational(1) &&
+                state.bound(z).lower().value() == Rational(-1) &&
+                state.bound(z).upper().value() == Rational(-1),
+            std::string(domainName) +
+                " parallel assignment must read every RHS from the old state");
+
+    StateT sequential = before;
+    sequential.assign(x, LinearExpression(y));
+    sequential.assign(y, LinearExpression(x));
+    sequential.assign(z, difference);
+    require(sequential.bound(y).lower().value() == Rational(2) &&
+                sequential.bound(z).lower().value() == Rational(0),
+            std::string(domainName) +
+                " test must distinguish parallel from sequential assignment");
+}
+
+void testParallelAssignments()
+{
+    checkParallelAssignmentFor<BoxState>("Box");
+    checkParallelAssignmentFor<OctagonState>("Octagon");
+    checkParallelAssignmentFor<ConvexPolyhedraState>("Polyhedra");
+
+    const Variable x(1);
+    const Variable y(2);
+    const VariableEnvironment environment(
+        {{x, NumericType::integer(), "x"},
+         {y, NumericType::integer(), "y"}});
+    BoxState state = BoxState::top(environment);
+    NumericalState& numerical = state;
+    requireThrows(
+        [&]
+        {
+            numerical.assignParallel(LinearAssignmentList{
+                {x, LinearExpression(y)}, {x, LinearExpression(x)}});
+        },
+        "parallel assignment must reject duplicate targets");
+
+    state.assumeAll(
+        {equalsValue(x, Rational(1)), equalsValue(y, Rational(2))});
+    state.assignParallel(TreeAssignmentList{
+        {x, TreeExpression::variable(y, NumericType::integer())},
+        {y, TreeExpression::variable(x, NumericType::integer())}});
+    require(state.bound(x).lower().value() == Rational(2) &&
+                state.bound(y).lower().value() == Rational(1),
+            "affine tree parallel assignment must use simultaneous semantics");
 }
 
 void testRandomizedNumericalSoundness()
@@ -456,6 +584,17 @@ void testNonRelationalState()
                     Rational(9),
             "multi-target stores must weakly update every possible cell");
 
+    DomainProductState<BoxState> parallelState = state;
+    parallelState.assignAddress(source, AddressSet::singleton(first));
+    parallelState.assignAddress(target, AddressSet::singleton(second));
+    parallelState.assignNumericParallel(
+        {{source, LinearExpression(Rational(3))},
+         {target, LinearExpression(Rational(4))}});
+    require(parallelState.addresses().addressesOf(source).isBottom() &&
+                parallelState.addresses().addressesOf(target).isBottom(),
+            "parallel numeric assignment must clear every target's address "
+            "facts in the product state");
+
     DomainProductState<BoxState> joined = state;
     DomainProductState<BoxState> alternative = state;
     alternative.assignNumeric(source, LinearExpression(Rational(11)));
@@ -477,6 +616,7 @@ int main()
         testBoxLatticeAndFallbacks();
         testConvexPolyhedraState();
         testPolyhedraLatticeAndFallbacks();
+        testParallelAssignments();
         testRandomizedNumericalSoundness();
         testNonRelationalState();
         std::cout << "abstract-domain state tests: PASS\n";

@@ -338,22 +338,45 @@ const char* ConvexPolyhedraState::name() const
 
 DomainCapabilities ConvexPolyhedraState::capabilities() const
 {
-    return {true, false, false, true, false};
+    DomainCapabilities result;
+    result.strictInequalities = true;
+    result.integerTightening = false;
+    result.thresholdWidening = true;
+    result.narrowing = true;
+    result.parallelAssignments = true;
+    result.nonlinearTreeExpressions = false;
+    return result;
 }
 
 void ConvexPolyhedraState::assign(
     Variable target, const LinearExpression& expression)
 {
-    if (!environment_.contains(target))
-        throw std::invalid_argument("assignment target is not in environment");
-    for (const auto& [variable, coefficient] : expression.terms())
+    assignParallel({{target, expression}});
+}
+
+void ConvexPolyhedraState::assignParallel(
+    const LinearAssignmentList& assignments)
+{
+    std::map<Variable, const LinearExpression*> expressions;
+    for (const LinearAssignment& assignment : assignments)
     {
-        (void)coefficient;
-        if (!environment_.contains(variable))
+        if (!environment_.contains(assignment.target))
             throw std::invalid_argument(
-                "assignment expression uses an unknown variable");
+                "parallel assignment target is not in environment");
+        if (!expressions.emplace(assignment.target, &assignment.expression)
+                 .second)
+            throw std::invalid_argument(
+                "parallel assignment contains a duplicate target");
+        for (const auto& [variable, coefficient] :
+             assignment.expression.terms())
+        {
+            (void)coefficient;
+            if (!environment_.contains(variable))
+                throw std::invalid_argument(
+                    "parallel assignment expression uses an unknown variable");
+        }
     }
-    if (impl_->bottom)
+    if (assignments.empty() || impl_->bottom)
         return;
 
     const std::size_t dimensions = environment_.size();
@@ -373,20 +396,22 @@ void ConvexPolyhedraState::assign(
         extended.push_back(std::move(old));
     }
 
-    const Dimension targetDimension = environment_.dimensionOf(target);
     for (Dimension dimension = 0; dimension < dimensions; ++dimension)
     {
         Inequality equality;
         equality.coefficients.resize(2 * dimensions);
         equality.coefficients[dimension] = Rational(1);
-        if (dimension == targetDimension)
+        const Variable target = environment_.variableOf(dimension);
+        const auto assigned = expressions.find(target);
+        if (assigned != expressions.end())
         {
-            for (const auto& [variable, coefficient] : expression.terms())
+            for (const auto& [variable, coefficient] :
+                 assigned->second->terms())
             {
                 equality.coefficients[dimensions +
                     environment_.dimensionOf(variable)] -= coefficient;
             }
-            equality.bound = expression.constant();
+            equality.bound = assigned->second->constant();
         }
         else
         {
@@ -720,7 +745,7 @@ ConvexPolyhedraState ConvexPolyhedraState::meet(
 }
 
 ConvexPolyhedraState ConvexPolyhedraState::widen(
-    const ConvexPolyhedraState& next) const
+    const ConvexPolyhedraState& next, const WideningPolicy& policy) const
 {
     requirePolyhedron(next);
     if (impl_->bottom)
@@ -735,6 +760,28 @@ ConvexPolyhedraState ConvexPolyhedraState::widen(
             result.impl_->inequalities.push_back(inequality);
     }
     result.normalize();
+    const auto retainApplicableThreshold =
+        [&](const LinearConstraint& threshold)
+        {
+            if (entails(threshold) == CheckResult::True &&
+                    next.entails(threshold) == CheckResult::True)
+                result.assume(threshold);
+        };
+    for (const Rational& threshold : policy.thresholds)
+    {
+        for (const VariableDeclaration& declaration :
+             environment_.variables())
+        {
+            retainApplicableThreshold(
+                lessEqual(LinearExpression(declaration.variable),
+                          LinearExpression(threshold)));
+            retainApplicableThreshold(
+                greaterEqual(LinearExpression(declaration.variable),
+                             LinearExpression(threshold)));
+        }
+    }
+    for (const LinearConstraint& threshold : policy.linearThresholds)
+        retainApplicableThreshold(threshold);
     return result;
 }
 

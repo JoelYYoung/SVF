@@ -210,6 +210,80 @@ ProofResult Z3SoundnessChecker::checkAssignment(
                  "assign: old state and transition imply result");
 }
 
+ProofResult Z3SoundnessChecker::checkParallelAssignment(
+    const NumericalState& before,
+    const LinearAssignmentList& assignments,
+    const NumericalState& result)
+{
+    requireEnvironment(before);
+    requireEnvironment(result);
+
+    std::map<Variable, const LinearExpression*> assigned;
+    for (const LinearAssignment& assignment : assignments)
+    {
+        if (!environment_.contains(assignment.target))
+            throw std::invalid_argument(
+                "parallel assignment target is not in environment");
+        if (!assigned.emplace(assignment.target, &assignment.expression)
+                 .second)
+            throw std::invalid_argument(
+                "parallel assignment contains a duplicate target");
+    }
+
+    z3::expr beforeFormula = state(before);
+    z3::expr_vector currentSymbols(context_);
+    z3::expr_vector oldSymbols(context_);
+    std::map<Variable, z3::expr> oldVariables;
+    for (const VariableDeclaration& declaration : environment_.variables())
+    {
+        const z3::expr& current = variables_.at(declaration.variable);
+        const std::string name = declaration.name + "_parallel_old";
+        z3::expr old = context_.constant(name.c_str(), current.get_sort());
+        currentSymbols.push_back(current);
+        oldSymbols.push_back(old);
+        oldVariables.emplace(declaration.variable, std::move(old));
+    }
+    z3::expr oldState = beforeFormula.substitute(currentSymbols, oldSymbols);
+
+    z3::expr transition = context_.bool_val(true);
+    for (const VariableDeclaration& declaration : environment_.variables())
+    {
+        const z3::expr& current = variables_.at(declaration.variable);
+        const z3::expr& old = oldVariables.at(declaration.variable);
+        const auto assignment = assigned.find(declaration.variable);
+        if (assignment == assigned.end())
+        {
+            transition = transition && current == old;
+            continue;
+        }
+
+        const LinearExpression& expression = *assignment->second;
+        z3::expr rhs =
+            context_.real_val(expression.constant().toString().c_str());
+        for (const auto& [variable, coefficient] : expression.terms())
+        {
+            const auto oldIt = oldVariables.find(variable);
+            if (oldIt == oldVariables.end())
+                throw std::invalid_argument(
+                    "parallel assignment expression contains an unknown variable");
+            z3::expr oldValue =
+                environment_.typeOf(variable).kind == NumericKind::Integer
+                    ? z3::to_real(oldIt->second)
+                    : oldIt->second;
+            rhs = rhs +
+                  context_.real_val(coefficient.toString().c_str()) * oldValue;
+        }
+        z3::expr currentValue =
+            declaration.type.kind == NumericKind::Integer
+                ? z3::to_real(current)
+                : current;
+        transition = transition && currentValue == rhs;
+    }
+
+    return prove(oldState && transition, state(result),
+                 "parallel assign: old state and transition imply result");
+}
+
 ProofResult Z3SoundnessChecker::checkForget(const NumericalState& before,
                                             Variable forgotten,
                                             const NumericalState& result)
