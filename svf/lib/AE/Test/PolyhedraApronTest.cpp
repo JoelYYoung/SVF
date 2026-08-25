@@ -110,6 +110,66 @@ void compareHullFamilies(ap_manager_t* manager, std::size_t dimensions,
     }
 }
 
+void compareLinealityAndPersistentDual(ap_manager_t* manager)
+{
+    const Variable x(1);
+    const Variable y(2);
+    const Variable z(3);
+    const Variable w(4);
+    const VariableEnvironment environment(
+        {{x, NumericType::real(), "x"}, {y, NumericType::real(), "y"},
+         {z, NumericType::real(), "z"}, {w, NumericType::real(), "w"}});
+
+    LinearExpression xMinusY(x);
+    xMinusY.setCoefficient(y, Rational(-1));
+    LinearExpression xPlusZ(x);
+    xPlusZ.setCoefficient(z, Rational(1));
+    const LinearConstraintSet initial{
+        equal(xMinusY, LinearExpression(Rational(2))),
+        greaterEqual(LinearExpression(z), LinearExpression(Rational(-3))),
+        lessEqual(xPlusZ, LinearExpression(Rational(5)))};
+    ConvexPolyhedraState native =
+        ConvexPolyhedraState::fromConstraints(environment, initial);
+    ApronValue apron = apronFromConstraints(manager, environment, initial);
+
+    // This shape has two independent lineality directions before clipping:
+    // one along x=y and one along the unconstrained w dimension. Joining an
+    // identical operand exercises a lazy V union followed by one H recovery.
+    native = native.join(native);
+    apron = ApronValue(
+        manager, ap_abstract0_join(manager, false, apron.get(), apron.get()));
+    require(apronMatches(manager, native, apron),
+            "explicit lineality round-trip differs from NewPolka");
+
+    LinearExpression yMinusZ(y);
+    yMinusZ.setCoefficient(z, Rational(-1));
+    const LinearConstraintSet clips{
+        greaterEqual(LinearExpression(w), LinearExpression(Rational(-2))),
+        lessEqual(LinearExpression(w), LinearExpression(Rational(4))),
+        greaterEqual(yMinusZ, LinearExpression(Rational(-7)))};
+    native.assumeAll(clips);
+    apron = apronMeetConstraints(manager, apron, environment, clips);
+    require(apronMatches(manager, native, apron),
+            "line-pivot incremental clipping differs from NewPolka");
+
+    LinearExpression wPlusZ(w);
+    wPlusZ.setCoefficient(z, Rational(1));
+    const LinearConstraintSet equalityClip{
+        equal(wPlusZ, LinearExpression(Rational(1)))};
+    native.assumeAll(equalityClip);
+    apron = apronMeetConstraints(manager, apron, environment, equalityClip);
+    require(apronMatches(manager, native, apron),
+            "persistent polar cache equality reduction differs from NewPolka");
+
+    // Repeated export must use the same canonical dual, not rebuild a subtly
+    // different affine-hull basis on each H/V transition.
+    const std::uint64_t hash = native.hash();
+    (void)native.toConstraints();
+    native.canonicalize();
+    require(native.hash() == hash && apronMatches(manager, native, apron),
+            "canonical H/V cache cycle changed a lineal polyhedron");
+}
+
 } // namespace
 
 int main()
@@ -121,6 +181,7 @@ int main()
             compareHullFamilies(manager.get(), dimensions,
                                 0xC0FFEEU +
                                     static_cast<std::uint32_t>(dimensions));
+        compareLinealityAndPersistentDual(manager.get());
         std::cout << "native Polyhedra/APRON NewPolka differential tests passed\n";
         return 0;
     }

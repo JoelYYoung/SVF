@@ -432,7 +432,8 @@ void testConvexPolyhedraState()
                     CheckResult::True &&
                 hull.bound(x).lower().value() == Rational(0) &&
                 hull.bound(x).upper().value() == Rational(2),
-            "Polyhedra join must compute the convex hull of two points");
+            "Polyhedra join must compute the convex hull of two points: " +
+                hull.toString() + ", x=" + hull.bound(x).toString());
 
     ConvexPolyhedraState forgotten = hull;
     forgotten.forget(y);
