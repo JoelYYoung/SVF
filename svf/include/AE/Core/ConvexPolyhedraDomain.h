@@ -24,8 +24,11 @@ struct ConvexPolyhedraConfig
 };
 
 /// Closed/non-closed convex polyhedra over exact GMP rationals. The internal
-/// H-representation is normalized linear inequalities; projection, affine
-/// image, feasibility, and convex hull use exact Fourier-Motzkin elimination.
+/// representation lazily caches normalized constraints (H) and homogeneous
+/// points/rays/lines (V), converting with an exact double-description kernel.
+/// Operations select the cheaper valid side without exposing H/V state to the
+/// abstract interpreter; exact Fourier-Motzkin remains the NNC projection
+/// fallback.
 class ConvexPolyhedraState final : public NumericalState
 {
 public:
@@ -117,6 +120,10 @@ private:
     const ConvexPolyhedraState& requirePolyhedron(
         const AbstractState& other) const;
     void addConstraint(const LinearConstraint& constraint);
+    void ensureConstraints() const;
+    void ensureGenerators() const;
+    void invalidateConstraints();
+    void invalidateGenerators();
     void normalize();
     void report(OperationKind operation, ApproximationKind approximation,
                 std::string reason) const;

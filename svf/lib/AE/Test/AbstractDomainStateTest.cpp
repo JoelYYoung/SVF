@@ -799,6 +799,144 @@ void testRandomizedNumericalSoundness()
     }
 }
 
+void testPolyhedraDualRepresentation()
+{
+    const Variable x(1);
+    const Variable y(2);
+    const Variable z(3);
+    const Variable w(4);
+    const VariableEnvironment environment(
+        {{x, NumericType::real(), "x"}, {y, NumericType::real(), "y"},
+         {z, NumericType::real(), "z"}, {w, NumericType::real(), "w"}});
+    Z3SoundnessChecker checker(environment);
+
+    // A lower-dimensional, unbounded polyhedron exercises points, rays and
+    // lines. Joining it with itself forces H -> V -> H without changing its
+    // mathematical value.
+    ConvexPolyhedraState halfPlane =
+        ConvexPolyhedraState::top(environment);
+    LinearExpression equality(x);
+    equality.setCoefficient(y, Rational(-1));
+    halfPlane.assume(equal(equality, LinearExpression(Rational(2))));
+    halfPlane.assume(atLeast(z, Rational(-3)));
+    const ConvexPolyhedraState roundTrip = halfPlane.join(halfPlane);
+    require(roundTrip.isEquivalentTo(halfPlane) == CheckResult::True &&
+                halfPlane.isEquivalentTo(roundTrip) == CheckResult::True &&
+                roundTrip.hash() == halfPlane.hash(),
+            "Polyhedra H/V conversion must preserve lower-dimensional "
+            "unbounded states and their canonical hash: before=" +
+                halfPlane.toString() + ", after=" + roundTrip.toString());
+    requireProof(checker.checkJoin(halfPlane, halfPlane, roundTrip));
+
+    // The V form of top contains a point plus a line in every dimension. A
+    // finite operand must therefore be redundant in its convex hull.
+    ConvexPolyhedraState point = ConvexPolyhedraState::top(environment);
+    point.assumeAll({equalsValue(x, Rational(1)),
+                     equalsValue(y, Rational(2)),
+                     equalsValue(z, Rational(3)),
+                     equalsValue(w, Rational(4))});
+    const ConvexPolyhedraState topHull =
+        ConvexPolyhedraState::top(environment).join(point);
+    require(topHull.isTop(),
+            "joining top through V representation must remain top");
+
+    ConvexPolyhedraState otherPoint = ConvexPolyhedraState::top(environment);
+    otherPoint.assumeAll({equalsValue(x, Rational(-1)),
+                          equalsValue(y, Rational(-2)),
+                          equalsValue(z, Rational(-3)),
+                          equalsValue(w, Rational(-4))});
+    checkRawRoundTrip(point.join(otherPoint),
+                      "V-only Convex Polyhedra hull");
+
+    // Repeated hulls remain in V form between calls. The resulting 4D simplex
+    // has five vertices and is intentionally the shape that made the old
+    // lifted Fourier-Motzkin join expensive.
+    ConvexPolyhedraState simplex =
+        ConvexPolyhedraState::bottom(environment);
+    const std::vector<std::vector<std::int64_t>> vertices{
+        {0, 0, 0, 0}, {5, 0, 0, 0}, {0, 5, 0, 0},
+        {0, 0, 5, 0}, {0, 0, 0, 5}};
+    for (const std::vector<std::int64_t>& vertex : vertices)
+    {
+        ConvexPolyhedraState next = ConvexPolyhedraState::top(environment);
+        next.assumeAll({equalsValue(x, Rational(vertex[0])),
+                        equalsValue(y, Rational(vertex[1])),
+                        equalsValue(z, Rational(vertex[2])),
+                        equalsValue(w, Rational(vertex[3]))});
+        const ConvexPolyhedraState before = simplex;
+        simplex = simplex.join(next);
+        requireProof(checker.checkJoin(before, next, simplex));
+    }
+    LinearExpression sum(x);
+    sum.setCoefficient(y, Rational(1));
+    sum.setCoefficient(z, Rational(1));
+    sum.setCoefficient(w, Rational(1));
+    require(simplex.entails(atLeast(x, Rational(0))) == CheckResult::True &&
+                simplex.entails(atLeast(y, Rational(0))) == CheckResult::True &&
+                simplex.entails(atLeast(z, Rational(0))) == CheckResult::True &&
+                simplex.entails(atLeast(w, Rational(0))) == CheckResult::True &&
+                simplex.entails(lessEqual(sum,
+                                           LinearExpression(Rational(5)))) ==
+                    CheckResult::True,
+            "V-form repeated joins must recover the exact 4D simplex facets: " +
+                simplex.toString());
+
+    // Alternate generator-friendly and constraint-friendly operations. Each
+    // mutation must invalidate exactly the stale side of the dual cache.
+    ConvexPolyhedraState alternating = simplex;
+    alternating.assume(atMost(x, Rational(2)));
+    const ConvexPolyhedraState beforeAssign = alternating;
+    LinearExpression image(y);
+    image.setCoefficient(z, Rational(2));
+    image.setConstant(Rational(1));
+    alternating.assign(x, image);
+    requireProof(checker.checkAssignment(beforeAssign, x, image, alternating));
+    alternating.forget(w);
+    require(alternating.bound(w).isTop() &&
+                alternating.entails(equal(
+                    LinearExpression(x) - image,
+                    LinearExpression(Rational()))) == CheckResult::True,
+            "assume/assign/forget must transparently refresh H/V caches");
+
+    // The pre-existing NNC join contract returns the closure. The internal V
+    // cache may therefore close this operation, but exact non-join operations
+    // must never consume that closure as if it represented x < 0.
+    ConvexPolyhedraState strict = ConvexPolyhedraState::top(environment);
+    strict.assume(lessThan(LinearExpression(x),
+                           LinearExpression(Rational(0))));
+    ConvexPolyhedraState endpoint = ConvexPolyhedraState::top(environment);
+    endpoint.assume(equalsValue(x, Rational(1)));
+    const ConvexPolyhedraState closedHull = strict.join(endpoint);
+    require(closedHull.entails(atMost(x, Rational(1))) == CheckResult::True &&
+                closedHull.entails(lessThan(
+                    LinearExpression(x), LinearExpression(Rational(1)))) ==
+                    CheckResult::Unknown,
+            "NNC join through V representation must expose its closed hull");
+    strict.assign(y, LinearExpression(x));
+    require(strict.entails(lessThan(LinearExpression(x),
+                                    LinearExpression(Rational(0)))) ==
+                CheckResult::True,
+            "an NNC closure cache must not replace the exact H state during "
+            "assignment");
+
+    const VariableEnvironment emptyEnvironment;
+    require(ConvexPolyhedraState::top(emptyEnvironment)
+                .join(ConvexPolyhedraState::top(emptyEnvironment))
+                .isTop(),
+            "zero-dimensional top must survive H/V conversion");
+
+    ConvexPolyhedraState inconsistent =
+        ConvexPolyhedraState::top(environment);
+    LinearExpression xPlusY(x);
+    xPlusY.setCoefficient(y, Rational(1));
+    inconsistent.assumeAll(
+        {equalsValue(x, Rational(0)), equalsValue(y, Rational(0)),
+         equal(xPlusY, LinearExpression(Rational(1)))});
+    require(inconsistent.isBottom(),
+            "affine-hull canonicalization must retain inconsistent dependent "
+            "equalities");
+}
+
 void testNonRelationalState()
 {
     const Location first(10);
@@ -944,6 +1082,7 @@ int main()
         testCompletedNumericalSurface();
         testNumericalHashAndRawSerialization();
         testRandomizedNumericalSoundness();
+        testPolyhedraDualRepresentation();
         testNonRelationalState();
         std::cout << "abstract-domain state tests: PASS\n";
         return EXIT_SUCCESS;
