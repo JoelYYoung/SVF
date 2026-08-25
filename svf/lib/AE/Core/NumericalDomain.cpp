@@ -459,16 +459,33 @@ std::unique_ptr<NumericalState> restore(DomainTag tag, std::uint8_t flags,
 
 NumericalState::RawBuffer NumericalState::serializeRaw() const
 {
+    // Transfers are allowed to retain an exact but non-minimal H cache so
+    // clients that only need constraints do not pay a global redundancy pass
+    // after every update. Serialization and hashing are the representation-
+    // independent boundary, so canonicalize an isolated copy here.
+    const NumericalState* canonical = this;
+    std::unique_ptr<AbstractState> cloned;
+    if (dynamic_cast<const ConvexPolyhedraState*>(this) != nullptr)
+    {
+        cloned = clone();
+        auto* numerical = dynamic_cast<NumericalState*>(cloned.get());
+        if (numerical == nullptr)
+            throw std::logic_error("numerical clone has an incompatible type");
+        numerical->canonicalize();
+        canonical = numerical;
+    }
+
     Writer writer;
     writer.writeMagic();
     writer.writeU16(RawVersion);
-    const DomainTag tag = domainTag(*this);
+    const DomainTag tag = domainTag(*canonical);
     writer.writeByte(static_cast<std::uint8_t>(tag));
-    writer.writeByte(configurationFlags(*this, tag));
-    writeEnvironment(writer, environment());
-    writer.writeByte(isBottom() ? 1U : 0U);
+    writer.writeByte(configurationFlags(*canonical, tag));
+    writeEnvironment(writer, canonical->environment());
+    writer.writeByte(canonical->isBottom() ? 1U : 0U);
     writeConstraints(writer,
-                     isBottom() ? LinearConstraintSet{} : toConstraints());
+                     canonical->isBottom() ? LinearConstraintSet{}
+                                           : canonical->toConstraints());
     return writer.finish();
 }
 

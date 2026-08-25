@@ -185,6 +185,150 @@ void compareLinealityAndPersistentDual(ap_manager_t* manager)
             "canonical H/V cache cycle changed a lineal polyhedron");
 }
 
+void compareNNCFamilies(ap_manager_t* manager)
+{
+    for (std::size_t dimensions = 2; dimensions <= 6; ++dimensions)
+    {
+        std::vector<VariableDeclaration> declarations;
+        for (std::size_t dimension = 0; dimension < dimensions; ++dimension)
+            declarations.push_back(
+                {Variable(static_cast<std::uint32_t>(dimension + 1)),
+                 NumericType::real(), "n" + std::to_string(dimension)});
+        const VariableEnvironment environment(std::move(declarations));
+
+        constexpr std::uint32_t Trials = 4;
+        for (std::uint32_t trial = 0; trial < Trials; ++trial)
+        {
+            const std::string caseContext =
+                " at dimension " + std::to_string(dimensions) + " trial " +
+                std::to_string(trial);
+            std::mt19937 random(
+                0x51A1C7U + static_cast<std::uint32_t>(dimensions) +
+                trial * 0x9E3779B9U);
+            std::uniform_int_distribution<int> slack(0, 3);
+
+            LinearConstraintSet initial;
+            LinearExpression sum;
+            for (const VariableDeclaration& declaration :
+                 environment.variables())
+            {
+                initial.push_back(greaterThan(
+                    LinearExpression(declaration.variable),
+                    LinearExpression(Rational(-4 - slack(random)))));
+                initial.push_back(lessEqual(
+                    LinearExpression(declaration.variable),
+                    LinearExpression(Rational(5 + slack(random)))));
+                sum.setCoefficient(declaration.variable, Rational(1));
+            }
+            initial.push_back(lessThan(
+                sum, LinearExpression(Rational(dimensions + slack(random)))));
+
+            ConvexPolyhedraState native =
+                ConvexPolyhedraState::fromConstraints(environment, initial);
+            ApronValue apron =
+                apronFromConstraints(manager, environment, initial);
+
+        // Self-join forces a lazy V-only result. An open facet must remain
+        // open rather than becoming the closure during materialization.
+            native = native.join(native);
+            apron = ApronValue(
+                manager,
+                ap_abstract0_join(manager, false, apron.get(), apron.get()));
+            require(apronMatches(manager, native, apron),
+                    "NNC lazy self-hull differs from strict NewPolka" +
+                        caseContext);
+            require(native.bound(environment.variableOf(0)).lower().isStrict(),
+                    "NNC V bound lost an open endpoint" + caseContext);
+
+            LinearExpression clip(environment.variableOf(0));
+            clip.setCoefficient(environment.variableOf(1), Rational(-1));
+            const LinearConstraintSet strictClip{greaterThan(
+                clip, LinearExpression(Rational(-3 - slack(random))))};
+            native.assumeAll(strictClip);
+            apron =
+                apronMeetConstraints(manager, apron, environment, strictClip);
+            require(apronMatches(manager, native, apron),
+                    "incremental NNC clipping differs from strict NewPolka" +
+                        caseContext);
+
+            const Variable target = environment.variableOf(0);
+            LinearExpression image(environment.variableOf(1));
+            image *= Rational(2);
+            image.setConstant(Rational(1));
+            native.assign(target, image);
+            apron = apronAssign(manager, apron, environment, target, image);
+            require(apronMatches(manager, native, apron),
+                    "NNC affine image differs from strict NewPolka" +
+                        caseContext);
+
+            const Variable forgotten = environment.variableOf(dimensions - 1);
+            native.forget(forgotten);
+            apron = apronForget(manager, apron, environment, forgotten);
+            require(apronMatches(manager, native, apron),
+                    "NNC projection differs from strict NewPolka" +
+                        caseContext);
+
+            const std::uint64_t hash = native.hash();
+            const std::string beforeCanonical = native.toString();
+            native.canonicalize();
+            require(apronMatches(manager, native, apron),
+                    "NNC canonicalization changed the polyhedron" +
+                        caseContext);
+            require(native.hash() == hash,
+                    "NNC canonicalization changed the semantic hash" +
+                        caseContext + ": before=" + beforeCanonical +
+                        " after=" + native.toString());
+        }
+    }
+}
+
+void compareMixedClosedAndNNC(ap_manager_t* manager)
+{
+    const Variable x(1);
+    const Variable y(2);
+    const VariableEnvironment environment(
+        {{x, NumericType::real(), "x"}, {y, NumericType::real(), "y"}});
+    const LinearConstraintSet openRows{
+        greaterThan(LinearExpression(x), LinearExpression(Rational(0))),
+        lessThan(LinearExpression(x), LinearExpression(Rational(1))),
+        equal(LinearExpression(y), LinearExpression(Rational(0)))};
+    ConvexPolyhedraState open =
+        ConvexPolyhedraState::fromConstraints(environment, openRows);
+    ApronValue apronOpen =
+        apronFromConstraints(manager, environment, openRows);
+
+    const ConvexPolyhedraState endpoint = point(environment, {2, 0});
+    const ApronValue apronEndpoint = apronFromState(manager, endpoint);
+    ConvexPolyhedraState hull = open.join(endpoint);
+    ApronValue apronHull(
+        manager, ap_abstract0_join(manager, false, apronOpen.get(),
+                                   apronEndpoint.get()));
+    require(apronMatches(manager, hull, apronHull),
+            "mixed closed/NNC hull differs from strict NewPolka");
+    const Interval hullX = hull.bound(x);
+    require(hullX.lower().isStrict() && !hullX.upper().isStrict() &&
+                hullX.upper().value() == Rational(2),
+            "mixed hull did not preserve open and included endpoints");
+
+    const LinearConstraintSet closedRows{
+        greaterEqual(LinearExpression(x), LinearExpression(Rational(-1))),
+        lessEqual(LinearExpression(x), LinearExpression(Rational(3))),
+        greaterEqual(LinearExpression(y), LinearExpression(Rational(-1)))};
+    const ConvexPolyhedraState closed =
+        ConvexPolyhedraState::fromConstraints(environment, closedRows);
+    const ApronValue apronClosed =
+        apronFromConstraints(manager, environment, closedRows);
+    ConvexPolyhedraState intersection = open.meet(closed);
+    ApronValue apronIntersection(
+        manager, ap_abstract0_meet(manager, false, apronOpen.get(),
+                                   apronClosed.get()));
+    require(apronMatches(manager, intersection, apronIntersection),
+            "mixed closed/NNC meet differs from strict NewPolka");
+    require(intersection.bound(x).lower().isStrict() &&
+                intersection.bound(x).upper().isStrict(),
+            "mixed meet closed an NNC endpoint");
+}
+
 } // namespace
 
 int main()
@@ -204,6 +348,8 @@ int main()
             }
         }
         compareLinealityAndPersistentDual(manager.get());
+        compareNNCFamilies(manager.get());
+        compareMixedClosedAndNNC(manager.get());
         std::cout << "native Polyhedra/APRON NewPolka differential tests passed\n";
         return 0;
     }

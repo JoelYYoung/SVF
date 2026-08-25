@@ -396,6 +396,115 @@ void benchmark(ap_manager_t* strictManager, ap_manager_t* lazyManager,
               << lazyLinealityMilliseconds << ','
               << nativeLinealityExport << ',' << strictLinealityExport << ','
               << lazyLinealityExport << '\n';
+
+    // NNC epsilon-representation path: the self-join leaves a lazy V-only
+    // value containing both included and closure points, and the strict clip
+    // is processed incrementally without closing its boundary.
+    LinearConstraintSet nncInitial;
+    LinearExpression nncSum;
+    for (const VariableDeclaration& declaration : environment.variables())
+    {
+        nncInitial.push_back(greaterThan(
+            LinearExpression(declaration.variable),
+            LinearExpression(Rational(-4))));
+        nncInitial.push_back(lessEqual(
+            LinearExpression(declaration.variable),
+            LinearExpression(Rational(5))));
+        nncSum.setCoefficient(declaration.variable, Rational(1));
+    }
+    nncInitial.push_back(lessThan(
+        nncSum, LinearExpression(Rational(
+                    static_cast<std::int64_t>(dimensions + 1)))));
+    ConvexPolyhedraState nativeNNCBase =
+        ConvexPolyhedraState::fromConstraints(environment, nncInitial);
+    nativeNNCBase = nativeNNCBase.join(nativeNNCBase);
+    (void)nativeNNCBase.toConstraints();
+    ApronValue strictNNCBase =
+        apronFromConstraints(strictManager, environment, nncInitial);
+    strictNNCBase = ApronValue(
+        strictManager,
+        ap_abstract0_join(strictManager, false, strictNNCBase.get(),
+                          strictNNCBase.get()));
+    ApronValue lazyNNCBase =
+        apronFromConstraints(lazyManager, environment, nncInitial);
+    lazyNNCBase = ApronValue(
+        lazyManager,
+        ap_abstract0_join(lazyManager, false, lazyNNCBase.get(),
+                          lazyNNCBase.get()));
+    {
+        ap_lincons0_array_t array =
+            ap_abstract0_to_lincons_array(strictManager, strictNNCBase.get());
+        ap_lincons0_array_clear(&array);
+    }
+    {
+        ap_lincons0_array_t array =
+            ap_abstract0_to_lincons_array(lazyManager, lazyNNCBase.get());
+        ap_lincons0_array_clear(&array);
+    }
+
+    LinearExpression nncDifference(environment.variableOf(0));
+    nncDifference.setCoefficient(environment.variableOf(1), Rational(-1));
+    const LinearConstraintSet nncClips{greaterThan(
+        nncDifference, LinearExpression(Rational(-3)))};
+
+    ConvexPolyhedraState nativeNNC = nativeNNCBase;
+    const double nativeNNCMilliseconds = medianMilliseconds(
+        [&] {
+            ConvexPolyhedraState result = nativeNNCBase;
+            result.assumeAll(nncClips);
+            nativeNNC = std::move(result);
+        },
+        repetitions);
+    ApronValue strictNNC = strictNNCBase;
+    const double strictNNCMilliseconds = medianMilliseconds(
+        [&] {
+            strictNNC = apronMeetConstraints(
+                strictManager, strictNNCBase, environment, nncClips);
+        },
+        repetitions);
+    ApronValue lazyNNC = lazyNNCBase;
+    const double lazyNNCMilliseconds = medianMilliseconds(
+        [&] {
+            lazyNNC = apronMeetConstraints(
+                lazyManager, lazyNNCBase, environment, nncClips);
+        },
+        repetitions);
+
+    std::vector<ConvexPolyhedraState> nativeNNCExports(
+        materializeRepetitions, nativeNNC);
+    const auto nativeNNCExportStart = Clock::now();
+    for (ConvexPolyhedraState& result : nativeNNCExports)
+        (void)result.toConstraints();
+    const double nativeNNCExport =
+        std::chrono::duration<double, std::milli>(
+            Clock::now() - nativeNNCExportStart)
+            .count() /
+        materializeRepetitions;
+
+    const auto apronExport = [&](ap_manager_t* manager,
+                                 const ApronValue& source)
+    {
+        std::vector<ApronValue> exports(materializeRepetitions, source);
+        const auto start = Clock::now();
+        for (ApronValue& value : exports)
+        {
+            ap_lincons0_array_t array =
+                ap_abstract0_to_lincons_array(manager, value.get());
+            ap_lincons0_array_clear(&array);
+        }
+        return std::chrono::duration<double, std::milli>(Clock::now() - start)
+                   .count() /
+               materializeRepetitions;
+    };
+    const double strictNNCExport = apronExport(strictManager, strictNNC);
+    const double lazyNNCExport = apronExport(lazyManager, lazyNNC);
+    if (!apronMatches(strictManager, nativeNNC, strictNNC) ||
+        !apronMatches(lazyManager, nativeNNC, lazyNNC))
+        throw std::runtime_error("NNC benchmark implementations disagree");
+    std::cout << "nnc_clip," << dimensions << ',' << nncClips.size() << ','
+              << nativeNNCMilliseconds << ',' << strictNNCMilliseconds << ','
+              << lazyNNCMilliseconds << ',' << nativeNNCExport << ','
+              << strictNNCExport << ',' << lazyNNCExport << '\n';
 }
 
 } // namespace

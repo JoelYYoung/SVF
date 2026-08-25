@@ -975,12 +975,17 @@ void testPolyhedraDualRepresentation()
             "long H/V operation chains must preserve exact affine facts");
     checkRawRoundTrip(chained, "long H/V Convex Polyhedra operation chain");
 
-    // The pre-existing NNC join contract returns the closure. The internal V
-    // cache may therefore close this operation, but exact non-join operations
-    // must never consume that closure as if it represented x < 0.
+    // NNC generators distinguish included points (epsilon>0) from closure
+    // points (epsilon=0), so strictness survives every V-native operation.
     ConvexPolyhedraState strict = ConvexPolyhedraState::top(environment);
     strict.assume(lessThan(LinearExpression(x),
                            LinearExpression(Rational(0))));
+    const ConvexPolyhedraState strictSelfHull = strict.join(strict);
+    require(strictSelfHull.entails(lessThan(
+                LinearExpression(x), LinearExpression(Rational(0)))) ==
+                CheckResult::True &&
+                strictSelfHull.bound(x).upper().isStrict(),
+            "NNC self-join must retain an open boundary through V");
     ConvexPolyhedraState endpoint = ConvexPolyhedraState::top(environment);
     endpoint.assume(equalsValue(x, Rational(1)));
     const ConvexPolyhedraState closedHull = strict.join(endpoint);
@@ -988,13 +993,16 @@ void testPolyhedraDualRepresentation()
                 closedHull.entails(lessThan(
                     LinearExpression(x), LinearExpression(Rational(1)))) ==
                     CheckResult::Unknown,
-            "NNC join through V representation must expose its closed hull");
+            "an included endpoint must close only its own NNC hull boundary");
     strict.assign(y, LinearExpression(x));
     require(strict.entails(lessThan(LinearExpression(x),
                                     LinearExpression(Rational(0)))) ==
                 CheckResult::True,
-            "an NNC closure cache must not replace the exact H state during "
-            "assignment");
+            "NNC V-native assignment must preserve strict constraints");
+    checkRawRoundTrip(strict,
+                      "strict NNC Convex Polyhedra operation chain");
+    checkRawRoundTrip(closedHull,
+                      "mixed closed/NNC Convex Polyhedra hull");
 
     const VariableEnvironment emptyEnvironment;
     require(ConvexPolyhedraState::top(emptyEnvironment)

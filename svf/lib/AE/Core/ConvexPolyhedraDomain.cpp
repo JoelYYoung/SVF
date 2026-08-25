@@ -25,10 +25,11 @@ struct Inequality
     bool strict = false;
 };
 
-/// A homogeneous generator `(t,x)`. A positive `t` denotes the point
-/// `x/t`; `t == 0` denotes a recession direction. A line is stored once and
-/// marked explicitly rather than encoded as two opposite rays. This is the
-/// key NewPolka invariant that permits line pivots without conic LP fallback.
+/// A homogeneous generator `(t,x)`, or `(t,epsilon,x)` for an NNC system.
+/// A positive `t` denotes the point `x/t`; `t == 0` denotes a recession
+/// direction. In an NNC system `epsilon > 0` marks an included point and
+/// `epsilon == 0` a closure point. A line is stored once and marked explicitly
+/// rather than encoded as two opposite rays.
 struct Generator
 {
     std::vector<mpz_class> coordinates;
@@ -45,6 +46,7 @@ struct GeneratorSystem
     /// Homogeneous halfspaces already reflected by `generators`. Saturation
     /// bit i in every generator refers to row i here.
     std::vector<std::vector<mpz_class>> constraints;
+    bool nnc = false;
 };
 
 std::vector<Inequality> project(
@@ -59,6 +61,7 @@ GeneratorSystem generatorsFromConstraints(
     const std::vector<Inequality>& inequalities, std::size_t dimensions);
 std::vector<Inequality> constraintsFromGenerators(
     const std::vector<Generator>& generators, std::size_t dimensions,
+    bool nnc,
     GeneratorSystem* minimizedPrimal = nullptr,
     GeneratorSystem* polar = nullptr);
 std::vector<Generator> uniqueGenerators(std::vector<Generator> generators);
@@ -67,14 +70,14 @@ std::vector<Generator> sortUniqueGenerators(
 std::vector<Generator> mergeGeneratorSets(
     const std::vector<Generator>& lhs, const std::vector<Generator>& rhs);
 bool generatorsEntail(const std::vector<Generator>& generators,
-                      const Inequality& inequality);
+                      const Inequality& inequality, bool nnc);
 Interval boundFromGenerators(const std::vector<Generator>& generators,
                              const std::vector<Rational>& objective,
-                             const Rational& constant);
+                             const Rational& constant, bool nnc);
 GeneratorSystem intersectGeneratorsWithConstraints(
     std::vector<Generator> generators,
     std::vector<std::vector<mpz_class>> processed,
-    const std::vector<Inequality>& added, std::size_t dimensions);
+    const std::vector<Inequality>& added, std::size_t dimensions, bool nnc);
 GeneratorSystem intersectCone(
     std::vector<Generator> generators,
     std::vector<std::vector<mpz_class>> processedConstraints,
@@ -82,11 +85,16 @@ GeneratorSystem intersectCone(
     bool inputCoherent = false);
 GeneratorSystem primalSystem(const GeneratorSystem& polar);
 std::vector<Inequality> inequalitiesFromForms(
-    const std::vector<Generator>& forms);
+    const std::vector<Generator>& forms, bool nnc);
 std::vector<std::vector<mpz_class>> generatorHalfspaces(
     const std::vector<Generator>& generators);
 void setGeneratorCoordinates(Generator& generator,
                              const std::vector<mpq_class>& coordinates);
+
+std::size_t generatorVariableOffset(bool nnc)
+{
+    return nnc ? 2 : 1;
+}
 
 bool hasStrictConstraint(const std::vector<Inequality>& inequalities)
 {
@@ -501,16 +509,19 @@ public:
     mutable std::vector<std::vector<mpz_class>> generatorConstraints;
     mutable GeneratorSystem polar;
     mutable bool constraintsValid = true;
+    /// Exact H rows may temporarily contain semantic redundancy after a
+    /// transfer that maintained both H and V caches incrementally.
+    mutable bool constraintsMinimal = true;
     mutable bool generatorsValid = false;
     /// True when generators are the minimized DD frame required by the
     /// adjacency invariant. Affine images and joins remain exact but may make
     /// this false until the next H -> V minimization.
     mutable bool generatorsMinimal = false;
     mutable bool polarValid = false;
-    /// NNC constraints are converted to generators for their closure. Such a
-    /// cache is useful for join, whose documented result is closed, but must
-    /// not be used by exact assignment/projection/query operations.
     mutable bool generatorsExact = false;
+    /// True when homogeneous coordinates include the epsilon coordinate used
+    /// to distinguish included points from closure points.
+    mutable bool generatorsNNC = false;
     bool bottom = false;
 };
 
@@ -661,6 +672,8 @@ void ConvexPolyhedraState::assignParallel(
     ensureGenerators();
     if (impl_->generatorsExact)
     {
+        const std::size_t variableOffset =
+            generatorVariableOffset(impl_->generatorsNNC);
         for (Generator& generator : impl_->generators)
         {
             const std::vector<mpz_class> old = generator.coordinates;
@@ -675,9 +688,11 @@ void ConvexPolyhedraState::assignParallel(
                 for (const auto& [variable, coefficient] : expression->terms())
                 {
                     value += coefficient.value() *
-                        old[environment_.dimensionOf(variable) + 1];
+                        old[environment_.dimensionOf(variable) +
+                            variableOffset];
                 }
-                next[environment_.dimensionOf(target) + 1] = std::move(value);
+                next[environment_.dimensionOf(target) + variableOffset] =
+                    std::move(value);
             }
             setGeneratorCoordinates(generator, next);
         }
@@ -827,6 +842,7 @@ void ConvexPolyhedraState::assume(const LinearConstraint& constraint)
             impl_->generatorsValid = false;
             impl_->generatorsMinimal = false;
             impl_->generatorsExact = false;
+            impl_->generatorsNNC = false;
             impl_->polarValid = false;
         }
         else
@@ -838,12 +854,16 @@ void ConvexPolyhedraState::assume(const LinearConstraint& constraint)
 
     std::vector<Inequality> rows = constraintRows(environment_, constraint);
     if (!rows.empty() && impl_->generatorsValid && impl_->generatorsExact &&
-        impl_->generatorsMinimal && !hasStrictConstraint(rows))
+        impl_->generatorsMinimal &&
+        (impl_->generatorsNNC || !hasStrictConstraint(rows)))
     {
+        const bool preserveConstraints =
+            impl_->constraintsValid &&
+            !(config_.integerTightening && hasIntegerVariable(environment_));
         GeneratorSystem system = intersectGeneratorsWithConstraints(
             std::move(impl_->generators),
             std::move(impl_->generatorConstraints),
-            rows, environment_.size());
+            rows, environment_.size(), impl_->generatorsNNC);
         GeneratorSystem polar = primalSystem(system);
         impl_->generators = std::move(system.generators);
         impl_->generatorConstraints = std::move(system.constraints);
@@ -859,14 +879,30 @@ void ConvexPolyhedraState::assume(const LinearConstraint& constraint)
             impl_->generatorsValid = false;
             impl_->generatorsMinimal = false;
             impl_->generatorsExact = false;
+            impl_->generatorsNNC = false;
             impl_->polarValid = false;
             return;
         }
         impl_->generatorsValid = true;
         impl_->generatorsMinimal = true;
         impl_->generatorsExact = true;
-        invalidateConstraints();
-        if (config_.integerTightening && hasIntegerVariable(environment_))
+        impl_->generatorsNNC = system.nnc;
+        if (preserveConstraints)
+        {
+            impl_->inequalities.insert(impl_->inequalities.end(), rows.begin(),
+                                       rows.end());
+            bool impossible = false;
+            impl_->inequalities =
+                normalized(std::move(impl_->inequalities), impossible);
+            if (impossible)
+                throw std::logic_error(
+                    "nonempty generator intersection has inconsistent H cache");
+            impl_->constraintsMinimal = false;
+        }
+        else
+            invalidateConstraints();
+        if (!preserveConstraints && config_.integerTightening &&
+            hasIntegerVariable(environment_))
             ensureConstraints();
         return;
     }
@@ -875,6 +911,8 @@ void ConvexPolyhedraState::assume(const LinearConstraint& constraint)
     impl_->inequalities.insert(impl_->inequalities.end(), rows.begin(),
                                rows.end());
     normalize();
+    if (!impl_->bottom && hasStrictConstraint(impl_->inequalities))
+        ensureGenerators();
 }
 
 void ConvexPolyhedraState::assumeAll(
@@ -899,12 +937,16 @@ void ConvexPolyhedraState::assumeAll(
     }
 
     if (!rows.empty() && impl_->generatorsValid && impl_->generatorsExact &&
-        impl_->generatorsMinimal && !hasStrictConstraint(rows))
+        impl_->generatorsMinimal &&
+        (impl_->generatorsNNC || !hasStrictConstraint(rows)))
     {
+        const bool preserveConstraints =
+            impl_->constraintsValid &&
+            !(config_.integerTightening && hasIntegerVariable(environment_));
         GeneratorSystem system = intersectGeneratorsWithConstraints(
             std::move(impl_->generators),
             std::move(impl_->generatorConstraints),
-            rows, environment_.size());
+            rows, environment_.size(), impl_->generatorsNNC);
         GeneratorSystem polar = primalSystem(system);
         impl_->generators = std::move(system.generators);
         impl_->generatorConstraints = std::move(system.constraints);
@@ -920,6 +962,7 @@ void ConvexPolyhedraState::assumeAll(
             impl_->generatorsValid = false;
             impl_->generatorsMinimal = false;
             impl_->generatorsExact = false;
+            impl_->generatorsNNC = false;
             impl_->polarValid = false;
         }
         else
@@ -927,8 +970,22 @@ void ConvexPolyhedraState::assumeAll(
             impl_->generatorsValid = true;
             impl_->generatorsMinimal = true;
             impl_->generatorsExact = true;
-            invalidateConstraints();
-            if (config_.integerTightening &&
+            impl_->generatorsNNC = system.nnc;
+            if (preserveConstraints)
+            {
+                impl_->inequalities.insert(impl_->inequalities.end(),
+                                           rows.begin(), rows.end());
+                bool impossible = false;
+                impl_->inequalities = normalized(
+                    std::move(impl_->inequalities), impossible);
+                if (impossible)
+                    throw std::logic_error(
+                        "nonempty generator intersection has inconsistent H cache");
+                impl_->constraintsMinimal = false;
+            }
+            else
+                invalidateConstraints();
+            if (!preserveConstraints && config_.integerTightening &&
                 hasIntegerVariable(environment_))
                 ensureConstraints();
         }
@@ -941,6 +998,8 @@ void ConvexPolyhedraState::assumeAll(
         // A convex conjunction needs one normalization pass. Disequalities
         // are checked afterwards so x != 0 and x = 0 are order independent.
         normalize();
+        if (!impl_->bottom && hasStrictConstraint(impl_->inequalities))
+            ensureGenerators();
     }
     for (const LinearConstraint& disequality : disequalities)
         assume(disequality);
@@ -970,11 +1029,14 @@ void ConvexPolyhedraState::forget(Variable variable)
     ensureGenerators();
     if (impl_->generatorsExact)
     {
-        const Dimension forgotten = environment_.dimensionOf(variable) + 1;
+        const std::size_t variableOffset =
+            generatorVariableOffset(impl_->generatorsNNC);
+        const Dimension forgotten =
+            environment_.dimensionOf(variable) + variableOffset;
         for (Generator& generator : impl_->generators)
             generator.coordinates[forgotten] = 0;
         Generator direction;
-        direction.coordinates.resize(environment_.size() + 1);
+        direction.coordinates.resize(environment_.size() + variableOffset);
         direction.coordinates[forgotten] = 1;
         direction.line = true;
         impl_->generators.push_back(std::move(direction));
@@ -1016,6 +1078,7 @@ void ConvexPolyhedraState::changeEnvironment(const VariableEnvironment& environm
         impl_->generatorsValid = false;
         impl_->generatorsMinimal = false;
         impl_->generatorsExact = false;
+        impl_->generatorsNNC = false;
         impl_->polarValid = false;
         impl_->polar = {};
         impl_->polarValid = false;
@@ -1025,21 +1088,25 @@ void ConvexPolyhedraState::changeEnvironment(const VariableEnvironment& environm
     ensureGenerators();
     if (impl_->generatorsExact)
     {
+        const std::size_t variableOffset =
+            generatorVariableOffset(impl_->generatorsNNC);
         std::vector<Generator> remapped;
         remapped.reserve(impl_->generators.size() + 2 * environment.size());
         for (const Generator& generator : impl_->generators)
         {
             Generator next;
-            next.coordinates.resize(environment.size() + 1);
-            next.coordinates.front() = generator.coordinates.front();
+            next.coordinates.resize(environment.size() + variableOffset);
+            std::copy_n(generator.coordinates.begin(), variableOffset,
+                        next.coordinates.begin());
             next.line = generator.line;
             for (Dimension old = 0; old < environment_.size(); ++old)
             {
                 const Variable variable = environment_.variableOf(old);
                 if (environment.contains(variable))
                 {
-                    next.coordinates[environment.dimensionOf(variable) + 1] =
-                        generator.coordinates[old + 1];
+                    next.coordinates[environment.dimensionOf(variable) +
+                                     variableOffset] =
+                        generator.coordinates[old + variableOffset];
                 }
             }
             remapped.push_back(std::move(next));
@@ -1052,9 +1119,11 @@ void ConvexPolyhedraState::changeEnvironment(const VariableEnvironment& environm
                 if (environment_.contains(declaration.variable))
                     continue;
                 Generator direction;
-                direction.coordinates.resize(environment.size() + 1);
+                direction.coordinates.resize(environment.size() +
+                                             variableOffset);
                 direction.coordinates[
-                    environment.dimensionOf(declaration.variable) + 1] =
+                    environment.dimensionOf(declaration.variable) +
+                    variableOffset] =
                     1;
                 direction.line = true;
                 remapped.push_back(std::move(direction));
@@ -1152,7 +1221,8 @@ CheckResult ConvexPolyhedraState::entails(
     if (rows.size() != 1)
         return CheckResult::Unknown;
     if (impl_->generatorsValid && impl_->generatorsExact)
-        return generatorsEntail(impl_->generators, rows.front())
+        return generatorsEntail(impl_->generators, rows.front(),
+                                impl_->generatorsNNC)
                    ? CheckResult::True
                    : CheckResult::Unknown;
     ensureConstraints();
@@ -1172,7 +1242,8 @@ Interval ConvexPolyhedraState::bound(Variable variable) const
     {
         std::vector<Rational> objective(environment_.size());
         objective[environment_.dimensionOf(variable)] = Rational(1);
-        return boundFromGenerators(impl_->generators, objective, Rational());
+        return boundFromGenerators(impl_->generators, objective, Rational(),
+                                   impl_->generatorsNNC);
     }
     ensureConstraints();
 
@@ -1231,7 +1302,8 @@ Interval ConvexPolyhedraState::bound(
         for (const auto& [variable, coefficient] : expression.terms())
             objective[environment_.dimensionOf(variable)] = coefficient;
         return boundFromGenerators(impl_->generators, objective,
-                                   expression.constant());
+                                   expression.constant(),
+                                   impl_->generatorsNNC);
     }
     ensureConstraints();
 
@@ -1320,6 +1392,8 @@ void ConvexPolyhedraState::close()
 
 void ConvexPolyhedraState::canonicalize()
 {
+    if (impl_->constraintsValid && impl_->constraintsMinimal)
+        return;
     normalize();
 }
 
@@ -1332,9 +1406,9 @@ ConvexPolyhedraState ConvexPolyhedraState::join(
     if (other.impl_->bottom)
         return *this;
 
-    // In homogeneous V form the closed convex hull is simply the cone
-    // generated by the union.  For NNC operands ensureGenerators returns the
-    // closure, matching the domain's pre-existing join contract.
+    // In homogeneous V form the NNC convex hull is the cone generated by the
+    // union. Epsilon-positive generators retain included points while
+    // epsilon-zero generators retain closure points.
     ensureGenerators();
     other.ensureGenerators();
 
@@ -1344,14 +1418,43 @@ ConvexPolyhedraState ConvexPolyhedraState::join(
     // join and any interior generators are removed by the one deferred DD
     // materialization. Keep a sorted primitive union throughout a join chain.
     ConvexPolyhedraState result = top(environment_, config_);
-    result.impl_->generators =
-        mergeGeneratorSets(impl_->generators, other.impl_->generators);
+    const bool resultNNC =
+        impl_->generatorsNNC || other.impl_->generatorsNNC;
+    const auto promote = [resultNNC](const std::vector<Generator>& source,
+                                     bool sourceNNC)
+    {
+        if (!resultNNC || sourceNNC)
+            return source;
+        std::vector<Generator> promoted;
+        promoted.reserve(2 * source.size());
+        for (const Generator& generator : source)
+        {
+            Generator closure = generator;
+            closure.coordinates.insert(closure.coordinates.begin() + 1, 0);
+            closure.saturation.clear();
+            promoted.push_back(closure);
+            if (!generator.line && generator.coordinates.front() > 0)
+            {
+                Generator included = std::move(closure);
+                included.coordinates[1] = included.coordinates.front();
+                promoted.push_back(std::move(included));
+            }
+        }
+        return sortUniqueGenerators(std::move(promoted));
+    };
+    const std::vector<Generator> lhs =
+        promote(impl_->generators, impl_->generatorsNNC);
+    const std::vector<Generator> rhs =
+        promote(other.impl_->generators, other.impl_->generatorsNNC);
+    result.impl_->generators = mergeGeneratorSets(lhs, rhs);
     result.impl_->generatorConstraints.clear();
     result.impl_->polar = {};
     result.impl_->constraintsValid = false;
+    result.impl_->constraintsMinimal = false;
     result.impl_->generatorsValid = true;
     result.impl_->generatorsMinimal = false;
     result.impl_->generatorsExact = true;
+    result.impl_->generatorsNNC = resultNNC;
     result.impl_->polarValid = false;
     if (config_.integerTightening && hasIntegerVariable(environment_))
         result.ensureConstraints();
@@ -1442,18 +1545,24 @@ void ConvexPolyhedraState::meetState(const AbstractState& other)
         impl_->generatorsValid = false;
         impl_->generatorsMinimal = false;
         impl_->generatorsExact = false;
+        impl_->generatorsNNC = false;
         impl_->polarValid = false;
         return;
     }
     polyhedron.ensureConstraints();
     if (impl_->generatorsValid && impl_->generatorsExact &&
         impl_->generatorsMinimal &&
-        !hasStrictConstraint(polyhedron.impl_->inequalities))
+        (impl_->generatorsNNC ||
+         !hasStrictConstraint(polyhedron.impl_->inequalities)))
     {
+        const bool preserveConstraints =
+            impl_->constraintsValid &&
+            !(config_.integerTightening && hasIntegerVariable(environment_));
         GeneratorSystem system = intersectGeneratorsWithConstraints(
             std::move(impl_->generators),
             std::move(impl_->generatorConstraints),
-            polyhedron.impl_->inequalities, environment_.size());
+            polyhedron.impl_->inequalities, environment_.size(),
+            impl_->generatorsNNC);
         GeneratorSystem polar = primalSystem(system);
         impl_->generators = std::move(system.generators);
         impl_->generatorConstraints = std::move(system.constraints);
@@ -1469,14 +1578,32 @@ void ConvexPolyhedraState::meetState(const AbstractState& other)
             impl_->generatorsValid = false;
             impl_->generatorsMinimal = false;
             impl_->generatorsExact = false;
+            impl_->generatorsNNC = false;
             impl_->polarValid = false;
             return;
         }
         impl_->generatorsValid = true;
         impl_->generatorsMinimal = true;
         impl_->generatorsExact = true;
-        invalidateConstraints();
-        if (config_.integerTightening && hasIntegerVariable(environment_))
+        impl_->generatorsNNC = system.nnc;
+        if (preserveConstraints)
+        {
+            impl_->inequalities.insert(
+                impl_->inequalities.end(),
+                polyhedron.impl_->inequalities.begin(),
+                polyhedron.impl_->inequalities.end());
+            bool impossible = false;
+            impl_->inequalities =
+                normalized(std::move(impl_->inequalities), impossible);
+            if (impossible)
+                throw std::logic_error(
+                    "nonempty generator intersection has inconsistent H cache");
+            impl_->constraintsMinimal = false;
+        }
+        else
+            invalidateConstraints();
+        if (!preserveConstraints && config_.integerTightening &&
+            hasIntegerVariable(environment_))
             ensureConstraints();
         return;
     }
@@ -1485,12 +1612,16 @@ void ConvexPolyhedraState::meetState(const AbstractState& other)
     if (polyhedron.impl_->generatorsValid &&
         polyhedron.impl_->generatorsExact &&
         polyhedron.impl_->generatorsMinimal &&
-        !hasStrictConstraint(impl_->inequalities))
+        (polyhedron.impl_->generatorsNNC ||
+         !hasStrictConstraint(impl_->inequalities)))
     {
+        const bool preserveConstraints =
+            !(config_.integerTightening && hasIntegerVariable(environment_));
         GeneratorSystem system = intersectGeneratorsWithConstraints(
             polyhedron.impl_->generators,
             polyhedron.impl_->generatorConstraints,
-            impl_->inequalities, environment_.size());
+            impl_->inequalities, environment_.size(),
+            polyhedron.impl_->generatorsNNC);
         GeneratorSystem polar = primalSystem(system);
         impl_->generators = std::move(system.generators);
         impl_->generatorConstraints = std::move(system.constraints);
@@ -1506,14 +1637,32 @@ void ConvexPolyhedraState::meetState(const AbstractState& other)
             impl_->generatorsValid = false;
             impl_->generatorsMinimal = false;
             impl_->generatorsExact = false;
+            impl_->generatorsNNC = false;
             impl_->polarValid = false;
             return;
         }
         impl_->generatorsValid = true;
         impl_->generatorsMinimal = true;
         impl_->generatorsExact = true;
-        invalidateConstraints();
-        if (config_.integerTightening && hasIntegerVariable(environment_))
+        impl_->generatorsNNC = system.nnc;
+        if (preserveConstraints)
+        {
+            impl_->inequalities.insert(
+                impl_->inequalities.end(),
+                polyhedron.impl_->inequalities.begin(),
+                polyhedron.impl_->inequalities.end());
+            bool impossible = false;
+            impl_->inequalities =
+                normalized(std::move(impl_->inequalities), impossible);
+            if (impossible)
+                throw std::logic_error(
+                    "nonempty generator intersection has inconsistent H cache");
+            impl_->constraintsMinimal = false;
+        }
+        else
+            invalidateConstraints();
+        if (!preserveConstraints && config_.integerTightening &&
+            hasIntegerVariable(environment_))
             ensureConstraints();
         return;
     }
@@ -1559,7 +1708,8 @@ bool ConvexPolyhedraState::leqState(const AbstractState& other) const
             polyhedron.impl_->inequalities.begin(),
             polyhedron.impl_->inequalities.end(),
             [&](const Inequality& inequality)
-            { return generatorsEntail(impl_->generators, inequality); });
+            { return generatorsEntail(impl_->generators, inequality,
+                                      impl_->generatorsNNC); });
     }
     ensureConstraints();
     return std::all_of(
@@ -1610,11 +1760,20 @@ void ConvexPolyhedraState::ensureConstraints() const
     GeneratorSystem polar;
     std::vector<Inequality> inequalities;
     if (impl_->polarValid)
-        inequalities = inequalitiesFromForms(impl_->polar.generators);
+        inequalities = inequalitiesFromForms(impl_->polar.generators,
+                                             impl_->generatorsNNC);
     else
         inequalities = constraintsFromGenerators(
-            impl_->generators, environment_.size(), &minimizedPrimal, &polar);
+            impl_->generators, environment_.size(), impl_->generatorsNNC,
+            &minimizedPrimal, &polar);
     bool bottom = false;
+    // In epsilon representation several strict forms can describe the same
+    // open facet implication. Ordinary DD adjacency minimizes the underlying
+    // homogeneous cone but does not perform NewPolka's epsilon-minimization.
+    // Remove those semantic redundancies before publishing canonical H rows.
+    if (impl_->generatorsNNC)
+        inequalities =
+            irredundant(std::move(inequalities), environment_.size());
     bool tightened = false;
     if (config_.integerTightening && hasIntegerVariable(environment_))
     {
@@ -1662,11 +1821,13 @@ void ConvexPolyhedraState::ensureConstraints() const
         self->impl_->generatorsValid = false;
         self->impl_->generatorsMinimal = false;
         self->impl_->generatorsExact = false;
+        self->impl_->generatorsNNC = false;
         self->impl_->polarValid = false;
         return;
     }
     impl_->inequalities = std::move(inequalities);
     impl_->constraintsValid = true;
+    impl_->constraintsMinimal = true;
     if (tightened)
     {
         impl_->generators.clear();
@@ -1674,6 +1835,7 @@ void ConvexPolyhedraState::ensureConstraints() const
         impl_->generatorsValid = false;
         impl_->generatorsMinimal = false;
         impl_->generatorsExact = false;
+        impl_->generatorsNNC = false;
         impl_->polar = {};
         impl_->polarValid = false;
     }
@@ -1685,6 +1847,7 @@ void ConvexPolyhedraState::ensureConstraints() const
         impl_->generatorsValid = true;
         impl_->generatorsMinimal = true;
         impl_->generatorsExact = true;
+        impl_->generatorsNNC = minimizedPrimal.nnc;
         impl_->polar = std::move(polar);
         impl_->polarValid = true;
     }
@@ -1710,13 +1873,15 @@ void ConvexPolyhedraState::ensureGenerators() const
         self->impl_->generatorsValid = false;
         self->impl_->generatorsMinimal = false;
         self->impl_->generatorsExact = false;
+        self->impl_->generatorsNNC = false;
         self->impl_->polar = {};
         self->impl_->polarValid = false;
         return;
     }
     impl_->generatorsValid = true;
     impl_->generatorsMinimal = true;
-    impl_->generatorsExact = !hasStrictConstraint(impl_->inequalities);
+    impl_->generatorsExact = true;
+    impl_->generatorsNNC = system.nnc;
     impl_->polar = std::move(polar);
     impl_->polarValid = true;
 }
@@ -1728,6 +1893,7 @@ void ConvexPolyhedraState::invalidateConstraints()
             "cannot invalidate constraints without an exact V representation");
     impl_->inequalities.clear();
     impl_->constraintsValid = false;
+    impl_->constraintsMinimal = false;
 }
 
 void ConvexPolyhedraState::invalidateGenerators()
@@ -1738,6 +1904,7 @@ void ConvexPolyhedraState::invalidateGenerators()
     impl_->generatorsValid = false;
     impl_->generatorsMinimal = false;
     impl_->generatorsExact = false;
+    impl_->generatorsNNC = false;
     impl_->polarValid = false;
 }
 
@@ -1749,6 +1916,7 @@ void ConvexPolyhedraState::normalize()
     {
         impl_->inequalities.clear();
         impl_->constraintsValid = true;
+        impl_->constraintsMinimal = true;
         return;
     }
     impl_->inequalities =
@@ -1774,6 +1942,7 @@ void ConvexPolyhedraState::normalize()
         impl_->inequalities =
             irredundant(std::move(impl_->inequalities), environment_.size());
     impl_->constraintsValid = true;
+    impl_->constraintsMinimal = true;
 }
 
 void ConvexPolyhedraState::report(OperationKind operation,
@@ -2194,8 +2363,9 @@ void assignDifferenceOfProducts(mpz_class& result,
 }
 
 bool generatorsEntail(const std::vector<Generator>& generators,
-                      const Inequality& inequality)
+                      const Inequality& inequality, bool nnc)
 {
+    const std::size_t variableOffset = generatorVariableOffset(nnc);
     for (const Generator& generator : generators)
     {
         Rational value = Rational::fromRaw(
@@ -2205,7 +2375,7 @@ bool generatorsEntail(const std::vector<Generator>& generators,
         {
             value += Rational::fromRaw(
                 inequality.coefficients[dimension].value() *
-                generator.coordinates[dimension + 1]);
+                generator.coordinates[dimension + variableOffset]);
         }
         if (generator.line)
         {
@@ -2218,7 +2388,8 @@ bool generatorsEntail(const std::vector<Generator>& generators,
                 return false;
         }
         else if (value.sign() > 0 ||
-                 (value.isZero() && inequality.strict))
+                 (value.isZero() && inequality.strict &&
+                  (!nnc || generator.coordinates[1] > 0)))
             return false;
     }
     return true;
@@ -2226,10 +2397,13 @@ bool generatorsEntail(const std::vector<Generator>& generators,
 
 Interval boundFromGenerators(const std::vector<Generator>& generators,
                              const std::vector<Rational>& objective,
-                             const Rational& constant)
+                             const Rational& constant, bool nnc)
 {
+    const std::size_t variableOffset = generatorVariableOffset(nnc);
     std::optional<Rational> minimum;
     std::optional<Rational> maximum;
+    bool minimumIncluded = false;
+    bool maximumIncluded = false;
     bool lowerUnbounded = false;
     bool upperUnbounded = false;
     for (const Generator& generator : generators)
@@ -2241,7 +2415,7 @@ Interval boundFromGenerators(const std::vector<Generator>& generators,
         {
             value += Rational::fromRaw(
                 objective[dimension].value() *
-                generator.coordinates[dimension + 1]);
+                generator.coordinates[dimension + variableOffset]);
         }
         if (generator.line)
         {
@@ -2256,17 +2430,29 @@ Interval boundFromGenerators(const std::vector<Generator>& generators,
             continue;
         }
         value /= Rational::fromRaw(mpq_class(generator.coordinates.front()));
+        const bool included = !nnc || generator.coordinates[1] > 0;
         if (!minimum || value < *minimum)
+        {
             minimum = value;
+            minimumIncluded = included;
+        }
+        else if (value == *minimum)
+            minimumIncluded = minimumIncluded || included;
         if (!maximum || *maximum < value)
+        {
             maximum = value;
+            maximumIncluded = included;
+        }
+        else if (value == *maximum)
+            maximumIncluded = maximumIncluded || included;
     }
     if (!minimum || !maximum)
         return Interval(Bound::plusInfinity(), Bound::minusInfinity());
-    return Interval(lowerUnbounded ? Bound::minusInfinity()
-                                   : Bound::finite(*minimum),
-                    upperUnbounded ? Bound::plusInfinity()
-                                   : Bound::finite(*maximum));
+    return Interval(
+        lowerUnbounded ? Bound::minusInfinity()
+                       : Bound::finite(*minimum, !minimumIncluded),
+        upperUnbounded ? Bound::plusInfinity()
+                       : Bound::finite(*maximum, !maximumIncluded));
 }
 
 bool normalizeGenerator(Generator& generator)
@@ -2884,12 +3070,15 @@ std::vector<Generator> fullSpaceCone(std::size_t dimensions)
 }
 
 std::vector<mpz_class> homogeneousConstraint(const Inequality& inequality,
-                                             std::size_t dimensions)
+                                             std::size_t dimensions, bool nnc)
 {
-    std::vector<mpq_class> rational(dimensions + 1);
+    const std::size_t variableOffset = generatorVariableOffset(nnc);
+    std::vector<mpq_class> rational(dimensions + variableOffset);
     rational[0] = -inequality.bound.value();
+    if (nnc && inequality.strict)
+        rational[1] = 1;
     for (std::size_t dimension = 0; dimension < dimensions; ++dimension)
-        rational[dimension + 1] =
+        rational[dimension + variableOffset] =
             inequality.coefficients[dimension].value();
     Generator row;
     setGeneratorCoordinates(row, rational);
@@ -2897,12 +3086,13 @@ std::vector<mpz_class> homogeneousConstraint(const Inequality& inequality,
 }
 
 std::vector<std::vector<mpz_class>> homogeneousConstraints(
-    const std::vector<Inequality>& inequalities, std::size_t dimensions)
+    const std::vector<Inequality>& inequalities, std::size_t dimensions,
+    bool nnc)
 {
     std::vector<std::vector<mpz_class>> result;
     result.reserve(inequalities.size());
     for (const Inequality& inequality : inequalities)
-        result.push_back(homogeneousConstraint(inequality, dimensions));
+        result.push_back(homogeneousConstraint(inequality, dimensions, nnc));
     return result;
 }
 
@@ -2926,7 +3116,7 @@ std::vector<std::vector<mpz_class>> generatorHalfspaces(
 }
 
 std::vector<Generator> canonicalizePolarForms(
-    const std::vector<Generator>& forms)
+    const std::vector<Generator>& forms, bool nnc)
 {
     std::vector<Generator> equations;
     for (const Generator& form : forms)
@@ -2941,7 +3131,7 @@ std::vector<Generator> canonicalizePolarForms(
     std::vector<std::size_t> pivots;
     std::size_t rank = 0;
     const std::size_t dimensions = forms.front().coordinates.size();
-    for (std::size_t column = 1;
+    for (std::size_t column = generatorVariableOffset(nnc);
          column < dimensions && rank < equations.size(); ++column)
     {
         auto pivot = std::find_if(
@@ -3014,39 +3204,39 @@ std::vector<Generator> canonicalizePolarForms(
 }
 
 std::vector<Inequality> inequalitiesFromForms(
-    const std::vector<Generator>& forms)
+    const std::vector<Generator>& forms, bool nnc)
 {
     std::vector<Generator> canonicalForms;
     const std::vector<Generator>* source = &forms;
     if (std::any_of(forms.begin(), forms.end(),
                     [](const Generator& form) { return form.line; }))
     {
-        canonicalForms = canonicalizePolarForms(forms);
+        canonicalForms = canonicalizePolarForms(forms, nnc);
         source = &canonicalForms;
     }
+    const std::size_t variableOffset = generatorVariableOffset(nnc);
     std::vector<Inequality> result;
     result.reserve(2 * source->size());
     for (const Generator& form : *source)
     {
         const auto first = std::find_if(
-            form.coordinates.begin() + 1, form.coordinates.end(),
+            form.coordinates.begin() + variableOffset,
+            form.coordinates.end(),
             [](const mpz_class& coordinate) { return coordinate != 0; });
         if (first == form.coordinates.end())
         {
-            // The polar always contains the implicit -t form encoding t >= 0.
-            // It is a tautology on the affine slice and is not part of the
-            // public H representation.
-            if (form.coordinates.front() <= 0)
-                continue;
-            throw std::logic_error(
-                "polyhedron polar contains a false constant form");
+            // Forms over only t/epsilon encode the homogeneous slice
+            // invariants t>=epsilon>=0. They do not constrain public
+            // variables and are omitted from H output.
+            continue;
         }
         mpz_class divisor = *first;
         if (divisor < 0)
             divisor = -divisor;
         Inequality inequality;
-        inequality.coefficients.reserve(form.coordinates.size() - 1);
-        for (auto coordinate = form.coordinates.begin() + 1;
+        inequality.coefficients.reserve(form.coordinates.size() -
+                                        variableOffset);
+        for (auto coordinate = form.coordinates.begin() + variableOffset;
              coordinate != form.coordinates.end(); ++coordinate)
         {
             inequality.coefficients.push_back(Rational::fromRaw(
@@ -3054,12 +3244,14 @@ std::vector<Inequality> inequalitiesFromForms(
         }
         inequality.bound = Rational::fromRaw(
             mpq_class(-form.coordinates.front(), divisor));
+        inequality.strict = nnc && form.coordinates[1] > 0;
         result.push_back(inequality);
         if (form.line)
         {
             for (Rational& coefficient : inequality.coefficients)
                 coefficient = -coefficient;
             inequality.bound = -inequality.bound;
+            inequality.strict = false;
             result.push_back(std::move(inequality));
         }
     }
@@ -3097,54 +3289,84 @@ GeneratorSystem primalSystem(const GeneratorSystem& polar)
     GeneratorSystem result;
     result.generators = simplifiedInputGenerators(polar);
     result.constraints = generatorHalfspaces(polar.generators);
+    result.nnc = polar.nnc;
     return result;
 }
 
 GeneratorSystem intersectGeneratorsWithConstraints(
     std::vector<Generator> generators,
     std::vector<std::vector<mpz_class>> processed,
-    const std::vector<Inequality>& added, std::size_t dimensions)
+    const std::vector<Inequality>& added, std::size_t dimensions, bool nnc)
 {
-    return intersectCone(std::move(generators), std::move(processed),
-                         homogeneousConstraints(added, dimensions), true);
+    GeneratorSystem result = intersectCone(
+        std::move(generators), std::move(processed),
+        homogeneousConstraints(added, dimensions, nnc), true);
+    result.nnc = nnc;
+    return result;
 }
 
 GeneratorSystem generatorsFromConstraints(
     const std::vector<Inequality>& inequalities, std::size_t dimensions)
 {
-    const std::size_t homogeneousDimensions = dimensions + 1;
-    // The homogenized top polyhedron has ray (1,0) and one explicit line per
-    // affine coordinate.
+    const bool nnc = hasStrictConstraint(inequalities);
+    const std::size_t variableOffset = generatorVariableOffset(nnc);
+    const std::size_t homogeneousDimensions = dimensions + variableOffset;
+    // The closed top cone has ray t. The NNC top cone has the two rays
+    // (t,epsilon)=(1,0),(1,1), which generate t>=epsilon>=0. Affine
+    // coordinates remain explicit lines in both representations.
     std::vector<Generator> initial;
-    Generator origin;
-    origin.coordinates.resize(homogeneousDimensions);
-    origin.coordinates[0] = 1;
-    initial.push_back(std::move(origin));
+    Generator closureOrigin;
+    closureOrigin.coordinates.resize(homogeneousDimensions);
+    closureOrigin.coordinates[0] = 1;
+    initial.push_back(closureOrigin);
+    if (nnc)
+    {
+        Generator includedOrigin = std::move(closureOrigin);
+        includedOrigin.coordinates[1] = 1;
+        initial.push_back(std::move(includedOrigin));
+    }
     for (std::size_t dimension = 0; dimension < dimensions; ++dimension)
     {
         Generator line;
         line.coordinates.resize(homogeneousDimensions);
-        line.coordinates[dimension + 1] = 1;
+        line.coordinates[dimension + variableOffset] = 1;
         line.line = true;
         initial.push_back(std::move(line));
     }
 
     std::vector<std::vector<mpz_class>> rows =
-        homogeneousConstraints(inequalities, dimensions);
-    std::vector<mpz_class> nonnegativeHomogeneous(homogeneousDimensions);
-    nonnegativeHomogeneous[0] = -1;
+        homogeneousConstraints(inequalities, dimensions, nnc);
+    std::vector<std::vector<mpz_class>> homogeneousBounds;
+    if (nnc)
+    {
+        std::vector<mpz_class> nonnegativeEpsilon(homogeneousDimensions);
+        nonnegativeEpsilon[1] = -1;
+        homogeneousBounds.push_back(std::move(nonnegativeEpsilon));
+        std::vector<mpz_class> epsilonAtMostHomogeneous(
+            homogeneousDimensions);
+        epsilonAtMostHomogeneous[0] = -1;
+        epsilonAtMostHomogeneous[1] = 1;
+        homogeneousBounds.push_back(std::move(epsilonAtMostHomogeneous));
+    }
+    else
+    {
+        std::vector<mpz_class> nonnegativeHomogeneous(homogeneousDimensions);
+        nonnegativeHomogeneous[0] = -1;
+        homogeneousBounds.push_back(std::move(nonnegativeHomogeneous));
+    }
     GeneratorSystem result = intersectCone(
-        std::move(initial), {std::move(nonnegativeHomogeneous)},
-        std::move(rows));
+        std::move(initial), std::move(homogeneousBounds), std::move(rows));
+    result.nnc = nnc;
 
     // A non-empty polyhedron must have a generator with positive homogeneous
     // coordinate.  A cone containing only recession directions is the
     // homogenization of the empty affine slice.
     const bool hasPoint = std::any_of(
         result.generators.begin(), result.generators.end(),
-        [](const Generator& generator)
+        [nnc](const Generator& generator)
         {
-            return !generator.line && generator.coordinates.front() > 0;
+            return !generator.line && generator.coordinates.front() > 0 &&
+                   (!nnc || generator.coordinates[1] > 0);
         });
     if (!hasPoint)
         result.generators.clear();
@@ -3153,9 +3375,11 @@ GeneratorSystem generatorsFromConstraints(
 
 std::vector<Inequality> constraintsFromGenerators(
     const std::vector<Generator>& generators, std::size_t dimensions,
+    bool nnc,
     GeneratorSystem* minimizedPrimal, GeneratorSystem* polarOutput)
 {
-    const std::size_t homogeneousDimensions = dimensions + 1;
+    const std::size_t homogeneousDimensions =
+        dimensions + generatorVariableOffset(nnc);
     std::vector<std::vector<mpz_class>> halfspaces =
         generatorHalfspaces(generators);
 
@@ -3165,10 +3389,11 @@ std::vector<Inequality> constraintsFromGenerators(
     GeneratorSystem polar = intersectCone(
         fullSpaceCone(homogeneousDimensions), {},
         std::move(halfspaces));
+    polar.nnc = nnc;
     if (minimizedPrimal != nullptr)
         *minimizedPrimal = primalSystem(polar);
     std::vector<Inequality> result =
-        inequalitiesFromForms(polar.generators);
+        inequalitiesFromForms(polar.generators, nnc);
     if (polarOutput != nullptr)
         *polarOutput = std::move(polar);
     // The pointed phase of the DD kernel emits only adjacent extreme forms;
