@@ -61,6 +61,46 @@ target_link_libraries(
 )
 add_test(NAME abstract-domain-state COMMAND svf-abstract-domain-state-test)
 
+# APRON is an optional test oracle, never a production dependency. Point
+# APRON_ROOT at an installation containing libapron and libpolkaMPQ to enable
+# both the correctness differential and the standalone timing comparison.
+set(APRON_ROOT "" CACHE PATH "Optional APRON installation prefix for tests")
+find_path(APRON_INCLUDE_DIR ap_abstract0.h
+          HINTS ${APRON_ROOT} ENV APRON_ROOT PATH_SUFFIXES include)
+find_library(APRON_LIBRARY NAMES apron
+             HINTS ${APRON_ROOT} ENV APRON_ROOT PATH_SUFFIXES lib)
+find_library(APRON_POLKA_LIBRARY NAMES polkaMPQ
+             HINTS ${APRON_ROOT} ENV APRON_ROOT PATH_SUFFIXES lib)
+if(APRON_INCLUDE_DIR AND APRON_LIBRARY AND APRON_POLKA_LIBRARY)
+  add_executable(svf-polyhedra-apron-test PolyhedraApronTest.cpp)
+  target_include_directories(
+    svf-polyhedra-apron-test PRIVATE ${CMAKE_CURRENT_LIST_DIR}
+                                    ${APRON_INCLUDE_DIR}
+  )
+  target_link_libraries(
+    svf-polyhedra-apron-test PRIVATE AbstractDomainCore
+                                     ${APRON_POLKA_LIBRARY}
+                                     ${APRON_LIBRARY}
+                                     MPFR::MPFR GMP::GMPXX m
+  )
+  add_test(NAME polyhedra-apron-differential
+           COMMAND svf-polyhedra-apron-test)
+
+  add_executable(svf-polyhedra-apron-benchmark
+                 PolyhedraApronBenchmark.cpp)
+  target_include_directories(
+    svf-polyhedra-apron-benchmark PRIVATE ${CMAKE_CURRENT_LIST_DIR}
+                                         ${APRON_INCLUDE_DIR}
+  )
+  target_link_libraries(
+    svf-polyhedra-apron-benchmark PRIVATE AbstractDomainCore
+                                          ${APRON_POLKA_LIBRARY}
+                                          ${APRON_LIBRARY}
+                                          MPFR::MPFR GMP::GMPXX m
+  )
+  message(STATUS "APRON/NewPolka differential tests enabled")
+endif()
+
 if(TARGET SvfCore)
   add_executable(
     svf-interval-state-test
@@ -138,6 +178,10 @@ if(APPLE)
     svf-relational-domain-test
     svf-abstract-domain-state-test
   )
+  if(TARGET svf-polyhedra-apron-test)
+    list(APPEND abstract_domain_test_targets
+         svf-polyhedra-apron-test svf-polyhedra-apron-benchmark)
+  endif()
   if(TARGET svf-ae-relational-integration-test)
     list(APPEND abstract_domain_test_targets
          svf-ae-relational-integration-test)

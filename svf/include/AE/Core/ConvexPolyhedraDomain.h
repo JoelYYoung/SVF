@@ -79,6 +79,7 @@ public:
     void substituteParallel(
         const LinearAssignmentList& assignments) override;
     void assume(const LinearConstraint& constraint) override;
+    void assumeAll(const LinearConstraintSet& constraints) override;
     void assume(const TreeConstraint& constraint) override;
     void forget(Variable variable) override;
     void changeEnvironment(const VariableEnvironment& environment,
@@ -119,7 +120,6 @@ private:
 
     const ConvexPolyhedraState& requirePolyhedron(
         const AbstractState& other) const;
-    void addConstraint(const LinearConstraint& constraint);
     void ensureConstraints() const;
     void ensureGenerators() const;
     void invalidateConstraints();

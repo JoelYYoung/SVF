@@ -3,7 +3,9 @@
 #include "AE/Core/ConvexPolyhedraDomain.h"
 
 #include <algorithm>
+#include <cstdint>
 #include <map>
+#include <limits>
 #include <numeric>
 #include <optional>
 #include <set>
@@ -30,6 +32,10 @@ struct Inequality
 struct Generator
 {
     std::vector<Rational> coordinates;
+    /// Bit i is set when this generator saturates processed homogeneous
+    /// constraint i.  The cache is rebuilt whenever its constraint basis
+    /// changes; it is not part of generator identity.
+    std::vector<std::uint64_t> saturation;
 };
 
 std::vector<Inequality> project(
@@ -46,11 +52,18 @@ std::vector<Inequality> constraintsFromGenerators(
     const std::vector<Generator>& generators, std::size_t dimensions);
 std::vector<Generator> irredundantGenerators(
     std::vector<Generator> generators);
+std::vector<Generator> uniqueGenerators(std::vector<Generator> generators);
+std::vector<Generator> mergeGeneratorSets(
+    const std::vector<Generator>& lhs, const std::vector<Generator>& rhs);
 bool generatorsEntail(const std::vector<Generator>& generators,
                       const Inequality& inequality);
 Interval boundFromGenerators(const std::vector<Generator>& generators,
                              const std::vector<Rational>& objective,
                              const Rational& constant);
+std::vector<Generator> intersectGeneratorsWithConstraints(
+    std::vector<Generator> generators,
+    const std::vector<Inequality>& existing,
+    const std::vector<Inequality>& added, std::size_t dimensions);
 
 bool hasStrictConstraint(const std::vector<Inequality>& inequalities)
 {
@@ -527,21 +540,7 @@ ConvexPolyhedraState ConvexPolyhedraState::fromConstraints(
     const ConvexPolyhedraConfig& config)
 {
     ConvexPolyhedraState result = top(environment, config);
-    LinearConstraintSet disequalities;
-    for (const LinearConstraint& constraint : constraints)
-    {
-        if (constraint.kind() == ConstraintKind::NotEqual)
-            disequalities.push_back(constraint);
-        else
-            result.addConstraint(constraint);
-    }
-    // Batch construction performs feasibility and redundancy elimination
-    // once instead of once per input row. Disequalities are checked after the
-    // convex conjunction is complete so x != 0, x = 0 is detected in either
-    // input order even though a general disequality is non-convex.
-    result.normalize();
-    for (const LinearConstraint& disequality : disequalities)
-        result.assume(disequality);
+    result.assumeAll(constraints);
     return result;
 }
 
@@ -647,8 +646,10 @@ void ConvexPolyhedraState::assignParallel(
                     std::move(value);
             }
         }
-        impl_->generators =
-            irredundantGenerators(std::move(impl_->generators));
+        // An affine image of a generating set stays exact even when some
+        // generators become redundant. Normalize/deduplicate cheaply and let
+        // the next H conversion remove semantic redundancy in one batch.
+        impl_->generators = uniqueGenerators(std::move(impl_->generators));
         invalidateConstraints();
         // Real-only states can remain V-only until a constraint operation
         // requests H. Integer states materialize H now so the existing per-row
@@ -784,8 +785,97 @@ void ConvexPolyhedraState::assume(const LinearConstraint& constraint)
                    "non-convex disequality is ignored");
         return;
     }
-    addConstraint(constraint);
+
+    std::vector<Inequality> rows = constraintRows(environment_, constraint);
+    if (!rows.empty() && impl_->generatorsValid && impl_->generatorsExact &&
+        !hasStrictConstraint(rows))
+    {
+        const std::vector<Inequality> noConstraints;
+        impl_->generators = intersectGeneratorsWithConstraints(
+            std::move(impl_->generators),
+            impl_->constraintsValid ? impl_->inequalities : noConstraints,
+            rows, environment_.size());
+        if (impl_->generators.empty())
+        {
+            impl_->bottom = true;
+            impl_->inequalities.clear();
+            impl_->constraintsValid = true;
+            impl_->generatorsValid = false;
+            impl_->generatorsExact = false;
+            return;
+        }
+        impl_->generatorsValid = true;
+        impl_->generatorsExact = true;
+        invalidateConstraints();
+        if (config_.integerTightening && hasIntegerVariable(environment_))
+            ensureConstraints();
+        return;
+    }
+
+    ensureConstraints();
+    impl_->inequalities.insert(impl_->inequalities.end(), rows.begin(),
+                               rows.end());
     normalize();
+}
+
+void ConvexPolyhedraState::assumeAll(
+    const LinearConstraintSet& constraints)
+{
+    if (impl_->bottom || constraints.empty())
+        return;
+
+    LinearConstraintSet disequalities;
+    std::vector<Inequality> rows;
+    for (const LinearConstraint& constraint : constraints)
+    {
+        if (constraint.kind() == ConstraintKind::NotEqual)
+        {
+            disequalities.push_back(constraint);
+            continue;
+        }
+        std::vector<Inequality> next =
+            constraintRows(environment_, constraint);
+        rows.insert(rows.end(), std::make_move_iterator(next.begin()),
+                    std::make_move_iterator(next.end()));
+    }
+
+    if (!rows.empty() && impl_->generatorsValid && impl_->generatorsExact &&
+        !hasStrictConstraint(rows))
+    {
+        const std::vector<Inequality> noConstraints;
+        impl_->generators = intersectGeneratorsWithConstraints(
+            std::move(impl_->generators),
+            impl_->constraintsValid ? impl_->inequalities : noConstraints,
+            rows, environment_.size());
+        if (impl_->generators.empty())
+        {
+            impl_->bottom = true;
+            impl_->inequalities.clear();
+            impl_->constraintsValid = true;
+            impl_->generatorsValid = false;
+            impl_->generatorsExact = false;
+        }
+        else
+        {
+            impl_->generatorsValid = true;
+            impl_->generatorsExact = true;
+            invalidateConstraints();
+            if (config_.integerTightening &&
+                hasIntegerVariable(environment_))
+                ensureConstraints();
+        }
+    }
+    else if (!rows.empty())
+    {
+        ensureConstraints();
+        impl_->inequalities.insert(impl_->inequalities.end(), rows.begin(),
+                                   rows.end());
+        // A convex conjunction needs one normalization pass. Disequalities
+        // are checked afterwards so x != 0 and x = 0 are order independent.
+        normalize();
+    }
+    for (const LinearConstraint& disequality : disequalities)
+        assume(disequality);
 }
 
 void ConvexPolyhedraState::assume(const TreeConstraint& constraint)
@@ -821,8 +911,7 @@ void ConvexPolyhedraState::forget(Variable variable)
         impl_->generators.push_back(direction);
         direction.coordinates[forgotten] = Rational(-1);
         impl_->generators.push_back(std::move(direction));
-        impl_->generators =
-            irredundantGenerators(std::move(impl_->generators));
+        impl_->generators = uniqueGenerators(std::move(impl_->generators));
         invalidateConstraints();
         if (config_.integerTightening && hasIntegerVariable(environment_))
             ensureConstraints();
@@ -853,6 +942,56 @@ void ConvexPolyhedraState::changeEnvironment(const VariableEnvironment& environm
         impl_->constraintsValid = true;
         impl_->generatorsValid = false;
         impl_->generatorsExact = false;
+        return;
+    }
+
+    ensureGenerators();
+    if (impl_->generatorsExact)
+    {
+        std::vector<Generator> remapped;
+        remapped.reserve(impl_->generators.size() + 2 * environment.size());
+        for (const Generator& generator : impl_->generators)
+        {
+            Generator next;
+            next.coordinates.resize(environment.size() + 1);
+            next.coordinates.front() = generator.coordinates.front();
+            for (Dimension old = 0; old < environment_.size(); ++old)
+            {
+                const Variable variable = environment_.variableOf(old);
+                if (environment.contains(variable))
+                {
+                    next.coordinates[environment.dimensionOf(variable) + 1] =
+                        generator.coordinates[old + 1];
+                }
+            }
+            remapped.push_back(std::move(next));
+        }
+        if (!initializeNewVariablesToZero)
+        {
+            for (const VariableDeclaration& declaration :
+                 environment.variables())
+            {
+                if (environment_.contains(declaration.variable))
+                    continue;
+                Generator direction;
+                direction.coordinates.resize(environment.size() + 1);
+                direction.coordinates[
+                    environment.dimensionOf(declaration.variable) + 1] =
+                    Rational(1);
+                remapped.push_back(direction);
+                direction.coordinates[
+                    environment.dimensionOf(declaration.variable) + 1] =
+                    Rational(-1);
+                remapped.push_back(std::move(direction));
+            }
+        }
+        environment_ = environment;
+        impl_->generators = uniqueGenerators(std::move(remapped));
+        impl_->generatorsValid = true;
+        impl_->generatorsExact = true;
+        invalidateConstraints();
+        if (config_.integerTightening && hasIntegerVariable(environment_))
+            ensureConstraints();
         return;
     }
 
@@ -1119,13 +1258,31 @@ ConvexPolyhedraState ConvexPolyhedraState::join(
     // closure, matching the domain's pre-existing join contract.
     ensureGenerators();
     other.ensureGenerators();
+    if (other.impl_->constraintsValid &&
+        !hasStrictConstraint(other.impl_->inequalities) &&
+        std::all_of(other.impl_->inequalities.begin(),
+                    other.impl_->inequalities.end(),
+                    [&](const Inequality& inequality)
+                    { return generatorsEntail(impl_->generators, inequality); }))
+        return other;
+    if (impl_->constraintsValid &&
+        !hasStrictConstraint(impl_->inequalities) &&
+        std::all_of(impl_->inequalities.begin(), impl_->inequalities.end(),
+                    [&](const Inequality& inequality)
+                    {
+                        return generatorsEntail(other.impl_->generators,
+                                                inequality);
+                    }))
+        return *this;
+
     ConvexPolyhedraState result = top(environment_, config_);
-    result.impl_->generators = impl_->generators;
-    result.impl_->generators.insert(result.impl_->generators.end(),
-                                    other.impl_->generators.begin(),
-                                    other.impl_->generators.end());
+    // The union already generates the exact hull. Eagerly solving one LP per
+    // generator at every join makes a hull chain repeatedly minimize all old
+    // vertices. Primitive normalization and exact deduplication are enough;
+    // the polar H conversion performs one saturation-based minimization when
+    // constraints are actually requested.
     result.impl_->generators =
-        irredundantGenerators(std::move(result.impl_->generators));
+        mergeGeneratorSets(impl_->generators, other.impl_->generators);
     result.impl_->constraintsValid = false;
     result.impl_->generatorsValid = true;
     result.impl_->generatorsExact = true;
@@ -1217,8 +1374,57 @@ void ConvexPolyhedraState::meetState(const AbstractState& other)
         impl_->generatorsExact = false;
         return;
     }
-    ensureConstraints();
     polyhedron.ensureConstraints();
+    if (impl_->generatorsValid && impl_->generatorsExact &&
+        !hasStrictConstraint(polyhedron.impl_->inequalities))
+    {
+        const std::vector<Inequality> noConstraints;
+        impl_->generators = intersectGeneratorsWithConstraints(
+            std::move(impl_->generators),
+            impl_->constraintsValid ? impl_->inequalities : noConstraints,
+            polyhedron.impl_->inequalities, environment_.size());
+        if (impl_->generators.empty())
+        {
+            impl_->bottom = true;
+            impl_->inequalities.clear();
+            impl_->constraintsValid = true;
+            impl_->generatorsValid = false;
+            impl_->generatorsExact = false;
+            return;
+        }
+        impl_->generatorsValid = true;
+        impl_->generatorsExact = true;
+        invalidateConstraints();
+        if (config_.integerTightening && hasIntegerVariable(environment_))
+            ensureConstraints();
+        return;
+    }
+
+    ensureConstraints();
+    if (polyhedron.impl_->generatorsValid &&
+        polyhedron.impl_->generatorsExact &&
+        !hasStrictConstraint(impl_->inequalities))
+    {
+        impl_->generators = intersectGeneratorsWithConstraints(
+            polyhedron.impl_->generators, polyhedron.impl_->inequalities,
+            impl_->inequalities, environment_.size());
+        if (impl_->generators.empty())
+        {
+            impl_->bottom = true;
+            impl_->inequalities.clear();
+            impl_->constraintsValid = true;
+            impl_->generatorsValid = false;
+            impl_->generatorsExact = false;
+            return;
+        }
+        impl_->generatorsValid = true;
+        impl_->generatorsExact = true;
+        invalidateConstraints();
+        if (config_.integerTightening && hasIntegerVariable(environment_))
+            ensureConstraints();
+        return;
+    }
+
     impl_->inequalities.insert(impl_->inequalities.end(),
                          polyhedron.impl_->inequalities.begin(),
                          polyhedron.impl_->inequalities.end());
@@ -1253,8 +1459,16 @@ bool ConvexPolyhedraState::leqState(const AbstractState& other) const
         return true;
     if (polyhedron.impl_->bottom)
         return false;
-    ensureConstraints();
     polyhedron.ensureConstraints();
+    if (impl_->generatorsValid && impl_->generatorsExact)
+    {
+        return std::all_of(
+            polyhedron.impl_->inequalities.begin(),
+            polyhedron.impl_->inequalities.end(),
+            [&](const Inequality& inequality)
+            { return generatorsEntail(impl_->generators, inequality); });
+    }
+    ensureConstraints();
     return std::all_of(
         polyhedron.impl_->inequalities.begin(),
         polyhedron.impl_->inequalities.end(),
@@ -1290,17 +1504,6 @@ const ConvexPolyhedraState& ConvexPolyhedraState::requirePolyhedron(
     return static_cast<const ConvexPolyhedraState&>(other);
 }
 
-void ConvexPolyhedraState::addConstraint(
-    const LinearConstraint& constraint)
-{
-    ensureConstraints();
-    invalidateGenerators();
-    std::vector<Inequality> rows = constraintRows(environment_, constraint);
-    impl_->inequalities.insert(impl_->inequalities.end(),
-                         std::make_move_iterator(rows.begin()),
-                         std::make_move_iterator(rows.end()));
-}
-
 void ConvexPolyhedraState::ensureConstraints() const
 {
     if (impl_->bottom || impl_->constraintsValid)
@@ -1327,11 +1530,19 @@ void ConvexPolyhedraState::ensureConstraints() const
     if (!bottom)
         inequalities =
             canonicalizeAffineHull(std::move(inequalities), bottom);
-    if (!bottom && !feasible(inequalities, environment_.size()))
-        bottom = true;
-    if (!bottom)
-        inequalities =
-            irredundant(std::move(inequalities), environment_.size());
+    // A real-valued V cache contains a positive-homogeneous point by
+    // construction, and the saturation DD conversion above already returns
+    // its irredundant facets. Integer row tightening is the only step here
+    // that can change that set or make it infeasible, so reserve the global
+    // LP validation/minimization for that case.
+    if (!bottom && tightened)
+    {
+        if (!feasible(inequalities, environment_.size()))
+            bottom = true;
+        else
+            inequalities =
+                irredundant(std::move(inequalities), environment_.size());
+    }
 
     if (bottom)
     {
@@ -1897,14 +2108,40 @@ Interval boundFromGenerators(const std::vector<Generator>& generators,
 
 bool normalizeGenerator(Generator& generator)
 {
-    const auto first = std::find_if(
-        generator.coordinates.begin(), generator.coordinates.end(),
-        [](const Rational& coordinate) { return !coordinate.isZero(); });
-    if (first == generator.coordinates.end())
+    if (std::all_of(generator.coordinates.begin(),
+                    generator.coordinates.end(),
+                    [](const Rational& coordinate)
+                    { return coordinate.isZero(); }))
         return false;
-    const Rational divisor = first->sign() > 0 ? *first : -*first;
+
+    // NewPolka keeps primitive integer rows. Clearing all denominators and the
+    // common numerator GCD here prevents repeated H/V conversion and affine
+    // images from accumulating large rational numerators and denominators.
+    mpz_class scale = 1;
+    for (const Rational& coordinate : generator.coordinates)
+    {
+        if (coordinate.isZero())
+            continue;
+        const mpz_class denominator = coordinate.value().get_den();
+        mpz_lcm(scale.get_mpz_t(), scale.get_mpz_t(),
+                denominator.get_mpz_t());
+    }
+    mpz_class divisor = 0;
+    for (const Rational& coordinate : generator.coordinates)
+    {
+        const mpq_class scaled = coordinate.value() * scale;
+        const mpz_class integer = scaled.get_num();
+        mpz_gcd(divisor.get_mpz_t(), divisor.get_mpz_t(),
+                integer.get_mpz_t());
+    }
+    if (divisor < 0)
+        divisor = -divisor;
     for (Rational& coordinate : generator.coordinates)
-        coordinate /= divisor;
+    {
+        const mpq_class scaled = coordinate.value() * scale;
+        const mpz_class integer = scaled.get_num() / divisor;
+        coordinate = Rational::fromRaw(mpq_class(integer));
+    }
     return true;
 }
 
@@ -1927,6 +2164,19 @@ std::vector<Generator> uniqueGenerators(std::vector<Generator> generators)
             unique.insert(std::move(generator));
     }
     return std::vector<Generator>(unique.begin(), unique.end());
+}
+
+std::vector<Generator> mergeGeneratorSets(
+    const std::vector<Generator>& lhs, const std::vector<Generator>& rhs)
+{
+    // Every authoritative V cache is primitive-normalized and sorted when it
+    // is created. A hull can therefore union two caches linearly without
+    // renormalizing every old GMP row at every step.
+    std::vector<Generator> result;
+    result.reserve(lhs.size() + rhs.size());
+    std::set_union(lhs.begin(), lhs.end(), rhs.begin(), rhs.end(),
+                   std::back_inserter(result), GeneratorLess{});
+    return result;
 }
 
 bool generatedByCone(const Generator& target,
@@ -1983,62 +2233,377 @@ std::vector<Generator> irredundantGenerators(
     return kept;
 }
 
-/// Incremental double-description conversion for a homogeneous cone.  The
-/// input generator set describes the current cone.  Each vector `constraint`
-/// adds the halfspace `constraint . x <= 0`.  Combining every inside/outside
-/// pair is deliberately more conservative than an adjacency-only Chernikova
-/// implementation; exact conic redundancy removal after each step gives the
-/// same cone without relying on a fragile adjacency invariant.
+constexpr std::size_t saturationWordBits = 64;
+
+std::size_t saturationWords(std::size_t constraints)
+{
+    return (constraints + saturationWordBits - 1) / saturationWordBits;
+}
+
+void clearSaturation(Generator& generator, std::size_t constraints)
+{
+    generator.saturation.assign(saturationWords(constraints), 0);
+}
+
+void setSaturation(Generator& generator, std::size_t constraint)
+{
+    const std::size_t word = constraint / saturationWordBits;
+    if (generator.saturation.size() <= word)
+        generator.saturation.resize(word + 1);
+    generator.saturation[word] |=
+        std::uint64_t(1) << (constraint % saturationWordBits);
+}
+
+bool saturated(const Generator& generator, std::size_t constraint)
+{
+    const std::size_t word = constraint / saturationWordBits;
+    return word < generator.saturation.size() &&
+           (generator.saturation[word] &
+            (std::uint64_t(1) << (constraint % saturationWordBits))) != 0;
+}
+
+std::size_t saturationCount(const Generator& generator,
+                            std::size_t constraints)
+{
+    std::size_t result = 0;
+    for (std::size_t constraint = 0; constraint < constraints; ++constraint)
+        result += saturated(generator, constraint) ? 1 : 0;
+    return result;
+}
+
+std::vector<std::uint64_t> commonSaturation(const Generator& lhs,
+                                            const Generator& rhs)
+{
+    const std::size_t words =
+        std::min(lhs.saturation.size(), rhs.saturation.size());
+    std::vector<std::uint64_t> result(words);
+    for (std::size_t word = 0; word < words; ++word)
+        result[word] = lhs.saturation[word] & rhs.saturation[word];
+    return result;
+}
+
+std::size_t saturationCount(const std::vector<std::uint64_t>& saturation)
+{
+    std::size_t result = 0;
+    for (std::uint64_t word : saturation)
+    {
+#if defined(__clang__) || defined(__GNUC__)
+        result += static_cast<std::size_t>(__builtin_popcountll(word));
+#else
+        while (word != 0)
+        {
+            word &= word - 1;
+            ++result;
+        }
+#endif
+    }
+    return result;
+}
+
+bool saturationSubset(const std::vector<std::uint64_t>& subset,
+                      const Generator& superset)
+{
+    for (std::size_t word = 0; word < subset.size(); ++word)
+    {
+        const std::uint64_t candidate =
+            word < superset.saturation.size() ? superset.saturation[word] : 0;
+        if ((subset[word] & ~candidate) != 0)
+            return false;
+    }
+    return true;
+}
+
+void rebuildSaturation(
+    std::vector<Generator>& generators,
+    const std::vector<std::vector<Rational>>& processedConstraints)
+{
+    for (Generator& generator : generators)
+    {
+        clearSaturation(generator, processedConstraints.size());
+        for (std::size_t constraint = 0;
+             constraint < processedConstraints.size(); ++constraint)
+        {
+            if (dot(processedConstraints[constraint], generator.coordinates)
+                    .isZero())
+                setSaturation(generator, constraint);
+        }
+    }
+}
+
+std::optional<std::pair<std::size_t, std::size_t>> linePivot(
+    const std::vector<Generator>& generators,
+    const std::vector<Rational>* constraint, std::size_t processedConstraints)
+{
+    for (std::size_t first = 0; first < generators.size(); ++first)
+    {
+        if (saturationCount(generators[first], processedConstraints) !=
+                processedConstraints ||
+            (constraint != nullptr &&
+             dot(*constraint, generators[first].coordinates).isZero()))
+            continue;
+        for (std::size_t second = first + 1; second < generators.size();
+             ++second)
+        {
+            if (saturationCount(generators[second], processedConstraints) !=
+                processedConstraints)
+                continue;
+            bool opposite = true;
+            for (std::size_t coordinate = 0;
+                 coordinate < generators[first].coordinates.size();
+                 ++coordinate)
+            {
+                if (generators[first].coordinates[coordinate] !=
+                    -generators[second].coordinates[coordinate])
+                {
+                    opposite = false;
+                    break;
+                }
+            }
+            if (opposite)
+                return std::make_pair(first, second);
+        }
+    }
+    return std::nullopt;
+}
+
+bool coneHasLineality(const std::vector<Generator>& generators,
+                      std::size_t processedConstraints)
+{
+    return linePivot(generators, nullptr, processedConstraints).has_value();
+}
+
+bool adjacentGenerators(const std::vector<Generator>& generators,
+                        std::size_t lhs, std::size_t rhs,
+                        std::size_t processedConstraints,
+                        std::size_t ambientDimensions)
+{
+    const std::vector<std::uint64_t> common =
+        commonSaturation(generators[lhs], generators[rhs]);
+    const std::size_t required = ambientDimensions > 2
+                                     ? ambientDimensions - 2
+                                     : 0;
+    // The rank of common active constraints cannot exceed their count.  Fewer
+    // than D-2 therefore cannot define a two-dimensional face.
+    if (saturationCount(common) < required)
+        return false;
+
+    for (std::size_t other = 0; other < generators.size(); ++other)
+    {
+        if (other == lhs || other == rhs)
+            continue;
+        // Explicit opposite rays encode lineality. NewPolka excludes lines
+        // from this extremal-ray dominance test.
+        if (saturationCount(generators[other], processedConstraints) ==
+            processedConstraints)
+            continue;
+        if (saturationSubset(common, generators[other]))
+            return false;
+    }
+    return true;
+}
+
+struct ConstraintSplit
+{
+    std::size_t inside = 0;
+    std::size_t outside = 0;
+    std::size_t boundary = 0;
+
+    std::size_t estimatedSize() const
+    {
+        if (outside == 0)
+            return inside + boundary;
+        if (inside == 0)
+            return boundary;
+        if (inside > std::numeric_limits<std::size_t>::max() / outside)
+            return std::numeric_limits<std::size_t>::max();
+        const std::size_t pairs = inside * outside;
+        if (pairs > std::numeric_limits<std::size_t>::max() -
+                        inside - boundary)
+            return std::numeric_limits<std::size_t>::max();
+        return inside + boundary + pairs;
+    }
+};
+
+ConstraintSplit splitBy(const std::vector<Generator>& generators,
+                        const std::vector<Rational>& constraint)
+{
+    ConstraintSplit result;
+    for (const Generator& generator : generators)
+    {
+        const int sign = dot(constraint, generator.coordinates).sign();
+        if (sign < 0)
+            ++result.inside;
+        else if (sign > 0)
+            ++result.outside;
+        else
+            ++result.boundary;
+    }
+    return result;
+}
+
+/// Incremental Chernikova/double-description conversion for a homogeneous
+/// cone.  Saturation sets make the expensive crossing-pair step adjacency
+/// aware once lineality has disappeared.  Before that point an exact conic
+/// redundancy pass retains the general non-pointed behavior.
 std::vector<Generator> intersectCone(
     std::vector<Generator> generators,
-    const std::vector<std::vector<Rational>>& constraints)
+    std::vector<std::vector<Rational>> processedConstraints,
+    std::vector<std::vector<Rational>> constraints,
+    bool inputIsMinimal = false)
 {
-    generators = irredundantGenerators(std::move(generators));
-    for (const std::vector<Rational>& constraint : constraints)
+    generators = inputIsMinimal
+                     ? uniqueGenerators(std::move(generators))
+                     : irredundantGenerators(std::move(generators));
+    rebuildSaturation(generators, processedConstraints);
+
+    while (!constraints.empty() && !generators.empty())
     {
-        std::vector<std::pair<Generator, Rational>> inside;
-        std::vector<std::pair<Generator, Rational>> outside;
-        std::vector<Generator> boundary;
-        for (Generator& generator : generators)
+        // Constraint order changes intermediate size dramatically. Select the
+        // row with the smallest predicted next generator set.
+        std::size_t selected = 0;
+        bool selectedCutsLine =
+            linePivot(generators, &constraints[0],
+                      processedConstraints.size())
+                .has_value();
+        ConstraintSplit selectedSplit = splitBy(generators, constraints[0]);
+        for (std::size_t candidate = 1; candidate < constraints.size();
+             ++candidate)
         {
-            Rational value = dot(constraint, generator.coordinates);
+            const bool cutsLine =
+                linePivot(generators, &constraints[candidate],
+                          processedConstraints.size())
+                    .has_value();
+            const ConstraintSplit split =
+                splitBy(generators, constraints[candidate]);
+            if ((cutsLine && !selectedCutsLine) ||
+                (cutsLine == selectedCutsLine &&
+                 split.estimatedSize() < selectedSplit.estimatedSize()))
+            {
+                selected = candidate;
+                selectedCutsLine = cutsLine;
+                selectedSplit = split;
+            }
+        }
+        std::vector<Rational> constraint =
+            std::move(constraints[selected]);
+        constraints.erase(constraints.begin() + selected);
+
+        // Every generator satisfies the row, so it is redundant for the cone
+        // and need not consume a saturation column.
+        if (selectedSplit.outside == 0)
+            continue;
+
+        // A row cutting a lineality direction can be handled by a single
+        // Chernikova line pivot. Move every other generator along that free
+        // direction onto the new boundary, and retain only the feasible
+        // orientation of the pivot as a ray. This removes one line dimension
+        // without materializing all crossing pairs or solving redundancy LPs.
+        const auto pivotPair = linePivot(
+            generators, &constraint, processedConstraints.size());
+        if (pivotPair)
+        {
+            std::size_t pivotIndex = pivotPair->first;
+            std::size_t oppositeIndex = pivotPair->second;
+            Rational pivotValue =
+                dot(constraint, generators[pivotIndex].coordinates);
+            if (pivotValue.sign() < 0)
+            {
+                std::swap(pivotIndex, oppositeIndex);
+                pivotValue = -pivotValue;
+            }
+            const Generator& pivot = generators[pivotIndex];
+            std::vector<Generator> next;
+            next.reserve(generators.size() - 1);
+            next.push_back(generators[oppositeIndex]);
+            for (std::size_t index = 0; index < generators.size(); ++index)
+            {
+                if (index == pivotIndex || index == oppositeIndex)
+                    continue;
+                const Rational value =
+                    dot(constraint, generators[index].coordinates);
+                Generator boundary;
+                boundary.coordinates.resize(
+                    generators[index].coordinates.size());
+                for (std::size_t coordinate = 0;
+                     coordinate < boundary.coordinates.size(); ++coordinate)
+                {
+                    boundary.coordinates[coordinate] =
+                        pivotValue *
+                            generators[index].coordinates[coordinate] -
+                        value * pivot.coordinates[coordinate];
+                }
+                next.push_back(std::move(boundary));
+            }
+            processedConstraints.push_back(std::move(constraint));
+            generators = uniqueGenerators(std::move(next));
+            rebuildSaturation(generators, processedConstraints);
+            continue;
+        }
+
+        const std::size_t newConstraint = processedConstraints.size();
+        const bool pointed =
+            !coneHasLineality(generators, processedConstraints.size());
+        std::vector<std::pair<std::size_t, Rational>> inside;
+        std::vector<std::pair<std::size_t, Rational>> outside;
+        std::vector<std::size_t> boundary;
+        for (std::size_t index = 0; index < generators.size(); ++index)
+        {
+            Rational value = dot(constraint, generators[index].coordinates);
             if (value.sign() < 0)
-                inside.emplace_back(std::move(generator), std::move(value));
+                inside.emplace_back(index, std::move(value));
             else if (value.sign() > 0)
-                outside.emplace_back(std::move(generator), std::move(value));
+                outside.emplace_back(index, std::move(value));
             else
-                boundary.push_back(std::move(generator));
+                boundary.push_back(index);
         }
 
         std::vector<Generator> next;
-        next.reserve(boundary.size() + inside.size() +
-                     inside.size() * outside.size());
-        next.insert(next.end(), std::make_move_iterator(boundary.begin()),
-                    std::make_move_iterator(boundary.end()));
-        for (const auto& [generator, value] : inside)
+        const std::size_t estimated = selectedSplit.estimatedSize();
+        if (estimated != std::numeric_limits<std::size_t>::max())
+            next.reserve(estimated);
+        for (std::size_t index : boundary)
+        {
+            Generator generator = generators[index];
+            setSaturation(generator, newConstraint);
+            next.push_back(std::move(generator));
+        }
+        for (const auto& [index, value] : inside)
         {
             (void)value;
-            next.push_back(generator);
+            next.push_back(generators[index]);
         }
-        for (const auto& [in, inValue] : inside)
+        for (const auto& [inIndex, inValue] : inside)
         {
-            for (const auto& [out, outValue] : outside)
+            for (const auto& [outIndex, outValue] : outside)
             {
+                if (pointed &&
+                    !adjacentGenerators(generators, inIndex, outIndex,
+                                        processedConstraints.size(),
+                                        generators[inIndex].coordinates.size()))
+                    continue;
                 Generator intersection;
-                intersection.coordinates.resize(in.coordinates.size());
+                intersection.coordinates.resize(
+                    generators[inIndex].coordinates.size());
                 for (std::size_t coordinate = 0;
                      coordinate < intersection.coordinates.size(); ++coordinate)
                 {
                     intersection.coordinates[coordinate] =
-                        outValue * in.coordinates[coordinate] -
-                        inValue * out.coordinates[coordinate];
+                        outValue *
+                            generators[inIndex].coordinates[coordinate] -
+                        inValue *
+                            generators[outIndex].coordinates[coordinate];
                 }
+                intersection.saturation = commonSaturation(
+                    generators[inIndex], generators[outIndex]);
+                setSaturation(intersection, newConstraint);
                 next.push_back(std::move(intersection));
             }
         }
-        generators = irredundantGenerators(std::move(next));
-        if (generators.empty())
-            break;
+        processedConstraints.push_back(std::move(constraint));
+        if (pointed)
+            generators = uniqueGenerators(std::move(next));
+        else
+            generators = irredundantGenerators(std::move(next));
     }
     return generators;
 }
@@ -2057,6 +2622,45 @@ std::vector<Generator> fullSpaceCone(std::size_t dimensions)
         result.push_back(std::move(positive));
     }
     return result;
+}
+
+std::vector<Rational> homogeneousConstraint(const Inequality& inequality,
+                                            std::size_t dimensions)
+{
+    std::vector<Rational> row(dimensions + 1);
+    row[0] = -inequality.bound;
+    std::copy(inequality.coefficients.begin(),
+              inequality.coefficients.end(), row.begin() + 1);
+    return row;
+}
+
+std::vector<std::vector<Rational>> homogeneousConstraints(
+    const std::vector<Inequality>& inequalities, std::size_t dimensions)
+{
+    std::vector<std::vector<Rational>> result;
+    result.reserve(inequalities.size());
+    for (const Inequality& inequality : inequalities)
+        result.push_back(homogeneousConstraint(inequality, dimensions));
+    return result;
+}
+
+std::vector<Generator> intersectGeneratorsWithConstraints(
+    std::vector<Generator> generators,
+    const std::vector<Inequality>& existing,
+    const std::vector<Inequality>& added, std::size_t dimensions)
+{
+    std::vector<std::vector<Rational>> processed;
+    processed.reserve(existing.size() + 1);
+    std::vector<Rational> nonnegativeHomogeneous(dimensions + 1);
+    nonnegativeHomogeneous[0] = Rational(-1);
+    processed.push_back(std::move(nonnegativeHomogeneous));
+    std::vector<std::vector<Rational>> oldRows =
+        homogeneousConstraints(existing, dimensions);
+    processed.insert(processed.end(),
+                     std::make_move_iterator(oldRows.begin()),
+                     std::make_move_iterator(oldRows.end()));
+    return intersectCone(std::move(generators), std::move(processed),
+                         homogeneousConstraints(added, dimensions));
 }
 
 std::vector<Generator> generatorsFromConstraints(
@@ -2079,18 +2683,13 @@ std::vector<Generator> generatorsFromConstraints(
         initial.push_back(std::move(ray));
     }
 
-    std::vector<std::vector<Rational>> homogeneousConstraints;
-    homogeneousConstraints.reserve(inequalities.size());
-    for (const Inequality& inequality : inequalities)
-    {
-        std::vector<Rational> row(homogeneousDimensions);
-        row[0] = -inequality.bound;
-        std::copy(inequality.coefficients.begin(),
-                  inequality.coefficients.end(), row.begin() + 1);
-        homogeneousConstraints.push_back(std::move(row));
-    }
-    std::vector<Generator> result =
-        intersectCone(std::move(initial), homogeneousConstraints);
+    std::vector<std::vector<Rational>> rows =
+        homogeneousConstraints(inequalities, dimensions);
+    std::vector<Rational> nonnegativeHomogeneous(homogeneousDimensions);
+    nonnegativeHomogeneous[0] = Rational(-1);
+    std::vector<Generator> result = intersectCone(
+        std::move(initial), {std::move(nonnegativeHomogeneous)},
+        std::move(rows), true);
 
     // A non-empty polyhedron must have a generator with positive homogeneous
     // coordinate.  A cone containing only recession directions is the
@@ -2116,7 +2715,8 @@ std::vector<Inequality> constraintsFromGenerators(
     // cone.  Applying the same double-description kernel to that polar gives
     // every facet/equality row of the original polyhedron.
     std::vector<Generator> polar = intersectCone(
-        fullSpaceCone(homogeneousDimensions), generatorHalfspaces);
+        fullSpaceCone(homogeneousDimensions), {},
+        std::move(generatorHalfspaces), true);
     std::vector<Inequality> result;
     result.reserve(polar.size());
     for (const Generator& form : polar)
@@ -2131,7 +2731,12 @@ std::vector<Inequality> constraintsFromGenerators(
     result = normalized(std::move(result), bottom);
     if (bottom)
         return {};
-    return irredundant(std::move(result), dimensions);
+    // The pointed phase of the DD kernel emits only adjacent extreme forms;
+    // after normalization these are already the facets/equality directions.
+    // Running one LP per row here repeats the minimization just performed by
+    // the saturation matrix and dominates V -> H conversion in dimensions
+    // where a hull has many facets.
+    return result;
 }
 
 } // namespace

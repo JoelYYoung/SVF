@@ -881,6 +881,56 @@ void testPolyhedraDualRepresentation()
             "V-form repeated joins must recover the exact 4D simplex facets: " +
                 simplex.toString());
 
+    // Batch clipping of an already generator-backed state is the common
+    // incremental Chernikova path: every new half-space updates the existing
+    // saturation matrix instead of rebuilding the conversion from scratch.
+    ConvexPolyhedraState clipped = simplex;
+    LinearExpression xPlusY(x);
+    xPlusY.setCoefficient(y, Rational(1));
+    LinearExpression zPlusW(z);
+    zPlusW.setCoefficient(w, Rational(1));
+    const LinearConstraintSet clips{
+        atMost(x, Rational(3)), atMost(y, Rational(4)),
+        greaterEqual(xPlusY, LinearExpression(Rational(1))),
+        lessEqual(zPlusW, LinearExpression(Rational(4)))};
+    clipped.assumeAll(clips);
+    for (const LinearConstraint& constraint : clips)
+        require(clipped.entails(constraint) == CheckResult::True,
+                "incremental V clipping must retain every batch constraint");
+
+    ConvexPolyhedraState cap = point.join(otherPoint);
+    cap.assumeAll({atLeast(x, Rational(-1)), atMost(x, Rational(0)),
+                   atLeast(y, Rational(-2)), atMost(y, Rational(0))});
+    const ConvexPolyhedraState met = clipped.meet(cap);
+    require(met.isSubsetOf(clipped) == CheckResult::True &&
+                met.isSubsetOf(cap) == CheckResult::True,
+            "meeting generator-backed states must incrementally clip one V "
+            "representation by the other's H representation");
+    checkRawRoundTrip(met, "incrementally met Convex Polyhedra state");
+
+    // Change the dense coordinate order while the state is V-only, remove a
+    // coordinate and add both a free and a zero-initialized coordinate.
+    const Variable q(5);
+    const VariableEnvironment projectedEnvironment(
+        {{w, NumericType::real(), "w"}, {x, NumericType::real(), "x"},
+         {z, NumericType::real(), "z"}, {q, NumericType::real(), "q"}});
+    ConvexPolyhedraState projected = simplex;
+    projected.changeEnvironment(projectedEnvironment);
+    require(!projected.environment().contains(y) && projected.bound(q).isTop() &&
+                projected.entails(atLeast(x, Rational(0))) ==
+                    CheckResult::True,
+            "V-only environment change must project removed variables, "
+            "permute retained coordinates and add free coordinates");
+    const VariableEnvironment zeroExtended = projectedEnvironment.add(
+        {{Variable(6), NumericType::real(), "zero"}});
+    projected.changeEnvironment(zeroExtended, true);
+    const Interval zeroBound = projected.bound(Variable(6));
+    require(zeroBound.lower().isFinite() && zeroBound.upper().isFinite() &&
+                zeroBound.lower().value() == Rational(0) &&
+                zeroBound.upper().value() == Rational(0),
+            "V-only zero-extending environment change must add an exact "
+            "zero coordinate");
+
     // Alternate generator-friendly and constraint-friendly operations. Each
     // mutation must invalidate exactly the stale side of the dual cache.
     ConvexPolyhedraState alternating = simplex;
@@ -897,6 +947,32 @@ void testPolyhedraDualRepresentation()
                     LinearExpression(x) - image,
                     LinearExpression(Rational()))) == CheckResult::True,
             "assume/assign/forget must transparently refresh H/V caches");
+
+    // Exercise repeated representation changes. No public operation is told
+    // whether H or V is currently authoritative.
+    ConvexPolyhedraState chained = simplex;
+    for (std::int64_t iteration = 0; iteration < 6; ++iteration)
+    {
+        ConvexPolyhedraState vertex = ConvexPolyhedraState::top(environment);
+        vertex.assumeAll({equalsValue(x, Rational(iteration)),
+                          equalsValue(y, Rational(5 - iteration)),
+                          equalsValue(z, Rational(iteration % 2)),
+                          equalsValue(w, Rational(0))});
+        chained = chained.join(vertex);
+        chained.assume(atMost(x, Rational(5)));
+        LinearExpression nextY(y);
+        nextY.setConstant(Rational(1));
+        chained.assign(z, nextY);
+        chained.forget(w);
+    }
+    require(chained.entails(atMost(x, Rational(5))) == CheckResult::True &&
+                chained.entails(equal(LinearExpression(z) -
+                                          (LinearExpression(y) +
+                                           LinearExpression(Rational(1))),
+                                      LinearExpression(Rational()))) ==
+                    CheckResult::True,
+            "long H/V operation chains must preserve exact affine facts");
+    checkRawRoundTrip(chained, "long H/V Convex Polyhedra operation chain");
 
     // The pre-existing NNC join contract returns the closure. The internal V
     // cache may therefore close this operation, but exact non-join operations
@@ -927,11 +1003,11 @@ void testPolyhedraDualRepresentation()
 
     ConvexPolyhedraState inconsistent =
         ConvexPolyhedraState::top(environment);
-    LinearExpression xPlusY(x);
-    xPlusY.setCoefficient(y, Rational(1));
+    LinearExpression inconsistentSum(x);
+    inconsistentSum.setCoefficient(y, Rational(1));
     inconsistent.assumeAll(
         {equalsValue(x, Rational(0)), equalsValue(y, Rational(0)),
-         equal(xPlusY, LinearExpression(Rational(1)))});
+         equal(inconsistentSum, LinearExpression(Rational(1)))});
     require(inconsistent.isBottom(),
             "affine-hull canonicalization must retain inconsistent dependent "
             "equalities");
