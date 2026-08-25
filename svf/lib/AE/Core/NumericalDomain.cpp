@@ -11,6 +11,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <optional>
 #include <set>
 #include <stdexcept>
 #include <string>
@@ -457,6 +458,433 @@ std::unique_ptr<NumericalState> restore(DomainTag tag, std::uint8_t flags,
 
 } // namespace
 
+namespace
+{
+
+Interval bottomInterval()
+{
+    return Interval(Bound::plusInfinity(), Bound::minusInfinity());
+}
+
+bool singletonZero(const Interval& value)
+{
+    return value.lower().isFinite() && value.upper().isFinite() &&
+           value.lower().value().isZero() &&
+           value.upper().value().isZero() && !value.lower().isStrict() &&
+           !value.upper().isStrict();
+}
+
+std::optional<Rational> singletonValue(const Interval& value)
+{
+    if (!value.lower().isFinite() || !value.upper().isFinite() ||
+        value.lower().isStrict() || value.upper().isStrict() ||
+        value.lower().value() != value.upper().value())
+        return std::nullopt;
+    return value.lower().value();
+}
+
+Interval negateInterval(const Interval& value)
+{
+    if (value.isBottom())
+        return bottomInterval();
+    const Bound lower = value.upper().isFinite()
+                            ? Bound::finite(-value.upper().value(),
+                                            value.upper().isStrict())
+                            : value.upper().isPlusInfinity()
+                                  ? Bound::minusInfinity()
+                                  : Bound::plusInfinity();
+    const Bound upper = value.lower().isFinite()
+                            ? Bound::finite(-value.lower().value(),
+                                            value.lower().isStrict())
+                            : value.lower().isMinusInfinity()
+                                  ? Bound::plusInfinity()
+                                  : Bound::minusInfinity();
+    return Interval(lower, upper);
+}
+
+Interval addIntervals(const Interval& lhs, const Interval& rhs)
+{
+    if (lhs.isBottom() || rhs.isBottom())
+        return bottomInterval();
+    Bound lower = Bound::minusInfinity();
+    Bound upper = Bound::plusInfinity();
+    if (lhs.lower().isFinite() && rhs.lower().isFinite())
+        lower = Bound::finite(lhs.lower().value() + rhs.lower().value(),
+                              lhs.lower().isStrict() || rhs.lower().isStrict());
+    if (lhs.upper().isFinite() && rhs.upper().isFinite())
+        upper = Bound::finite(lhs.upper().value() + rhs.upper().value(),
+                              lhs.upper().isStrict() || rhs.upper().isStrict());
+    return Interval(lower, upper);
+}
+
+Interval finiteHull(const std::vector<Rational>& lowerCandidates,
+                    const std::vector<Rational>& upperCandidates)
+{
+    if (lowerCandidates.empty() || upperCandidates.empty())
+        return Interval::top();
+    Rational lower = lowerCandidates.front();
+    Rational upper = upperCandidates.front();
+    for (const Rational& candidate : lowerCandidates)
+        if (candidate < lower)
+            lower = candidate;
+    for (const Rational& candidate : upperCandidates)
+        if (upper < candidate)
+            upper = candidate;
+    return Interval(Bound::finite(lower), Bound::finite(upper));
+}
+
+Interval multiplyIntervals(const Interval& lhs, const Interval& rhs)
+{
+    if (lhs.isBottom() || rhs.isBottom())
+        return bottomInterval();
+    if (singletonZero(lhs) || singletonZero(rhs))
+        return Interval::singleton(Rational());
+    if (!lhs.lower().isFinite() || !lhs.upper().isFinite() ||
+        !rhs.lower().isFinite() || !rhs.upper().isFinite())
+        return Interval::top();
+    const std::vector<Rational> products{
+        lhs.lower().value() * rhs.lower().value(),
+        lhs.lower().value() * rhs.upper().value(),
+        lhs.upper().value() * rhs.lower().value(),
+        lhs.upper().value() * rhs.upper().value()};
+    return finiteHull(products, products);
+}
+
+bool containsZero(const Interval& value)
+{
+    if (value.isBottom())
+        return false;
+    const bool aboveLower =
+        value.lower().isMinusInfinity() ||
+        (value.lower().isFinite() &&
+         (value.lower().value() < Rational() ||
+          (value.lower().value().isZero() && !value.lower().isStrict())));
+    const bool belowUpper =
+        value.upper().isPlusInfinity() ||
+        (value.upper().isFinite() &&
+         (Rational() < value.upper().value() ||
+          (value.upper().value().isZero() && !value.upper().isStrict())));
+    return aboveLower && belowUpper;
+}
+
+Rational truncateTowardZero(const Rational& value)
+{
+    return value.sign() < 0 ? value.ceil() : value.floor();
+}
+
+Interval divideIntervals(const Interval& lhs, const Interval& rhs,
+                         bool integerDivision)
+{
+    if (lhs.isBottom() || rhs.isBottom())
+        return bottomInterval();
+    if (containsZero(rhs) || !lhs.lower().isFinite() ||
+        !lhs.upper().isFinite() || !rhs.lower().isFinite() ||
+        !rhs.upper().isFinite())
+        return Interval::top();
+    std::vector<Rational> quotients{
+        lhs.lower().value() / rhs.lower().value(),
+        lhs.lower().value() / rhs.upper().value(),
+        lhs.upper().value() / rhs.lower().value(),
+        lhs.upper().value() / rhs.upper().value()};
+    if (integerDivision)
+        for (Rational& quotient : quotients)
+            quotient = truncateTowardZero(quotient);
+    return finiteHull(quotients, quotients);
+}
+
+Rational powerOfTwo(long exponent)
+{
+    mpq_class value(1);
+    if (exponent >= 0)
+        mpz_mul_2exp(value.get_num_mpz_t(), value.get_num_mpz_t(), exponent);
+    else
+        mpz_mul_2exp(value.get_den_mpz_t(), value.get_den_mpz_t(), -exponent);
+    value.canonicalize();
+    return Rational::fromRaw(value);
+}
+
+struct IEEEFormatBounds
+{
+    Rational maximum;
+    Rational minimumNormal;
+    Rational minimumSubnormal;
+};
+
+IEEEFormatBounds ieeeBounds(const FloatFormat& format)
+{
+    if (format.exponentBits < 2 || format.exponentBits >= 63 ||
+        format.significandBits < 2)
+        throw std::invalid_argument("invalid IEEE floating format");
+    const std::uint64_t bias =
+        (std::uint64_t(1) << (format.exponentBits - 1)) - 1;
+    const Rational maximum =
+        (Rational(2) - powerOfTwo(1 -
+                                  static_cast<long>(format.significandBits))) *
+        powerOfTwo(static_cast<long>(bias));
+    const Rational minimumNormal =
+        powerOfTwo(1 - static_cast<long>(bias));
+    const long minimumExponent =
+        1 - static_cast<long>(bias) -
+        static_cast<long>(format.significandBits - 1);
+    return {maximum, minimumNormal, powerOfTwo(minimumExponent)};
+}
+
+Rational roundIntegral(const Rational& value, RoundingMode rounding)
+{
+    const Rational lower = value.floor();
+    const Rational upper = value.ceil();
+    switch (rounding)
+    {
+    case RoundingMode::TowardZero:
+        return value.sign() < 0 ? upper : lower;
+    case RoundingMode::TowardPositive:
+        return upper;
+    case RoundingMode::TowardNegative:
+        return lower;
+    case RoundingMode::NearestTiesToEven: {
+        const Rational lowerDistance = value - lower;
+        const Rational upperDistance = upper - value;
+        if (lowerDistance < upperDistance)
+            return lower;
+        if (upperDistance < lowerDistance)
+            return upper;
+        return mpz_even_p(lower.value().get_num_mpz_t()) != 0 ? lower
+                                                               : upper;
+    }
+    }
+    return value;
+}
+
+std::optional<Rational> roundedIEEE(const Rational& value,
+                                    const FloatFormat& format,
+                                    RoundingMode rounding)
+{
+    const IEEEFormatBounds bounds = ieeeBounds(format);
+    if (bounds.maximum < value || value < -bounds.maximum)
+        return std::nullopt;
+    if (-bounds.minimumNormal < value && value < bounds.minimumNormal)
+        return roundIntegral(value / bounds.minimumSubnormal, rounding) *
+               bounds.minimumSubnormal;
+    return FloatSemantics::add(value, Rational(), format.significandBits,
+                               rounding);
+}
+
+Interval roundIEEEInterval(const Interval& value, const FloatFormat& format,
+                           RoundingMode rounding)
+{
+    if (value.isBottom())
+        return bottomInterval();
+    if (!value.lower().isFinite() || !value.upper().isFinite())
+        return Interval::top();
+    const std::optional<Rational> lower = roundedIEEE(
+        value.lower().value(), format, rounding);
+    const std::optional<Rational> upper = roundedIEEE(
+        value.upper().value(), format, rounding);
+    if (!lower || !upper)
+        return Interval::top();
+    return Interval(Bound::finite(*lower), Bound::finite(*upper));
+}
+
+Interval remainderIntervals(const Interval& lhs, const Interval& rhs)
+{
+    if (lhs.isBottom() || rhs.isBottom())
+        return bottomInterval();
+    if (containsZero(rhs) || !rhs.lower().isFinite() ||
+        !rhs.upper().isFinite())
+        return Interval::top();
+    const std::optional<Rational> lhsValue = singletonValue(lhs);
+    const std::optional<Rational> rhsValue = singletonValue(rhs);
+    if (lhsValue && rhsValue)
+    {
+        const Rational quotient =
+            truncateTowardZero(*lhsValue / *rhsValue);
+        return Interval::singleton(*lhsValue - quotient * *rhsValue);
+    }
+    Rational magnitude = rhs.lower().value().sign() < 0
+                             ? -rhs.lower().value()
+                             : rhs.lower().value();
+    const Rational upperMagnitude = rhs.upper().value().sign() < 0
+                                        ? -rhs.upper().value()
+                                        : rhs.upper().value();
+    if (magnitude < upperMagnitude)
+        magnitude = upperMagnitude;
+    if (magnitude.isZero())
+        return Interval::top();
+    Rational lower = -magnitude;
+    Rational upper = magnitude;
+    if (lhs.lower().isFinite() && lhs.lower().value().sign() >= 0)
+        lower = Rational();
+    if (lhs.upper().isFinite() && lhs.upper().value().sign() <= 0)
+        upper = Rational();
+    return Interval(Bound::finite(lower, true), Bound::finite(upper, true));
+}
+
+Interval squareRootInterval(const Interval& operand, const NumericType& type,
+                            RoundingMode rounding)
+{
+    if (operand.isBottom())
+        return bottomInterval();
+    if (!operand.lower().isFinite() || operand.lower().value().sign() < 0)
+        return Interval::top();
+    const unsigned precision =
+        type.kind == NumericKind::IEEEFloat
+            ? type.floatFormat.significandBits
+            : 256U;
+    MpfrValue input(precision);
+    MpfrValue output(precision);
+    input.set(operand.lower().value(), MPFR_RNDD);
+    mpfr_sqrt(output.raw(), input.raw(), MPFR_RNDD);
+    const Rational lower = output.toRational();
+    if (!operand.upper().isFinite())
+        return Interval(Bound::finite(lower), Bound::plusInfinity());
+    input.set(operand.upper().value(), MPFR_RNDU);
+    mpfr_sqrt(output.raw(), input.raw(), MPFR_RNDU);
+    Interval result(Bound::finite(lower),
+                    Bound::finite(output.toRational()));
+    return type.kind == NumericKind::IEEEFloat
+               ? roundIEEEInterval(result, type.floatFormat, rounding)
+               : result;
+}
+
+Interval castInterval(const Interval& operand, const NumericType& type,
+                      RoundingMode rounding)
+{
+    if (operand.isBottom())
+        return bottomInterval();
+    if (type.kind == NumericKind::Real)
+        return operand;
+    if (type.kind == NumericKind::IEEEFloat)
+        return roundIEEEInterval(operand, type.floatFormat, rounding);
+    if (!operand.lower().isFinite() || !operand.upper().isFinite())
+        return Interval::top();
+    Rational lower = truncateTowardZero(operand.lower().value());
+    Rational upper = truncateTowardZero(operand.upper().value());
+    if (upper < lower)
+        std::swap(lower, upper);
+    return Interval(Bound::finite(lower), Bound::finite(upper));
+}
+
+Interval evaluateTree(const NumericalState& state,
+                      const TreeExpression& expression)
+{
+    switch (expression.kind())
+    {
+    case TreeExpression::Kind::Constant:
+        return castInterval(Interval::singleton(expression.constant()),
+                            expression.type(), expression.roundingMode());
+    case TreeExpression::Kind::Variable:
+        if (!state.environment().contains(expression.variable()))
+            throw std::invalid_argument("tree expression uses an unknown variable");
+        if (state.environment().typeOf(expression.variable()) !=
+            expression.type())
+            throw std::invalid_argument("tree variable type does not match environment");
+        return state.bound(expression.variable());
+    case TreeExpression::Kind::Unary: {
+        const Interval operand = evaluateTree(state, expression.lhs());
+        switch (expression.unaryOperator())
+        {
+        case UnaryOperator::Negate:
+            return expression.type().kind == NumericKind::IEEEFloat
+                       ? roundIEEEInterval(
+                             negateInterval(operand),
+                             expression.type().floatFormat,
+                             expression.roundingMode())
+                       : negateInterval(operand);
+        case UnaryOperator::Cast:
+            return castInterval(operand, expression.type(),
+                                expression.roundingMode());
+        case UnaryOperator::SquareRoot:
+            return squareRootInterval(operand, expression.type(),
+                                      expression.roundingMode());
+        }
+    }
+    case TreeExpression::Kind::Binary: {
+        const Interval lhs = evaluateTree(state, expression.lhs());
+        const Interval rhs = evaluateTree(state, expression.rhs());
+        Interval result;
+        switch (expression.binaryOperator())
+        {
+        case BinaryOperator::Add:
+            result = addIntervals(lhs, rhs);
+            break;
+        case BinaryOperator::Subtract:
+            result = addIntervals(lhs, negateInterval(rhs));
+            break;
+        case BinaryOperator::Multiply:
+            result = multiplyIntervals(lhs, rhs);
+            break;
+        case BinaryOperator::Divide:
+            result = divideIntervals(
+                lhs, rhs, expression.type().kind == NumericKind::Integer);
+            break;
+        case BinaryOperator::Remainder:
+            result = remainderIntervals(lhs, rhs);
+            break;
+        }
+        return expression.type().kind == NumericKind::IEEEFloat
+                   ? roundIEEEInterval(result,
+                                       expression.type().floatFormat,
+                                       expression.roundingMode())
+                   : result;
+    }
+    }
+    return Interval::top();
+}
+
+bool definitelyTrue(const Interval& value, ConstraintKind kind)
+{
+    if (value.isBottom())
+        return true;
+    switch (kind)
+    {
+    case ConstraintKind::Equal:
+        return singletonZero(value);
+    case ConstraintKind::NotEqual:
+        return !containsZero(value);
+    case ConstraintKind::LessEqual:
+        return value.upper().isFinite() && value.upper().value() <= Rational();
+    case ConstraintKind::LessThan:
+        return value.upper().isFinite() &&
+               (value.upper().value() < Rational() ||
+                (value.upper().value().isZero() && value.upper().isStrict()));
+    case ConstraintKind::GreaterEqual:
+        return value.lower().isFinite() && Rational() <= value.lower().value();
+    case ConstraintKind::GreaterThan:
+        return value.lower().isFinite() &&
+               (Rational() < value.lower().value() ||
+                (value.lower().value().isZero() && value.lower().isStrict()));
+    }
+    return false;
+}
+
+bool definitelyFalse(const Interval& value, ConstraintKind kind)
+{
+    if (value.isBottom())
+        return false;
+    switch (kind)
+    {
+    case ConstraintKind::Equal:
+        return !containsZero(value);
+    case ConstraintKind::NotEqual:
+        return singletonZero(value);
+    case ConstraintKind::LessEqual:
+        return value.lower().isFinite() &&
+               (Rational() < value.lower().value() ||
+                (value.lower().value().isZero() && value.lower().isStrict()));
+    case ConstraintKind::LessThan:
+        return value.lower().isFinite() && Rational() <= value.lower().value();
+    case ConstraintKind::GreaterEqual:
+        return value.upper().isFinite() &&
+               (value.upper().value() < Rational() ||
+                (value.upper().value().isZero() && value.upper().isStrict()));
+    case ConstraintKind::GreaterThan:
+        return value.upper().isFinite() && value.upper().value() <= Rational();
+    }
+    return false;
+}
+
+} // namespace
+
 NumericalState::RawBuffer NumericalState::serializeRaw() const
 {
     // Transfers are allowed to retain an exact but non-minimal H cache so
@@ -501,6 +929,9 @@ void NumericalState::substitute(Variable target,
     // value can soundly constrain the pre-state without nonlinear/machine
     // semantics for the right-hand side.
     forget(target);
+    recordOperation(OperationKind::Substitution,
+                    ApproximationKind::UnsupportedFallback, false,
+                    "nonlinear backward substitution projected the output");
 }
 
 void NumericalState::substituteParallel(
@@ -531,6 +962,11 @@ void NumericalState::substituteParallel(
     for (Variable target : unsupported)
         forget(target);
     substituteParallel(affine);
+    if (!unsupported.empty())
+        recordOperation(
+            OperationKind::Substitution,
+            ApproximationKind::UnsupportedFallback, false,
+            "parallel nonlinear backward substitution projected unsupported outputs");
 }
 
 Interval NumericalState::bound(const TreeExpression& expression) const
@@ -538,8 +974,123 @@ Interval NumericalState::bound(const TreeExpression& expression) const
     if (const std::optional<LinearExpression> linear = expression.asLinear())
         return bound(*linear);
     if (isBottom())
-        return Interval(Bound::plusInfinity(), Bound::minusInfinity());
-    return Interval::top();
+        return bottomInterval();
+    return evaluateTreeExpression(expression);
+}
+
+Interval NumericalState::evaluateTreeExpression(
+    const TreeExpression& expression) const
+{
+    if (isBottom())
+        return bottomInterval();
+    return evaluateTree(*this, expression);
+}
+
+LinearConstraintSet NumericalState::treeConstraintConsequences(
+    const TreeConstraint& constraint) const
+{
+    const Interval value = evaluateTreeExpression(constraint.expression());
+    if (definitelyFalse(value, constraint.kind()))
+        return {LinearConstraint(LinearExpression(Rational(1)),
+                                 ConstraintKind::LessEqual)};
+    if (definitelyTrue(value, constraint.kind()))
+        return {};
+
+    const TreeExpression& expression = constraint.expression();
+    if (expression.kind() != TreeExpression::Kind::Binary ||
+        expression.binaryOperator() != BinaryOperator::Multiply ||
+        expression.type().kind == NumericKind::IEEEFloat)
+        return {};
+    const std::optional<LinearExpression> lhs = expression.lhs().asLinear();
+    const std::optional<LinearExpression> rhs = expression.rhs().asLinear();
+    if (!lhs || !rhs)
+        return {};
+    const Interval lhsBounds = bound(*lhs);
+    const Interval rhsBounds = bound(*rhs);
+    if (!lhsBounds.lower().isFinite() || !lhsBounds.upper().isFinite() ||
+        !rhsBounds.lower().isFinite() || !rhsBounds.upper().isFinite())
+        return {};
+
+    const Rational& lx = lhsBounds.lower().value();
+    const Rational& ux = lhsBounds.upper().value();
+    const Rational& ly = rhsBounds.lower().value();
+    const Rational& uy = rhsBounds.upper().value();
+    const std::vector<LinearExpression> lowerForms{
+        *rhs * lx + *lhs * ly - LinearExpression(lx * ly),
+        *rhs * ux + *lhs * uy - LinearExpression(ux * uy)};
+    const std::vector<LinearExpression> upperForms{
+        *rhs * ux + *lhs * ly - LinearExpression(ux * ly),
+        *rhs * lx + *lhs * uy - LinearExpression(lx * uy)};
+
+    LinearConstraintSet result;
+    const auto appendLower = [&](ConstraintKind kind)
+    {
+        for (const LinearExpression& form : lowerForms)
+            result.emplace_back(form, kind);
+    };
+    const auto appendUpper = [&](ConstraintKind kind)
+    {
+        for (const LinearExpression& form : upperForms)
+            result.emplace_back(form, kind);
+    };
+    switch (constraint.kind())
+    {
+    case ConstraintKind::LessEqual:
+        appendLower(ConstraintKind::LessEqual);
+        break;
+    case ConstraintKind::LessThan:
+        appendLower(ConstraintKind::LessThan);
+        break;
+    case ConstraintKind::GreaterEqual:
+        appendUpper(ConstraintKind::GreaterEqual);
+        break;
+    case ConstraintKind::GreaterThan:
+        appendUpper(ConstraintKind::GreaterThan);
+        break;
+    case ConstraintKind::Equal:
+        appendLower(ConstraintKind::LessEqual);
+        appendUpper(ConstraintKind::GreaterEqual);
+        break;
+    case ConstraintKind::NotEqual:
+        break;
+    }
+    return result;
+}
+
+void NumericalState::assignInterval(Variable target, const Interval& value)
+{
+    if (!environment().contains(target))
+        throw std::invalid_argument("assignment target is not in environment");
+    if (isBottom())
+        return;
+    forget(target);
+    if (value.isBottom())
+    {
+        assume(LinearConstraint(LinearExpression(Rational(1)),
+                                ConstraintKind::LessEqual));
+        return;
+    }
+    if (value.lower().isFinite())
+        assume(LinearConstraint(
+            LinearExpression(target) -
+                LinearExpression(value.lower().value()),
+            value.lower().isStrict() ? ConstraintKind::GreaterThan
+                                     : ConstraintKind::GreaterEqual));
+    if (value.upper().isFinite())
+        assume(LinearConstraint(
+            LinearExpression(target) -
+                LinearExpression(value.upper().value()),
+            value.upper().isStrict() ? ConstraintKind::LessThan
+                                     : ConstraintKind::LessEqual));
+}
+
+void NumericalState::recordOperation(OperationKind operation,
+                                     ApproximationKind approximation,
+                                     bool best, std::string reason) const
+{
+    lastOperation_ = {operation, approximation,
+                      approximation == ApproximationKind::Exact, best,
+                      std::move(reason)};
 }
 
 VariableEnvironment NumericalState::unifyEnvironmentWith(

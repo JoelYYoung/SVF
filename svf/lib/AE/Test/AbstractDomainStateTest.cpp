@@ -216,9 +216,10 @@ void checkExpressionBoundsAndSubstitution(State state, Variable x, Variable y)
         TreeExpression::variable(x, NumericType::real()),
         TreeExpression::variable(y, NumericType::real()),
         NumericType::real());
-    require(state.bound(nonlinearTree).isTop(),
+    require(state.bound(nonlinearTree) ==
+                Interval::singleton(Rational(4)),
             std::string(state.name()) +
-                " must return top for an unsupported nonlinear bound");
+                " must evaluate a bounded nonlinear tree");
     State unsupportedPreimage = state;
     unsupportedPreimage.substitute(x, nonlinearTree);
     require(unsupportedPreimage.bound(x).isTop() &&
@@ -1022,6 +1023,296 @@ void testPolyhedraDualRepresentation()
             "equalities");
 }
 
+void testExtendedApronSurface()
+{
+    const Variable x(1);
+    const Variable y(2);
+    const Variable z(3);
+    const Variable a(4);
+    const Variable b(5);
+    const VariableEnvironment realEnvironment(
+        {{x, NumericType::real(), "x"}, {y, NumericType::real(), "y"},
+         {z, NumericType::real(), "z"}});
+
+    const auto checkSharedCapabilities = [&](const auto& state)
+    {
+        const DomainCapabilities capabilities = state.capabilities();
+        require(capabilities.expandFold &&
+                    capabilities.operationMetadata &&
+                    capabilities.ieeeTreeExpressions &&
+                    capabilities.nonlinearTreeExpressions,
+                std::string(state.name()) +
+                    " did not advertise the completed APRON surface");
+    };
+    checkSharedCapabilities(BoxState::top(realEnvironment));
+    checkSharedCapabilities(OctagonState::top(realEnvironment));
+    checkSharedCapabilities(ConvexPolyhedraState::top(realEnvironment));
+    require(ConvexPolyhedraState::top(realEnvironment)
+                .capabilities()
+                .generatorExchange,
+            "Polyhedra did not advertise public generator exchange");
+
+    BoxState metadataCurrent = BoxState::top(realEnvironment);
+    metadataCurrent.assign(x, LinearExpression(Rational(1)));
+    require(metadataCurrent.lastOperation().operation ==
+                    OperationKind::Assignment &&
+                metadataCurrent.lastOperation().exact &&
+                metadataCurrent.lastOperation().best,
+            "exact affine assignment metadata is incorrect");
+    BoxState metadataNext = metadataCurrent;
+    metadataNext.assign(x, LinearExpression(Rational(2)));
+    const BoxState metadataWidened = metadataCurrent.widen(metadataNext);
+    require(metadataWidened.lastOperation().operation ==
+                    OperationKind::Widening &&
+                !metadataWidened.lastOperation().exact &&
+                metadataWidened.lastOperation().best,
+            "widening metadata must distinguish exact from best");
+
+    const TreeExpression product = TreeExpression::binary(
+        BinaryOperator::Multiply,
+        TreeExpression::variable(x, NumericType::real()),
+        TreeExpression::variable(y, NumericType::real()),
+        NumericType::real());
+    const auto checkNonlinear = [&](auto state)
+    {
+        state.assumeAll({atLeast(x, Rational(2)), atMost(x, Rational(3)),
+                         atLeast(y, Rational(-1)), atMost(y, Rational(4))});
+        state.assign(z, product);
+        const Interval result = state.bound(z);
+        require(result.lower().isFinite() && result.upper().isFinite() &&
+                    result.lower().value() <= Rational(-3) &&
+                    Rational(12) <= result.upper().value(),
+                std::string(state.name()) +
+                    " nonlinear multiplication lost a concrete endpoint");
+        require(!state.lastOperation().exact &&
+                    !state.lastOperation().best &&
+                    state.lastOperation().approximation ==
+                        ApproximationKind::SoundOverApproximation,
+                std::string(state.name()) +
+                    " did not expose nonlinear approximation metadata");
+    };
+    checkNonlinear(BoxState::top(realEnvironment));
+    checkNonlinear(OctagonState::top(realEnvironment));
+    checkNonlinear(ConvexPolyhedraState::top(realEnvironment));
+
+    BoxState parallel = BoxState::top(realEnvironment);
+    parallel.assumeAll({equalsValue(x, Rational(2)),
+                        equalsValue(y, Rational(3))});
+    parallel.assignParallel(TreeAssignmentList{
+        {x, TreeExpression::binary(
+                BinaryOperator::Multiply,
+                TreeExpression::variable(y, NumericType::real()),
+                TreeExpression::variable(y, NumericType::real()),
+                NumericType::real())},
+        {y, TreeExpression::binary(
+                BinaryOperator::Multiply,
+                TreeExpression::variable(x, NumericType::real()),
+                TreeExpression::variable(x, NumericType::real()),
+                NumericType::real())}});
+    require(parallel.bound(x) == Interval::singleton(Rational(9)) &&
+                parallel.bound(y) == Interval::singleton(Rational(4)),
+            "parallel nonlinear assignments must read one incoming state");
+
+    BoxState impossible = BoxState::top(realEnvironment);
+    impossible.assumeAll({atLeast(x, Rational(1)), atMost(x, Rational(2)),
+                          atLeast(y, Rational(1)), atMost(y, Rational(3))});
+    impossible.assume(TreeConstraint(product, ConstraintKind::LessEqual));
+    require(impossible.isBottom(),
+            "interval-disproved nonlinear guards must produce bottom");
+
+    BoxState nonlinearOperators = BoxState::top(realEnvironment);
+    nonlinearOperators.assumeAll(
+        {equalsValue(x, Rational(9)), equalsValue(y, Rational(4))});
+    const TreeExpression quotient = TreeExpression::binary(
+        BinaryOperator::Divide,
+        TreeExpression::variable(x, NumericType::real()),
+        TreeExpression::variable(y, NumericType::real()),
+        NumericType::real());
+    const TreeExpression remainder = TreeExpression::binary(
+        BinaryOperator::Remainder,
+        TreeExpression::variable(x, NumericType::real()),
+        TreeExpression::variable(y, NumericType::real()),
+        NumericType::real());
+    const TreeExpression squareRoot = TreeExpression::unary(
+        UnaryOperator::SquareRoot,
+        TreeExpression::variable(y, NumericType::real()),
+        NumericType::real());
+    require(nonlinearOperators.bound(quotient) ==
+                    Interval::singleton(Rational("9/4")) &&
+                nonlinearOperators.bound(remainder) ==
+                    Interval::singleton(Rational(1)) &&
+                nonlinearOperators.bound(squareRoot) ==
+                    Interval::singleton(Rational(2)),
+            "divide, remainder, and square-root tree evaluation is incorrect");
+    const TreeExpression zeroDivisor = TreeExpression::binary(
+        BinaryOperator::Divide,
+        TreeExpression::variable(x, NumericType::real()),
+        TreeExpression::constant(Rational(), NumericType::real()),
+        NumericType::real());
+    require(nonlinearOperators.bound(zeroDivisor).isTop(),
+            "possible division by zero must conservatively produce top");
+
+    BoxState castSource = BoxState::top(realEnvironment);
+    castSource.assumeAll(
+        {atLeast(x, Rational("-3/2")), atMost(x, Rational("7/2"))});
+    const TreeExpression integerCast = TreeExpression::unary(
+        UnaryOperator::Cast,
+        TreeExpression::variable(x, NumericType::real()),
+        NumericType::integer(), RoundingMode::TowardZero);
+    require(castSource.bound(integerCast) ==
+                Interval(Bound::finite(Rational(-1)),
+                         Bound::finite(Rational(3))),
+            "real-to-integer casts must truncate toward zero");
+
+    const Variable f(11);
+    const Variable g(12);
+    const Variable h(13);
+    const NumericType binary32 = NumericType::ieee(FloatFormat::binary32());
+    const VariableEnvironment floatEnvironment(
+        {{f, binary32, "f"}, {g, binary32, "g"}, {h, binary32, "h"}});
+    BoxState floating = BoxState::top(floatEnvironment);
+    floating.assign(
+        f, TreeExpression::constant(Rational("1/10"), binary32));
+    floating.assign(
+        g, TreeExpression::constant(Rational("1/5"), binary32));
+    floating.assign(
+        h, TreeExpression::binary(
+               BinaryOperator::Add,
+               TreeExpression::variable(f, binary32),
+               TreeExpression::variable(g, binary32), binary32));
+    const Rational rounded = FloatSemantics::add(
+        FloatSemantics::add(Rational("1/10"), Rational(), 24,
+                            RoundingMode::NearestTiesToEven),
+        FloatSemantics::add(Rational("1/5"), Rational(), 24,
+                            RoundingMode::NearestTiesToEven),
+        24, RoundingMode::NearestTiesToEven);
+    require(floating.bound(h).lower().isFinite() &&
+                floating.bound(h).upper().isFinite() &&
+                floating.bound(h).lower().value() <= rounded &&
+                rounded <= floating.bound(h).upper().value(),
+            "outward IEEE interval evaluation excluded the rounded result");
+
+    const Rational halfUlp("1/16777216");
+    for (RoundingMode rounding :
+         {RoundingMode::NearestTiesToEven, RoundingMode::TowardZero,
+          RoundingMode::TowardPositive, RoundingMode::TowardNegative})
+    {
+        const TreeExpression roundedAddition = TreeExpression::binary(
+            BinaryOperator::Add,
+            TreeExpression::constant(Rational(1), binary32),
+            TreeExpression::constant(halfUlp, binary32), binary32,
+            rounding);
+        const Rational expected = FloatSemantics::add(
+            Rational(1), halfUlp, 24, rounding);
+        require(floating.bound(roundedAddition) ==
+                    Interval::singleton(expected),
+                "binary32 addition did not honor its rounding mode");
+    }
+
+    const Rational minimumSubnormal(
+        "1/713623846352979940529142984724747568191373312");
+    const TreeExpression subnormalTie = TreeExpression::unary(
+        UnaryOperator::Cast,
+        TreeExpression::constant(minimumSubnormal * Rational("3/2"),
+                                 NumericType::real()),
+        binary32, RoundingMode::NearestTiesToEven);
+    require(floating.bound(subnormalTie) ==
+                Interval::singleton(minimumSubnormal * Rational(2)),
+            "binary32 subnormal ties must round to an even significand");
+    floating.assign(
+        h, TreeExpression::constant(
+               Rational("10000000000000000000000000000000000000000"),
+               binary32));
+    require(floating.bound(h).isTop(),
+            "IEEE overflow must conservatively produce top");
+
+    const VariableEnvironment summaryEnvironment(
+        {{x, NumericType::real(), "summary"},
+         {y, NumericType::real(), "other"}});
+    const std::vector<VariableDeclaration> copies{
+        {a, NumericType::real(), "materialized_a"},
+        {b, NumericType::real(), "materialized_b"}};
+    const auto checkExpandFold = [&](auto state)
+    {
+        state.assume(equalsValue(x, Rational(1)));
+        state.assume(equalsValue(y, Rational(2)));
+        state.expand(x, copies);
+        require(state.environment().contains(a) &&
+                    state.environment().contains(b) &&
+                    state.bound(a) == Interval::singleton(Rational(1)) &&
+                    state.bound(b) == Interval::singleton(Rational(1)),
+                std::string(state.name()) +
+                    " expand did not duplicate the summary value");
+        state.assign(a, LinearExpression(Rational(10)));
+        state.fold(x, {a});
+        require(!state.environment().contains(a) &&
+                    state.environment().contains(b) &&
+                    state.bound(x).lower().isFinite() &&
+                    state.bound(x).upper().isFinite() &&
+                    state.bound(x).lower().value() == Rational(1) &&
+                    state.bound(x).upper().value() == Rational(10) &&
+                    state.lastOperation().operation == OperationKind::Fold,
+                std::string(state.name()) +
+                    " fold did not retain every representative");
+    };
+    checkExpandFold(BoxState::top(summaryEnvironment));
+    checkExpandFold(OctagonState::top(summaryEnvironment));
+    checkExpandFold(ConvexPolyhedraState::top(summaryEnvironment));
+
+    const VariableEnvironment generatorEnvironment(
+        {{x, NumericType::real(), "x"}, {y, NumericType::real(), "y"}});
+    const PolyhedraGeneratorSet nncGenerators{
+        {PolyhedraGeneratorKind::ClosurePoint,
+         {Rational(0), Rational(0)}},
+        {PolyhedraGeneratorKind::Point, {Rational(1), Rational(0)}},
+        {PolyhedraGeneratorKind::Ray, {Rational(0), Rational(1)}}};
+    ConvexPolyhedraState generated =
+        ConvexPolyhedraState::fromGenerators(generatorEnvironment,
+                                              nncGenerators);
+    require(generated.lastOperation().operation ==
+                    OperationKind::GeneratorImport &&
+                generated.lastOperation().exact &&
+                generated.lastOperation().best &&
+                generated.bound(x).lower().isStrict() &&
+                !generated.bound(x).upper().isStrict() &&
+                generated.bound(x).lower().value() == Rational(0) &&
+                generated.bound(x).upper().value() == Rational(1) &&
+                generated.bound(y).lower().value() == Rational(0) &&
+                generated.bound(y).upper().isPlusInfinity(),
+            "public NNC generators lost included/closure/ray semantics");
+    const PolyhedraGeneratorSet exported = generated.toGenerators();
+    require(generated.lastOperation().operation ==
+                OperationKind::GeneratorExport,
+            "generator export did not update operation metadata");
+    const ConvexPolyhedraState regenerated =
+        ConvexPolyhedraState::fromGenerators(generatorEnvironment, exported);
+    require(generated.isEquivalentTo(regenerated) == CheckResult::True,
+            "public generator export/import changed an NNC polyhedron: " +
+                generated.toString() + " versus " + regenerated.toString());
+
+    const PolyhedraGeneratorSet lineGenerators{
+        {PolyhedraGeneratorKind::Point, {Rational(0), Rational(0)}},
+        {PolyhedraGeneratorKind::Line, {Rational(0), Rational(1)}}};
+    const ConvexPolyhedraState line =
+        ConvexPolyhedraState::fromGenerators(generatorEnvironment,
+                                              lineGenerators);
+    require(line.bound(x) == Interval::singleton(Rational(0)) &&
+                line.bound(y).isTop(),
+            "public line generator did not create a bidirectional direction");
+    require(ConvexPolyhedraState::fromGenerators(generatorEnvironment, {})
+                .isBottom(),
+            "an empty public generator system must denote bottom");
+    requireThrows(
+        [&]
+        {
+            (void)ConvexPolyhedraState::fromGenerators(
+                generatorEnvironment,
+                {{PolyhedraGeneratorKind::Ray,
+                  {Rational(1), Rational(0)}}});
+        },
+        "a generator system without an included point must be rejected");
+}
+
 void testNonRelationalState()
 {
     const Location first(10);
@@ -1168,6 +1459,7 @@ int main()
         testNumericalHashAndRawSerialization();
         testRandomizedNumericalSoundness();
         testPolyhedraDualRepresentation();
+        testExtendedApronSurface();
         testNonRelationalState();
         std::cout << "abstract-domain state tests: PASS\n";
         return EXIT_SUCCESS;

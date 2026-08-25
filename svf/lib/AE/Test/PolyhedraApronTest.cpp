@@ -329,6 +329,90 @@ void compareMixedClosedAndNNC(ap_manager_t* manager)
             "mixed meet closed an NNC endpoint");
 }
 
+void compareExpandFold(ap_manager_t* manager)
+{
+    const Variable x(1);
+    const Variable y(2);
+    const Variable firstCopy(3);
+    const Variable secondCopy(4);
+    const VariableEnvironment environment(
+        {{x, NumericType::real(), "x"}, {y, NumericType::real(), "y"}});
+    LinearExpression difference(x);
+    difference.setCoefficient(y, Rational(-1));
+    const LinearConstraintSet initial{
+        greaterEqual(difference, LinearExpression(Rational(0))),
+        lessEqual(difference, LinearExpression(Rational(2))),
+        greaterEqual(LinearExpression(y), LinearExpression(Rational(-1))),
+        lessEqual(LinearExpression(y), LinearExpression(Rational(3)))};
+
+    ConvexPolyhedraState native =
+        ConvexPolyhedraState::fromConstraints(environment, initial);
+    ApronValue apron = apronFromConstraints(manager, environment, initial);
+    native.expand(
+        x, {{firstCopy, NumericType::real(), "x0"},
+            {secondCopy, NumericType::real(), "x1"}});
+    apron = ApronValue(
+        manager, ap_abstract0_expand(manager, false, apron.get(), 0, 2));
+    require(apronMatches(manager, native, apron),
+            "polyhedra expand differs from NewPolka");
+
+    LinearExpression copiesDifference(firstCopy);
+    copiesDifference.setCoefficient(secondCopy, Rational(-1));
+    require(native.entails(equal(copiesDifference,
+                                 LinearExpression(Rational()))) !=
+                CheckResult::True,
+            "polyhedra expand incorrectly equated unrelated copies");
+
+    native.fold(x, {firstCopy, secondCopy});
+    ap_dim_t dimensions[] = {0, 2, 3};
+    apron = ApronValue(
+        manager,
+        ap_abstract0_fold(manager, false, apron.get(), dimensions, 3));
+    require(apronMatches(manager, native, apron),
+            "polyhedra fold differs from NewPolka");
+}
+
+void compareGeneratorExchange(ap_manager_t* manager)
+{
+    const Variable x(1);
+    const Variable y(2);
+    const VariableEnvironment environment(
+        {{x, NumericType::real(), "x"}, {y, NumericType::real(), "y"}});
+    const PolyhedraGeneratorSet generators{
+        {PolyhedraGeneratorKind::ClosurePoint,
+         {Rational(0), Rational(0)}},
+        {PolyhedraGeneratorKind::Point, {Rational(1), Rational(0)}},
+        {PolyhedraGeneratorKind::Ray, {Rational(0), Rational(1)}}};
+    ConvexPolyhedraState native =
+        ConvexPolyhedraState::fromGenerators(environment, generators);
+    const LinearConstraintSet expectedConstraints{
+        greaterThan(LinearExpression(x), LinearExpression(Rational(0))),
+        lessEqual(LinearExpression(x), LinearExpression(Rational(1))),
+        greaterEqual(LinearExpression(y), LinearExpression(Rational(0)))};
+    const ApronValue expected =
+        apronFromConstraints(manager, environment, expectedConstraints);
+    require(apronMatches(manager, native, expected),
+            "public point/closure-point/ray import differs from NewPolka");
+
+    native = ConvexPolyhedraState::fromGenerators(environment,
+                                                   native.toGenerators());
+    require(apronMatches(manager, native, expected),
+            "public NNC generator export/import differs from NewPolka");
+
+    const ConvexPolyhedraState line =
+        ConvexPolyhedraState::fromGenerators(
+            environment,
+            {{PolyhedraGeneratorKind::Point,
+              {Rational(0), Rational(0)}},
+             {PolyhedraGeneratorKind::Line,
+              {Rational(0), Rational(1)}}});
+    const ApronValue expectedLine = apronFromConstraints(
+        manager, environment,
+        {equal(LinearExpression(x), LinearExpression(Rational(0)))});
+    require(apronMatches(manager, line, expectedLine),
+            "public line generator import differs from NewPolka");
+}
+
 } // namespace
 
 int main()
@@ -350,6 +434,8 @@ int main()
         compareLinealityAndPersistentDual(manager.get());
         compareNNCFamilies(manager.get());
         compareMixedClosedAndNNC(manager.get());
+        compareExpandFold(manager.get());
+        compareGeneratorExchange(manager.get());
         std::cout << "native Polyhedra/APRON NewPolka differential tests passed\n";
         return 0;
     }

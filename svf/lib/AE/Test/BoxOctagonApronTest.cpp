@@ -232,6 +232,34 @@ void compareExactLatticeFamily(ap_manager_t* manager,
     requireEquivalent(manager, forgotten,
                       apronForget(manager, apronLeft, environment, variable),
                       name + " forget");
+
+    const Variable source = environment.variableOf(0);
+    const Variable firstCopy(
+        static_cast<std::uint32_t>(environment.size() + 1));
+    const Variable secondCopy(
+        static_cast<std::uint32_t>(environment.size() + 2));
+    const std::vector<VariableDeclaration> copies{
+        {firstCopy, NumericType::real(), "expanded0"},
+        {secondCopy, NumericType::real(), "expanded1"}};
+    State expanded = left;
+    expanded.expand(source, copies);
+    ApronValue apronExpanded(
+        manager,
+        ap_abstract0_expand(manager, false, apronLeft.get(),
+                            environment.dimensionOf(source), copies.size()));
+    requireEquivalent(manager, expanded, apronExpanded, name + " expand");
+
+    expanded.fold(source, {firstCopy, secondCopy});
+    ap_dim_t foldedDimensions[] = {
+        static_cast<ap_dim_t>(environment.dimensionOf(source)),
+        static_cast<ap_dim_t>(environment.size()),
+        static_cast<ap_dim_t>(environment.size() + 1)};
+    ApronValue apronFolded(
+        manager,
+        ap_abstract0_fold(manager, false, apronExpanded.get(),
+                          foldedDimensions, 3));
+    requireEquivalent(manager, expanded, apronFolded,
+                      name + " fold after expand");
 }
 
 void compareBoxFamily(ap_manager_t* boxManager,

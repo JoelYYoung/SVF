@@ -181,6 +181,15 @@ public:
     bool isBottom() const;
     std::string toString() const;
 
+    friend bool operator==(const Interval& lhs, const Interval& rhs)
+    {
+        return lhs.lower_ == rhs.lower_ && lhs.upper_ == rhs.upper_;
+    }
+    friend bool operator!=(const Interval& lhs, const Interval& rhs)
+    {
+        return !(lhs == rhs);
+    }
+
 private:
     Bound lower_;
     Bound upper_;

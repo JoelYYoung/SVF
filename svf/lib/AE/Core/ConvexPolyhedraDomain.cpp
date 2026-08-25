@@ -585,6 +585,86 @@ ConvexPolyhedraState ConvexPolyhedraState::fromConstraints(
     return result;
 }
 
+ConvexPolyhedraState ConvexPolyhedraState::fromGenerators(
+    const VariableEnvironment& environment,
+    const PolyhedraGeneratorSet& generators,
+    const ConvexPolyhedraConfig& config)
+{
+    if (generators.empty())
+        return bottom(environment, config);
+    const bool nnc = std::any_of(
+        generators.begin(), generators.end(),
+        [](const PolyhedraGenerator& generator)
+        { return generator.kind == PolyhedraGeneratorKind::ClosurePoint; });
+    const bool hasIncludedPoint = std::any_of(
+        generators.begin(), generators.end(),
+        [](const PolyhedraGenerator& generator)
+        { return generator.kind == PolyhedraGeneratorKind::Point; });
+    if (!hasIncludedPoint)
+        throw std::invalid_argument(
+            "a nonempty generator system requires an included point");
+
+    // Public PPL/APRON-style NNC generators carry point/closure membership,
+    // not the internal numeric epsilon witness. First compute the facets of
+    // their closed hull, then mark exactly those facets strict that no
+    // included point saturates. This is invariant under the internal epsilon
+    // scaling chosen by a previous H -> V conversion.
+    std::vector<Generator> closureGenerators;
+    closureGenerators.reserve(generators.size());
+    for (const PolyhedraGenerator& generator : generators)
+    {
+        if (generator.coordinates.size() != environment.size())
+            throw std::invalid_argument(
+                "generator coordinates do not match the environment");
+        std::vector<mpq_class> coordinates(environment.size() + 1);
+        const bool finite =
+            generator.kind == PolyhedraGeneratorKind::Point ||
+            generator.kind == PolyhedraGeneratorKind::ClosurePoint;
+        if (finite)
+            coordinates.front() = 1;
+        for (Dimension dimension = 0; dimension < environment.size();
+             ++dimension)
+            coordinates[dimension + 1] =
+                generator.coordinates[dimension].value();
+        Generator converted;
+        converted.line =
+            generator.kind == PolyhedraGeneratorKind::Line;
+        setGeneratorCoordinates(converted, coordinates);
+        closureGenerators.push_back(std::move(converted));
+    }
+    closureGenerators = uniqueGenerators(std::move(closureGenerators));
+    std::vector<Inequality> inequalities = constraintsFromGenerators(
+        closureGenerators, environment.size(), false);
+    if (nnc)
+    {
+        for (Inequality& inequality : inequalities)
+        {
+            const bool includedBoundaryPoint = std::any_of(
+                generators.begin(), generators.end(),
+                [&](const PolyhedraGenerator& generator)
+                {
+                    if (generator.kind != PolyhedraGeneratorKind::Point)
+                        return false;
+                    Rational value;
+                    for (Dimension dimension = 0;
+                         dimension < environment.size(); ++dimension)
+                        value += inequality.coefficients[dimension] *
+                                 generator.coordinates[dimension];
+                    return value == inequality.bound;
+                });
+            inequality.strict = !includedBoundaryPoint;
+        }
+    }
+    ConvexPolyhedraState result = top(environment, config);
+    result.impl_->inequalities = std::move(inequalities);
+    result.normalize();
+    if (!result.impl_->bottom && nnc)
+        result.ensureGenerators();
+    result.recordOperation(OperationKind::GeneratorImport,
+                           ApproximationKind::Exact, true);
+    return result;
+}
+
 ConvexPolyhedraState::ConvexPolyhedraState(
     const ConvexPolyhedraState& other)
     : NumericalState(other), environment_(other.environment_),
@@ -634,7 +714,11 @@ DomainCapabilities ConvexPolyhedraState::capabilities() const
     result.backwardAssignments = true;
     result.topologicalClosure = true;
     result.canonicalization = true;
-    result.nonlinearTreeExpressions = false;
+    result.expandFold = true;
+    result.operationMetadata = true;
+    result.generatorExchange = true;
+    result.ieeeTreeExpressions = true;
+    result.nonlinearTreeExpressions = true;
     return result;
 }
 
@@ -666,6 +750,7 @@ void ConvexPolyhedraState::assignParallel(
                     "parallel assignment expression uses an unknown variable");
         }
     }
+    recordOperation(OperationKind::Assignment, ApproximationKind::Exact, true);
     if (assignments.empty() || impl_->bottom)
         return;
 
@@ -797,6 +882,8 @@ void ConvexPolyhedraState::substituteParallel(
                     "substitution expression uses an unknown variable");
         }
     }
+    recordOperation(OperationKind::Substitution, ApproximationKind::Exact,
+                    true);
     if (assignments.empty() || impl_->bottom)
         return;
 
@@ -817,14 +904,17 @@ void ConvexPolyhedraState::assign(Variable target,
         assign(target, *linear);
         return;
     }
-    forget(target);
+    const Interval value = evaluateTreeExpression(expression);
+    assignInterval(target, value);
     report(OperationKind::Assignment,
-           ApproximationKind::UnsupportedFallback,
-           "non-affine tree assignment forgets the target");
+           ApproximationKind::SoundOverApproximation,
+           "nonlinear or finite IEEE assignment was interval-linearized",
+           false);
 }
 
 void ConvexPolyhedraState::assume(const LinearConstraint& constraint)
 {
+    recordOperation(OperationKind::Assumption, ApproximationKind::Exact, true);
     if (impl_->bottom)
         return;
     if (constraint.kind() == ConstraintKind::NotEqual)
@@ -918,6 +1008,7 @@ void ConvexPolyhedraState::assume(const LinearConstraint& constraint)
 void ConvexPolyhedraState::assumeAll(
     const LinearConstraintSet& constraints)
 {
+    recordOperation(OperationKind::Assumption, ApproximationKind::Exact, true);
     if (impl_->bottom || constraints.empty())
         return;
 
@@ -1014,9 +1105,15 @@ void ConvexPolyhedraState::assume(const TreeConstraint& constraint)
         assume(LinearConstraint(*linear, constraint.kind()));
         return;
     }
+    const LinearConstraintSet consequences =
+        treeConstraintConsequences(constraint);
+    assumeAll(consequences);
     report(OperationKind::Assumption,
-           ApproximationKind::UnsupportedFallback,
-           "non-affine tree constraint is ignored");
+           ApproximationKind::SoundOverApproximation,
+           consequences.empty()
+               ? "nonlinear or finite IEEE guard had no affine consequence"
+               : "nonlinear guard was reduced to sound affine consequences",
+           false);
 }
 
 void ConvexPolyhedraState::forget(Variable variable)
@@ -1046,8 +1143,9 @@ void ConvexPolyhedraState::forget(Variable variable)
         impl_->polar = {};
         impl_->polarValid = false;
         invalidateConstraints();
-        if (config_.integerTightening && hasIntegerVariable(environment_))
-            ensureConstraints();
+    if (config_.integerTightening && hasIntegerVariable(environment_))
+        ensureConstraints();
+    recordOperation(OperationKind::Forget, ApproximationKind::Exact, true);
         return;
     }
 
@@ -1067,6 +1165,8 @@ void ConvexPolyhedraState::changeEnvironment(const VariableEnvironment& environm
             throw std::invalid_argument(
                 "environment change modifies a variable's numeric type");
     }
+    recordOperation(OperationKind::EnvironmentChange,
+                    ApproximationKind::Exact, true);
     if (impl_->bottom)
     {
         environment_ = environment;
@@ -1186,6 +1286,83 @@ void ConvexPolyhedraState::changeEnvironment(const VariableEnvironment& environm
                          LinearExpression(Rational())));
     }
     normalize();
+}
+
+void ConvexPolyhedraState::expand(
+    Variable source, const std::vector<VariableDeclaration>& copies)
+{
+    if (!environment_.contains(source))
+        throw std::invalid_argument("expanded variable is not in environment");
+    std::set<Variable> seen;
+    for (const VariableDeclaration& copy : copies)
+    {
+        if (environment_.contains(copy.variable) ||
+            !seen.insert(copy.variable).second)
+            throw std::invalid_argument(
+                "expanded variables must be new and unique");
+        if (copy.type != environment_.typeOf(source))
+            throw std::invalid_argument(
+                "expanded variables must have the source numeric type");
+    }
+    if (copies.empty())
+    {
+        recordOperation(OperationKind::Expand, ApproximationKind::Exact, true);
+        return;
+    }
+    const LinearConstraintSet original = toConstraints();
+    changeEnvironment(environment_.add(copies));
+    for (const VariableDeclaration& copy : copies)
+    {
+        std::map<Variable, LinearExpression> replacement{
+            {source, LinearExpression(copy.variable)}};
+        LinearConstraintSet duplicated;
+        duplicated.reserve(original.size());
+        for (const LinearConstraint& constraint : original)
+        {
+            duplicated.emplace_back(
+                constraint.expression().substituted(replacement),
+                constraint.kind());
+        }
+        assumeAll(duplicated);
+    }
+    recordOperation(OperationKind::Expand, ApproximationKind::Exact, true);
+}
+
+void ConvexPolyhedraState::fold(
+    Variable target, const std::vector<Variable>& folded)
+{
+    if (!environment_.contains(target))
+        throw std::invalid_argument("fold target is not in environment");
+    std::set<Variable> seen;
+    std::vector<Variable> sources{target};
+    for (Variable variable : folded)
+    {
+        if (variable == target || !environment_.contains(variable) ||
+            !seen.insert(variable).second)
+            throw std::invalid_argument(
+                "folded variables must be distinct non-target dimensions");
+        if (environment_.typeOf(variable) != environment_.typeOf(target))
+            throw std::invalid_argument(
+                "folded variables must have the target numeric type");
+        sources.push_back(variable);
+    }
+    if (folded.empty())
+    {
+        recordOperation(OperationKind::Fold, ApproximationKind::Exact, true);
+        return;
+    }
+
+    ConvexPolyhedraState result = bottom(environment_, config_);
+    for (Variable source : sources)
+    {
+        ConvexPolyhedraState branch = *this;
+        if (source != target)
+            branch.assign(target, LinearExpression(source));
+        result = result.join(branch);
+    }
+    result.changeEnvironment(environment_.remove(folded));
+    *this = std::move(result);
+    recordOperation(OperationKind::Fold, ApproximationKind::Exact, true);
 }
 
 CheckResult ConvexPolyhedraState::entails(
@@ -1380,6 +1557,48 @@ LinearConstraintSet ConvexPolyhedraState::toConstraints() const
     return result;
 }
 
+PolyhedraGeneratorSet ConvexPolyhedraState::toGenerators() const
+{
+    PolyhedraGeneratorSet result;
+    if (impl_->bottom)
+    {
+        recordOperation(OperationKind::GeneratorExport,
+                        ApproximationKind::Exact, true);
+        return result;
+    }
+    ensureGenerators();
+    const std::size_t offset =
+        generatorVariableOffset(impl_->generatorsNNC);
+    result.reserve(impl_->generators.size());
+    for (const Generator& generator : impl_->generators)
+    {
+        PolyhedraGenerator exported;
+        if (generator.line)
+            exported.kind = PolyhedraGeneratorKind::Line;
+        else if (generator.coordinates.front() == 0)
+            exported.kind = PolyhedraGeneratorKind::Ray;
+        else if (impl_->generatorsNNC && generator.coordinates[1] == 0)
+            exported.kind = PolyhedraGeneratorKind::ClosurePoint;
+        else
+            exported.kind = PolyhedraGeneratorKind::Point;
+        exported.coordinates.reserve(environment_.size());
+        for (Dimension dimension = 0; dimension < environment_.size();
+             ++dimension)
+        {
+            mpq_class coordinate(
+                generator.coordinates[dimension + offset]);
+            if (generator.coordinates.front() != 0)
+                coordinate /= generator.coordinates.front();
+            exported.coordinates.push_back(
+                Rational::fromRaw(coordinate));
+        }
+        result.push_back(std::move(exported));
+    }
+    recordOperation(OperationKind::GeneratorExport,
+                    ApproximationKind::Exact, true);
+    return result;
+}
+
 void ConvexPolyhedraState::close()
 {
     if (impl_->bottom)
@@ -1388,13 +1607,21 @@ void ConvexPolyhedraState::close()
     for (Inequality& inequality : impl_->inequalities)
         inequality.strict = false;
     normalize();
+    recordOperation(OperationKind::TopologicalClosure,
+                    ApproximationKind::Exact, true);
 }
 
 void ConvexPolyhedraState::canonicalize()
 {
     if (impl_->constraintsValid && impl_->constraintsMinimal)
+    {
+        recordOperation(OperationKind::Canonicalization,
+                        ApproximationKind::Exact, true);
         return;
+    }
     normalize();
+    recordOperation(OperationKind::Canonicalization,
+                    ApproximationKind::Exact, true);
 }
 
 ConvexPolyhedraState ConvexPolyhedraState::join(
@@ -1402,9 +1629,19 @@ ConvexPolyhedraState ConvexPolyhedraState::join(
 {
     requirePolyhedron(other);
     if (impl_->bottom)
-        return other;
+    {
+        ConvexPolyhedraState result(other);
+        result.recordOperation(OperationKind::Join,
+                               ApproximationKind::Exact, true);
+        return result;
+    }
     if (other.impl_->bottom)
-        return *this;
+    {
+        ConvexPolyhedraState result(*this);
+        result.recordOperation(OperationKind::Join,
+                               ApproximationKind::Exact, true);
+        return result;
+    }
 
     // In homogeneous V form the NNC convex hull is the cone generated by the
     // union. Epsilon-positive generators retain included points while
@@ -1458,6 +1695,8 @@ ConvexPolyhedraState ConvexPolyhedraState::join(
     result.impl_->polarValid = false;
     if (config_.integerTightening && hasIntegerVariable(environment_))
         result.ensureConstraints();
+    result.recordOperation(OperationKind::Join, ApproximationKind::Exact,
+                           true);
     return result;
 }
 
@@ -1466,6 +1705,8 @@ ConvexPolyhedraState ConvexPolyhedraState::meet(
 {
     ConvexPolyhedraState result(*this);
     result.meetState(other);
+    result.recordOperation(OperationKind::Meet, ApproximationKind::Exact,
+                           true);
     return result;
 }
 
@@ -1474,9 +1715,21 @@ ConvexPolyhedraState ConvexPolyhedraState::widen(
 {
     requirePolyhedron(next);
     if (impl_->bottom)
-        return next;
+    {
+        ConvexPolyhedraState result(next);
+        result.recordOperation(OperationKind::Widening,
+                               ApproximationKind::SoundOverApproximation,
+                               true);
+        return result;
+    }
     if (next.impl_->bottom)
-        return *this;
+    {
+        ConvexPolyhedraState result(*this);
+        result.recordOperation(OperationKind::Widening,
+                               ApproximationKind::SoundOverApproximation,
+                               true);
+        return result;
+    }
     ensureConstraints();
     next.ensureConstraints();
     ConvexPolyhedraState result = top(environment_, config_);
@@ -1509,13 +1762,18 @@ ConvexPolyhedraState ConvexPolyhedraState::widen(
     }
     for (const LinearConstraint& threshold : policy.linearThresholds)
         retainApplicableThreshold(threshold);
+    result.recordOperation(OperationKind::Widening,
+                           ApproximationKind::SoundOverApproximation, true);
     return result;
 }
 
 ConvexPolyhedraState ConvexPolyhedraState::narrow(
     const ConvexPolyhedraState& next) const
 {
-    return meet(next);
+    ConvexPolyhedraState result = meet(next);
+    result.recordOperation(OperationKind::Narrowing,
+                           ApproximationKind::Exact, true);
+    return result;
 }
 
 bool ConvexPolyhedraState::hasCompatibleDomain(
@@ -1947,8 +2205,9 @@ void ConvexPolyhedraState::normalize()
 
 void ConvexPolyhedraState::report(OperationKind operation,
                                   ApproximationKind approximation,
-                                  std::string reason) const
+                                  std::string reason, bool best) const
 {
+    recordOperation(operation, approximation, best, reason);
     if (config_.diagnostics)
         config_.diagnostics->report(
             {operation, approximation, std::move(reason)});

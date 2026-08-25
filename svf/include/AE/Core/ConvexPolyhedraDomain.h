@@ -23,6 +23,25 @@ struct ConvexPolyhedraConfig
     }
 };
 
+enum class PolyhedraGeneratorKind
+{
+    Point,
+    ClosurePoint,
+    Ray,
+    Line
+};
+
+/// Public, environment-ordered V-representation element. Point coordinates
+/// are affine values; Ray/Line coordinates are directions. A closure point is
+/// available only in an NNC generator system. An empty system denotes bottom.
+struct PolyhedraGenerator
+{
+    PolyhedraGeneratorKind kind = PolyhedraGeneratorKind::Point;
+    std::vector<Rational> coordinates;
+};
+
+using PolyhedraGeneratorSet = std::vector<PolyhedraGenerator>;
+
 /// Closed/non-closed convex polyhedra over exact GMP rationals. The internal
 /// representation lazily caches normalized constraints (H) and homogeneous
 /// points/rays/lines (V), converting with an exact double-description kernel.
@@ -49,6 +68,10 @@ public:
     static ConvexPolyhedraState fromConstraints(
         const VariableEnvironment& environment,
         const LinearConstraintSet& constraints,
+        const ConvexPolyhedraConfig& config = {});
+    static ConvexPolyhedraState fromGenerators(
+        const VariableEnvironment& environment,
+        const PolyhedraGeneratorSet& generators,
         const ConvexPolyhedraConfig& config = {});
 
     ConvexPolyhedraState(const ConvexPolyhedraState& other);
@@ -84,12 +107,17 @@ public:
     void forget(Variable variable) override;
     void changeEnvironment(const VariableEnvironment& environment,
                            bool initializeNewVariablesToZero = false) override;
+    void expand(Variable source,
+                const std::vector<VariableDeclaration>& copies) override;
+    void fold(Variable target,
+              const std::vector<Variable>& folded) override;
 
     CheckResult entails(const LinearConstraint& constraint) const override;
     Interval bound(Variable variable) const override;
     Interval bound(const LinearExpression& expression) const override;
     IntervalBox toBox() const override;
     LinearConstraintSet toConstraints() const override;
+    PolyhedraGeneratorSet toGenerators() const;
     void close() override;
     void canonicalize() override;
 
@@ -126,7 +154,7 @@ private:
     void invalidateGenerators();
     void normalize();
     void report(OperationKind operation, ApproximationKind approximation,
-                std::string reason) const;
+                std::string reason, bool best = true) const;
 
     VariableEnvironment environment_;
     ConvexPolyhedraConfig config_;

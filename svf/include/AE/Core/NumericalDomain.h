@@ -26,7 +26,33 @@ enum class ApproximationKind
 enum class OperationKind
 {
     Assignment,
-    Assumption
+    Assumption,
+    Substitution,
+    Forget,
+    EnvironmentChange,
+    Join,
+    Meet,
+    Widening,
+    Narrowing,
+    TopologicalClosure,
+    Canonicalization,
+    Expand,
+    Fold,
+    GeneratorImport,
+    GeneratorExport
+};
+
+/// APRON-style information about the most recently completed mutating
+/// operation. `exact` means that no semantic approximation beyond the
+/// selected abstract domain was introduced. `best` means that the operation
+/// used the strongest implemented transformer for that domain and syntax.
+struct OperationMetadata
+{
+    OperationKind operation = OperationKind::Assignment;
+    ApproximationKind approximation = ApproximationKind::Exact;
+    bool exact = true;
+    bool best = true;
+    std::string reason;
 };
 
 struct Diagnostic
@@ -54,6 +80,10 @@ struct DomainCapabilities
     bool backwardAssignments = false;
     bool topologicalClosure = false;
     bool canonicalization = false;
+    bool expandFold = false;
+    bool operationMetadata = false;
+    bool generatorExchange = false;
+    bool ieeeTreeExpressions = false;
     /// True only when nonlinear TreeExpression operations retain domain facts
     /// instead of applying a sound forget/ignore fallback.
     bool nonlinearTreeExpressions = false;
@@ -130,6 +160,10 @@ public:
         const RawBuffer& buffer);
 
     virtual DomainCapabilities capabilities() const = 0;
+    const OperationMetadata& lastOperation() const
+    {
+        return lastOperation_;
+    }
     virtual const VariableEnvironment& environment() const = 0;
 
     virtual void assign(Variable target,
@@ -157,6 +191,20 @@ public:
         const VariableEnvironment& environment,
         bool initializeNewVariablesToZero = false) = 0;
 
+    /// Duplicate a summary dimension into new dimensions. Every copy has the
+    /// source dimension's relations with all other dimensions, while the
+    /// expanded dimensions remain mutually unrelated except where those
+    /// duplicated relations logically imply otherwise. This is APRON's
+    /// expand operation.
+    virtual void expand(
+        Variable source,
+        const std::vector<VariableDeclaration>& copies) = 0;
+    /// Merge several materialized dimensions into `target` by taking the
+    /// abstract hull of every possible representative, then remove the other
+    /// dimensions. This is APRON's fold operation.
+    virtual void fold(Variable target,
+                      const std::vector<Variable>& folded) = 0;
+
     /// Assume every constraint, letting them propagate into each other until
     /// the state stops moving.
     ///
@@ -172,8 +220,10 @@ public:
     /// Bound a complete affine expression using the relational backend, not
     /// merely interval arithmetic over its individual variables.
     virtual Interval bound(const LinearExpression& expression) const = 0;
-    /// Affine integer/real trees use bound(LinearExpression); unsupported
-    /// nonlinear or machine-semantic trees conservatively return top.
+    /// Affine integer/real trees use bound(LinearExpression). Nonlinear and
+    /// finite IEEE trees use sound interval evaluation with outward rounding;
+    /// exceptional IEEE outcomes that cannot be represented numerically lose
+    /// the affected bound to top.
     Interval bound(const TreeExpression& expression) const;
     virtual IntervalBox toBox() const = 0;
     virtual LinearConstraintSet toConstraints() const = 0;
@@ -196,6 +246,26 @@ public:
     VariableEnvironment unifyEnvironmentWith(
         NumericalState& other,
         bool initializeNewVariablesToZero = false);
+
+protected:
+    /// Evaluate nonlinear and finite IEEE trees by sound interval semantics,
+    /// applying each IEEE node's requested rounding mode at its endpoints.
+    /// Exceptional IEEE outcomes conservatively produce top.
+    Interval evaluateTreeExpression(const TreeExpression& expression) const;
+    /// Necessary affine consequences of a nonlinear tree guard. The result
+    /// may be empty when the guard cannot safely refine the selected domain.
+    LinearConstraintSet treeConstraintConsequences(
+        const TreeConstraint& constraint) const;
+    /// Strongly update a target from an already-computed interval. This is
+    /// used to preserve simultaneous semantics for nonlinear tree batches.
+    virtual void assignInterval(Variable target, const Interval& value);
+    void recordOperation(OperationKind operation,
+                         ApproximationKind approximation,
+                         bool best,
+                         std::string reason = {}) const;
+
+private:
+    mutable OperationMetadata lastOperation_;
 };
 
 } // namespace SVF::AbstractDomain

@@ -428,7 +428,10 @@ void testTopBottomIdentitiesAndQueries()
                 capabilities.backwardAssignments &&
                 capabilities.topologicalClosure &&
                 capabilities.canonicalization &&
-                !capabilities.nonlinearTreeExpressions,
+                capabilities.expandFold &&
+                capabilities.operationMetadata &&
+                capabilities.ieeeTreeExpressions &&
+                capabilities.nonlinearTreeExpressions,
             "Octagon capabilities must describe the enabled implementation");
 
     OctagonState bottom = OctagonState::bottom(environment);

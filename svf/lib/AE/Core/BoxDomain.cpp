@@ -204,7 +204,10 @@ DomainCapabilities BoxState::capabilities() const
     result.backwardAssignments = true;
     result.topologicalClosure = true;
     result.canonicalization = true;
-    result.nonlinearTreeExpressions = false;
+    result.expandFold = true;
+    result.operationMetadata = true;
+    result.ieeeTreeExpressions = true;
+    result.nonlinearTreeExpressions = true;
     return result;
 }
 
@@ -222,6 +225,7 @@ void BoxState::assign(Variable target, const LinearExpression& expression)
                 "assignment expression uses an unknown variable");
     }
     setBound(environment_.dimensionOf(target), evaluate(*this, expression));
+    recordOperation(OperationKind::Assignment, ApproximationKind::Exact, true);
 }
 
 void BoxState::assign(Variable target, const TreeExpression& expression)
@@ -232,10 +236,13 @@ void BoxState::assign(Variable target, const TreeExpression& expression)
         assign(target, *linear);
         return;
     }
-    forget(target);
+    const Interval value = evaluateTreeExpression(expression);
+    if (!bottom_)
+        setBound(environment_.dimensionOf(target), value);
     report(OperationKind::Assignment,
-           ApproximationKind::UnsupportedFallback,
-           "non-affine tree assignment forgets the target");
+           ApproximationKind::SoundOverApproximation,
+           "nonlinear or finite IEEE assignment was interval-linearized",
+           false);
 }
 
 void BoxState::assignParallel(const LinearAssignmentList& assignments)
@@ -268,6 +275,7 @@ void BoxState::assignParallel(const LinearAssignmentList& assignments)
                              evaluate(*this, assignment.expression));
     for (auto& [dimension, value] : updates)
         setBound(dimension, std::move(value));
+    recordOperation(OperationKind::Assignment, ApproximationKind::Exact, true);
 }
 
 void BoxState::substitute(Variable target,
@@ -307,10 +315,13 @@ void BoxState::substituteParallel(
             constraint.expression().substituted(replacements),
             constraint.kind());
     *this = fromConstraints(environment_, preimage, config_);
+    recordOperation(OperationKind::Substitution, ApproximationKind::Exact,
+                    true);
 }
 
 void BoxState::assume(const LinearConstraint& constraint)
 {
+    recordOperation(OperationKind::Assumption, ApproximationKind::Exact, true);
     if (bottom_)
         return;
     for (const auto& [variable, coefficient] : constraint.expression().terms())
@@ -407,9 +418,15 @@ void BoxState::assume(const TreeConstraint& constraint)
         assume(LinearConstraint(*linear, constraint.kind()));
         return;
     }
+    const LinearConstraintSet consequences =
+        treeConstraintConsequences(constraint);
+    assumeAll(consequences);
     report(OperationKind::Assumption,
-           ApproximationKind::UnsupportedFallback,
-           "non-affine tree constraint is ignored");
+           ApproximationKind::SoundOverApproximation,
+           consequences.empty()
+               ? "nonlinear or finite IEEE guard had no affine consequence"
+               : "nonlinear guard was reduced to sound affine consequences",
+           false);
 }
 
 void BoxState::forget(Variable variable)
@@ -418,6 +435,7 @@ void BoxState::forget(Variable variable)
         throw std::invalid_argument("forgotten variable is not in environment");
     if (!bottom_)
         bounds_[environment_.dimensionOf(variable)] = Interval::top();
+    recordOperation(OperationKind::Forget, ApproximationKind::Exact, true);
 }
 
 void BoxState::changeEnvironment(const VariableEnvironment& environment,
@@ -448,6 +466,73 @@ void BoxState::changeEnvironment(const VariableEnvironment& environment,
     bounds_ = std::move(next);
     for (Dimension dimension = 0; dimension < environment_.size(); ++dimension)
         canonicalize(dimension);
+    recordOperation(OperationKind::EnvironmentChange,
+                    ApproximationKind::Exact, true);
+}
+
+void BoxState::expand(
+    Variable source, const std::vector<VariableDeclaration>& copies)
+{
+    if (!environment_.contains(source))
+        throw std::invalid_argument("expanded variable is not in environment");
+    std::set<Variable> seen;
+    for (const VariableDeclaration& copy : copies)
+    {
+        if (environment_.contains(copy.variable) ||
+            !seen.insert(copy.variable).second)
+            throw std::invalid_argument(
+                "expanded variables must be new and unique");
+        if (copy.type != environment_.typeOf(source))
+            throw std::invalid_argument(
+                "expanded variables must have the source numeric type");
+    }
+    if (copies.empty())
+    {
+        recordOperation(OperationKind::Expand, ApproximationKind::Exact, true);
+        return;
+    }
+    const Interval sourceValue = bound(source);
+    changeEnvironment(environment_.add(copies));
+    for (const VariableDeclaration& copy : copies)
+        if (!bottom_)
+            setBound(environment_.dimensionOf(copy.variable), sourceValue);
+    recordOperation(OperationKind::Expand, ApproximationKind::Exact, true);
+}
+
+void BoxState::fold(Variable target, const std::vector<Variable>& folded)
+{
+    if (!environment_.contains(target))
+        throw std::invalid_argument("fold target is not in environment");
+    std::set<Variable> seen;
+    std::vector<Variable> sources{target};
+    for (Variable variable : folded)
+    {
+        if (variable == target || !environment_.contains(variable) ||
+            !seen.insert(variable).second)
+            throw std::invalid_argument(
+                "folded variables must be distinct non-target dimensions");
+        if (environment_.typeOf(variable) != environment_.typeOf(target))
+            throw std::invalid_argument(
+                "folded variables must have the target numeric type");
+        sources.push_back(variable);
+    }
+    if (folded.empty())
+    {
+        recordOperation(OperationKind::Fold, ApproximationKind::Exact, true);
+        return;
+    }
+
+    BoxState result = bottom(environment_, config_);
+    for (Variable source : sources)
+    {
+        BoxState branch = *this;
+        if (source != target)
+            branch.setBound(environment_.dimensionOf(target), bound(source));
+        result = result.join(branch);
+    }
+    result.changeEnvironment(environment_.remove(folded));
+    *this = std::move(result);
+    recordOperation(OperationKind::Fold, ApproximationKind::Exact, true);
 }
 
 CheckResult BoxState::entails(const LinearConstraint& constraint) const
@@ -581,18 +666,24 @@ void BoxState::close()
                                 : interval.upper();
         setBound(dimension, Interval(lower, upper));
     }
+    recordOperation(OperationKind::TopologicalClosure,
+                    ApproximationKind::Exact, true, "topological closure");
 }
 
 void BoxState::canonicalize()
 {
     for (Dimension dimension = 0; dimension < environment_.size(); ++dimension)
         canonicalize(dimension);
+    recordOperation(OperationKind::Canonicalization,
+                    ApproximationKind::Exact, true, "canonicalization");
 }
 
 BoxState BoxState::join(const BoxState& other) const
 {
     BoxState result(*this);
     result.joinState(other);
+    result.recordOperation(OperationKind::Join, ApproximationKind::Exact,
+                           true);
     return result;
 }
 
@@ -600,6 +691,8 @@ BoxState BoxState::meet(const BoxState& other) const
 {
     BoxState result(*this);
     result.meetState(other);
+    result.recordOperation(OperationKind::Meet, ApproximationKind::Exact,
+                           true);
     return result;
 }
 
@@ -608,9 +701,21 @@ BoxState BoxState::widen(const BoxState& next,
 {
     requireBox(next);
     if (bottom_)
-        return next;
+    {
+        BoxState result(next);
+        result.recordOperation(OperationKind::Widening,
+                               ApproximationKind::SoundOverApproximation,
+                               true);
+        return result;
+    }
     if (next.bottom_)
-        return *this;
+    {
+        BoxState result(*this);
+        result.recordOperation(OperationKind::Widening,
+                               ApproximationKind::SoundOverApproximation,
+                               true);
+        return result;
+    }
     BoxState result(*this);
     for (Dimension dimension = 0; dimension < environment_.size(); ++dimension)
     {
@@ -652,6 +757,8 @@ BoxState BoxState::widen(const BoxState& next,
             next.entails(threshold) == CheckResult::True)
             result.assume(threshold);
     }
+    result.recordOperation(OperationKind::Widening,
+                           ApproximationKind::SoundOverApproximation, true);
     return result;
 }
 
@@ -659,7 +766,12 @@ BoxState BoxState::narrow(const BoxState& next) const
 {
     requireBox(next);
     if (bottom_ || next.bottom_)
-        return bottom(environment_, config_);
+    {
+        BoxState result = bottom(environment_, config_);
+        result.recordOperation(OperationKind::Narrowing,
+                               ApproximationKind::Exact, true);
+        return result;
+    }
     BoxState result(*this);
     for (Dimension dimension = 0; dimension < environment_.size(); ++dimension)
     {
@@ -671,6 +783,8 @@ BoxState BoxState::narrow(const BoxState& next) const
             upper = next.bounds_[dimension].upper();
         result.setBound(dimension, Interval(lower, upper));
     }
+    result.recordOperation(OperationKind::Narrowing,
+                           ApproximationKind::Exact, true);
     return result;
 }
 
@@ -800,8 +914,9 @@ void BoxState::setBound(Dimension dimension, Interval interval)
 
 void BoxState::report(OperationKind operation,
                       ApproximationKind approximation,
-                      std::string reason) const
+                      std::string reason, bool best) const
 {
+    recordOperation(operation, approximation, best, reason);
     if (config_.diagnostics)
         config_.diagnostics->report(
             {operation, approximation, std::move(reason)});

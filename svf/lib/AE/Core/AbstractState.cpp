@@ -169,7 +169,7 @@ void NumericalState::assignParallel(const TreeAssignmentList& assignments)
 {
     std::set<Variable> targets;
     LinearAssignmentList affine;
-    std::vector<const TreeAssignment*> fallback;
+    std::vector<std::pair<Variable, Interval>> fallback;
     affine.reserve(assignments.size());
     fallback.reserve(assignments.size());
     for (const TreeAssignment& assignment : assignments)
@@ -184,15 +184,22 @@ void NumericalState::assignParallel(const TreeAssignmentList& assignments)
                 assignment.expression.asLinear())
             affine.push_back({assignment.target, *linear});
         else
-            fallback.push_back(&assignment);
+            fallback.emplace_back(
+                assignment.target,
+                evaluateTreeExpression(assignment.expression));
     }
 
-    // Affine right-hand sides run first while every unsupported target still
-    // has its incoming value. Unsupported assignments then apply their normal
-    // sound fallback, which forgets only their own targets.
+    // Every nonlinear RHS interval was evaluated above from the common
+    // incoming state. Affine right-hand sides now run simultaneously, then the
+    // precomputed nonlinear intervals are committed without rereading targets.
     assignParallel(affine);
-    for (const TreeAssignment* assignment : fallback)
-        assign(assignment->target, assignment->expression);
+    for (const auto& [target, value] : fallback)
+        assignInterval(target, value);
+    if (!fallback.empty())
+        recordOperation(
+            OperationKind::Assignment,
+            ApproximationKind::SoundOverApproximation, false,
+            "parallel nonlinear or finite IEEE assignments were interval-linearized");
 }
 
 void NumericalState::assumeAll(const LinearConstraintSet& constraints)

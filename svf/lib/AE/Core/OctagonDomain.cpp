@@ -6,6 +6,7 @@
 #include <map>
 #include <vector>
 #include <optional>
+#include <set>
 #include <sstream>
 #include <stdexcept>
 #include <utility>
@@ -191,7 +192,10 @@ public:
         result.backwardAssignments = true;
         result.topologicalClosure = true;
         result.canonicalization = true;
-        result.nonlinearTreeExpressions = false;
+        result.expandFold = true;
+        result.operationMetadata = true;
+        result.ieeeTreeExpressions = true;
+        result.nonlinearTreeExpressions = true;
         return result;
     }
 
@@ -794,6 +798,39 @@ public:
     void forgetCurrent(const VariableEnvironment& environment, Variable variable)
     {
         forget(state_, environment, variable);
+    }
+
+    void assignIntervalCurrent(const VariableEnvironment& environment,
+                               Variable target, const Interval& value)
+    {
+        if (!environment.contains(target))
+            throw std::invalid_argument(
+                "assignment target is not in relational environment");
+        if (state_.bottom)
+            return;
+        const Dimension dimension = environment.dimensionOf(target);
+        forget(state_, dimension);
+        if (value.isBottom())
+        {
+            state_.bottom = true;
+            return;
+        }
+        if (value.upper().isFinite())
+        {
+            LinearExpression upper(target);
+            upper.setConstant(-value.upper().value());
+            addLessEqual(state_, environment, upper,
+                         value.upper().isStrict(), false);
+        }
+        if (value.lower().isFinite())
+        {
+            LinearExpression lower;
+            lower.setCoefficient(target, Rational(-1));
+            lower.setConstant(value.lower().value());
+            addLessEqual(state_, environment, lower,
+                         value.lower().isStrict(), false);
+        }
+        normalize(state_, environment);
     }
 
     void canonicalizeCurrent()
@@ -1589,8 +1626,9 @@ DomainCapabilities OctagonState::capabilities() const
 
 void OctagonState::report(OperationKind operation,
                           ApproximationKind approximation,
-                          std::string reason) const
+                          std::string reason, bool best) const
 {
+    recordOperation(operation, approximation, best, reason);
     DiagnosticSink* sink = diagnosticSink();
     if (sink && approximation != ApproximationKind::Exact)
         sink->report({operation, approximation, std::move(reason)});
@@ -1605,7 +1643,8 @@ void OctagonState::assign(Variable target,
                ? std::string(name()) +
                      " forgot a target assigned an unsupported linear expression"
                : std::string(name()) +
-                     " approximated a linear assignment");
+                     " approximated a linear assignment",
+           approximation == ApproximationKind::Exact);
 }
 
 void OctagonState::assign(Variable target, const TreeExpression& expression)
@@ -1615,11 +1654,13 @@ void OctagonState::assign(Variable target, const TreeExpression& expression)
         assign(target, *linear);
         return;
     }
-    forget(target);
+    const Interval value = evaluateTreeExpression(expression);
+    assignInterval(target, value);
     report(OperationKind::Assignment,
-           ApproximationKind::UnsupportedFallback,
+           ApproximationKind::SoundOverApproximation,
            std::string(name()) +
-               " forgot a target assigned a nonlinear or floating tree expression");
+               " interval-linearized a nonlinear or finite IEEE assignment",
+           false);
 }
 
 void OctagonState::substitute(Variable target,
@@ -1659,6 +1700,8 @@ void OctagonState::substituteParallel(
             constraint.expression().substituted(replacements),
             constraint.kind());
     *this = fromConstraints(environment_, preimage, config());
+    recordOperation(OperationKind::Substitution, ApproximationKind::Exact,
+                    true);
 }
 
 void OctagonState::assume(const LinearConstraint& constraint)
@@ -1666,7 +1709,8 @@ void OctagonState::assume(const LinearConstraint& constraint)
     const ApproximationKind approximation = assumeState(constraint);
     report(OperationKind::Assumption, approximation,
            std::string(name()) +
-               " ignored or approximated an unsupported constraint");
+               " ignored or approximated an unsupported constraint",
+           approximation == ApproximationKind::Exact);
 }
 
 void OctagonState::assume(const TreeConstraint& constraint)
@@ -1676,15 +1720,28 @@ void OctagonState::assume(const TreeConstraint& constraint)
         assume(LinearConstraint(*linear, constraint.kind()));
         return;
     }
+    const LinearConstraintSet consequences =
+        treeConstraintConsequences(constraint);
+    assumeAll(consequences);
     report(OperationKind::Assumption,
-           ApproximationKind::UnsupportedFallback,
-           std::string(name()) +
-               " ignored a nonlinear or floating assumption");
+           ApproximationKind::SoundOverApproximation,
+           consequences.empty()
+               ? std::string(name()) +
+                     " found no affine consequence for a nonlinear or finite IEEE guard"
+               : std::string(name()) +
+                     " reduced a nonlinear guard to sound affine consequences",
+           false);
 }
 
 void OctagonState::forget(Variable variable)
 {
     forgetState(variable);
+    recordOperation(OperationKind::Forget, ApproximationKind::Exact, true);
+}
+
+void OctagonState::assignInterval(Variable target, const Interval& value)
+{
+    impl_->assignIntervalCurrent(environment_, target, value);
 }
 
 void OctagonState::projectLowerBounds()
@@ -1698,6 +1755,107 @@ void OctagonState::changeEnvironment(const VariableEnvironment& environment,
     const VariableEnvironment oldEnvironment = environment_;
     changeEnvironmentState(oldEnvironment, environment, initializeNewVariablesToZero);
     environment_ = environment;
+    recordOperation(OperationKind::EnvironmentChange,
+                    ApproximationKind::Exact, true);
+}
+
+void OctagonState::expand(
+    Variable source, const std::vector<VariableDeclaration>& copies)
+{
+    if (!environment_.contains(source))
+        throw std::invalid_argument("expanded variable is not in environment");
+    std::set<Variable> seen;
+    for (const VariableDeclaration& copy : copies)
+    {
+        if (environment_.contains(copy.variable) ||
+            !seen.insert(copy.variable).second)
+            throw std::invalid_argument(
+                "expanded variables must be new and unique");
+        if (copy.type != environment_.typeOf(source))
+            throw std::invalid_argument(
+                "expanded variables must have the source numeric type");
+    }
+    if (copies.empty())
+    {
+        recordOperation(OperationKind::Expand, ApproximationKind::Exact, true);
+        return;
+    }
+    const Interval sourceValue = bound(source);
+    const LinearConstraintSet original = toConstraints();
+    const bool relational =
+        environment_.typeOf(source).kind != NumericKind::IEEEFloat;
+    changeEnvironment(environment_.add(copies));
+    for (const VariableDeclaration& copy : copies)
+    {
+        if (relational)
+        {
+            std::map<Variable, LinearExpression> replacement{
+                {source, LinearExpression(copy.variable)}};
+            LinearConstraintSet duplicated;
+            duplicated.reserve(original.size());
+            for (const LinearConstraint& constraint : original)
+            {
+                duplicated.emplace_back(
+                    constraint.expression().substituted(replacement),
+                    constraint.kind());
+            }
+            assumeAll(duplicated);
+        }
+        else
+            assignInterval(copy.variable, sourceValue);
+    }
+    recordOperation(OperationKind::Expand,
+                    relational ? ApproximationKind::Exact
+                               : ApproximationKind::SoundOverApproximation,
+                    relational,
+                    relational ? "" : "IEEE expand retained finite bounds");
+}
+
+void OctagonState::fold(Variable target,
+                        const std::vector<Variable>& folded)
+{
+    if (!environment_.contains(target))
+        throw std::invalid_argument("fold target is not in environment");
+    std::set<Variable> seen;
+    std::vector<Variable> sources{target};
+    for (Variable variable : folded)
+    {
+        if (variable == target || !environment_.contains(variable) ||
+            !seen.insert(variable).second)
+            throw std::invalid_argument(
+                "folded variables must be distinct non-target dimensions");
+        if (environment_.typeOf(variable) != environment_.typeOf(target))
+            throw std::invalid_argument(
+                "folded variables must have the target numeric type");
+        sources.push_back(variable);
+    }
+    if (folded.empty())
+    {
+        recordOperation(OperationKind::Fold, ApproximationKind::Exact, true);
+        return;
+    }
+    const bool relational =
+        environment_.typeOf(target).kind != NumericKind::IEEEFloat;
+    OctagonState result = bottom(environment_, config());
+    for (Variable source : sources)
+    {
+        OctagonState branch = *this;
+        if (source != target)
+        {
+            if (relational)
+                branch.assign(target, LinearExpression(source));
+            else
+                branch.assignInterval(target, bound(source));
+        }
+        result = result.join(branch);
+    }
+    result.changeEnvironment(environment_.remove(folded));
+    *this = std::move(result);
+    recordOperation(OperationKind::Fold,
+                    relational ? ApproximationKind::Exact
+                               : ApproximationKind::SoundOverApproximation,
+                    relational,
+                    relational ? "" : "IEEE fold retained finite hull bounds");
 }
 
 CheckResult OctagonState::entails(const LinearConstraint& constraint) const
@@ -1786,11 +1944,15 @@ void OctagonState::close()
         closed.emplace_back(constraint.expression(), kind);
     }
     *this = fromConstraints(environment_, closed, config());
+    recordOperation(OperationKind::TopologicalClosure,
+                    ApproximationKind::Exact, true);
 }
 
 void OctagonState::canonicalize()
 {
     impl_->canonicalizeCurrent();
+    recordOperation(OperationKind::Canonicalization,
+                    ApproximationKind::Exact, true);
 }
 
 const OctagonConfig& OctagonState::config() const
@@ -1808,13 +1970,19 @@ OctagonState OctagonState::reconfigured(const OctagonConfig& config) const
 OctagonState OctagonState::join(const OctagonState& other) const
 {
     requireCompatible(other);
-    return OctagonState(environment(), impl_->joined(*other.impl_));
+    OctagonState result(environment(), impl_->joined(*other.impl_));
+    result.recordOperation(OperationKind::Join, ApproximationKind::Exact,
+                           true);
+    return result;
 }
 
 OctagonState OctagonState::meet(const OctagonState& other) const
 {
     requireCompatible(other);
-    return OctagonState(environment(), impl_->met(*other.impl_));
+    OctagonState result(environment(), impl_->met(*other.impl_));
+    result.recordOperation(OperationKind::Meet, ApproximationKind::Exact,
+                           true);
+    return result;
 }
 
 OctagonState OctagonState::widen(
@@ -1828,6 +1996,8 @@ OctagonState OctagonState::widen(
             next.entails(threshold) == CheckResult::True)
             result.assume(threshold);
     }
+    result.recordOperation(OperationKind::Widening,
+                           ApproximationKind::SoundOverApproximation, true);
     return result;
 }
 
@@ -1837,7 +2007,10 @@ OctagonState OctagonState::narrow(const OctagonState& next) const
     if (!next.leqState(*this))
         throw std::invalid_argument(
             "narrowing requires next to be included in current");
-    return OctagonState(environment(), impl_->narrowed(*next.impl_));
+    OctagonState result(environment(), impl_->narrowed(*next.impl_));
+    result.recordOperation(OperationKind::Narrowing,
+                           ApproximationKind::Exact, true);
+    return result;
 }
 
 OctagonState OctagonState::projectedLowerBounds() const

@@ -78,6 +78,10 @@ public:
     void projectLowerBounds();
     void changeEnvironment(const VariableEnvironment& environment,
                            bool initializeNewVariablesToZero = false) override;
+    void expand(Variable source,
+                const std::vector<VariableDeclaration>& copies) override;
+    void fold(Variable target,
+              const std::vector<Variable>& folded) override;
 
     CheckResult entails(const LinearConstraint& constraint) const override;
     Interval bound(Variable variable) const override;
@@ -113,7 +117,8 @@ private:
 
     DiagnosticSink* diagnosticSink() const;
     void report(OperationKind operation, ApproximationKind approximation,
-                std::string reason) const;
+                std::string reason, bool best = true) const;
+    void assignInterval(Variable target, const Interval& value) override;
     bool hasCompatibleDomain(const AbstractState& other) const override;
     ApproximationKind assignState(
         Variable target, const LinearExpression& expression);

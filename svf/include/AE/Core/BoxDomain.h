@@ -71,6 +71,10 @@ public:
     void forget(Variable variable) override;
     void changeEnvironment(const VariableEnvironment& environment,
                            bool initializeNewVariablesToZero = false) override;
+    void expand(Variable source,
+                const std::vector<VariableDeclaration>& copies) override;
+    void fold(Variable target,
+              const std::vector<Variable>& folded) override;
 
     CheckResult entails(const LinearConstraint& constraint) const override;
     Interval bound(Variable variable) const override;
@@ -103,7 +107,7 @@ private:
     void canonicalize(Dimension dimension);
     void setBound(Dimension dimension, Interval interval);
     void report(OperationKind operation, ApproximationKind approximation,
-                std::string reason) const;
+                std::string reason, bool best = true) const;
 
     VariableEnvironment environment_;
     BoxConfig config_;
