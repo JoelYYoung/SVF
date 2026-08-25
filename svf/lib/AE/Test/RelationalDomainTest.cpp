@@ -181,7 +181,7 @@ void testPolymorphicStateContract()
                                NumericType::integer()),
         ConstraintKind::LessEqual));
     require(treeState.bound(x).upper().value() == Rational(3),
-            "linear tree assumptions must use the common fallback");
+            "linear tree assumptions must use the common affine path");
 
     OctagonState singleton = OctagonState::top(environment);
     singleton.assume(equalsConstant(x, Rational(1)));
@@ -578,7 +578,7 @@ void testFallbacksConstantsAndOptions()
                TreeExpression::variable(y, NumericType::integer()),
                NumericType::integer()));
     require(assigned.bound(z).isTop(),
-            "a nonlinear tree assignment must conservatively forget");
+            "an unbounded nonlinear tree assignment must intervalize to top");
 
     OctagonConfig relaxedOptions;
     relaxedOptions.strongClosure = false;
@@ -599,7 +599,7 @@ void testFallbacksConstantsAndOptions()
     floatingState.assume(atMost(fp, Rational(1)));
     floatingState.assign(fp, LinearExpression(Rational(1)));
     require(floatingState.bound(fp).isTop(),
-            "IEEE operations must currently use conservative fallback");
+            "direct affine IEEE operations must reject mathematical-real semantics");
 }
 
 void testPersistentPerStateConfiguration()

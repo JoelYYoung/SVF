@@ -1,4 +1,4 @@
-//===- NumericalDomain.cpp -- Numerical-state serialization ------------===//
+//===- NumericalDomain.cpp -- Shared numerical-state implementation ----===//
 
 #include "AE/Core/NumericalDomain.h"
 
@@ -18,7 +18,8 @@
 #include <utility>
 #include <vector>
 
-using namespace SVF::AbstractDomain;
+namespace SVF::AbstractDomain
+{
 
 namespace
 {
@@ -517,20 +518,56 @@ Interval addIntervals(const Interval& lhs, const Interval& rhs)
     return Interval(lower, upper);
 }
 
-Interval finiteHull(const std::vector<Rational>& lowerCandidates,
-                    const std::vector<Rational>& upperCandidates)
+struct ExtendedRational
 {
-    if (lowerCandidates.empty() || upperCandidates.empty())
-        return Interval::top();
-    Rational lower = lowerCandidates.front();
-    Rational upper = upperCandidates.front();
-    for (const Rational& candidate : lowerCandidates)
-        if (candidate < lower)
-            lower = candidate;
-    for (const Rational& candidate : upperCandidates)
-        if (upper < candidate)
-            upper = candidate;
-    return Interval(Bound::finite(lower), Bound::finite(upper));
+    /// -1 is minus infinity, 0 is finite, and 1 is plus infinity.
+    int infinity = 0;
+    Rational value;
+};
+
+ExtendedRational extended(const Bound& bound)
+{
+    if (bound.isMinusInfinity())
+        return {-1, Rational()};
+    if (bound.isPlusInfinity())
+        return {1, Rational()};
+    return {0, bound.value()};
+}
+
+int compareExtended(const ExtendedRational& lhs,
+                    const ExtendedRational& rhs)
+{
+    if (lhs.infinity != rhs.infinity)
+        return lhs.infinity < rhs.infinity ? -1 : 1;
+    if (lhs.infinity != 0)
+        return 0;
+    if (lhs.value < rhs.value)
+        return -1;
+    if (rhs.value < lhs.value)
+        return 1;
+    return 0;
+}
+
+ExtendedRational multiplyExtended(const ExtendedRational& lhs,
+                                  const ExtendedRational& rhs)
+{
+    if (lhs.infinity == 0 && rhs.infinity == 0)
+        return {0, lhs.value * rhs.value};
+    if ((lhs.infinity == 0 && lhs.value.isZero()) ||
+        (rhs.infinity == 0 && rhs.value.isZero()))
+        return {0, Rational()};
+    const int lhsSign = lhs.infinity != 0 ? lhs.infinity : lhs.value.sign();
+    const int rhsSign = rhs.infinity != 0 ? rhs.infinity : rhs.value.sign();
+    return {lhsSign * rhsSign, Rational()};
+}
+
+Bound extendedBound(const ExtendedRational& value)
+{
+    if (value.infinity < 0)
+        return Bound::minusInfinity();
+    if (value.infinity > 0)
+        return Bound::plusInfinity();
+    return Bound::finite(value.value);
 }
 
 Interval multiplyIntervals(const Interval& lhs, const Interval& rhs)
@@ -539,15 +576,25 @@ Interval multiplyIntervals(const Interval& lhs, const Interval& rhs)
         return bottomInterval();
     if (singletonZero(lhs) || singletonZero(rhs))
         return Interval::singleton(Rational());
-    if (!lhs.lower().isFinite() || !lhs.upper().isFinite() ||
-        !rhs.lower().isFinite() || !rhs.upper().isFinite())
-        return Interval::top();
-    const std::vector<Rational> products{
-        lhs.lower().value() * rhs.lower().value(),
-        lhs.lower().value() * rhs.upper().value(),
-        lhs.upper().value() * rhs.lower().value(),
-        lhs.upper().value() * rhs.upper().value()};
-    return finiteHull(products, products);
+    const ExtendedRational lhsLower = extended(lhs.lower());
+    const ExtendedRational lhsUpper = extended(lhs.upper());
+    const ExtendedRational rhsLower = extended(rhs.lower());
+    const ExtendedRational rhsUpper = extended(rhs.upper());
+    const std::array<ExtendedRational, 4> products{
+        multiplyExtended(lhsLower, rhsLower),
+        multiplyExtended(lhsLower, rhsUpper),
+        multiplyExtended(lhsUpper, rhsLower),
+        multiplyExtended(lhsUpper, rhsUpper)};
+    ExtendedRational lower = products.front();
+    ExtendedRational upper = products.front();
+    for (const ExtendedRational& product : products)
+    {
+        if (compareExtended(product, lower) < 0)
+            lower = product;
+        if (compareExtended(upper, product) < 0)
+            upper = product;
+    }
+    return Interval(extendedBound(lower), extendedBound(upper));
 }
 
 bool containsZero(const Interval& value)
@@ -577,19 +624,48 @@ Interval divideIntervals(const Interval& lhs, const Interval& rhs,
 {
     if (lhs.isBottom() || rhs.isBottom())
         return bottomInterval();
-    if (containsZero(rhs) || !lhs.lower().isFinite() ||
-        !lhs.upper().isFinite() || !rhs.lower().isFinite() ||
-        !rhs.upper().isFinite())
+    if (containsZero(rhs))
         return Interval::top();
-    std::vector<Rational> quotients{
-        lhs.lower().value() / rhs.lower().value(),
-        lhs.lower().value() / rhs.upper().value(),
-        lhs.upper().value() / rhs.lower().value(),
-        lhs.upper().value() / rhs.upper().value()};
-    if (integerDivision)
-        for (Rational& quotient : quotients)
-            quotient = truncateTowardZero(quotient);
-    return finiteHull(quotients, quotients);
+
+    Bound reciprocalLower;
+    Bound reciprocalUpper;
+    const bool positive =
+        rhs.lower().isFinite() && rhs.lower().value().sign() >= 0;
+    if (positive)
+    {
+        reciprocalLower = rhs.upper().isPlusInfinity()
+                              ? Bound::finite(Rational())
+                              : Bound::finite(Rational(1) /
+                                              rhs.upper().value());
+        reciprocalUpper =
+            rhs.lower().value().isZero()
+                ? Bound::plusInfinity()
+                : Bound::finite(Rational(1) / rhs.lower().value());
+    }
+    else
+    {
+        reciprocalLower =
+            rhs.upper().isFinite() && rhs.upper().value().isZero()
+                ? Bound::minusInfinity()
+                : Bound::finite(Rational(1) / rhs.upper().value());
+        reciprocalUpper = rhs.lower().isMinusInfinity()
+                              ? Bound::finite(Rational())
+                              : Bound::finite(Rational(1) /
+                                              rhs.lower().value());
+    }
+    Interval result =
+        multiplyIntervals(lhs, Interval(reciprocalLower, reciprocalUpper));
+    if (!integerDivision || result.isBottom())
+        return result;
+    const Bound lower = result.lower().isFinite()
+                            ? Bound::finite(
+                                  truncateTowardZero(result.lower().value()))
+                            : result.lower();
+    const Bound upper = result.upper().isFinite()
+                            ? Bound::finite(
+                                  truncateTowardZero(result.upper().value()))
+                            : result.upper();
+    return Interval(lower, upper);
 }
 
 Rational powerOfTwo(long exponent)
@@ -689,9 +765,10 @@ Interval remainderIntervals(const Interval& lhs, const Interval& rhs)
 {
     if (lhs.isBottom() || rhs.isBottom())
         return bottomInterval();
-    if (containsZero(rhs) || !rhs.lower().isFinite() ||
-        !rhs.upper().isFinite())
+    if (containsZero(rhs))
         return Interval::top();
+    if (singletonZero(lhs))
+        return Interval::singleton(Rational());
     const std::optional<Rational> lhsValue = singletonValue(lhs);
     const std::optional<Rational> rhsValue = singletonValue(rhs);
     if (lhsValue && rhsValue)
@@ -700,18 +777,37 @@ Interval remainderIntervals(const Interval& lhs, const Interval& rhs)
             truncateTowardZero(*lhsValue / *rhsValue);
         return Interval::singleton(*lhsValue - quotient * *rhsValue);
     }
-    Rational magnitude = rhs.lower().value().sign() < 0
-                             ? -rhs.lower().value()
-                             : rhs.lower().value();
-    const Rational upperMagnitude = rhs.upper().value().sign() < 0
-                                        ? -rhs.upper().value()
-                                        : rhs.upper().value();
-    if (magnitude < upperMagnitude)
-        magnitude = upperMagnitude;
-    if (magnitude.isZero())
+    std::optional<Rational> magnitude;
+    if (rhs.lower().isFinite() && rhs.upper().isFinite())
+    {
+        magnitude = rhs.lower().value().sign() < 0
+                        ? -rhs.lower().value()
+                        : rhs.lower().value();
+        const Rational upperMagnitude = rhs.upper().value().sign() < 0
+                                            ? -rhs.upper().value()
+                                            : rhs.upper().value();
+        if (*magnitude < upperMagnitude)
+            magnitude = upperMagnitude;
+    }
+    if (lhs.lower().isFinite() && lhs.upper().isFinite())
+    {
+        Rational lhsMagnitude = lhs.lower().value().sign() < 0
+                                    ? -lhs.lower().value()
+                                    : lhs.lower().value();
+        const Rational upperMagnitude = lhs.upper().value().sign() < 0
+                                            ? -lhs.upper().value()
+                                            : lhs.upper().value();
+        if (lhsMagnitude < upperMagnitude)
+            lhsMagnitude = upperMagnitude;
+        if (!magnitude || lhsMagnitude < *magnitude)
+            magnitude = lhsMagnitude;
+    }
+    if (!magnitude)
         return Interval::top();
-    Rational lower = -magnitude;
-    Rational upper = magnitude;
+    if (magnitude->isZero())
+        return Interval::top();
+    Rational lower = -*magnitude;
+    Rational upper = *magnitude;
     if (lhs.lower().isFinite() && lhs.lower().value().sign() >= 0)
         lower = Rational();
     if (lhs.upper().isFinite() && lhs.upper().value().sign() <= 0)
@@ -883,6 +979,85 @@ bool definitelyFalse(const Interval& value, ConstraintKind kind)
     return false;
 }
 
+struct BilinearDecomposition
+{
+    LinearExpression affine;
+    LinearExpression lhs;
+    LinearExpression rhs;
+    Rational factor;
+    bool hasProduct = false;
+};
+
+bool affineConstant(const std::optional<LinearExpression>& expression,
+                    Rational& value)
+{
+    if (!expression || !expression->terms().empty())
+        return false;
+    value = expression->constant();
+    return true;
+}
+
+bool decomposeSingleProduct(const TreeExpression& expression,
+                            const Rational& scale,
+                            BilinearDecomposition& result)
+{
+    if (scale.isZero())
+        return true;
+    if (const std::optional<LinearExpression> linear = expression.asLinear())
+    {
+        result.affine += *linear * scale;
+        return true;
+    }
+    if (expression.kind() == TreeExpression::Kind::Unary &&
+        expression.unaryOperator() == UnaryOperator::Negate)
+        return decomposeSingleProduct(expression.lhs(), -scale, result);
+    if (expression.kind() != TreeExpression::Kind::Binary)
+        return false;
+
+    if (expression.binaryOperator() == BinaryOperator::Add ||
+        expression.binaryOperator() == BinaryOperator::Subtract)
+    {
+        if (!decomposeSingleProduct(expression.lhs(), scale, result))
+            return false;
+        const Rational rhsScale =
+            expression.binaryOperator() == BinaryOperator::Add ? scale
+                                                                : -scale;
+        return decomposeSingleProduct(expression.rhs(), rhsScale, result);
+    }
+
+    const std::optional<LinearExpression> lhs = expression.lhs().asLinear();
+    const std::optional<LinearExpression> rhs = expression.rhs().asLinear();
+    if (expression.binaryOperator() == BinaryOperator::Multiply)
+    {
+        if (lhs && rhs)
+        {
+            if (result.hasProduct)
+                return false;
+            result.lhs = *lhs;
+            result.rhs = *rhs;
+            result.factor = scale;
+            result.hasProduct = true;
+            return true;
+        }
+        Rational constant;
+        if (affineConstant(lhs, constant))
+            return decomposeSingleProduct(expression.rhs(), scale * constant,
+                                          result);
+        if (affineConstant(rhs, constant))
+            return decomposeSingleProduct(expression.lhs(), scale * constant,
+                                          result);
+        return false;
+    }
+    if (expression.binaryOperator() == BinaryOperator::Divide)
+    {
+        Rational divisor;
+        return affineConstant(rhs, divisor) && !divisor.isZero() &&
+               decomposeSingleProduct(expression.lhs(), scale / divisor,
+                                      result);
+    }
+    return false;
+}
+
 } // namespace
 
 NumericalState::RawBuffer NumericalState::serializeRaw() const
@@ -997,16 +1172,14 @@ LinearConstraintSet NumericalState::treeConstraintConsequences(
         return {};
 
     const TreeExpression& expression = constraint.expression();
-    if (expression.kind() != TreeExpression::Kind::Binary ||
-        expression.binaryOperator() != BinaryOperator::Multiply ||
-        expression.type().kind == NumericKind::IEEEFloat)
+    if (expression.type().kind == NumericKind::IEEEFloat)
         return {};
-    const std::optional<LinearExpression> lhs = expression.lhs().asLinear();
-    const std::optional<LinearExpression> rhs = expression.rhs().asLinear();
-    if (!lhs || !rhs)
+    BilinearDecomposition decomposition;
+    if (!decomposeSingleProduct(expression, Rational(1), decomposition) ||
+        !decomposition.hasProduct)
         return {};
-    const Interval lhsBounds = bound(*lhs);
-    const Interval rhsBounds = bound(*rhs);
+    const Interval lhsBounds = bound(decomposition.lhs);
+    const Interval rhsBounds = bound(decomposition.rhs);
     if (!lhsBounds.lower().isFinite() || !lhsBounds.upper().isFinite() ||
         !rhsBounds.lower().isFinite() || !rhsBounds.upper().isFinite())
         return {};
@@ -1015,12 +1188,28 @@ LinearConstraintSet NumericalState::treeConstraintConsequences(
     const Rational& ux = lhsBounds.upper().value();
     const Rational& ly = rhsBounds.lower().value();
     const Rational& uy = rhsBounds.upper().value();
-    const std::vector<LinearExpression> lowerForms{
-        *rhs * lx + *lhs * ly - LinearExpression(lx * ly),
-        *rhs * ux + *lhs * uy - LinearExpression(ux * uy)};
-    const std::vector<LinearExpression> upperForms{
-        *rhs * ux + *lhs * ly - LinearExpression(ux * ly),
-        *rhs * lx + *lhs * uy - LinearExpression(lx * uy)};
+    std::vector<LinearExpression> productLowerForms{
+        decomposition.rhs * lx + decomposition.lhs * ly -
+            LinearExpression(lx * ly),
+        decomposition.rhs * ux + decomposition.lhs * uy -
+            LinearExpression(ux * uy)};
+    std::vector<LinearExpression> productUpperForms{
+        decomposition.rhs * ux + decomposition.lhs * ly -
+            LinearExpression(ux * ly),
+        decomposition.rhs * lx + decomposition.lhs * uy -
+            LinearExpression(lx * uy)};
+    if (decomposition.factor.sign() < 0)
+        std::swap(productLowerForms, productUpperForms);
+    std::vector<LinearExpression> lowerForms;
+    std::vector<LinearExpression> upperForms;
+    lowerForms.reserve(productLowerForms.size());
+    upperForms.reserve(productUpperForms.size());
+    for (const LinearExpression& form : productLowerForms)
+        lowerForms.push_back(decomposition.affine +
+                             form * decomposition.factor);
+    for (const LinearExpression& form : productUpperForms)
+        upperForms.push_back(decomposition.affine +
+                             form * decomposition.factor);
 
     LinearConstraintSet result;
     const auto appendLower = [&](ConstraintKind kind)
@@ -1130,3 +1319,5 @@ std::unique_ptr<NumericalState> NumericalState::deserializeRaw(
             "raw bottom state unexpectedly contains constraints");
     return restore(tag, flags, environment, bottomByte != 0, constraints);
 }
+
+} // namespace SVF::AbstractDomain

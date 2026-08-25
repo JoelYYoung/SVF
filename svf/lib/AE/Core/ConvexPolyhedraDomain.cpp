@@ -591,7 +591,12 @@ ConvexPolyhedraState ConvexPolyhedraState::fromGenerators(
     const ConvexPolyhedraConfig& config)
 {
     if (generators.empty())
-        return bottom(environment, config);
+    {
+        ConvexPolyhedraState result = bottom(environment, config);
+        result.recordOperation(OperationKind::GeneratorImport,
+                               ApproximationKind::Exact, true);
+        return result;
+    }
     const bool nnc = std::any_of(
         generators.begin(), generators.end(),
         [](const PolyhedraGenerator& generator)
@@ -1120,6 +1125,7 @@ void ConvexPolyhedraState::forget(Variable variable)
 {
     if (!environment_.contains(variable))
         throw std::invalid_argument("forgotten variable is not in environment");
+    recordOperation(OperationKind::Forget, ApproximationKind::Exact, true);
     if (impl_->bottom)
         return;
 
@@ -1143,9 +1149,8 @@ void ConvexPolyhedraState::forget(Variable variable)
         impl_->polar = {};
         impl_->polarValid = false;
         invalidateConstraints();
-    if (config_.integerTightening && hasIntegerVariable(environment_))
-        ensureConstraints();
-    recordOperation(OperationKind::Forget, ApproximationKind::Exact, true);
+        if (config_.integerTightening && hasIntegerVariable(environment_))
+            ensureConstraints();
         return;
     }
 
@@ -1309,22 +1314,54 @@ void ConvexPolyhedraState::expand(
         recordOperation(OperationKind::Expand, ApproximationKind::Exact, true);
         return;
     }
-    const LinearConstraintSet original = toConstraints();
-    changeEnvironment(environment_.add(copies));
-    for (const VariableDeclaration& copy : copies)
+    if (impl_->bottom)
     {
-        std::map<Variable, LinearExpression> replacement{
-            {source, LinearExpression(copy.variable)}};
-        LinearConstraintSet duplicated;
-        duplicated.reserve(original.size());
-        for (const LinearConstraint& constraint : original)
-        {
-            duplicated.emplace_back(
-                constraint.expression().substituted(replacement),
-                constraint.kind());
-        }
-        assumeAll(duplicated);
+        changeEnvironment(environment_.add(copies));
+        recordOperation(OperationKind::Expand, ApproximationKind::Exact, true);
+        return;
     }
+
+    ensureConstraints();
+    const VariableEnvironment oldEnvironment = environment_;
+    const VariableEnvironment expandedEnvironment = environment_.add(copies);
+    const std::vector<Inequality> original = impl_->inequalities;
+    std::vector<Inequality> expanded;
+    expanded.reserve(original.size() * (copies.size() + 1));
+    // APRON expansion is the conjunction of one renamed copy of the original
+    // H system per representative. Building that fiber product in one batch
+    // avoids a complete H/V cycle for every new dimension.
+    std::vector<Variable> representatives{source};
+    representatives.reserve(copies.size() + 1);
+    for (const VariableDeclaration& copy : copies)
+        representatives.push_back(copy.variable);
+    for (Variable representative : representatives)
+    {
+        for (const Inequality& inequality : original)
+        {
+            Inequality duplicated;
+            duplicated.coefficients.resize(expandedEnvironment.size());
+            duplicated.bound = inequality.bound;
+            duplicated.strict = inequality.strict;
+            for (Dimension old = 0; old < oldEnvironment.size(); ++old)
+            {
+                const Variable oldVariable = oldEnvironment.variableOf(old);
+                const Variable nextVariable =
+                    oldVariable == source ? representative : oldVariable;
+                duplicated.coefficients[
+                    expandedEnvironment.dimensionOf(nextVariable)] +=
+                    inequality.coefficients[old];
+            }
+            expanded.push_back(std::move(duplicated));
+        }
+    }
+    bool impossible = false;
+    environment_ = expandedEnvironment;
+    impl_->inequalities = normalized(std::move(expanded), impossible);
+    if (impossible)
+        throw std::logic_error("expanding a feasible polyhedron became bottom");
+    impl_->constraintsValid = true;
+    impl_->constraintsMinimal = false;
+    invalidateGenerators();
     recordOperation(OperationKind::Expand, ApproximationKind::Exact, true);
 }
 
@@ -1352,15 +1389,62 @@ void ConvexPolyhedraState::fold(
         return;
     }
 
-    ConvexPolyhedraState result = bottom(environment_, config_);
+    const VariableEnvironment foldedEnvironment =
+        environment_.remove(folded);
+    if (impl_->bottom)
+    {
+        environment_ = foldedEnvironment;
+        recordOperation(OperationKind::Fold, ApproximationKind::Exact, true);
+        return;
+    }
+
+    ensureGenerators();
+    const bool nnc = impl_->generatorsNNC;
+    const std::size_t offset = generatorVariableOffset(nnc);
+    std::vector<Generator> foldedGenerators;
+    foldedGenerators.reserve(impl_->generators.size() * sources.size());
+    // Each fold branch is a linear projection/renaming of the same generator
+    // system. The convex hull of those images is represented exactly by their
+    // generator union, so no branch-local H materialization is needed.
     for (Variable source : sources)
     {
-        ConvexPolyhedraState branch = *this;
-        if (source != target)
-            branch.assign(target, LinearExpression(source));
-        result = result.join(branch);
+        for (const Generator& generator : impl_->generators)
+        {
+            Generator mapped;
+            mapped.coordinates.resize(foldedEnvironment.size() + offset);
+            mapped.line = generator.line;
+            for (std::size_t coordinate = 0; coordinate < offset;
+                 ++coordinate)
+                mapped.coordinates[coordinate] =
+                    generator.coordinates[coordinate];
+            for (Dimension next = 0; next < foldedEnvironment.size(); ++next)
+            {
+                const Variable variable = foldedEnvironment.variableOf(next);
+                const Variable oldVariable =
+                    variable == target ? source : variable;
+                mapped.coordinates[next + offset] =
+                    generator.coordinates[
+                        environment_.dimensionOf(oldVariable) + offset];
+            }
+            foldedGenerators.push_back(std::move(mapped));
+        }
     }
-    result.changeEnvironment(environment_.remove(folded));
+
+    ConvexPolyhedraState result = top(foldedEnvironment, config_);
+    result.impl_->inequalities.clear();
+    result.impl_->constraintsValid = false;
+    result.impl_->constraintsMinimal = false;
+    result.impl_->generators =
+        uniqueGenerators(std::move(foldedGenerators));
+    result.impl_->generatorConstraints.clear();
+    result.impl_->generatorsValid = true;
+    result.impl_->generatorsMinimal = false;
+    result.impl_->generatorsExact = true;
+    result.impl_->generatorsNNC = nnc;
+    result.impl_->polar = {};
+    result.impl_->polarValid = false;
+    if (config_.integerTightening && hasIntegerVariable(foldedEnvironment))
+        result.ensureConstraints();
     *this = std::move(result);
     recordOperation(OperationKind::Fold, ApproximationKind::Exact, true);
 }
@@ -1601,14 +1685,14 @@ PolyhedraGeneratorSet ConvexPolyhedraState::toGenerators() const
 
 void ConvexPolyhedraState::close()
 {
+    recordOperation(OperationKind::TopologicalClosure,
+                    ApproximationKind::Exact, true);
     if (impl_->bottom)
         return;
     ensureConstraints();
     for (Inequality& inequality : impl_->inequalities)
         inequality.strict = false;
     normalize();
-    recordOperation(OperationKind::TopologicalClosure,
-                    ApproximationKind::Exact, true);
 }
 
 void ConvexPolyhedraState::canonicalize()

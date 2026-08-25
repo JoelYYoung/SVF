@@ -1691,6 +1691,8 @@ void OctagonState::substituteParallel(
                     "substitution expression uses an unknown variable");
         }
     }
+    recordOperation(OperationKind::Substitution, ApproximationKind::Exact,
+                    true);
     if (assignments.empty() || isBottom())
         return;
 
@@ -1700,8 +1702,6 @@ void OctagonState::substituteParallel(
             constraint.expression().substituted(replacements),
             constraint.kind());
     *this = fromConstraints(environment_, preimage, config());
-    recordOperation(OperationKind::Substitution, ApproximationKind::Exact,
-                    true);
 }
 
 void OctagonState::assume(const LinearConstraint& constraint)
@@ -1931,6 +1931,8 @@ LinearConstraintSet OctagonState::toConstraints() const
 
 void OctagonState::close()
 {
+    recordOperation(OperationKind::TopologicalClosure,
+                    ApproximationKind::Exact, true);
     if (isBottom())
         return;
     LinearConstraintSet closed;
@@ -1944,8 +1946,6 @@ void OctagonState::close()
         closed.emplace_back(constraint.expression(), kind);
     }
     *this = fromConstraints(environment_, closed, config());
-    recordOperation(OperationKind::TopologicalClosure,
-                    ApproximationKind::Exact, true);
 }
 
 void OctagonState::canonicalize()

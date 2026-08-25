@@ -284,6 +284,96 @@ void benchmark(ap_manager_t* strictManager, ap_manager_t* lazyManager,
               << nativeClipExport << ',' << strictClipExport << ','
               << lazyClipExport << '\n';
 
+    const Variable expandedSource = environment.variableOf(0);
+    const Variable firstCopy(
+        static_cast<std::uint32_t>(dimensions + 1));
+    const Variable secondCopy(
+        static_cast<std::uint32_t>(dimensions + 2));
+    const std::vector<VariableDeclaration> expandedCopies{
+        {firstCopy, NumericType::real(), "expanded0"},
+        {secondCopy, NumericType::real(), "expanded1"}};
+    ConvexPolyhedraState nativeFolded = nativeClipBase;
+    const double nativeExpandFoldMilliseconds = medianMilliseconds(
+        [&] {
+            ConvexPolyhedraState result = nativeClipBase;
+            result.expand(expandedSource, expandedCopies);
+            result.fold(expandedSource, {firstCopy, secondCopy});
+            nativeFolded = std::move(result);
+        },
+        repetitions);
+    ap_dim_t foldedDimensions[] = {
+        static_cast<ap_dim_t>(environment.dimensionOf(expandedSource)),
+        static_cast<ap_dim_t>(dimensions),
+        static_cast<ap_dim_t>(dimensions + 1)};
+    ApronValue strictFolded = strictClipBase;
+    const double strictExpandFoldMilliseconds = medianMilliseconds(
+        [&] {
+            ApronValue expanded(
+                strictManager,
+                ap_abstract0_expand(
+                    strictManager, false, strictClipBase.get(),
+                    environment.dimensionOf(expandedSource), 2));
+            strictFolded = ApronValue(
+                strictManager,
+                ap_abstract0_fold(strictManager, false, expanded.get(),
+                                  foldedDimensions, 3));
+        },
+        repetitions);
+    ApronValue lazyFolded = lazyClipBase;
+    const double lazyExpandFoldMilliseconds = medianMilliseconds(
+        [&] {
+            ApronValue expanded(
+                lazyManager,
+                ap_abstract0_expand(
+                    lazyManager, false, lazyClipBase.get(),
+                    environment.dimensionOf(expandedSource), 2));
+            lazyFolded = ApronValue(
+                lazyManager,
+                ap_abstract0_fold(lazyManager, false, expanded.get(),
+                                  foldedDimensions, 3));
+        },
+        repetitions);
+    if (!apronMatches(strictManager, nativeFolded, strictFolded) ||
+        !apronMatches(lazyManager, nativeFolded, lazyFolded))
+        throw std::runtime_error(
+            "expand/fold benchmark implementations disagree");
+    std::cout << "expand_fold," << dimensions << ",2,"
+              << nativeExpandFoldMilliseconds << ','
+              << strictExpandFoldMilliseconds << ','
+              << lazyExpandFoldMilliseconds << ",0,0,0\n";
+
+    std::size_t exportedGeneratorCount = 0;
+    const double nativeGeneratorExportMilliseconds = medianMilliseconds(
+        [&] {
+            ConvexPolyhedraState result = nativeClipBase;
+            exportedGeneratorCount = result.toGenerators().size();
+        },
+        repetitions);
+    const double strictGeneratorExportMilliseconds = medianMilliseconds(
+        [&] {
+            ApronValue result = strictClipBase;
+            ap_generator0_array_t generators =
+                ap_abstract0_to_generator_array(strictManager, result.get());
+            exportedGeneratorCount = generators.size;
+            ap_generator0_array_clear(&generators);
+        },
+        repetitions);
+    const double lazyGeneratorExportMilliseconds = medianMilliseconds(
+        [&] {
+            ApronValue result = lazyClipBase;
+            ap_generator0_array_t generators =
+                ap_abstract0_to_generator_array(lazyManager, result.get());
+            exportedGeneratorCount = generators.size;
+            ap_generator0_array_clear(&generators);
+        },
+        repetitions);
+    if (exportedGeneratorCount == 0 && !nativeClipBase.isBottom())
+        throw std::runtime_error("generator export benchmark returned empty");
+    std::cout << "generator_export," << dimensions << ",1,"
+              << nativeGeneratorExportMilliseconds << ','
+              << strictGeneratorExportMilliseconds << ','
+              << lazyGeneratorExportMilliseconds << ",0,0,0\n";
+
     // Exercise the non-pointed phase separately. The initial equality leaves
     // a shared line in v0/v1, while every later unconstrained dimension adds
     // another explicit line. The batch then removes those lineality

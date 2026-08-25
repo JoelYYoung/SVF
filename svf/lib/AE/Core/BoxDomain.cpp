@@ -215,8 +215,6 @@ void BoxState::assign(Variable target, const LinearExpression& expression)
 {
     if (!environment_.contains(target))
         throw std::invalid_argument("assignment target is not in environment");
-    if (bottom_)
-        return;
     for (const auto& [variable, coefficient] : expression.terms())
     {
         (void)coefficient;
@@ -224,8 +222,10 @@ void BoxState::assign(Variable target, const LinearExpression& expression)
             throw std::invalid_argument(
                 "assignment expression uses an unknown variable");
     }
-    setBound(environment_.dimensionOf(target), evaluate(*this, expression));
     recordOperation(OperationKind::Assignment, ApproximationKind::Exact, true);
+    if (bottom_)
+        return;
+    setBound(environment_.dimensionOf(target), evaluate(*this, expression));
 }
 
 void BoxState::assign(Variable target, const TreeExpression& expression)
@@ -265,6 +265,7 @@ void BoxState::assignParallel(const LinearAssignmentList& assignments)
                     "parallel assignment expression uses an unknown variable");
         }
     }
+    recordOperation(OperationKind::Assignment, ApproximationKind::Exact, true);
     if (bottom_)
         return;
 
@@ -275,7 +276,6 @@ void BoxState::assignParallel(const LinearAssignmentList& assignments)
                              evaluate(*this, assignment.expression));
     for (auto& [dimension, value] : updates)
         setBound(dimension, std::move(value));
-    recordOperation(OperationKind::Assignment, ApproximationKind::Exact, true);
 }
 
 void BoxState::substitute(Variable target,
@@ -306,6 +306,8 @@ void BoxState::substituteParallel(
                     "substitution expression uses an unknown variable");
         }
     }
+    recordOperation(OperationKind::Substitution, ApproximationKind::Exact,
+                    true);
     if (assignments.empty() || bottom_)
         return;
 
@@ -315,8 +317,6 @@ void BoxState::substituteParallel(
             constraint.expression().substituted(replacements),
             constraint.kind());
     *this = fromConstraints(environment_, preimage, config_);
-    recordOperation(OperationKind::Substitution, ApproximationKind::Exact,
-                    true);
 }
 
 void BoxState::assume(const LinearConstraint& constraint)
@@ -653,6 +653,8 @@ LinearConstraintSet BoxState::toConstraints() const
 
 void BoxState::close()
 {
+    recordOperation(OperationKind::TopologicalClosure,
+                    ApproximationKind::Exact, true, "topological closure");
     if (bottom_)
         return;
     for (Dimension dimension = 0; dimension < environment_.size(); ++dimension)
@@ -666,8 +668,6 @@ void BoxState::close()
                                 : interval.upper();
         setBound(dimension, Interval(lower, upper));
     }
-    recordOperation(OperationKind::TopologicalClosure,
-                    ApproximationKind::Exact, true, "topological closure");
 }
 
 void BoxState::canonicalize()

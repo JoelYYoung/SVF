@@ -95,7 +95,11 @@ void NumericalState::assignParallel(
     const LinearAssignmentList& assignments)
 {
     if (assignments.empty())
+    {
+        recordOperation(OperationKind::Assignment, ApproximationKind::Exact,
+                        true);
         return;
+    }
 
     const VariableEnvironment originalEnvironment = environment();
     std::set<Variable> targets;
@@ -117,7 +121,28 @@ void NumericalState::assignParallel(
         }
     }
     if (isBottom())
+    {
+        recordOperation(OperationKind::Assignment, ApproximationKind::Exact,
+                        true);
         return;
+    }
+
+    ApproximationKind approximation = ApproximationKind::Exact;
+    bool best = true;
+    std::string reason;
+    const auto includeLastOperation = [&]()
+    {
+        const OperationMetadata& metadata = lastOperation();
+        if (metadata.approximation == ApproximationKind::UnsupportedFallback ||
+            (metadata.approximation ==
+                 ApproximationKind::SoundOverApproximation &&
+             approximation == ApproximationKind::Exact))
+            approximation = metadata.approximation;
+        best = best && metadata.best;
+        if (metadata.approximation != ApproximationKind::Exact &&
+            !metadata.reason.empty())
+            reason = metadata.reason;
+    };
 
     std::uint64_t nextId = 0;
     for (const VariableDeclaration& declaration :
@@ -146,7 +171,10 @@ void NumericalState::assignParallel(
 
     changeEnvironment(originalEnvironment.add(std::move(temporaries)));
     for (const auto& [target, temporary] : oldValues)
+    {
         assign(temporary, LinearExpression(target));
+        includeLastOperation();
+    }
 
     for (const LinearAssignment& assignment : assignments)
     {
@@ -161,17 +189,20 @@ void NumericalState::assignParallel(
                 source, rewritten.coefficient(source) + coefficient);
         }
         assign(assignment.target, rewritten);
+        includeLastOperation();
     }
     changeEnvironment(originalEnvironment);
+    recordOperation(OperationKind::Assignment, approximation, best,
+                    std::move(reason));
 }
 
 void NumericalState::assignParallel(const TreeAssignmentList& assignments)
 {
     std::set<Variable> targets;
     LinearAssignmentList affine;
-    std::vector<std::pair<Variable, Interval>> fallback;
+    std::vector<std::pair<Variable, Interval>> intervalized;
     affine.reserve(assignments.size());
-    fallback.reserve(assignments.size());
+    intervalized.reserve(assignments.size());
     for (const TreeAssignment& assignment : assignments)
     {
         if (!environment().contains(assignment.target))
@@ -184,7 +215,7 @@ void NumericalState::assignParallel(const TreeAssignmentList& assignments)
                 assignment.expression.asLinear())
             affine.push_back({assignment.target, *linear});
         else
-            fallback.emplace_back(
+            intervalized.emplace_back(
                 assignment.target,
                 evaluateTreeExpression(assignment.expression));
     }
@@ -193,9 +224,9 @@ void NumericalState::assignParallel(const TreeAssignmentList& assignments)
     // incoming state. Affine right-hand sides now run simultaneously, then the
     // precomputed nonlinear intervals are committed without rereading targets.
     assignParallel(affine);
-    for (const auto& [target, value] : fallback)
+    for (const auto& [target, value] : intervalized)
         assignInterval(target, value);
-    if (!fallback.empty())
+    if (!intervalized.empty())
         recordOperation(
             OperationKind::Assignment,
             ApproximationKind::SoundOverApproximation, false,
@@ -204,6 +235,12 @@ void NumericalState::assignParallel(const TreeAssignmentList& assignments)
 
 void NumericalState::assumeAll(const LinearConstraintSet& constraints)
 {
+    if (constraints.empty())
+    {
+        recordOperation(OperationKind::Assumption, ApproximationKind::Exact,
+                        true);
+        return;
+    }
     if (constraints.size() < 2)
     {
         for (const LinearConstraint& constraint : constraints)

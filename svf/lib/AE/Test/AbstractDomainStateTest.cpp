@@ -164,27 +164,29 @@ void testBoxLatticeAndFallbacks()
     auto diagnostics = std::make_shared<RecordingDiagnosticSink>();
     BoxConfig config;
     config.diagnostics = diagnostics;
-    BoxState fallback = BoxState::top(integers, config);
+    BoxState intervalized = BoxState::top(integers, config);
     const TreeExpression xTree =
         TreeExpression::variable(x, NumericType::integer());
     const TreeExpression yTree =
         TreeExpression::variable(y, NumericType::integer());
     const TreeExpression nonlinear = TreeExpression::binary(
         BinaryOperator::Multiply, xTree, yTree, NumericType::integer());
-    fallback.assign(x, nonlinear);
-    fallback.assume(TreeConstraint(nonlinear, ConstraintKind::LessEqual));
-    require(fallback.bound(x).isTop() && diagnostics->diagnostics.size() == 2,
-            "nonlinear Box operations must report their sound fallbacks");
+    intervalized.assign(x, nonlinear);
+    intervalized.assume(
+        TreeConstraint(nonlinear, ConstraintKind::LessEqual));
+    require(intervalized.bound(x).isTop() &&
+                diagnostics->diagnostics.size() == 2,
+            "unbounded nonlinear Box operations must report intervalization");
 
     const Variable z(3);
     const VariableEnvironment extended({{x, NumericType::integer(), "x"},
                                         {y, NumericType::integer(), "y"},
                                         {z, NumericType::integer(), "z"}});
-    fallback.changeEnvironment(extended, true);
-    require(fallback.bound(z).lower().value() == Rational(0) &&
-                fallback.bound(z).upper().value() == Rational(0),
+    intervalized.changeEnvironment(extended, true);
+    require(intervalized.bound(z).lower().value() == Rational(0) &&
+                intervalized.bound(z).upper().value() == Rational(0),
             "requested Box environment projection must initialize new symbols");
-    requireThrows([&] { fallback.forget(Variable(99)); },
+    requireThrows([&] { intervalized.forget(Variable(99)); },
                   "Box must reject unknown variables");
 }
 
@@ -481,7 +483,7 @@ void testPolyhedraLatticeAndFallbacks()
     auto diagnostics = std::make_shared<RecordingDiagnosticSink>();
     ConvexPolyhedraConfig config;
     config.diagnostics = diagnostics;
-    ConvexPolyhedraState fallback =
+    ConvexPolyhedraState intervalized =
         ConvexPolyhedraState::top(environment, config);
     const TreeExpression xTree =
         TreeExpression::variable(x, NumericType::real());
@@ -489,11 +491,14 @@ void testPolyhedraLatticeAndFallbacks()
         TreeExpression::variable(y, NumericType::real());
     const TreeExpression nonlinear = TreeExpression::binary(
         BinaryOperator::Multiply, xTree, yTree, NumericType::real());
-    fallback.assign(x, nonlinear);
-    fallback.assume(TreeConstraint(nonlinear, ConstraintKind::LessEqual));
-    fallback.assume(notEqual(LinearExpression(x), LinearExpression(y)));
-    require(fallback.bound(x).isTop() && diagnostics->diagnostics.size() == 3,
-            "non-convex/nonlinear Polyhedra operations must report fallbacks");
+    intervalized.assign(x, nonlinear);
+    intervalized.assume(
+        TreeConstraint(nonlinear, ConstraintKind::LessEqual));
+    intervalized.assume(
+        notEqual(LinearExpression(x), LinearExpression(y)));
+    require(intervalized.bound(x).isTop() &&
+                diagnostics->diagnostics.size() == 3,
+            "non-convex and unbounded nonlinear operations must report approximation");
 
     ConvexPolyhedraState contradiction = ConvexPolyhedraState::top(environment);
     contradiction.assume(atMost(x, Rational(0)));
@@ -1068,6 +1073,42 @@ void testExtendedApronSurface()
                 metadataWidened.lastOperation().best,
             "widening metadata must distinguish exact from best");
 
+    const auto checkNoOpMetadata = [&](auto state)
+    {
+        state.assign(x, LinearExpression(Rational(1)));
+        require(state.lastOperation().operation == OperationKind::Assignment,
+                std::string(state.name()) +
+                    " bottom assignment left stale metadata");
+        state.assignParallel(LinearAssignmentList{});
+        require(state.lastOperation().operation == OperationKind::Assignment,
+                std::string(state.name()) +
+                    " empty assignment batch left stale metadata");
+        state.substituteParallel(LinearAssignmentList{});
+        require(state.lastOperation().operation ==
+                    OperationKind::Substitution,
+                std::string(state.name()) +
+                    " empty substitution batch left stale metadata");
+        state.assumeAll({});
+        require(state.lastOperation().operation == OperationKind::Assumption,
+                std::string(state.name()) +
+                    " empty assumption batch left stale metadata");
+        state.close();
+        require(state.lastOperation().operation ==
+                    OperationKind::TopologicalClosure,
+                std::string(state.name()) +
+                    " bottom closure left stale metadata");
+    };
+    checkNoOpMetadata(BoxState::bottom(realEnvironment));
+    checkNoOpMetadata(OctagonState::bottom(realEnvironment));
+    checkNoOpMetadata(ConvexPolyhedraState::bottom(realEnvironment));
+
+    OctagonState parallelMetadata = OctagonState::top(realEnvironment);
+    parallelMetadata.assignParallel(
+        {{x, LinearExpression(y)}, {y, LinearExpression(x)}});
+    require(parallelMetadata.lastOperation().operation ==
+                OperationKind::Assignment,
+            "default parallel assignment leaked environment-change metadata");
+
     const TreeExpression product = TreeExpression::binary(
         BinaryOperator::Multiply,
         TreeExpression::variable(x, NumericType::real()),
@@ -1120,6 +1161,28 @@ void testExtendedApronSurface()
     require(impossible.isBottom(),
             "interval-disproved nonlinear guards must produce bottom");
 
+    const TreeExpression shiftedProduct = TreeExpression::binary(
+        BinaryOperator::Subtract, product,
+        TreeExpression::constant(Rational(5), NumericType::real()),
+        NumericType::real());
+    const auto checkShiftedProductGuard = [&](auto state)
+    {
+        state.assumeAll({atLeast(x, Rational(2)), atMost(x, Rational(3)),
+                         atLeast(y, Rational(2)), atMost(y, Rational(3))});
+        state.assume(
+            TreeConstraint(shiftedProduct, ConstraintKind::LessEqual));
+        require(state.bound(x).upper().isFinite() &&
+                    state.bound(x).upper().value() <= Rational("5/2") &&
+                    state.bound(y).upper().isFinite() &&
+                    state.bound(y).upper().value() <= Rational("5/2"),
+                std::string(state.name()) +
+                    " did not retain a shifted-product McCormick consequence");
+    };
+    checkShiftedProductGuard(BoxState::top(realEnvironment));
+    checkShiftedProductGuard(OctagonState::top(realEnvironment));
+    checkShiftedProductGuard(
+        ConvexPolyhedraState::top(realEnvironment));
+
     BoxState nonlinearOperators = BoxState::top(realEnvironment);
     nonlinearOperators.assumeAll(
         {equalsValue(x, Rational(9)), equalsValue(y, Rational(4))});
@@ -1151,6 +1214,26 @@ void testExtendedApronSurface()
         NumericType::real());
     require(nonlinearOperators.bound(zeroDivisor).isTop(),
             "possible division by zero must conservatively produce top");
+
+    BoxState unboundedOperators = BoxState::top(realEnvironment);
+    unboundedOperators.assumeAll(
+        {atLeast(x, Rational(2)), atLeast(y, Rational(3)),
+         atMost(y, Rational(4))});
+    const Interval unboundedProduct = unboundedOperators.bound(product);
+    require(unboundedProduct.lower().isFinite() &&
+                unboundedProduct.lower().value() == Rational(6) &&
+                unboundedProduct.upper().isPlusInfinity(),
+            "semi-infinite multiplication lost its finite lower endpoint");
+    const Interval unboundedQuotient =
+        unboundedOperators.bound(TreeExpression::binary(
+            BinaryOperator::Divide,
+            TreeExpression::variable(x, NumericType::real()),
+            TreeExpression::variable(y, NumericType::real()),
+            NumericType::real()));
+    require(unboundedQuotient.lower().isFinite() &&
+                unboundedQuotient.lower().value() == Rational("1/2") &&
+                unboundedQuotient.upper().isPlusInfinity(),
+            "semi-infinite division lost its finite lower endpoint");
 
     BoxState castSource = BoxState::top(realEnvironment);
     castSource.assumeAll(
@@ -1299,8 +1382,11 @@ void testExtendedApronSurface()
     require(line.bound(x) == Interval::singleton(Rational(0)) &&
                 line.bound(y).isTop(),
             "public line generator did not create a bidirectional direction");
-    require(ConvexPolyhedraState::fromGenerators(generatorEnvironment, {})
-                .isBottom(),
+    const ConvexPolyhedraState emptyGenerators =
+        ConvexPolyhedraState::fromGenerators(generatorEnvironment, {});
+    require(emptyGenerators.isBottom() &&
+                emptyGenerators.lastOperation().operation ==
+                    OperationKind::GeneratorImport,
             "an empty public generator system must denote bottom");
     requireThrows(
         [&]

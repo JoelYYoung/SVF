@@ -339,37 +339,52 @@ void compareExpandFold(ap_manager_t* manager)
         {{x, NumericType::real(), "x"}, {y, NumericType::real(), "y"}});
     LinearExpression difference(x);
     difference.setCoefficient(y, Rational(-1));
-    const LinearConstraintSet initial{
-        greaterEqual(difference, LinearExpression(Rational(0))),
-        lessEqual(difference, LinearExpression(Rational(2))),
-        greaterEqual(LinearExpression(y), LinearExpression(Rational(-1))),
-        lessEqual(LinearExpression(y), LinearExpression(Rational(3)))};
+    for (bool strict : {false, true})
+    {
+        const LinearConstraintSet initial{
+            strict ? greaterThan(difference,
+                                 LinearExpression(Rational(0)))
+                   : greaterEqual(difference,
+                                  LinearExpression(Rational(0))),
+            strict ? lessThan(difference,
+                              LinearExpression(Rational(2)))
+                   : lessEqual(difference,
+                               LinearExpression(Rational(2))),
+            greaterEqual(LinearExpression(y),
+                         LinearExpression(Rational(-1))),
+            lessEqual(LinearExpression(y),
+                      LinearExpression(Rational(3)))};
+        const std::string context = strict ? "NNC" : "closed";
 
-    ConvexPolyhedraState native =
-        ConvexPolyhedraState::fromConstraints(environment, initial);
-    ApronValue apron = apronFromConstraints(manager, environment, initial);
-    native.expand(
-        x, {{firstCopy, NumericType::real(), "x0"},
-            {secondCopy, NumericType::real(), "x1"}});
-    apron = ApronValue(
-        manager, ap_abstract0_expand(manager, false, apron.get(), 0, 2));
-    require(apronMatches(manager, native, apron),
-            "polyhedra expand differs from NewPolka");
+        ConvexPolyhedraState native =
+            ConvexPolyhedraState::fromConstraints(environment, initial);
+        ApronValue apron =
+            apronFromConstraints(manager, environment, initial);
+        native.expand(
+            x, {{firstCopy, NumericType::real(), "x0"},
+                {secondCopy, NumericType::real(), "x1"}});
+        apron = ApronValue(
+            manager,
+            ap_abstract0_expand(manager, false, apron.get(), 0, 2));
+        require(apronMatches(manager, native, apron),
+                context + " polyhedra expand differs from NewPolka");
 
-    LinearExpression copiesDifference(firstCopy);
-    copiesDifference.setCoefficient(secondCopy, Rational(-1));
-    require(native.entails(equal(copiesDifference,
-                                 LinearExpression(Rational()))) !=
-                CheckResult::True,
-            "polyhedra expand incorrectly equated unrelated copies");
+        LinearExpression copiesDifference(firstCopy);
+        copiesDifference.setCoefficient(secondCopy, Rational(-1));
+        require(native.entails(equal(copiesDifference,
+                                     LinearExpression(Rational()))) !=
+                    CheckResult::True,
+                context +
+                    " polyhedra expand incorrectly equated unrelated copies");
 
-    native.fold(x, {firstCopy, secondCopy});
-    ap_dim_t dimensions[] = {0, 2, 3};
-    apron = ApronValue(
-        manager,
-        ap_abstract0_fold(manager, false, apron.get(), dimensions, 3));
-    require(apronMatches(manager, native, apron),
-            "polyhedra fold differs from NewPolka");
+        native.fold(x, {firstCopy, secondCopy});
+        ap_dim_t dimensions[] = {0, 2, 3};
+        apron = ApronValue(
+            manager,
+            ap_abstract0_fold(manager, false, apron.get(), dimensions, 3));
+        require(apronMatches(manager, native, apron),
+                context + " polyhedra fold differs from NewPolka");
+    }
 }
 
 void compareGeneratorExchange(ap_manager_t* manager)
