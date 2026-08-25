@@ -152,6 +152,18 @@ void compareLinealityAndPersistentDual(ap_manager_t* manager)
     require(apronMatches(manager, native, apron),
             "line-pivot incremental clipping differs from NewPolka");
 
+    LinearExpression largeRow;
+    largeRow.setCoefficient(x, Rational(104729));
+    largeRow.setCoefficient(y, Rational(-13007));
+    largeRow.setCoefficient(z, Rational(8191));
+    largeRow.setCoefficient(w, Rational(-4099));
+    const LinearConstraintSet largeClip{lessEqual(
+        largeRow, LinearExpression(Rational("1234567/97")))};
+    native.assumeAll(largeClip);
+    apron = apronMeetConstraints(manager, apron, environment, largeClip);
+    require(apronMatches(manager, native, apron),
+            "large GMP coefficient clipping differs from NewPolka");
+
     LinearExpression wPlusZ(w);
     wPlusZ.setCoefficient(z, Rational(1));
     const LinearConstraintSet equalityClip{

@@ -61,6 +61,11 @@ void benchmark(ap_manager_t* strictManager, ap_manager_t* lazyManager,
                std::size_t dimensions,
                std::size_t pointCount, std::size_t repetitions)
 {
+    // Cold materialization needs independent copies, but allocating one copy
+    // per arbitrarily large timing repetition obscures the code under test and
+    // can consume gigabytes during profiling runs.
+    const std::size_t materializeRepetitions =
+        std::min<std::size_t>(repetitions, 4096);
     std::vector<VariableDeclaration> declarations;
     for (std::size_t dimension = 0; dimension < dimensions; ++dimension)
         declarations.push_back({Variable(static_cast<std::uint32_t>(dimension + 1)),
@@ -125,7 +130,7 @@ void benchmark(ap_manager_t* strictManager, ap_manager_t* lazyManager,
     // Force lazy H materialization on fresh copies. Re-exporting the same
     // object would only measure its already warm cache.
     std::vector<ConvexPolyhedraState> nativeExports(
-        repetitions, nativeResult);
+        materializeRepetitions, nativeResult);
     const auto nativeExportStart = Clock::now();
     for (ConvexPolyhedraState& result : nativeExports)
         (void)result.toConstraints();
@@ -133,9 +138,10 @@ void benchmark(ap_manager_t* strictManager, ap_manager_t* lazyManager,
         std::chrono::duration<double, std::milli>(Clock::now() -
                                                   nativeExportStart)
             .count() /
-        repetitions;
+        materializeRepetitions;
 
-    std::vector<ApronValue> strictExports(repetitions, strictResult);
+    std::vector<ApronValue> strictExports(materializeRepetitions,
+                                          strictResult);
     const auto strictExportStart = Clock::now();
     for (ApronValue& result : strictExports)
     {
@@ -147,9 +153,9 @@ void benchmark(ap_manager_t* strictManager, ap_manager_t* lazyManager,
         std::chrono::duration<double, std::milli>(Clock::now() -
                                                   strictExportStart)
             .count() /
-        repetitions;
+        materializeRepetitions;
 
-    std::vector<ApronValue> lazyExports(repetitions, lazyResult);
+    std::vector<ApronValue> lazyExports(materializeRepetitions, lazyResult);
     const auto lazyExportStart = Clock::now();
     for (ApronValue& result : lazyExports)
     {
@@ -161,7 +167,7 @@ void benchmark(ap_manager_t* strictManager, ap_manager_t* lazyManager,
         std::chrono::duration<double, std::milli>(Clock::now() -
                                                   lazyExportStart)
             .count() /
-        repetitions;
+        materializeRepetitions;
 
     if (!apronMatches(strictManager, nativeResult, strictResult) ||
         !apronMatches(lazyManager, nativeResult, lazyResult))
@@ -229,7 +235,7 @@ void benchmark(ap_manager_t* strictManager, ap_manager_t* lazyManager,
         repetitions);
 
     std::vector<ConvexPolyhedraState> nativeClipExports(
-        repetitions, nativeClipped);
+        materializeRepetitions, nativeClipped);
     const auto nativeClipExportStart = Clock::now();
     for (ConvexPolyhedraState& result : nativeClipExports)
         (void)result.toConstraints();
@@ -237,9 +243,10 @@ void benchmark(ap_manager_t* strictManager, ap_manager_t* lazyManager,
         std::chrono::duration<double, std::milli>(Clock::now() -
                                                   nativeClipExportStart)
             .count() /
-        repetitions;
+        materializeRepetitions;
 
-    std::vector<ApronValue> strictClipExports(repetitions, strictClipped);
+    std::vector<ApronValue> strictClipExports(materializeRepetitions,
+                                              strictClipped);
     const auto strictClipExportStart = Clock::now();
     for (ApronValue& result : strictClipExports)
     {
@@ -251,9 +258,10 @@ void benchmark(ap_manager_t* strictManager, ap_manager_t* lazyManager,
         std::chrono::duration<double, std::milli>(Clock::now() -
                                                   strictClipExportStart)
             .count() /
-        repetitions;
+        materializeRepetitions;
 
-    std::vector<ApronValue> lazyClipExports(repetitions, lazyClipped);
+    std::vector<ApronValue> lazyClipExports(materializeRepetitions,
+                                            lazyClipped);
     const auto lazyClipExportStart = Clock::now();
     for (ApronValue& result : lazyClipExports)
     {
@@ -265,7 +273,7 @@ void benchmark(ap_manager_t* strictManager, ap_manager_t* lazyManager,
         std::chrono::duration<double, std::milli>(Clock::now() -
                                                   lazyClipExportStart)
             .count() /
-        repetitions;
+        materializeRepetitions;
 
     if (!apronMatches(strictManager, nativeClipped, strictClipped) ||
         !apronMatches(lazyManager, nativeClipped, lazyClipped))
@@ -275,6 +283,119 @@ void benchmark(ap_manager_t* strictManager, ap_manager_t* lazyManager,
               << strictClipMilliseconds << ',' << lazyClipMilliseconds << ','
               << nativeClipExport << ',' << strictClipExport << ','
               << lazyClipExport << '\n';
+
+    // Exercise the non-pointed phase separately. The initial equality leaves
+    // a shared line in v0/v1, while every later unconstrained dimension adds
+    // another explicit line. The batch then removes those lineality
+    // directions before entering the ordinary pointed DD phase.
+    LinearExpression difference(environment.variableOf(0));
+    difference.setCoefficient(environment.variableOf(1), Rational(-1));
+    LinearConstraintSet linealityInitial{
+        equal(difference, LinearExpression(Rational(2)))};
+    if (dimensions > 2)
+    {
+        linealityInitial.push_back(greaterEqual(
+            LinearExpression(environment.variableOf(2)),
+            LinearExpression(Rational(-3))));
+    }
+    ConvexPolyhedraState nativeLinealityBase =
+        ConvexPolyhedraState::fromConstraints(environment, linealityInitial);
+    nativeLinealityBase = nativeLinealityBase.join(nativeLinealityBase);
+    (void)nativeLinealityBase.toConstraints();
+    ApronValue strictLinealityBase =
+        apronFromState(strictManager, nativeLinealityBase);
+    ApronValue lazyLinealityBase =
+        apronFromState(lazyManager, nativeLinealityBase);
+
+    LinearConstraintSet linealityClips{
+        lessEqual(LinearExpression(environment.variableOf(0)),
+                  LinearExpression(Rational(5))),
+        greaterEqual(LinearExpression(environment.variableOf(1)),
+                     LinearExpression(Rational(-4)))};
+    for (std::size_t dimension = 2; dimension < dimensions; ++dimension)
+    {
+        linealityClips.push_back(lessEqual(
+            LinearExpression(environment.variableOf(dimension)),
+            LinearExpression(Rational(
+                static_cast<std::int64_t>(dimension + 3)))));
+    }
+
+    ConvexPolyhedraState nativeLineality = nativeLinealityBase;
+    const double nativeLinealityMilliseconds = medianMilliseconds(
+        [&] {
+            ConvexPolyhedraState result = nativeLinealityBase;
+            result.assumeAll(linealityClips);
+            nativeLineality = std::move(result);
+        },
+        repetitions);
+    ApronValue strictLineality = strictLinealityBase;
+    const double strictLinealityMilliseconds = medianMilliseconds(
+        [&] {
+            strictLineality = apronMeetConstraints(
+                strictManager, strictLinealityBase, environment,
+                linealityClips);
+        },
+        repetitions);
+    ApronValue lazyLineality = lazyLinealityBase;
+    const double lazyLinealityMilliseconds = medianMilliseconds(
+        [&] {
+            lazyLineality = apronMeetConstraints(
+                lazyManager, lazyLinealityBase, environment, linealityClips);
+        },
+        repetitions);
+
+    std::vector<ConvexPolyhedraState> nativeLinealityExports(
+        materializeRepetitions, nativeLineality);
+    const auto nativeLinealityExportStart = Clock::now();
+    for (ConvexPolyhedraState& result : nativeLinealityExports)
+        (void)result.toConstraints();
+    const double nativeLinealityExport =
+        std::chrono::duration<double, std::milli>(
+            Clock::now() - nativeLinealityExportStart)
+            .count() /
+        materializeRepetitions;
+
+    std::vector<ApronValue> strictLinealityExports(materializeRepetitions,
+                                                   strictLineality);
+    const auto strictLinealityExportStart = Clock::now();
+    for (ApronValue& result : strictLinealityExports)
+    {
+        ap_lincons0_array_t array =
+            ap_abstract0_to_lincons_array(strictManager, result.get());
+        ap_lincons0_array_clear(&array);
+    }
+    const double strictLinealityExport =
+        std::chrono::duration<double, std::milli>(
+            Clock::now() - strictLinealityExportStart)
+            .count() /
+        materializeRepetitions;
+
+    std::vector<ApronValue> lazyLinealityExports(materializeRepetitions,
+                                                 lazyLineality);
+    const auto lazyLinealityExportStart = Clock::now();
+    for (ApronValue& result : lazyLinealityExports)
+    {
+        ap_lincons0_array_t array =
+            ap_abstract0_to_lincons_array(lazyManager, result.get());
+        ap_lincons0_array_clear(&array);
+    }
+    const double lazyLinealityExport =
+        std::chrono::duration<double, std::milli>(
+            Clock::now() - lazyLinealityExportStart)
+            .count() /
+        materializeRepetitions;
+
+    if (!apronMatches(strictManager, nativeLineality, strictLineality) ||
+        !apronMatches(lazyManager, nativeLineality, lazyLineality))
+        throw std::runtime_error(
+            "lineality benchmark implementations disagree");
+    std::cout << "lineality_clip," << dimensions << ','
+              << linealityClips.size() << ','
+              << nativeLinealityMilliseconds << ','
+              << strictLinealityMilliseconds << ','
+              << lazyLinealityMilliseconds << ','
+              << nativeLinealityExport << ',' << strictLinealityExport << ','
+              << lazyLinealityExport << '\n';
 }
 
 } // namespace
@@ -287,6 +408,11 @@ int main(int argc, char** argv)
             argc > 1 ? static_cast<std::size_t>(std::stoul(argv[1])) : 10;
         const std::size_t repetitions =
             argc > 2 ? static_cast<std::size_t>(std::stoul(argv[2])) : 3;
+        const std::size_t maxDimensions =
+            argc > 3 ? static_cast<std::size_t>(std::stoul(argv[3])) : 6;
+        if (maxDimensions < 2)
+            throw std::invalid_argument(
+                "maximum benchmark dimension must be at least two");
         ApronManager strictManager;
         ApronManager lazyManager;
         ap_funopt_t lazyJoin =
@@ -298,7 +424,8 @@ int main(int argc, char** argv)
                      "newpolka_lazy_operation_ms,native_materialize_ms,"
                      "newpolka_strict_materialize_ms,"
                      "newpolka_lazy_materialize_ms\n";
-        for (std::size_t dimensions = 2; dimensions <= 6; ++dimensions)
+        for (std::size_t dimensions = 2; dimensions <= maxDimensions;
+             ++dimensions)
             benchmark(strictManager.get(), lazyManager.get(), dimensions,
                       points, repetitions);
         return 0;
