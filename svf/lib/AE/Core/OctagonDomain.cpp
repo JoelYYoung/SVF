@@ -262,23 +262,50 @@ public:
         // target, as in `x := 2*x + y`, then asserting `target = expression`
         // after the strong update is not a weaker fact, it is a false one --
         // the `target` in the expression is the old value and is already gone.
+        // The best interval-only image is not enough for an octagon: every
+        // objective E +/- y and -E +/- y yields a representable relation
+        // between the new target x'=E and an unchanged variable y.  Measure
+        // all of them on the incoming state before the strong update.  This
+        // is the general octagonal affine-image construction; it does not
+        // depend on the number or values of the coefficients in E.
+        normalize(state, environment);
         const Interval assigned =
             evaluateInterval(state, environment, expression);
-        const bool readsTarget = !expression.coefficient(target).isZero();
-
-        forget(state, targetDimension);
-        if (!readsTarget)
+        struct RelationalImage
         {
-            LinearExpression equality(target);
-            equality -= expression;
-            const bool exact = addConstraint(
-                state, environment,
-                LinearConstraint(std::move(equality), ConstraintKind::Equal));
-            normalize(state, environment);
-            return exact ? ApproximationKind::Exact
-                         : ApproximationKind::SoundOverApproximation;
+            Variable variable;
+            int sign;
+            Bound targetUpper;
+            Bound targetLower;
+        };
+        std::vector<RelationalImage> relationalImages;
+        relationalImages.reserve(2 * (environment.size() - 1));
+        for (const VariableDeclaration& declaration : environment.variables())
+        {
+            if (declaration.variable == target)
+                continue;
+            for (const int sign : {-1, 1})
+            {
+                LinearExpression positiveObjective = expression;
+                positiveObjective.setCoefficient(
+                    declaration.variable,
+                    positiveObjective.coefficient(declaration.variable) +
+                        Rational(sign));
+                LinearExpression negativeObjective = -expression;
+                negativeObjective.setCoefficient(
+                    declaration.variable,
+                    negativeObjective.coefficient(declaration.variable) +
+                        Rational(sign));
+                relationalImages.push_back(
+                    {declaration.variable, sign,
+                     boundExpression(state, environment, positiveObjective)
+                         .upper(),
+                     boundExpression(state, environment, negativeObjective)
+                         .upper()});
+            }
         }
 
+        forget(state, targetDimension);
         if (assigned.upper().isFinite())
         {
             LinearExpression upper(target);
@@ -293,6 +320,26 @@ public:
             lower.setConstant(assigned.lower().value());
             addLessEqual(state, environment, lower, assigned.lower().isStrict(),
                          false);
+        }
+        for (const RelationalImage& image : relationalImages)
+        {
+            if (image.targetUpper.isFinite())
+            {
+                LinearExpression upper(target);
+                upper.setCoefficient(image.variable, Rational(image.sign));
+                upper.setConstant(-image.targetUpper.value());
+                addLessEqual(state, environment, upper,
+                             image.targetUpper.isStrict(), false);
+            }
+            if (image.targetLower.isFinite())
+            {
+                LinearExpression lower;
+                lower.setCoefficient(target, Rational(-1));
+                lower.setCoefficient(image.variable, Rational(image.sign));
+                lower.setConstant(-image.targetLower.value());
+                addLessEqual(state, environment, lower,
+                             image.targetLower.isStrict(), false);
+            }
         }
         normalize(state, environment);
         return ApproximationKind::SoundOverApproximation;
@@ -1003,7 +1050,11 @@ private:
             const Rational lhsMagnitude = absolute(lhsCoefficient);
             if (lhsMagnitude != absolute(rhsCoefficient) ||
                 lhsMagnitude.isZero())
+            {
+                if (allowLinearization)
+                    addLinearized(state, environment, expression, strict);
                 return false;
+            }
 
             const Dimension lhsDimension = environment.dimensionOf(lhsVariable);
             const Dimension rhsDimension = environment.dimensionOf(rhsVariable);
@@ -1183,32 +1234,70 @@ private:
             return true;
         };
 
-        const auto apply = [&](const std::vector<Variable>& kept)
+        const auto applyUnary = [&](Variable kept)
         {
             Rational rest;
             bool restStrict = false;
-            if (!restMinimum(kept, rest, restStrict))
+            if (!restMinimum({kept}, rest, restStrict))
                 return;
             LinearExpression reduced(expression.constant() + rest);
-            for (Variable variable : kept)
-                reduced.setCoefficient(variable,
-                                       expression.coefficient(variable));
+            reduced.setCoefficient(kept, expression.coefficient(kept));
+            addLessEqual(state, environment, reduced, strict || restStrict,
+                         false);
+        };
+
+        // For a pair a*x+b*y, retain the largest common octagonal part
+        // m*(sign(a)*x+sign(b)*y), where m=min(|a|,|b|), and intervalize only
+        // the coefficient remainders.  When |a|=|b| this is the exact pair
+        // handled previously.  Unequal magnitudes now produce the strongest
+        // consequence available from this interval decomposition, and the
+        // construction is invariant under positive scaling of the input row.
+        const auto applyPair = [&](Variable first, Variable second)
+        {
+            const Rational firstCoefficient = expression.coefficient(first);
+            const Rational secondCoefficient = expression.coefficient(second);
+            const Rational common =
+                std::min(absolute(firstCoefficient),
+                         absolute(secondCoefficient));
+            if (common.isZero())
+                return;
+
+            Rational rest = expression.constant();
+            bool restStrict = false;
+            for (const auto& [variable, coefficient] : expression.terms())
+            {
+                Rational remainder = coefficient;
+                if (variable == first)
+                    remainder -= Rational(firstCoefficient.sign()) * common;
+                else if (variable == second)
+                    remainder -= Rational(secondCoefficient.sign()) * common;
+                if (remainder.isZero())
+                    continue;
+                const Interval& interval = intervals.at(variable);
+                const Bound& endpoint = remainder.sign() > 0
+                                            ? interval.lower()
+                                            : interval.upper();
+                if (!endpoint.isFinite())
+                    return;
+                rest += remainder * endpoint.value();
+                restStrict = restStrict || endpoint.isStrict();
+            }
+
+            LinearExpression reduced(rest);
+            reduced.setCoefficient(
+                first, Rational(firstCoefficient.sign()) * common);
+            reduced.setCoefficient(
+                second, Rational(secondCoefficient.sign()) * common);
             addLessEqual(state, environment, reduced, strict || restStrict,
                          false);
         };
 
         for (std::size_t first = 0; first < variables.size(); ++first)
         {
-            apply({variables[first]});
-            const Rational firstMagnitude =
-                absolute(expression.coefficient(variables[first]));
+            applyUnary(variables[first]);
             for (std::size_t second = first + 1; second < variables.size();
                  ++second)
-            {
-                if (firstMagnitude ==
-                    absolute(expression.coefficient(variables[second])))
-                    apply({variables[first], variables[second]});
-            }
+                applyPair(variables[first], variables[second]);
         }
     }
 

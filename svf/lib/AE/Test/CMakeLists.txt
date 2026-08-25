@@ -71,6 +71,10 @@ find_library(APRON_LIBRARY NAMES apron
              HINTS ${APRON_ROOT} ENV APRON_ROOT PATH_SUFFIXES lib)
 find_library(APRON_POLKA_LIBRARY NAMES polkaMPQ
              HINTS ${APRON_ROOT} ENV APRON_ROOT PATH_SUFFIXES lib)
+find_library(APRON_BOX_LIBRARY NAMES boxMPQ
+             HINTS ${APRON_ROOT} ENV APRON_ROOT PATH_SUFFIXES lib)
+find_library(APRON_OCTAGON_LIBRARY NAMES octMPQ
+             HINTS ${APRON_ROOT} ENV APRON_ROOT PATH_SUFFIXES lib)
 if(APRON_INCLUDE_DIR AND APRON_LIBRARY AND APRON_POLKA_LIBRARY)
   add_executable(svf-polyhedra-apron-test PolyhedraApronTest.cpp)
   target_include_directories(
@@ -98,6 +102,23 @@ if(APRON_INCLUDE_DIR AND APRON_LIBRARY AND APRON_POLKA_LIBRARY)
                                           ${APRON_LIBRARY}
                                           MPFR::MPFR GMP::GMPXX m
   )
+  if(APRON_BOX_LIBRARY AND APRON_OCTAGON_LIBRARY)
+    add_executable(svf-box-octagon-apron-test BoxOctagonApronTest.cpp)
+    target_include_directories(
+      svf-box-octagon-apron-test PRIVATE ${CMAKE_CURRENT_LIST_DIR}
+                                         ${APRON_INCLUDE_DIR}
+    )
+    target_link_libraries(
+      svf-box-octagon-apron-test PRIVATE AbstractDomainCore
+                                         ${APRON_BOX_LIBRARY}
+                                         ${APRON_OCTAGON_LIBRARY}
+                                         ${APRON_POLKA_LIBRARY}
+                                         ${APRON_LIBRARY}
+                                         MPFR::MPFR GMP::GMPXX m
+    )
+    add_test(NAME box-octagon-apron-differential
+             COMMAND svf-box-octagon-apron-test)
+  endif()
   message(STATUS "APRON/NewPolka differential tests enabled")
 endif()
 
@@ -181,6 +202,9 @@ if(APPLE)
   if(TARGET svf-polyhedra-apron-test)
     list(APPEND abstract_domain_test_targets
          svf-polyhedra-apron-test svf-polyhedra-apron-benchmark)
+  endif()
+  if(TARGET svf-box-octagon-apron-test)
+    list(APPEND abstract_domain_test_targets svf-box-octagon-apron-test)
   endif()
   if(TARGET svf-ae-relational-integration-test)
     list(APPEND abstract_domain_test_targets

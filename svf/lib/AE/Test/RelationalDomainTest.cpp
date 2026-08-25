@@ -289,17 +289,17 @@ void testAssumeClosureAndAssignment()
                 assigned.bound(x).upper().value() == Rational(-1),
             "x := -x + 2 must transform signed target nodes exactly");
 
-    LinearExpression unsupported(x);
-    unsupported *= Rational(2);
+    LinearExpression scaled(x);
+    scaled *= Rational(2);
     beforeAssignment = assigned;
-    assigned.assign(y, unsupported);
+    assigned.assign(y, scaled);
     requireProof(
-        checker.checkAssignment(beforeAssignment, y, unsupported, assigned));
-    requireProof(checker.checkForget(beforeAssignment, y, assigned));
-    require(assigned.bound(y).isTop(),
-            "unsupported y := 2*x must soundly forget y");
+        checker.checkAssignment(beforeAssignment, y, scaled, assigned));
+    require(assigned.bound(y).lower().value() == Rational(-2) &&
+                assigned.bound(y).upper().value() == Rational(-2),
+            "general y := 2*x must recover the strongest interval image");
     require(assigned.bound(x).lower().value() == Rational(-1),
-            "forgetting y must retain independent x information");
+            "a general affine image must retain independent x information");
 }
 
 void testStrictIntegerAndRealBounds()
