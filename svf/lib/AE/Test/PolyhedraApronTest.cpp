@@ -39,6 +39,9 @@ ConvexPolyhedraState point(const VariableEnvironment& environment,
 void compareHullFamilies(ap_manager_t* manager, std::size_t dimensions,
                          std::uint32_t seed)
 {
+    const std::string caseContext =
+        " at dimension " + std::to_string(dimensions) + " seed " +
+        std::to_string(seed);
     std::vector<VariableDeclaration> declarations;
     for (std::size_t dimension = 0; dimension < dimensions; ++dimension)
         declarations.push_back({Variable(static_cast<std::uint32_t>(dimension + 1)),
@@ -63,8 +66,7 @@ void compareHullFamilies(ap_manager_t* manager, std::size_t dimensions,
                                        apronPoint.get()));
     }
     require(apronMatches(manager, native, apron),
-            "native repeated hull differs from NewPolka at dimension " +
-                std::to_string(dimensions));
+            "native repeated hull differs from NewPolka" + caseContext);
 
     LinearExpression sum;
     for (const VariableDeclaration& declaration : environment.variables())
@@ -77,7 +79,8 @@ void compareHullFamilies(ap_manager_t* manager, std::size_t dimensions,
     native.assumeAll(clips);
     apron = apronMeetConstraints(manager, apron, environment, clips);
     require(apronMatches(manager, native, apron),
-            "incremental constraint meet differs from NewPolka");
+            "incremental constraint meet differs from NewPolka" +
+                caseContext);
 
     ConvexPolyhedraState other = point(
         environment, std::vector<std::int64_t>(dimensions, 0));
@@ -89,7 +92,7 @@ void compareHullFamilies(ap_manager_t* manager, std::size_t dimensions,
                                     manager, false, apron.get(),
                                     apronOther.get()));
     require(apronMatches(manager, native, apron),
-            "generator-backed meet differs from NewPolka");
+            "generator-backed meet differs from NewPolka" + caseContext);
 
     if (dimensions >= 2)
     {
@@ -100,13 +103,13 @@ void compareHullFamilies(ap_manager_t* manager, std::size_t dimensions,
         native.assign(target, image);
         apron = apronAssign(manager, apron, environment, target, image);
         require(apronMatches(manager, native, apron),
-                "affine assignment differs from NewPolka");
+                "affine assignment differs from NewPolka" + caseContext);
 
         const Variable forgotten = environment.variableOf(dimensions - 1);
         native.forget(forgotten);
         apron = apronForget(manager, apron, environment, forgotten);
         require(apronMatches(manager, native, apron),
-                "projection/forget differs from NewPolka");
+                "projection/forget differs from NewPolka" + caseContext);
     }
 }
 
@@ -189,10 +192,17 @@ int main()
     try
     {
         ApronManager manager;
+        constexpr std::uint32_t StressTrials = 8;
         for (std::size_t dimensions = 2; dimensions <= 6; ++dimensions)
-            compareHullFamilies(manager.get(), dimensions,
-                                0xC0FFEEU +
-                                    static_cast<std::uint32_t>(dimensions));
+        {
+            for (std::uint32_t trial = 0; trial < StressTrials; ++trial)
+            {
+                compareHullFamilies(
+                    manager.get(), dimensions,
+                    0xC0FFEEU + static_cast<std::uint32_t>(dimensions) +
+                        trial * 0x9E3779B9U);
+            }
+        }
         compareLinealityAndPersistentDual(manager.get());
         std::cout << "native Polyhedra/APRON NewPolka differential tests passed\n";
         return 0;
