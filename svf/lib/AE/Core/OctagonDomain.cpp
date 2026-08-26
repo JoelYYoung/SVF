@@ -11,7 +11,8 @@
 #include <stdexcept>
 #include <utility>
 
-using namespace SVF::AbstractDomain;
+namespace SVF::AbstractDomain
+{
 
 namespace
 {
@@ -160,7 +161,7 @@ Bound tightenIntegerUnary(const Bound& bound)
 
 } // namespace
 
-class SVF::AbstractDomain::OctagonState::Impl final
+class OctagonState::Impl final
 {
 public:
     Impl(const VariableEnvironment& environment, OctagonConfig options, bool bottom)
@@ -1516,9 +1517,6 @@ private:
     OctagonConfig options_;
     OctagonStorage state_;
 };
-
-namespace SVF::AbstractDomain
-{
 
 OctagonState::OctagonState(VariableEnvironment environment, OctagonConfig config,
                            bool bottom)

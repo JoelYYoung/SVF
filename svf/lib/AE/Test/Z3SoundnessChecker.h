@@ -13,7 +13,12 @@
 namespace SVF::test
 {
 
-using namespace AbstractDomain;
+using AbstractDomain::LinearAssignmentList;
+using AbstractDomain::LinearConstraint;
+using AbstractDomain::LinearExpression;
+using AbstractDomain::NumericalState;
+using AbstractDomain::Variable;
+using AbstractDomain::VariableEnvironment;
 
 struct ProofResult
 {

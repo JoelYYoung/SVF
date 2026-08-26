@@ -246,12 +246,13 @@ void compareExactLatticeFamily(ap_manager_t* manager,
     ApronValue apronExpanded(
         manager,
         ap_abstract0_expand(manager, false, apronLeft.get(),
-                            environment.dimensionOf(source), copies.size()));
+                            SVF::test::apronDimension(environment, source),
+                            copies.size()));
     requireEquivalent(manager, expanded, apronExpanded, name + " expand");
 
     expanded.fold(source, {firstCopy, secondCopy});
     ap_dim_t foldedDimensions[] = {
-        static_cast<ap_dim_t>(environment.dimensionOf(source)),
+        SVF::test::apronDimension(environment, source),
         static_cast<ap_dim_t>(environment.size()),
         static_cast<ap_dim_t>(environment.size() + 1)};
     ApronValue apronFolded(

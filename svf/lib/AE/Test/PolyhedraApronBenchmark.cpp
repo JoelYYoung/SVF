@@ -66,6 +66,8 @@ void benchmark(ap_manager_t* strictManager, ap_manager_t* lazyManager,
     // can consume gigabytes during profiling runs.
     const std::size_t materializeRepetitions =
         std::min<std::size_t>(repetitions, 4096);
+    const double materializeDivisor =
+        static_cast<double>(materializeRepetitions);
     std::vector<VariableDeclaration> declarations;
     for (std::size_t dimension = 0; dimension < dimensions; ++dimension)
         declarations.push_back({Variable(static_cast<std::uint32_t>(dimension + 1)),
@@ -138,7 +140,7 @@ void benchmark(ap_manager_t* strictManager, ap_manager_t* lazyManager,
         std::chrono::duration<double, std::milli>(Clock::now() -
                                                   nativeExportStart)
             .count() /
-        materializeRepetitions;
+        materializeDivisor;
 
     std::vector<ApronValue> strictExports(materializeRepetitions,
                                           strictResult);
@@ -153,7 +155,7 @@ void benchmark(ap_manager_t* strictManager, ap_manager_t* lazyManager,
         std::chrono::duration<double, std::milli>(Clock::now() -
                                                   strictExportStart)
             .count() /
-        materializeRepetitions;
+        materializeDivisor;
 
     std::vector<ApronValue> lazyExports(materializeRepetitions, lazyResult);
     const auto lazyExportStart = Clock::now();
@@ -167,7 +169,7 @@ void benchmark(ap_manager_t* strictManager, ap_manager_t* lazyManager,
         std::chrono::duration<double, std::milli>(Clock::now() -
                                                   lazyExportStart)
             .count() /
-        materializeRepetitions;
+        materializeDivisor;
 
     if (!apronMatches(strictManager, nativeResult, strictResult) ||
         !apronMatches(lazyManager, nativeResult, lazyResult))
@@ -243,7 +245,7 @@ void benchmark(ap_manager_t* strictManager, ap_manager_t* lazyManager,
         std::chrono::duration<double, std::milli>(Clock::now() -
                                                   nativeClipExportStart)
             .count() /
-        materializeRepetitions;
+        materializeDivisor;
 
     std::vector<ApronValue> strictClipExports(materializeRepetitions,
                                               strictClipped);
@@ -258,7 +260,7 @@ void benchmark(ap_manager_t* strictManager, ap_manager_t* lazyManager,
         std::chrono::duration<double, std::milli>(Clock::now() -
                                                   strictClipExportStart)
             .count() /
-        materializeRepetitions;
+        materializeDivisor;
 
     std::vector<ApronValue> lazyClipExports(materializeRepetitions,
                                             lazyClipped);
@@ -273,7 +275,7 @@ void benchmark(ap_manager_t* strictManager, ap_manager_t* lazyManager,
         std::chrono::duration<double, std::milli>(Clock::now() -
                                                   lazyClipExportStart)
             .count() /
-        materializeRepetitions;
+        materializeDivisor;
 
     if (!apronMatches(strictManager, nativeClipped, strictClipped) ||
         !apronMatches(lazyManager, nativeClipped, lazyClipped))
@@ -302,7 +304,7 @@ void benchmark(ap_manager_t* strictManager, ap_manager_t* lazyManager,
         },
         repetitions);
     ap_dim_t foldedDimensions[] = {
-        static_cast<ap_dim_t>(environment.dimensionOf(expandedSource)),
+        SVF::test::apronDimension(environment, expandedSource),
         static_cast<ap_dim_t>(dimensions),
         static_cast<ap_dim_t>(dimensions + 1)};
     ApronValue strictFolded = strictClipBase;
@@ -312,7 +314,8 @@ void benchmark(ap_manager_t* strictManager, ap_manager_t* lazyManager,
                 strictManager,
                 ap_abstract0_expand(
                     strictManager, false, strictClipBase.get(),
-                    environment.dimensionOf(expandedSource), 2));
+                    SVF::test::apronDimension(environment, expandedSource),
+                    2));
             strictFolded = ApronValue(
                 strictManager,
                 ap_abstract0_fold(strictManager, false, expanded.get(),
@@ -326,7 +329,8 @@ void benchmark(ap_manager_t* strictManager, ap_manager_t* lazyManager,
                 lazyManager,
                 ap_abstract0_expand(
                     lazyManager, false, lazyClipBase.get(),
-                    environment.dimensionOf(expandedSource), 2));
+                    SVF::test::apronDimension(environment, expandedSource),
+                    2));
             lazyFolded = ApronValue(
                 lazyManager,
                 ap_abstract0_fold(lazyManager, false, expanded.get(),
@@ -443,7 +447,7 @@ void benchmark(ap_manager_t* strictManager, ap_manager_t* lazyManager,
         std::chrono::duration<double, std::milli>(
             Clock::now() - nativeLinealityExportStart)
             .count() /
-        materializeRepetitions;
+        materializeDivisor;
 
     std::vector<ApronValue> strictLinealityExports(materializeRepetitions,
                                                    strictLineality);
@@ -458,7 +462,7 @@ void benchmark(ap_manager_t* strictManager, ap_manager_t* lazyManager,
         std::chrono::duration<double, std::milli>(
             Clock::now() - strictLinealityExportStart)
             .count() /
-        materializeRepetitions;
+        materializeDivisor;
 
     std::vector<ApronValue> lazyLinealityExports(materializeRepetitions,
                                                  lazyLineality);
@@ -473,7 +477,7 @@ void benchmark(ap_manager_t* strictManager, ap_manager_t* lazyManager,
         std::chrono::duration<double, std::milli>(
             Clock::now() - lazyLinealityExportStart)
             .count() /
-        materializeRepetitions;
+        materializeDivisor;
 
     if (!apronMatches(strictManager, nativeLineality, strictLineality) ||
         !apronMatches(lazyManager, nativeLineality, lazyLineality))
@@ -569,7 +573,7 @@ void benchmark(ap_manager_t* strictManager, ap_manager_t* lazyManager,
         std::chrono::duration<double, std::milli>(
             Clock::now() - nativeNNCExportStart)
             .count() /
-        materializeRepetitions;
+        materializeDivisor;
 
     const auto apronExport = [&](ap_manager_t* manager,
                                  const ApronValue& source)
@@ -584,7 +588,7 @@ void benchmark(ap_manager_t* strictManager, ap_manager_t* lazyManager,
         }
         return std::chrono::duration<double, std::milli>(Clock::now() - start)
                    .count() /
-               materializeRepetitions;
+               materializeDivisor;
     };
     const double strictNNCExport = apronExport(strictManager, strictNNC);
     const double lazyNNCExport = apronExport(lazyManager, lazyNNC);

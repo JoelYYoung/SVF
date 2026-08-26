@@ -5,7 +5,8 @@
 #include <algorithm>
 #include <sstream>
 
-using namespace SVF::AbstractDomain;
+namespace SVF::AbstractDomain
+{
 
 namespace
 {
@@ -272,7 +273,7 @@ AddressSet AddressState::defaultValue() const
     return defaultTop_ ? AddressSet::top() : AddressSet::bottom();
 }
 
-Lifetime SVF::AbstractDomain::join(Lifetime lhs, Lifetime rhs)
+Lifetime join(Lifetime lhs, Lifetime rhs)
 {
     if (lhs == Lifetime::Bottom)
         return rhs;
@@ -281,7 +282,7 @@ Lifetime SVF::AbstractDomain::join(Lifetime lhs, Lifetime rhs)
     return Lifetime::MaybeFreed;
 }
 
-Lifetime SVF::AbstractDomain::meet(Lifetime lhs, Lifetime rhs)
+Lifetime meet(Lifetime lhs, Lifetime rhs)
 {
     if (lhs == Lifetime::MaybeFreed)
         return rhs;
@@ -290,12 +291,12 @@ Lifetime SVF::AbstractDomain::meet(Lifetime lhs, Lifetime rhs)
     return Lifetime::Bottom;
 }
 
-bool SVF::AbstractDomain::isSubsetOf(Lifetime lhs, Lifetime rhs)
+bool isSubsetOf(Lifetime lhs, Lifetime rhs)
 {
     return lhs == Lifetime::Bottom || rhs == Lifetime::MaybeFreed || lhs == rhs;
 }
 
-const char* SVF::AbstractDomain::toString(Lifetime lifetime)
+const char* toString(Lifetime lifetime)
 {
     switch (lifetime)
     {
@@ -467,3 +468,5 @@ Variable MemoryLayout::contentOf(Location location) const
         throw std::out_of_range("location has no content symbol");
     return it->second;
 }
+
+} // namespace SVF::AbstractDomain

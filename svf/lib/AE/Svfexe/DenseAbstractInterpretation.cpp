@@ -9,8 +9,10 @@
 #include <stdexcept>
 #include <utility>
 
-using namespace SVF;
-namespace AD = SVF::AbstractDomain;
+namespace SVF
+{
+
+namespace AD = AbstractDomain;
 
 namespace
 {
@@ -75,7 +77,7 @@ AD::ConstraintKind negatePredicate(AD::ConstraintKind kind)
     return kind;
 }
 
-bool constraintKind(s32_t predicate, AD::ConstraintKind& kind)
+bool constraintKind(u32_t predicate, AD::ConstraintKind& kind)
 {
     switch (predicate)
     {
@@ -865,5 +867,7 @@ rebuildCompatibilityProjection(const ICFGNode* node)
     }
 }
 
-template class SVF::DenseAbstractInterpretation<AD::BoxState>;
-template class SVF::DenseAbstractInterpretation<AD::OctagonState>;
+template class DenseAbstractInterpretation<AD::BoxState>;
+template class DenseAbstractInterpretation<AD::OctagonState>;
+
+} // namespace SVF

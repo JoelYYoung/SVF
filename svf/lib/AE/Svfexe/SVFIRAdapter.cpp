@@ -8,13 +8,22 @@
 #include "Util/SVFUtil.h"
 
 #include <limits>
-#include <iterator>
 #include <stdexcept>
 #include <string>
 #include <utility>
 
-using namespace SVF;
-using namespace SVF::AbstractDomain;
+namespace SVF
+{
+
+using AbstractDomain::LinearExpression;
+using AbstractDomain::Location;
+using AbstractDomain::MemoryLayout;
+using AbstractDomain::NumericType;
+using AbstractDomain::Rational;
+using AbstractDomain::TreeExpression;
+using AbstractDomain::Variable;
+using AbstractDomain::VariableDeclaration;
+using AbstractDomain::VariableEnvironment;
 
 namespace
 {
@@ -194,3 +203,5 @@ TreeExpression SVFIRAdapter::treeExpression(const ValVar& value) const
                                     environment(value.getFunction())
                                         .typeOf(symbol));
 }
+
+} // namespace SVF

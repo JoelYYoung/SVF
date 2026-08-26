@@ -8,7 +8,8 @@
 #include <stdexcept>
 #include <utility>
 
-using namespace SVF::AbstractDomain;
+namespace SVF::AbstractDomain
+{
 
 namespace
 {
@@ -921,3 +922,5 @@ void BoxState::report(OperationKind operation,
         config_.diagnostics->report(
             {operation, approximation, std::move(reason)});
 }
+
+} // namespace SVF::AbstractDomain

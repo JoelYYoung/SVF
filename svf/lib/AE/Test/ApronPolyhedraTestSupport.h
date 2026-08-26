@@ -11,6 +11,7 @@ extern "C"
 #include "pk.h"
 }
 
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -18,7 +19,30 @@ extern "C"
 namespace SVF::test
 {
 
-using namespace AbstractDomain;
+using AbstractDomain::ConstraintKind;
+using AbstractDomain::ConvexPolyhedraState;
+using AbstractDomain::Dimension;
+using AbstractDomain::LinearConstraint;
+using AbstractDomain::LinearConstraintSet;
+using AbstractDomain::LinearExpression;
+using AbstractDomain::NumericKind;
+using AbstractDomain::Rational;
+using AbstractDomain::Variable;
+using AbstractDomain::VariableDeclaration;
+using AbstractDomain::VariableEnvironment;
+
+inline ap_dim_t apronDimension(Dimension dimension)
+{
+    if (dimension > std::numeric_limits<ap_dim_t>::max())
+        throw std::length_error("abstract-domain dimension exceeds APRON limit");
+    return static_cast<ap_dim_t>(dimension);
+}
+
+inline ap_dim_t apronDimension(const VariableEnvironment& environment,
+                               Variable variable)
+{
+    return apronDimension(environment.dimensionOf(variable));
+}
 
 class ApronManager
 {
@@ -112,7 +136,8 @@ inline ap_linexpr0_t* apronExpression(const LinearExpression& expression,
     for (const auto& [variable, coefficient] : expression.terms())
     {
         ap_scalar_t* scalar = apronScalar(coefficient * sign);
-        ap_linexpr0_set_coeff_scalar(result, environment.dimensionOf(variable),
+        ap_linexpr0_set_coeff_scalar(result,
+                                     apronDimension(environment, variable),
                                      scalar);
         ap_scalar_free(scalar);
     }
@@ -227,7 +252,7 @@ inline ApronValue apronAssign(ap_manager_t* manager, const ApronValue& state,
 {
     ap_linexpr0_t* apronExpr = apronExpression(expression, environment);
     ap_abstract0_t* result = ap_abstract0_assign_linexpr(
-        manager, false, state.get(), environment.dimensionOf(target),
+        manager, false, state.get(), apronDimension(environment, target),
         apronExpr, nullptr);
     ap_linexpr0_free(apronExpr);
     return ApronValue(manager, result);
@@ -237,7 +262,7 @@ inline ApronValue apronForget(ap_manager_t* manager, const ApronValue& state,
                               const VariableEnvironment& environment,
                               Variable variable)
 {
-    ap_dim_t dimension = environment.dimensionOf(variable);
+    ap_dim_t dimension = apronDimension(environment, variable);
     return ApronValue(manager, ap_abstract0_forget_array(
                                    manager, false, state.get(), &dimension, 1,
                                    false));

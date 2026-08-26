@@ -7,7 +7,8 @@
 #include <stdexcept>
 #include <utility>
 
-using namespace SVF::AbstractDomain;
+namespace SVF::AbstractDomain
+{
 
 struct VariableEnvironment::Data
 {
@@ -126,7 +127,7 @@ VariableEnvironment VariableEnvironment::merge(const VariableEnvironment& other)
     return VariableEnvironment(std::move(declarations));
 }
 
-bool SVF::AbstractDomain::operator==(const VariableEnvironment& lhs,
+bool operator==(const VariableEnvironment& lhs,
                                     const VariableEnvironment& rhs)
 {
     if (lhs.data_ == rhs.data_)
@@ -143,3 +144,5 @@ bool SVF::AbstractDomain::operator==(const VariableEnvironment& lhs,
     }
     return true;
 }
+
+} // namespace SVF::AbstractDomain

@@ -27,37 +27,16 @@
  *
  */
 
-#include <iomanip>
 #include "AE/Core/IntervalState.h"
 #include "SVFIR/SVFIR.h"
 #include "Util/SVFUtil.h"
-#include "Util/Options.h"
 
-using namespace SVF;
-using namespace SVFUtil;
+#include <iomanip>
+#include <sstream>
+#include <utility>
 
-bool IntervalState::equals(const IntervalState&other) const
+namespace SVF
 {
-    return *this == other;
-}
-
-u32_t IntervalState::hash() const
-{
-    size_t h = getVarToVal().size() * 2;
-    Hash<u32_t> hf;
-    for (const auto &t: getVarToVal())
-    {
-        h ^= hf(t.first) + 0x9e3779b9 + (h << 6) + (h >> 2);
-    }
-    size_t h2 = getLocToVal().size() * 2;
-    for (const auto &t: getLocToVal())
-    {
-        h2 ^= hf(t.first) + 0x9e3779b9 + (h2 << 6) + (h2 >> 2);
-    }
-    Hash<std::pair<u32_t, u32_t>> pairH;
-    size_t result = pairH({h, h2});
-    return static_cast<u32_t>(result);
-}
 
 IntervalState IntervalState::widening(const IntervalState& other)
 {
@@ -77,6 +56,8 @@ IntervalState IntervalState::widening(const IntervalState& other)
             if (it->second.isInterval() && other._addrToAbsVal.at(key).isInterval())
                 it->second.getInterval().widen_with(other._addrToAbsVal.at(key).getInterval());
     }
+    es._freedAddrs.insert(other._freedAddrs.begin(),
+                          other._freedAddrs.end());
     return es;
 }
 
@@ -97,11 +78,15 @@ IntervalState IntervalState::narrowing(const IntervalState& other)
             if (it->second.isInterval() && other._addrToAbsVal.at(key).isInterval())
                 it->second.getInterval().narrow_with(other._addrToAbsVal.at(key).getInterval());
     }
+    Set<NodeID> intersection;
+    for (NodeID address : es._freedAddrs)
+        if (other._freedAddrs.count(address) != 0)
+            intersection.insert(address);
+    es._freedAddrs = std::move(intersection);
     return es;
 
 }
 
-/// domain join with other, important! other widen this.
 void IntervalState::joinWith(const IntervalState& other)
 {
     for (auto it = other._varToAbsVal.begin(); it != other._varToAbsVal.end(); ++it)
@@ -160,7 +145,6 @@ void IntervalState::joinFreedAddressesFrom(const IntervalState& other)
                        other._freedAddrs.end());
 }
 
-/// domain meet with other, important! other widen this.
 void IntervalState::meetWith(const IntervalState& other)
 {
     for (auto it = other._varToAbsVal.begin(); it != other._varToAbsVal.end(); ++it)
@@ -182,9 +166,9 @@ void IntervalState::meetWith(const IntervalState& other)
         }
     }
     Set<NodeID> intersection;
-    std::set_intersection(_freedAddrs.begin(), _freedAddrs.end(),
-                          other._freedAddrs.begin(), other._freedAddrs.end(),
-                          std::inserter(intersection, intersection.begin()));
+    for (NodeID address : _freedAddrs)
+        if (other._freedAddrs.count(address) != 0)
+            intersection.insert(address);
     _freedAddrs = std::move(intersection);
 }
 
@@ -425,3 +409,5 @@ std::string IntervalState::stateToString() const
 {
     return toString();
 }
+
+} // namespace SVF

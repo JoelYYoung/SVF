@@ -5,7 +5,8 @@
 #include <stdexcept>
 #include <utility>
 
-using namespace SVF::AbstractDomain;
+namespace SVF::AbstractDomain
+{
 
 Integer::Integer() : value_(0) {}
 
@@ -388,3 +389,5 @@ Rational FloatSemantics::divide(const Rational& lhs, const Rational& rhs,
     return evaluate(BinaryOperation::Divide, lhs, rhs, significandBits,
                     rounding);
 }
+
+} // namespace SVF::AbstractDomain

@@ -72,8 +72,12 @@ void compareHullFamilies(ap_manager_t* manager, std::size_t dimensions,
     for (const VariableDeclaration& declaration : environment.variables())
         sum.setCoefficient(declaration.variable, Rational(1));
     const LinearConstraintSet clips{
-        greaterEqual(sum, LinearExpression(Rational(-dimensions))),
-        lessEqual(sum, LinearExpression(Rational(dimensions + 2))),
+        greaterEqual(
+            sum,
+            LinearExpression(Rational(-static_cast<std::int64_t>(dimensions)))),
+        lessEqual(sum,
+                  LinearExpression(
+                      Rational(static_cast<std::int64_t>(dimensions) + 2))),
         greaterEqual(LinearExpression(environment.variableOf(0)),
                      LinearExpression(Rational(-3)))};
     native.assumeAll(clips);
@@ -221,7 +225,10 @@ void compareNNCFamilies(ap_manager_t* manager)
                 sum.setCoefficient(declaration.variable, Rational(1));
             }
             initial.push_back(lessThan(
-                sum, LinearExpression(Rational(dimensions + slack(random)))));
+                sum,
+                LinearExpression(
+                    Rational(static_cast<std::int64_t>(dimensions) +
+                             static_cast<std::int64_t>(slack(random))))));
 
             ConvexPolyhedraState native =
                 ConvexPolyhedraState::fromConstraints(environment, initial);

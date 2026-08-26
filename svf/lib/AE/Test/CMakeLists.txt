@@ -35,7 +35,6 @@ add_executable(
   svf-relational-domain-test
   RelationalDomainTest.cpp
   Z3SoundnessChecker.cpp
-  Z3SoundnessChecker.h
 )
 
 target_include_directories(
@@ -51,7 +50,6 @@ add_executable(
   svf-abstract-domain-state-test
   AbstractDomainStateTest.cpp
   Z3SoundnessChecker.cpp
-  Z3SoundnessChecker.h
 )
 target_include_directories(
   svf-abstract-domain-state-test PRIVATE ${CMAKE_CURRENT_LIST_DIR}

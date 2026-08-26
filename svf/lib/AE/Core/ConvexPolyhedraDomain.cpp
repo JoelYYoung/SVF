@@ -3,6 +3,7 @@
 #include "AE/Core/ConvexPolyhedraDomain.h"
 
 #include <algorithm>
+#include <cstddef>
 #include <cstdint>
 #include <map>
 #include <limits>
@@ -13,7 +14,8 @@
 #include <stdexcept>
 #include <utility>
 
-using namespace SVF::AbstractDomain;
+namespace SVF::AbstractDomain
+{
 
 namespace
 {
@@ -53,8 +55,9 @@ std::vector<Inequality> project(
     std::vector<Inequality> inequalities,
     const std::vector<std::size_t>& dimensions);
 bool feasible(std::vector<Inequality> inequalities, std::size_t dimensions);
-bool entails(const std::vector<Inequality>& premises, std::size_t dimensions,
-             const Inequality& conclusion);
+bool entailsInequality(const std::vector<Inequality>& premises,
+                       std::size_t dimensions,
+                       const Inequality& conclusion);
 std::vector<Inequality> irredundant(std::vector<Inequality> inequalities,
                                     std::size_t dimensions);
 GeneratorSystem generatorsFromConstraints(
@@ -309,12 +312,14 @@ std::vector<Inequality> canonicalizeAffineHull(
          dimension < dimensions && row < equations.size(); ++dimension)
     {
         auto pivot = std::find_if(
-            equations.begin() + row, equations.end(),
+            equations.begin() + static_cast<std::ptrdiff_t>(row),
+            equations.end(),
             [&](const Inequality& equation)
             { return !equation.coefficients[dimension].isZero(); });
         if (pivot == equations.end())
             continue;
-        std::iter_swap(equations.begin() + row, pivot);
+        std::iter_swap(
+            equations.begin() + static_cast<std::ptrdiff_t>(row), pivot);
         const Rational divisor = equations[row].coefficients[dimension];
         for (Rational& coefficient : equations[row].coefficients)
             coefficient /= divisor;
@@ -816,7 +821,8 @@ void ConvexPolyhedraState::assignParallel(
         old.coefficients.resize(2 * dimensions);
         std::copy(inequality.coefficients.begin(),
                   inequality.coefficients.end(),
-                  old.coefficients.begin() + dimensions);
+                  old.coefficients.begin() +
+                      static_cast<std::ptrdiff_t>(dimensions));
         old.bound = inequality.bound;
         old.strict = inequality.strict;
         extended.push_back(std::move(old));
@@ -1487,7 +1493,8 @@ CheckResult ConvexPolyhedraState::entails(
                    ? CheckResult::True
                    : CheckResult::Unknown;
     ensureConstraints();
-    return ::entails(impl_->inequalities, environment_.size(), rows.front())
+    return entailsInequality(impl_->inequalities, environment_.size(),
+                             rows.front())
                ? CheckResult::True
                : CheckResult::Unknown;
 }
@@ -1819,8 +1826,8 @@ ConvexPolyhedraState ConvexPolyhedraState::widen(
     ConvexPolyhedraState result = top(environment_, config_);
     for (const Inequality& inequality : impl_->inequalities)
     {
-        if (::entails(next.impl_->inequalities, environment_.size(),
-                      inequality))
+        if (entailsInequality(next.impl_->inequalities, environment_.size(),
+                              inequality))
             result.impl_->inequalities.push_back(inequality);
     }
     result.normalize();
@@ -2059,8 +2066,8 @@ bool ConvexPolyhedraState::leqState(const AbstractState& other) const
         polyhedron.impl_->inequalities.end(),
         [&](const Inequality& inequality)
         {
-            return ::entails(impl_->inequalities, environment_.size(),
-                             inequality);
+            return entailsInequality(impl_->inequalities,
+                                     environment_.size(), inequality);
         });
 }
 
@@ -2488,7 +2495,9 @@ public:
         std::vector<std::size_t> basis;
         const auto compact = [&](const std::vector<mpq_class>& row)
         {
-            std::vector<mpq_class> result(row.begin(), row.begin() + keep);
+            std::vector<mpq_class> result(
+                row.begin(),
+                row.begin() + static_cast<std::ptrdiff_t>(keep));
             result.push_back(row[columns_]);
             return result;
         };
@@ -2644,8 +2653,9 @@ bool feasible(std::vector<Inequality> inequalities, std::size_t dimensions)
     return tableau.value() > 0;
 }
 
-bool entails(const std::vector<Inequality>& premises, std::size_t dimensions,
-             const Inequality& conclusion)
+bool entailsInequality(const std::vector<Inequality>& premises,
+                       std::size_t dimensions,
+                       const Inequality& conclusion)
 {
     std::vector<Inequality> counterexample = premises;
     counterexample.push_back(negateForCounterexample(conclusion));
@@ -2677,9 +2687,11 @@ std::vector<Inequality> irredundant(std::vector<Inequality> inequalities,
     for (std::size_t index = 0; index < inequalities.size(); ++index)
     {
         std::vector<Inequality> rest = kept;
-        rest.insert(rest.end(), inequalities.begin() + index + 1,
+        rest.insert(rest.end(),
+                    inequalities.begin() +
+                        static_cast<std::ptrdiff_t>(index + 1),
                     inequalities.end());
-        if (!entails(rest, dimensions, inequalities[index]))
+        if (!entailsInequality(rest, dimensions, inequalities[index]))
             kept.push_back(std::move(inequalities[index]));
     }
     return kept;
@@ -3060,12 +3072,14 @@ std::vector<Generator> simplifiedInputGenerators(
          column < dimensions && rank < equations.size(); ++column)
     {
         auto pivot = std::find_if(
-            equations.begin() + rank, equations.end(),
+            equations.begin() + static_cast<std::ptrdiff_t>(rank),
+            equations.end(),
             [&](const std::vector<mpz_class>& row)
             { return row[column] != 0; });
         if (pivot == equations.end())
             continue;
-        std::iter_swap(equations.begin() + rank, pivot);
+        std::iter_swap(
+            equations.begin() + static_cast<std::ptrdiff_t>(rank), pivot);
         const mpz_class pivotValue = equations[rank][column];
         for (std::size_t other = 0; other < equations.size(); ++other)
         {
@@ -3478,12 +3492,14 @@ std::vector<Generator> canonicalizePolarForms(
          column < dimensions && rank < equations.size(); ++column)
     {
         auto pivot = std::find_if(
-            equations.begin() + rank, equations.end(),
+            equations.begin() + static_cast<std::ptrdiff_t>(rank),
+            equations.end(),
             [&](const Generator& equation)
             { return equation.coordinates[column] != 0; });
         if (pivot == equations.end())
             continue;
-        std::iter_swap(equations.begin() + rank, pivot);
+        std::iter_swap(
+            equations.begin() + static_cast<std::ptrdiff_t>(rank), pivot);
         if (equations[rank].coordinates[column] < 0)
             for (mpz_class& coordinate : equations[rank].coordinates)
                 coordinate = -coordinate;
@@ -3563,7 +3579,8 @@ std::vector<Inequality> inequalitiesFromForms(
     for (const Generator& form : *source)
     {
         const auto first = std::find_if(
-            form.coordinates.begin() + variableOffset,
+            form.coordinates.begin() +
+                static_cast<std::ptrdiff_t>(variableOffset),
             form.coordinates.end(),
             [](const mpz_class& coordinate) { return coordinate != 0; });
         if (first == form.coordinates.end())
@@ -3579,7 +3596,9 @@ std::vector<Inequality> inequalitiesFromForms(
         Inequality inequality;
         inequality.coefficients.reserve(form.coordinates.size() -
                                         variableOffset);
-        for (auto coordinate = form.coordinates.begin() + variableOffset;
+        for (auto coordinate =
+                 form.coordinates.begin() +
+                 static_cast<std::ptrdiff_t>(variableOffset);
              coordinate != form.coordinates.end(); ++coordinate)
         {
             inequality.coefficients.push_back(Rational::fromRaw(
@@ -3748,3 +3767,5 @@ std::vector<Inequality> constraintsFromGenerators(
 }
 
 } // namespace
+
+} // namespace SVF::AbstractDomain

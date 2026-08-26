@@ -53,6 +53,33 @@ int main()
         require(joined[1].getInterval().equals(
                     IntervalValue((s64_t)0, (s64_t)2)),
                 "whole-state join failed");
+        IntervalState lifetimeOnlyDifference = lhs;
+        lifetimeOnlyDifference.addToFreedAddrs(
+            IntervalState::getVirtualMemAddress(10));
+        require(lifetimeOnlyDifference != lhs,
+                "freed-address state was omitted from equality");
+
+        IntervalState widened = lhs.widening(rhs);
+        require(widened.isFreedMem(IntervalState::getVirtualMemAddress(10)),
+                "widening lost freed-address state");
+        IntervalState narrowed = widened.narrowing(lhs);
+        require(!narrowed.isFreedMem(IntervalState::getVirtualMemAddress(10)),
+                "narrowing did not refine freed-address state");
+
+        IntervalState freedLeft;
+        freedLeft.addToFreedAddrs(IntervalState::getVirtualMemAddress(10));
+        freedLeft.addToFreedAddrs(IntervalState::getVirtualMemAddress(30));
+        IntervalState freedRight;
+        freedRight.addToFreedAddrs(IntervalState::getVirtualMemAddress(20));
+        freedRight.addToFreedAddrs(IntervalState::getVirtualMemAddress(30));
+        freedLeft.meetWith(freedRight);
+        require(!freedLeft.isFreedMem(
+                    IntervalState::getVirtualMemAddress(10)) &&
+                    !freedLeft.isFreedMem(
+                        IntervalState::getVirtualMemAddress(20)) &&
+                    freedLeft.isFreedMem(
+                        IntervalState::getVirtualMemAddress(30)),
+                "freed-address meet did not compute set intersection");
 
         const AbstractDomain::AbstractState& genericLhs = lhs;
         const AbstractDomain::AbstractState& genericRhs = rhs;

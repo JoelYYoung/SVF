@@ -20,7 +20,7 @@
 //
 //===----------------------------------------------------------------------===//
 /*
- * IntervalExeState.h
+ * IntervalState.h
  *
  *  Created on: Jul 9, 2022
  *      Author: Xiao Cheng, Jiawei Wang
@@ -51,6 +51,8 @@
 #include "AE/Core/IntervalValue.h"
 #include "Util/GeneralType.h"
 
+#include <algorithm>
+
 namespace SVF
 {
 class IntervalState final : public AbstractDomain::AbstractState
@@ -58,20 +60,14 @@ class IntervalState final : public AbstractDomain::AbstractState
     friend class SVFIR2AbsState;
     friend class RelationSolver;
 public:
-    typedef Map<u32_t, AbstractValue> VarToAbsValMap;
-    typedef VarToAbsValMap AddrToAbsValMap;
-    /// default constructor
-    IntervalState()
-    {
-    }
+    using VarToAbsValMap = Map<u32_t, AbstractValue>;
+    using AddrToAbsValMap = VarToAbsValMap;
 
-    IntervalState(VarToAbsValMap&_varToValMap, AddrToAbsValMap&_locToValMap) : _varToAbsVal(_varToValMap), _addrToAbsVal(_locToValMap) {}
-
-    /// copy constructor
-    IntervalState(const IntervalState&rhs) : _varToAbsVal(rhs.getVarToVal()), _addrToAbsVal(rhs.getLocToVal()), _freedAddrs(rhs._freedAddrs)
-    {
-
-    }
+    IntervalState() = default;
+    IntervalState(const IntervalState&) = default;
+    IntervalState(IntervalState&&) = default;
+    IntervalState& operator=(const IntervalState&) = default;
+    IntervalState& operator=(IntervalState&&) = default;
 
     ~IntervalState() override = default;
 
@@ -90,29 +86,21 @@ public:
 
 
     /// The physical address starts with 0x7f...... + idx
-    static inline u32_t getVirtualMemAddress(u32_t idx)
+    static u32_t getVirtualMemAddress(u32_t idx)
     {
         return AddressValue::getVirtualMemAddress(idx);
     }
 
     /// Check bit value of val start with 0x7F000000, filter by 0xFF000000
-    static inline bool isVirtualMemAddress(u32_t val)
+    static bool isVirtualMemAddress(u32_t val)
     {
         return AddressValue::isVirtualMemAddress(val);
     }
 
     /// Return the internal index if addr is an address otherwise return the value of idx
-    inline u32_t getIDFromAddr(u32_t addr) const
+    u32_t getIDFromAddr(u32_t addr) const
     {
         return _freedAddrs.count(addr) ?  AddressValue::getInternalID(BlackHoleObjAddr) : AddressValue::getInternalID(addr);
-    }
-
-    /// move constructor
-    IntervalState(IntervalState&&rhs) : _varToAbsVal(std::move(rhs._varToAbsVal)),
-        _addrToAbsVal(std::move(rhs._addrToAbsVal)),
-        _freedAddrs(std::move(rhs._freedAddrs))
-    {
-
     }
 
     /// Set all value bottom
@@ -139,126 +127,109 @@ public:
         return inv;
     }
 
-    /// Copy some values and return a new IntervalExeState
-    IntervalState sliceState(Set<u32_t> &sl)
+    /// Return a state containing only the requested variable values.
+    IntervalState sliceState(const Set<u32_t>& variables) const
     {
-        IntervalState inv;
-        for (u32_t id: sl)
-            inv._varToAbsVal[id] = _varToAbsVal[id];
-        return inv;
+        IntervalState result;
+        for (u32_t id : variables)
+        {
+            const auto value = _varToAbsVal.find(id);
+            if (value != _varToAbsVal.end())
+                result._varToAbsVal.emplace(*value);
+        }
+        return result;
     }
 
-    static inline bool isNullMem(u32_t addr)
+    static bool isNullMem(u32_t addr)
     {
         return addr == NullMemAddr;
     }
 
-    static inline bool isBlackHoleObjAddr(u32_t addr)
+    static bool isBlackHoleObjAddr(u32_t addr)
     {
         return addr == BlackHoleObjAddr;
     }
 
 
-protected:
+private:
     VarToAbsValMap _varToAbsVal; ///< Map a variable (symbol) to its abstract value
     AddrToAbsValMap _addrToAbsVal; ///< Map a memory address to its stored abstract value
     Set<NodeID> _freedAddrs;
 
 public:
-
-
     /// get abstract value of variable
-    inline virtual AbstractValue &operator[](u32_t varId)
+    AbstractValue& operator[](u32_t varId)
     {
         assert(!isVirtualMemAddress(varId) && "varId is a virtual memory address, use load() instead");
         return _varToAbsVal[varId];
     }
 
     /// get abstract value of variable
-    inline virtual const AbstractValue &operator[](u32_t varId) const
+    const AbstractValue& operator[](u32_t varId) const
     {
         assert(!isVirtualMemAddress(varId) && "varId is a virtual memory address, use load() instead");
         return _varToAbsVal.at(varId);
     }
 
-    inline virtual AbstractValue &load(u32_t addr)
+    AbstractValue& load(u32_t addr)
     {
         assert(isVirtualMemAddress(addr) && "not virtual address?");
         u32_t objId = getIDFromAddr(addr);
         return _addrToAbsVal[objId];
     }
 
-    inline virtual const AbstractValue &load(u32_t addr) const
+    const AbstractValue& load(u32_t addr) const
     {
         assert(isVirtualMemAddress(addr) && "not virtual address?");
         u32_t objId = getIDFromAddr(addr);
         return _addrToAbsVal.at(objId);
     }
 
-    inline void store(u32_t addr, const AbstractValue &val)
+    void store(u32_t addr, const AbstractValue& val)
     {
         assert(isVirtualMemAddress(addr) && "not virtual address?");
-        u32_t objId = getIDFromAddr(addr);
-        if (isNullMem(addr)) return;
+        if (isNullMem(addr))
+            return;
+        const u32_t objId = getIDFromAddr(addr);
         _addrToAbsVal[objId] = val;
     }
 
     /// whether the variable is in varToAddrs table
-    inline bool inVarToAddrsTable(u32_t id) const
+    bool inVarToAddrsTable(u32_t id) const
     {
-        if (_varToAbsVal.find(id)!= _varToAbsVal.end())
-        {
-            if (_varToAbsVal.at(id).isAddr())
-                return true;
-        }
-        return false;
+        const auto value = _varToAbsVal.find(id);
+        return value != _varToAbsVal.end() && value->second.isAddr();
     }
 
     /// whether the variable is in varToVal table
-    inline virtual bool inVarToValTable(u32_t id) const
+    bool inVarToValTable(u32_t id) const
     {
-        if (_varToAbsVal.find(id) != _varToAbsVal.end())
-        {
-            if (_varToAbsVal.at(id).isInterval())
-                return true;
-        }
-        return false;
+        const auto value = _varToAbsVal.find(id);
+        return value != _varToAbsVal.end() && value->second.isInterval();
     }
 
     /// whether the memory address stores memory addresses
-    inline bool inAddrToAddrsTable(u32_t id) const
+    bool inAddrToAddrsTable(u32_t id) const
     {
-        if (_addrToAbsVal.find(id)!= _addrToAbsVal.end())
-        {
-            if (_addrToAbsVal.at(id).isAddr())
-            {
-                return true;
-            }
-        }
-        return false;
+        const auto value = _addrToAbsVal.find(id);
+        return value != _addrToAbsVal.end() && value->second.isAddr();
     }
 
     /// whether the memory address stores abstract value
-    inline virtual bool inAddrToValTable(u32_t id) const
+    bool inAddrToValTable(u32_t id) const
     {
-        if (_addrToAbsVal.find(id) != _addrToAbsVal.end())
-        {
-            if (_addrToAbsVal.at(id).isInterval())
-            {
-                return true;
-            }
-        }
-        return false;
+        const auto value = _addrToAbsVal.find(id);
+        return value != _addrToAbsVal.end() && value->second.isInterval();
     }
 
     /// get var2val map
-    inline const VarToAbsValMap&getVarToVal() const
+    const VarToAbsValMap& getVarToVal() const
     {
         return _varToAbsVal;
     }
 
     /// get loc2val map
-    inline const AddrToAbsValMap&getLocToVal() const
+    const AddrToAbsValMap& getLocToVal() const
     {
         return _addrToAbsVal;
     }
@@ -269,7 +240,7 @@ public:
     /// domain narrow with other, and return the narrowed domain
     IntervalState narrowing(const IntervalState&other);
 
-    /// domain join with other, important! other widen this.
+    /// Join another interval/address state into this state.
     void joinWith(const IntervalState&other);
 
     /// Fine-grained joins used by sparse engines.  Their names make the
@@ -284,7 +255,7 @@ public:
         _freedAddrs = other._freedAddrs;
     }
 
-    /// domain meet with other, important! other widen this.
+    /// Meet another interval/address state into this state.
     void meetWith(const IntervalState&other);
 
     void addToFreedAddrs(NodeID addr)
@@ -299,7 +270,7 @@ public:
 
     bool isFreedMem(u32_t addr) const
     {
-        return _freedAddrs.find(addr) != _freedAddrs.end();
+        return _freedAddrs.count(addr) != 0;
     }
 
 
@@ -307,61 +278,34 @@ public:
 
     std::string toString() const;
 
-    u32_t hash() const;
-
     // lhs == rhs for varToValMap
     bool eqVarToValMap(const VarToAbsValMap&lhs, const VarToAbsValMap&rhs) const;
     // lhs >= rhs for varToValMap
     bool geqVarToValMap(const VarToAbsValMap&lhs, const VarToAbsValMap&rhs) const;
-    // lhs == rhs for IntervalState
-    bool equals(const IntervalState&other) const;
-
-    /// Assignment operator
-    IntervalState&operator=(const IntervalState&rhs)
+    bool operator==(const IntervalState& rhs) const
     {
-        if (&rhs != this)
-        {
-            _varToAbsVal = rhs._varToAbsVal;
-            _addrToAbsVal = rhs._addrToAbsVal;
-            _freedAddrs = rhs._freedAddrs;
-        }
-        return *this;
+        return eqVarToValMap(_varToAbsVal, rhs.getVarToVal()) &&
+               eqVarToValMap(_addrToAbsVal, rhs.getLocToVal()) &&
+               _freedAddrs == rhs._freedAddrs;
     }
 
-    /// operator= move constructor
-    IntervalState&operator=(IntervalState&&rhs)
-    {
-        if (&rhs != this)
-        {
-            _varToAbsVal = std::move(rhs._varToAbsVal);
-            _addrToAbsVal = std::move(rhs._addrToAbsVal);
-            _freedAddrs = std::move(rhs._freedAddrs);
-        }
-        return *this;
-    }
-
-    bool operator==(const IntervalState&rhs) const
-    {
-        return  eqVarToValMap(_varToAbsVal, rhs.getVarToVal()) &&
-                eqVarToValMap(_addrToAbsVal, rhs.getLocToVal())
-                ;
-    }
-
-    bool operator!=(const IntervalState&rhs) const
+    bool operator!=(const IntervalState& rhs) const
     {
         return !(*this == rhs);
     }
 
-    bool operator<(const IntervalState&rhs) const
+    bool operator<(const IntervalState& rhs) const
     {
         return !(*this >= rhs);
     }
 
-    bool operator>=(const IntervalState&rhs) const
+    bool operator>=(const IntervalState& rhs) const
     {
         return geqVarToValMap(_varToAbsVal, rhs.getVarToVal()) &&
-               geqVarToValMap(_addrToAbsVal, rhs.getLocToVal())
-               ;
+               geqVarToValMap(_addrToAbsVal, rhs.getLocToVal()) &&
+               std::all_of(rhs._freedAddrs.begin(), rhs._freedAddrs.end(),
+                           [&](NodeID address)
+                           { return _freedAddrs.count(address) != 0; });
     }
 
     void clear()
@@ -391,11 +335,9 @@ private:
     bool isTopState() const override;
     bool leqState(const AbstractDomain::AbstractState& other) const override;
     std::string stateToString() const override;
-
-
 };
 
-}
+} // namespace SVF
 
 
 #endif // SVF_AE_INTERVAL_STATE_H
