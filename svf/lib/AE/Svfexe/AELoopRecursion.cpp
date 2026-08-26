@@ -179,8 +179,8 @@ bool AbstractInterpretation::widenCycleState(
     const AbstractDomain::AbstractState& cur,
     const ICFGCycleWTO* cycle)
 {
-    const auto& previous = dynamic_cast<const IntervalState&>(prev);
-    const auto& current = dynamic_cast<const IntervalState&>(cur);
+    const auto& previous = static_cast<const IntervalState&>(prev);
+    const auto& current = static_cast<const IntervalState&>(cur);
     IntervalState prev_copy = previous;
     IntervalState next = prev_copy.widening(current);
     // Always write back (even at fixpoint) so cycle_head's trace holds the
@@ -199,8 +199,8 @@ bool AbstractInterpretation::narrowCycleState(
     const ICFGNode* cycle_head = cycle->head()->getICFGNode();
     if (!shouldApplyNarrowing(cycle_head->getFun()))
         return true;
-    const auto& previous = dynamic_cast<const IntervalState&>(prev);
-    const auto& current = dynamic_cast<const IntervalState&>(cur);
+    const auto& previous = static_cast<const IntervalState&>(prev);
+    const auto& current = static_cast<const IntervalState&>(cur);
     IntervalState prev_copy = previous;
     IntervalState next = prev_copy.narrowing(current);
     if (next.isEquivalentTo(previous) ==

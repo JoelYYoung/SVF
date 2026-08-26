@@ -153,8 +153,9 @@ void testPolymorphicStateContract()
 
     std::unique_ptr<AbstractState> widened = genericCurrent.clone();
     widened->widenWith(genericNext);
-    const auto& widen =
-        dynamic_cast<const OctagonState&>(*widened);
+    require(widened->isState<OctagonState>(),
+            "polymorphic widening must preserve the Octagon type");
+    const auto& widen = static_cast<const OctagonState&>(*widened);
     require(widen.bound(x).lower().value() == Rational(0) &&
                 widen.bound(x).upper().isPlusInfinity(),
             "polymorphic widening must dispatch to Octagon");

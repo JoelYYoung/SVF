@@ -1169,6 +1169,12 @@ void ConvexPolyhedraState::forget(Variable variable)
 void ConvexPolyhedraState::changeEnvironment(const VariableEnvironment& environment,
                                              bool initializeNewVariablesToZero)
 {
+    if (environment_ == environment)
+    {
+        recordOperation(OperationKind::EnvironmentChange,
+                        ApproximationKind::Exact, true);
+        return;
+    }
     for (const VariableDeclaration& declaration : environment.variables())
     {
         if (environment_.contains(declaration.variable) &&
@@ -1870,7 +1876,9 @@ ConvexPolyhedraState ConvexPolyhedraState::narrow(
 bool ConvexPolyhedraState::hasCompatibleDomain(
     const AbstractState& other) const
 {
-    const auto* polyhedron = dynamic_cast<const ConvexPolyhedraState*>(&other);
+    const auto* polyhedron = other.isState<ConvexPolyhedraState>()
+                                 ? &static_cast<const ConvexPolyhedraState&>(other)
+                                 : nullptr;
     return polyhedron && environment_ == polyhedron->environment_ &&
            config_.operationCompatible(polyhedron->config_);
 }

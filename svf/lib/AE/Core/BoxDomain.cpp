@@ -17,8 +17,7 @@ namespace
 int compareLower(const Bound& lhs, const Bound& rhs)
 {
     if (lhs.kind() != rhs.kind())
-        return static_cast<int>(lhs.kind()) < static_cast<int>(rhs.kind())
-                   ? -1
+        return static_cast<int>(lhs.kind()) < static_cast<int>(rhs.kind()) ? -1
                    : 1;
     if (!lhs.isFinite())
         return 0;
@@ -143,13 +142,15 @@ LinearConstraint normalizedLessEqual(const LinearConstraint& constraint,
 
 } // namespace
 
-BoxState::BoxState(VariableEnvironment environment, BoxConfig config, bool bottom)
+BoxState::BoxState(VariableEnvironment environment, BoxConfig config,
+                   bool bottom)
     : environment_(std::move(environment)), config_(std::move(config)),
-      bounds_(environment_.size(), Interval::top()), bottom_(bottom)
+      bottom_(bottom)
 {
 }
 
-BoxState BoxState::top(const VariableEnvironment& environment, const BoxConfig& config)
+BoxState BoxState::top(const VariableEnvironment& environment,
+                       const BoxConfig& config)
 {
     return BoxState(environment, config, false);
 }
@@ -161,8 +162,7 @@ BoxState BoxState::bottom(const VariableEnvironment& environment,
 }
 
 BoxState BoxState::fromBox(const VariableEnvironment& environment,
-                           const IntervalBox& box,
-                           const BoxConfig& config)
+                           const IntervalBox& box, const BoxConfig& config)
 {
     BoxState result = top(environment, config);
     for (const auto& [variable, interval] : box.bounds)
@@ -240,8 +240,7 @@ void BoxState::assign(Variable target, const TreeExpression& expression)
     const Interval value = evaluateTreeExpression(expression);
     if (!bottom_)
         setBound(environment_.dimensionOf(target), value);
-    report(OperationKind::Assignment,
-           ApproximationKind::SoundOverApproximation,
+    report(OperationKind::Assignment, ApproximationKind::SoundOverApproximation,
            "nonlinear or finite IEEE assignment was interval-linearized",
            false);
 }
@@ -279,14 +278,12 @@ void BoxState::assignParallel(const LinearAssignmentList& assignments)
         setBound(dimension, std::move(value));
 }
 
-void BoxState::substitute(Variable target,
-                          const LinearExpression& expression)
+void BoxState::substitute(Variable target, const LinearExpression& expression)
 {
     substituteParallel({{target, expression}});
 }
 
-void BoxState::substituteParallel(
-    const LinearAssignmentList& assignments)
+void BoxState::substituteParallel(const LinearAssignmentList& assignments)
 {
     std::map<Variable, LinearExpression> replacements;
     for (const LinearAssignment& assignment : assignments)
@@ -314,8 +311,7 @@ void BoxState::substituteParallel(
 
     LinearConstraintSet preimage;
     for (const LinearConstraint& constraint : toConstraints())
-        preimage.emplace_back(
-            constraint.expression().substituted(replacements),
+        preimage.emplace_back(constraint.expression().substituted(replacements),
             constraint.kind());
     *this = fromConstraints(environment_, preimage, config_);
 }
@@ -329,8 +325,7 @@ void BoxState::assume(const LinearConstraint& constraint)
     {
         (void)coefficient;
         if (!environment_.contains(variable))
-            throw std::invalid_argument(
-                "constraint uses an unknown variable");
+            throw std::invalid_argument("constraint uses an unknown variable");
     }
 
     if (constraint.kind() == ConstraintKind::NotEqual)
@@ -338,10 +333,10 @@ void BoxState::assume(const LinearConstraint& constraint)
         const Interval value = evaluate(*this, constraint.expression());
         if (!value.lower().isFinite() || !value.upper().isFinite() ||
                 value.lower().value() != Rational() ||
-                value.upper().value() != Rational() ||
-                value.lower().isStrict() || value.upper().isStrict())
+            value.upper().value() != Rational() || value.lower().isStrict() ||
+            value.upper().isStrict())
             return;
-        bottom_ = true;
+        makeBottom();
         return;
     }
 
@@ -374,28 +369,26 @@ void BoxState::assume(const LinearConstraint& constraint)
             const Rational rhs = -rest.lower().value() / coefficient;
             const bool resultStrict = strict || rest.lower().isStrict();
             const Dimension dimension = environment_.dimensionOf(variable);
-            Interval next = bounds_[dimension];
+            Interval next = boundAt(dimension);
             if (coefficient.sign() > 0)
             {
                 next = meetIntervals(
-                    next,
-                    Interval(Bound::minusInfinity(),
+                    next, Interval(Bound::minusInfinity(),
                              Bound::finite(rhs, resultStrict)));
             }
             else
             {
-                next = meetIntervals(
-                    next,
+                next = meetIntervals(next,
                     Interval(Bound::finite(rhs, resultStrict),
                              Bound::plusInfinity()));
             }
-            const Interval previous = bounds_[dimension];
+            const Interval previous = boundAt(dimension);
             setBound(dimension, next);
             if (bottom_)
                 return;
             changed = changed ||
-                      !intervalIncluded(previous, bounds_[dimension]) ||
-                      !intervalIncluded(bounds_[dimension], previous);
+                      !intervalIncluded(previous, boundAt(dimension)) ||
+                      !intervalIncluded(boundAt(dimension), previous);
         }
         if (!changed)
             break;
@@ -406,7 +399,7 @@ void BoxState::assume(const LinearConstraint& constraint)
     {
         const int sign = value.lower().value().sign();
         if (sign > 0 || (sign == 0 && (strict || value.lower().isStrict())))
-            bottom_ = true;
+            makeBottom();
     }
 }
 
@@ -422,8 +415,7 @@ void BoxState::assume(const TreeConstraint& constraint)
     const LinearConstraintSet consequences =
         treeConstraintConsequences(constraint);
     assumeAll(consequences);
-    report(OperationKind::Assumption,
-           ApproximationKind::SoundOverApproximation,
+    report(OperationKind::Assumption, ApproximationKind::SoundOverApproximation,
            consequences.empty()
                ? "nonlinear or finite IEEE guard had no affine consequence"
                : "nonlinear guard was reduced to sound affine consequences",
@@ -435,13 +427,19 @@ void BoxState::forget(Variable variable)
     if (!environment_.contains(variable))
         throw std::invalid_argument("forgotten variable is not in environment");
     if (!bottom_)
-        bounds_[environment_.dimensionOf(variable)] = Interval::top();
+        eraseBound(environment_.dimensionOf(variable));
     recordOperation(OperationKind::Forget, ApproximationKind::Exact, true);
 }
 
 void BoxState::changeEnvironment(const VariableEnvironment& environment,
                                  bool initializeNewVariablesToZero)
 {
+    if (environment_ == environment)
+    {
+        recordOperation(OperationKind::EnvironmentChange,
+                        ApproximationKind::Exact, true);
+        return;
+    }
     for (const VariableDeclaration& declaration : environment.variables())
     {
         if (environment_.contains(declaration.variable) &&
@@ -449,30 +447,38 @@ void BoxState::changeEnvironment(const VariableEnvironment& environment,
             throw std::invalid_argument(
                 "environment change modifies a variable's numeric type");
     }
-    std::vector<Interval> next(environment.size(), Interval::top());
-    for (const VariableDeclaration& declaration : environment.variables())
+    BoxState next = BoxState::top(environment, config_);
+    if (bottom_)
+        next.makeBottom();
+    else
     {
-        if (environment_.contains(declaration.variable))
+        for (Dimension oldDimension : boundedDimensions())
         {
-            next[environment.dimensionOf(declaration.variable)] =
-                bounds_[environment_.dimensionOf(declaration.variable)];
+            const Variable variable = environment_.variableOf(oldDimension);
+            if (environment.contains(variable))
+                next.setBound(environment.dimensionOf(variable),
+                              boundAt(oldDimension));
         }
-        else if (initializeNewVariablesToZero)
+        if (initializeNewVariablesToZero)
         {
-            next[environment.dimensionOf(declaration.variable)] =
-                Interval::singleton(Rational());
+            for (const VariableDeclaration& declaration :
+                 environment.variables())
+            {
+                if (!environment_.contains(declaration.variable))
+                    next.setBound(environment.dimensionOf(declaration.variable),
+                                  Interval::singleton(Rational()));
         }
     }
-    environment_ = environment;
-    bounds_ = std::move(next);
-    for (Dimension dimension = 0; dimension < environment_.size(); ++dimension)
-        canonicalize(dimension);
-    recordOperation(OperationKind::EnvironmentChange,
-                    ApproximationKind::Exact, true);
+    }
+    environment_ = std::move(next.environment_);
+    boundPages_ = std::move(next.boundPages_);
+    bottom_ = next.bottom_;
+    recordOperation(OperationKind::EnvironmentChange, ApproximationKind::Exact,
+                    true);
 }
 
-void BoxState::expand(
-    Variable source, const std::vector<VariableDeclaration>& copies)
+void BoxState::expand(Variable source,
+                      const std::vector<VariableDeclaration>& copies)
 {
     if (!environment_.contains(source))
         throw std::invalid_argument("expanded variable is not in environment");
@@ -541,25 +547,20 @@ CheckResult BoxState::entails(const LinearConstraint& constraint) const
     if (bottom_)
         return CheckResult::True;
     const Interval value = evaluate(*this, constraint.expression());
-    const auto upperAtMostZero = [&]()
-    {
+    const auto upperAtMostZero = [&]() {
         if (!value.upper().isFinite())
             return false;
         return value.upper().value().sign() <= 0;
     };
-    const auto upperBelowZero = [&]()
-    {
+    const auto upperBelowZero = [&]() {
         return value.upper().isFinite() &&
                (value.upper().value().sign() < 0 ||
                 (value.upper().value().isZero() && value.upper().isStrict()));
     };
-    const auto lowerAtLeastZero = [&]()
-    {
-        return value.lower().isFinite() &&
-               value.lower().value().sign() >= 0;
+    const auto lowerAtLeastZero = [&]() {
+        return value.lower().isFinite() && value.lower().value().sign() >= 0;
     };
-    const auto lowerAboveZero = [&]()
-    {
+    const auto lowerAboveZero = [&]() {
         return value.lower().isFinite() &&
                (value.lower().value().sign() > 0 ||
                 (value.lower().value().isZero() && value.lower().isStrict()));
@@ -591,7 +592,7 @@ Interval BoxState::bound(Variable variable) const
         throw std::invalid_argument("bounded variable is not in environment");
     if (bottom_)
         return Interval(Bound::plusInfinity(), Bound::minusInfinity());
-    return bounds_[environment_.dimensionOf(variable)];
+    return boundAt(environment_.dimensionOf(variable));
 }
 
 Interval BoxState::bound(const LinearExpression& expression) const
@@ -612,10 +613,10 @@ IntervalBox BoxState::toBox() const
 {
     IntervalBox result;
     for (Dimension dimension = 0; dimension < environment_.size(); ++dimension)
-        result.bounds.emplace(
-            environment_.variableOf(dimension),
-            bottom_ ? bound(environment_.variableOf(dimension))
-                    : bounds_[dimension]);
+        result.bounds.emplace(environment_.variableOf(dimension),
+                              bottom_
+                                  ? bound(environment_.variableOf(dimension))
+                                  : boundAt(dimension));
     return result;
 }
 
@@ -628,24 +629,24 @@ LinearConstraintSet BoxState::toConstraints() const
                             ConstraintKind::LessEqual);
         return result;
     }
-    for (Dimension dimension = 0; dimension < environment_.size(); ++dimension)
+    for (Dimension dimension : boundedDimensions())
     {
         const Variable variable = environment_.variableOf(dimension);
-        const Interval& interval = bounds_[dimension];
+        const Interval& interval = boundAt(dimension);
         if (interval.lower().isFinite())
         {
-            result.emplace_back(
-                LinearExpression(variable) -
+            result.emplace_back(LinearExpression(variable) -
                     LinearExpression(interval.lower().value()),
-                interval.lower().isStrict() ? ConstraintKind::GreaterThan
+                                interval.lower().isStrict()
+                                    ? ConstraintKind::GreaterThan
                                             : ConstraintKind::GreaterEqual);
         }
         if (interval.upper().isFinite())
         {
-            result.emplace_back(
-                LinearExpression(variable) -
+            result.emplace_back(LinearExpression(variable) -
                     LinearExpression(interval.upper().value()),
-                interval.upper().isStrict() ? ConstraintKind::LessThan
+                                interval.upper().isStrict()
+                                    ? ConstraintKind::LessThan
                                             : ConstraintKind::LessEqual);
         }
     }
@@ -654,13 +655,13 @@ LinearConstraintSet BoxState::toConstraints() const
 
 void BoxState::close()
 {
-    recordOperation(OperationKind::TopologicalClosure,
-                    ApproximationKind::Exact, true, "topological closure");
+    recordOperation(OperationKind::TopologicalClosure, ApproximationKind::Exact,
+                    true, "topological closure");
     if (bottom_)
         return;
-    for (Dimension dimension = 0; dimension < environment_.size(); ++dimension)
+    for (Dimension dimension : boundedDimensions())
     {
-        const Interval& interval = bounds_[dimension];
+        const Interval& interval = boundAt(dimension);
         const Bound lower = interval.lower().isFinite()
                                 ? Bound::finite(interval.lower().value())
                                 : interval.lower();
@@ -673,18 +674,17 @@ void BoxState::close()
 
 void BoxState::canonicalize()
 {
-    for (Dimension dimension = 0; dimension < environment_.size(); ++dimension)
+    for (Dimension dimension : boundedDimensions())
         canonicalize(dimension);
-    recordOperation(OperationKind::Canonicalization,
-                    ApproximationKind::Exact, true, "canonicalization");
+    recordOperation(OperationKind::Canonicalization, ApproximationKind::Exact,
+                    true, "canonicalization");
 }
 
 BoxState BoxState::join(const BoxState& other) const
 {
     BoxState result(*this);
     result.joinState(other);
-    result.recordOperation(OperationKind::Join, ApproximationKind::Exact,
-                           true);
+    result.recordOperation(OperationKind::Join, ApproximationKind::Exact, true);
     return result;
 }
 
@@ -692,8 +692,7 @@ BoxState BoxState::meet(const BoxState& other) const
 {
     BoxState result(*this);
     result.meetState(other);
-    result.recordOperation(OperationKind::Meet, ApproximationKind::Exact,
-                           true);
+    result.recordOperation(OperationKind::Meet, ApproximationKind::Exact, true);
     return result;
 }
 
@@ -705,24 +704,22 @@ BoxState BoxState::widen(const BoxState& next,
     {
         BoxState result(next);
         result.recordOperation(OperationKind::Widening,
-                               ApproximationKind::SoundOverApproximation,
-                               true);
+                               ApproximationKind::SoundOverApproximation, true);
         return result;
     }
     if (next.bottom_)
     {
         BoxState result(*this);
         result.recordOperation(OperationKind::Widening,
-                               ApproximationKind::SoundOverApproximation,
-                               true);
+                               ApproximationKind::SoundOverApproximation, true);
         return result;
     }
     BoxState result(*this);
-    for (Dimension dimension = 0; dimension < environment_.size(); ++dimension)
+    for (Dimension dimension : boundedDimensions())
     {
-        Bound lower = bounds_[dimension].lower();
-        Bound upper = bounds_[dimension].upper();
-        const Interval& following = next.bounds_[dimension];
+        Bound lower = boundAt(dimension).lower();
+        Bound upper = boundAt(dimension).upper();
+        const Interval& following = next.boundAt(dimension);
         if (compareLower(following.lower(), lower) < 0)
         {
             lower = Bound::minusInfinity();
@@ -731,8 +728,7 @@ BoxState BoxState::widen(const BoxState& next,
                 for (const Rational& threshold : policy.thresholds)
                 {
                     if (threshold <= following.lower().value() &&
-                            (lower.isMinusInfinity() ||
-                             lower.value() < threshold))
+                        (lower.isMinusInfinity() || lower.value() < threshold))
                         lower = Bound::finite(threshold);
                 }
             }
@@ -774,24 +770,26 @@ BoxState BoxState::narrow(const BoxState& next) const
         return result;
     }
     BoxState result(*this);
-    for (Dimension dimension = 0; dimension < environment_.size(); ++dimension)
+    for (Dimension dimension : next.boundedDimensions())
     {
-        Bound lower = bounds_[dimension].lower();
-        Bound upper = bounds_[dimension].upper();
+        Bound lower = boundAt(dimension).lower();
+        Bound upper = boundAt(dimension).upper();
         if (lower.isMinusInfinity())
-            lower = next.bounds_[dimension].lower();
+            lower = next.boundAt(dimension).lower();
         if (upper.isPlusInfinity())
-            upper = next.bounds_[dimension].upper();
+            upper = next.boundAt(dimension).upper();
         result.setBound(dimension, Interval(lower, upper));
     }
-    result.recordOperation(OperationKind::Narrowing,
-                           ApproximationKind::Exact, true);
+    result.recordOperation(OperationKind::Narrowing, ApproximationKind::Exact,
+                           true);
     return result;
 }
 
 bool BoxState::hasCompatibleDomain(const AbstractState& other) const
 {
-    const auto* box = dynamic_cast<const BoxState*>(&other);
+    const auto* box = other.isState<BoxState>()
+                          ? &static_cast<const BoxState&>(other)
+                          : nullptr;
     return box && environment_ == box->environment_ &&
            config_.operationCompatible(box->config_);
 }
@@ -806,9 +804,9 @@ void BoxState::joinState(const AbstractState& other)
         *this = box;
         return;
     }
-    for (Dimension dimension = 0; dimension < environment_.size(); ++dimension)
-        bounds_[dimension] =
-            joinIntervals(bounds_[dimension], box.bounds_[dimension]);
+    for (Dimension dimension : boundedDimensions())
+        setBound(dimension,
+                 joinIntervals(boundAt(dimension), box.boundAt(dimension)));
 }
 
 void BoxState::meetState(const AbstractState& other)
@@ -816,13 +814,13 @@ void BoxState::meetState(const AbstractState& other)
     const BoxState& box = requireBox(other);
     if (bottom_ || box.bottom_)
     {
-        bottom_ = true;
+        makeBottom();
         return;
     }
-    for (Dimension dimension = 0; dimension < environment_.size(); ++dimension)
+    for (Dimension dimension : box.boundedDimensions())
     {
         setBound(dimension,
-                 meetIntervals(bounds_[dimension], box.bounds_[dimension]));
+                 meetIntervals(boundAt(dimension), box.boundAt(dimension)));
         if (bottom_)
             return;
     }
@@ -847,9 +845,7 @@ bool BoxState::isTopState() const
 {
     if (bottom_)
         return false;
-    return std::all_of(bounds_.begin(), bounds_.end(),
-                       [](const Interval& interval)
-                       { return interval.isTop(); });
+    return boundPages_.empty();
 }
 
 bool BoxState::leqState(const AbstractState& other) const
@@ -859,9 +855,9 @@ bool BoxState::leqState(const AbstractState& other) const
         return true;
     if (box.bottom_)
         return false;
-    for (Dimension dimension = 0; dimension < environment_.size(); ++dimension)
+    for (Dimension dimension : box.boundedDimensions())
     {
-        if (!intervalIncluded(bounds_[dimension], box.bounds_[dimension]))
+        if (!intervalIncluded(boundAt(dimension), box.boundAt(dimension)))
             return false;
     }
     return true;
@@ -878,7 +874,7 @@ std::string BoxState::stateToString() const
         if (dimension != 0)
             output << ", ";
         output << environment_.nameOf(environment_.variableOf(dimension)) << "="
-               << bounds_[dimension].toString();
+               << boundAt(dimension).toString();
     }
     output << "}";
     return output.str();
@@ -894,27 +890,120 @@ void BoxState::canonicalize(Dimension dimension)
 {
     if (bottom_)
         return;
-    Interval interval = bounds_[dimension];
+    Interval interval = boundAt(dimension);
     const Variable variable = environment_.variableOf(dimension);
     if (config_.integerTightening &&
             environment_.typeOf(variable).kind == NumericKind::Integer)
     {
         interval = Interval(integerLower(interval.lower()),
                             integerUpper(interval.upper()));
-        bounds_[dimension] = interval;
     }
     if (interval.isBottom())
-        bottom_ = true;
+    {
+        makeBottom();
+        return;
+    }
+    if (interval.isTop())
+        eraseBound(dimension);
+    else
+        writablePage(dimension / BoundsPerPage)
+            .bounds[dimension % BoundsPerPage] = std::move(interval);
 }
 
 void BoxState::setBound(Dimension dimension, Interval interval)
 {
-    bounds_[dimension] = std::move(interval);
+    if (interval.isTop())
+        eraseBound(dimension);
+    else
+        writablePage(dimension / BoundsPerPage)
+            .bounds[dimension % BoundsPerPage] = std::move(interval);
     canonicalize(dimension);
 }
 
-void BoxState::report(OperationKind operation,
-                      ApproximationKind approximation,
+const Interval& BoxState::boundAt(Dimension dimension) const
+{
+    static const Interval top = Interval::top();
+    const std::size_t pageIndex = dimension / BoundsPerPage;
+    const auto iterator =
+        std::lower_bound(boundPages_.begin(), boundPages_.end(), pageIndex,
+                         [](const BoundPageEntry& entry, std::size_t index) {
+                             return entry.index < index;
+                         });
+    if (iterator == boundPages_.end() || iterator->index != pageIndex)
+        return top;
+    const auto& slot = iterator->page->bounds[dimension % BoundsPerPage];
+    return slot ? *slot : top;
+}
+
+BoxState::BoundPage& BoxState::writablePage(std::size_t pageIndex)
+{
+    auto iterator =
+        std::lower_bound(boundPages_.begin(), boundPages_.end(), pageIndex,
+                         [](const BoundPageEntry& entry, std::size_t index) {
+                             return entry.index < index;
+                         });
+    if (iterator == boundPages_.end() || iterator->index != pageIndex)
+    {
+        iterator = boundPages_.insert(
+            iterator, {pageIndex, std::make_shared<BoundPage>()});
+    }
+    else if (iterator->page.use_count() != 1)
+    {
+        iterator->page = std::make_shared<BoundPage>(*iterator->page);
+    }
+    return *iterator->page;
+}
+
+void BoxState::eraseBound(Dimension dimension)
+{
+    const std::size_t pageIndex = dimension / BoundsPerPage;
+    auto iterator =
+        std::lower_bound(boundPages_.begin(), boundPages_.end(), pageIndex,
+                         [](const BoundPageEntry& entry, std::size_t index) {
+                             return entry.index < index;
+                         });
+    if (iterator == boundPages_.end() || iterator->index != pageIndex)
+        return;
+    const std::size_t offset = dimension % BoundsPerPage;
+    if (!iterator->page->bounds[offset])
+        return;
+    if (iterator->page.use_count() != 1)
+        iterator->page = std::make_shared<BoundPage>(*iterator->page);
+    iterator->page->bounds[offset].reset();
+    if (pageIsEmpty(*iterator->page))
+        boundPages_.erase(iterator);
+}
+
+bool BoxState::pageIsEmpty(const BoundPage& page)
+{
+    return std::none_of(page.bounds.begin(), page.bounds.end(),
+                        [](const auto& bound) { return bound.has_value(); });
+}
+
+std::vector<Dimension> BoxState::boundedDimensions() const
+{
+    std::vector<Dimension> dimensions;
+    for (const BoundPageEntry& entry : boundPages_)
+    {
+        for (std::size_t offset = 0; offset < BoundsPerPage; ++offset)
+        {
+            const Dimension dimension = entry.index * BoundsPerPage + offset;
+            if (dimension >= environment_.size())
+                break;
+            if (entry.page->bounds[offset])
+                dimensions.push_back(dimension);
+        }
+    }
+    return dimensions;
+}
+
+void BoxState::makeBottom()
+{
+    bottom_ = true;
+    boundPages_.clear();
+}
+
+void BoxState::report(OperationKind operation, ApproximationKind approximation,
                       std::string reason, bool best) const
 {
     recordOperation(operation, approximation, best, reason);

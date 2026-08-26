@@ -172,8 +172,7 @@ void testBoxLatticeAndFallbacks()
     const TreeExpression nonlinear = TreeExpression::binary(
         BinaryOperator::Multiply, xTree, yTree, NumericType::integer());
     intervalized.assign(x, nonlinear);
-    intervalized.assume(
-        TreeConstraint(nonlinear, ConstraintKind::LessEqual));
+    intervalized.assume(TreeConstraint(nonlinear, ConstraintKind::LessEqual));
     require(intervalized.bound(x).isTop() &&
                 diagnostics->diagnostics.size() == 2,
             "unbounded nonlinear Box operations must report intervalization");
@@ -188,6 +187,60 @@ void testBoxLatticeAndFallbacks()
             "requested Box environment projection must initialize new symbols");
     requireThrows([&] { intervalized.forget(Variable(99)); },
                   "Box must reject unknown variables");
+}
+
+void testPagedBoxCopyOnWrite()
+{
+    std::vector<VariableDeclaration> declarations;
+    declarations.reserve(130);
+    for (std::uint32_t id = 1; id <= 130; ++id)
+        declarations.push_back(
+            {Variable(id), NumericType::integer(), "v" + std::to_string(id)});
+    const VariableEnvironment environment(std::move(declarations));
+    const Variable first(1);
+    const Variable middle(65);
+    const Variable last(130);
+
+    BoxState original = BoxState::top(environment);
+    original.assume(equalsValue(first, Rational(1)));
+    original.assume(equalsValue(middle, Rational(2)));
+    original.assume(equalsValue(last, Rational(3)));
+
+    BoxState copy = original;
+    copy.assign(first, LinearExpression(Rational(9)));
+    copy.forget(middle);
+    require(original.bound(first) == Interval::singleton(Rational(1)) &&
+                original.bound(middle) == Interval::singleton(Rational(2)) &&
+                copy.bound(first) == Interval::singleton(Rational(9)) &&
+                copy.bound(middle).isTop() &&
+                copy.bound(last) == Interval::singleton(Rational(3)),
+            "paged Box copies must detach only mutated bounds");
+
+    BoxState alternative = BoxState::top(environment);
+    alternative.assume(equalsValue(first, Rational(1)));
+    alternative.assume(equalsValue(last, Rational(4)));
+    const BoxState joined = original.join(alternative);
+    require(joined.bound(first) == Interval::singleton(Rational(1)) &&
+                joined.bound(middle).isTop() &&
+                joined.bound(last).lower().value() == Rational(3) &&
+                joined.bound(last).upper().value() == Rational(4),
+            "paged Box join must discard one-sided finite dimensions");
+
+    alternative.forget(last);
+    alternative.assume(equalsValue(middle, Rational(2)));
+    const BoxState met = original.meet(alternative);
+    require(met.isEquivalentTo(original) == CheckResult::True,
+            "paged Box meet must preserve and import sparse bounds");
+
+    std::vector<VariableDeclaration> reducedDeclarations;
+    reducedDeclarations.push_back({last, NumericType::integer(), "v130"});
+    reducedDeclarations.push_back({first, NumericType::integer(), "v1"});
+    BoxState projected = original;
+    projected.changeEnvironment(
+        VariableEnvironment(std::move(reducedDeclarations)));
+    require(projected.bound(first) == Interval::singleton(Rational(1)) &&
+                projected.bound(last) == Interval::singleton(Rational(3)),
+            "paged Box environment changes must remap active dimensions");
 }
 
 template <typename State>
@@ -205,8 +258,7 @@ void checkExpressionBoundsAndSubstitution(State state, Variable x, Variable y)
                 " must bound a complete affine expression");
 
     const TreeExpression affineTree = TreeExpression::binary(
-        BinaryOperator::Add,
-        TreeExpression::variable(x, NumericType::real()),
+        BinaryOperator::Add, TreeExpression::variable(x, NumericType::real()),
         TreeExpression::constant(Rational(2), NumericType::real()),
         NumericType::real());
     require(state.bound(affineTree).lower().value() == Rational(3) &&
@@ -216,10 +268,8 @@ void checkExpressionBoundsAndSubstitution(State state, Variable x, Variable y)
     const TreeExpression nonlinearTree = TreeExpression::binary(
         BinaryOperator::Multiply,
         TreeExpression::variable(x, NumericType::real()),
-        TreeExpression::variable(y, NumericType::real()),
-        NumericType::real());
-    require(state.bound(nonlinearTree) ==
-                Interval::singleton(Rational(4)),
+        TreeExpression::variable(y, NumericType::real()), NumericType::real());
+    require(state.bound(nonlinearTree) == Interval::singleton(Rational(4)),
             std::string(state.name()) +
                 " must evaluate a bounded nonlinear tree");
     State unsupportedPreimage = state;
@@ -238,8 +288,8 @@ void checkExpressionBoundsAndSubstitution(State state, Variable x, Variable y)
     yPlusOne.setConstant(Rational(1));
     backward.substitute(x, yPlusOne);
     Z3SoundnessChecker checker(state.environment());
-    requireProof(checker.checkParallelSubstitution(
-        backwardPost, {{x, yPlusOne}}, backward));
+    requireProof(checker.checkParallelSubstitution(backwardPost,
+                                                   {{x, yPlusOne}}, backward));
     require(backward.entails(equalsValue(y, Rational(9))) == CheckResult::True,
             std::string(state.name()) +
                 " must compute the affine assignment preimage");
@@ -248,14 +298,14 @@ void checkExpressionBoundsAndSubstitution(State state, Variable x, Variable y)
     parallel.assume(equalsValue(x, Rational(1)));
     parallel.assume(equalsValue(y, Rational(2)));
     const State parallelPost = parallel;
-    const LinearAssignmentList replacements{
-        {x, LinearExpression(y)}, {y, LinearExpression(x)}};
+    const LinearAssignmentList replacements{{x, LinearExpression(y)},
+                                            {y, LinearExpression(x)}};
     parallel.substituteParallel(replacements);
-    requireProof(checker.checkParallelSubstitution(
-        parallelPost, replacements, parallel));
-    require(parallel.entails(equalsValue(x, Rational(2))) == CheckResult::True &&
-                parallel.entails(equalsValue(y, Rational(1))) ==
-                    CheckResult::True,
+    requireProof(checker.checkParallelSubstitution(parallelPost, replacements,
+                                                   parallel));
+    require(
+        parallel.entails(equalsValue(x, Rational(2))) == CheckResult::True &&
+            parallel.entails(equalsValue(y, Rational(1))) == CheckResult::True,
             std::string(state.name()) +
                 " must make backward parallel substitution simultaneous");
 }
@@ -269,8 +319,8 @@ void testCompletedNumericalSurface()
 
     checkExpressionBoundsAndSubstitution(BoxState::top(reals), x, y);
     checkExpressionBoundsAndSubstitution(OctagonState::top(reals), x, y);
-    checkExpressionBoundsAndSubstitution(
-        ConvexPolyhedraState::top(reals), x, y);
+    checkExpressionBoundsAndSubstitution(ConvexPolyhedraState::top(reals), x,
+                                         y);
 
     LinearExpression relationalSum(x);
     relationalSum.setCoefficient(y, Rational(1));
@@ -282,8 +332,7 @@ void testCompletedNumericalSurface()
                 octagonalSum.upper().value() == Rational(5),
             "Octagon expression bounds must read a directly represented "
             "signed-sum DBM edge");
-    ConvexPolyhedraState relationalPolyhedra =
-        ConvexPolyhedraState::top(reals);
+    ConvexPolyhedraState relationalPolyhedra = ConvexPolyhedraState::top(reals);
     relationalPolyhedra.assume(
         equal(relationalSum, LinearExpression(Rational(5))));
     const Interval polyhedralSum = relationalPolyhedra.bound(relationalSum);
@@ -292,8 +341,7 @@ void testCompletedNumericalSurface()
             "Polyhedra expression bounds must optimize the full affine "
             "objective without intervalizing its variables");
 
-    const auto checkClosure = [&](auto state)
-    {
+    const auto checkClosure = [&](auto state) {
         state.assume(
             lessThan(LinearExpression(x), LinearExpression(Rational(1))));
         require(state.bound(x).upper().isStrict(),
@@ -311,10 +359,10 @@ void testCompletedNumericalSurface()
     checkClosure(OctagonState::top(reals));
     checkClosure(ConvexPolyhedraState::top(reals));
 
-    BoxState left = BoxState::top(
-        VariableEnvironment({{x, NumericType::real(), "x"}}));
-    BoxState right = BoxState::top(
-        VariableEnvironment({{y, NumericType::real(), "y"}}));
+    BoxState left =
+        BoxState::top(VariableEnvironment({{x, NumericType::real(), "x"}}));
+    BoxState right =
+        BoxState::top(VariableEnvironment({{y, NumericType::real(), "y"}}));
     left.assume(equalsValue(x, Rational(1)));
     right.assume(equalsValue(y, Rational(2)));
     const VariableEnvironment unified = left.unifyEnvironmentWith(right);
@@ -323,9 +371,9 @@ void testCompletedNumericalSurface()
                 right.bound(x).isTop(),
             "one-call environment unification must lift both states");
     const BoxState combined = left.meet(right);
-    require(combined.entails(equalsValue(x, Rational(1))) == CheckResult::True &&
-                combined.entails(equalsValue(y, Rational(2))) ==
-                    CheckResult::True,
+    require(
+        combined.entails(equalsValue(x, Rational(1))) == CheckResult::True &&
+            combined.entails(equalsValue(y, Rational(2))) == CheckResult::True,
             "aligned states must compose without another remap");
 
     LinearExpression sum(x);
@@ -342,8 +390,8 @@ void testCompletedNumericalSurface()
     boxNext.assume(atLeast(y, Rational(0)));
     boxNext.assume(atMost(x, Rational(2)));
     boxNext.assume(atMost(y, Rational(2)));
-    const BoxState boxThreshold = boxCurrent.widen(
-        boxNext, WideningPolicy({}, {linearThreshold}));
+    const BoxState boxThreshold =
+        boxCurrent.widen(boxNext, WideningPolicy({}, {linearThreshold}));
     require(boxThreshold.bound(x).upper().value() == Rational(10) &&
                 boxThreshold.bound(y).upper().value() == Rational(10),
             "Box must retain the representable interval consequence of a "
@@ -353,18 +401,16 @@ void testCompletedNumericalSurface()
     octCurrent.assume(lessEqual(sum, LinearExpression(Rational(1))));
     OctagonState octNext = OctagonState::top(reals);
     octNext.assume(lessEqual(sum, LinearExpression(Rational(2))));
-    const OctagonState octThreshold = octCurrent.widen(
-        octNext, WideningPolicy({}, {linearThreshold}));
+    const OctagonState octThreshold =
+        octCurrent.widen(octNext, WideningPolicy({}, {linearThreshold}));
     require(octThreshold.entails(linearThreshold) == CheckResult::True,
             "Octagon must retain a representable general linear threshold");
 
-    const VariableEnvironment integers(
-        {{x, NumericType::integer(), "x"}});
+    const VariableEnvironment integers({{x, NumericType::integer(), "x"}});
     ConvexPolyhedraState tightened = ConvexPolyhedraState::top(integers);
     LinearExpression twiceX(x);
     twiceX *= Rational(2);
-    tightened.assume(
-        lessEqual(twiceX, LinearExpression(Rational(3))));
+    tightened.assume(lessEqual(twiceX, LinearExpression(Rational(3))));
     require(tightened.bound(x).upper().value() == Rational(1) &&
                 !tightened.bound(x).upper().isStrict() &&
                 tightened.capabilities().integerTightening,
@@ -374,8 +420,7 @@ void testCompletedNumericalSurface()
     rationalConfig.integerTightening = false;
     ConvexPolyhedraState untightened =
         ConvexPolyhedraState::top(integers, rationalConfig);
-    untightened.assume(
-        lessEqual(twiceX, LinearExpression(Rational(3))));
+    untightened.assume(lessEqual(twiceX, LinearExpression(Rational(3))));
     require(untightened.bound(x).upper().value() == Rational("3/2") &&
                 !untightened.capabilities().integerTightening,
             "Polyhedra integer tightening must remain an explicit policy");
@@ -386,8 +431,7 @@ void testCompletedNumericalSurface()
             "raw serialization must preserve the Polyhedra tightening policy");
 
     const DomainCapabilities capabilities = tightened.capabilities();
-    require(capabilities.expressionBounds &&
-                capabilities.backwardAssignments &&
+    require(capabilities.expressionBounds && capabilities.backwardAssignments &&
                 capabilities.topologicalClosure &&
                 capabilities.canonicalization,
             "capabilities must expose the completed numerical surface");
@@ -492,13 +536,12 @@ void testPolyhedraLatticeAndFallbacks()
     const TreeExpression nonlinear = TreeExpression::binary(
         BinaryOperator::Multiply, xTree, yTree, NumericType::real());
     intervalized.assign(x, nonlinear);
-    intervalized.assume(
-        TreeConstraint(nonlinear, ConstraintKind::LessEqual));
-    intervalized.assume(
-        notEqual(LinearExpression(x), LinearExpression(y)));
+    intervalized.assume(TreeConstraint(nonlinear, ConstraintKind::LessEqual));
+    intervalized.assume(notEqual(LinearExpression(x), LinearExpression(y)));
     require(intervalized.bound(x).isTop() &&
                 diagnostics->diagnostics.size() == 3,
-            "non-convex and unbounded nonlinear operations must report approximation");
+            "non-convex and unbounded nonlinear operations must report "
+            "approximation");
 
     ConvexPolyhedraState contradiction = ConvexPolyhedraState::top(environment);
     contradiction.assume(atMost(x, Rational(0)));
@@ -631,7 +674,9 @@ void checkRawRoundTrip(const StateT& state, const char* domainName)
 
     std::unique_ptr<NumericalState> decoded =
         NumericalState::deserializeRaw(first);
-    const auto* restored = dynamic_cast<const StateT*>(decoded.get());
+    const auto* restored = decoded->template isState<StateT>()
+                               ? static_cast<const StateT*>(decoded.get())
+                               : nullptr;
     require(restored != nullptr,
             std::string(domainName) +
                 " raw deserialization must restore the concrete domain");
@@ -690,7 +735,9 @@ void testNumericalHashAndRawSerialization()
     std::unique_ptr<NumericalState> restoredOctagon =
         NumericalState::deserializeRaw(octagon.serializeRaw());
     const auto* restoredOctagonState =
-        dynamic_cast<const OctagonState*>(restoredOctagon.get());
+        restoredOctagon->isState<OctagonState>()
+            ? static_cast<const OctagonState*>(restoredOctagon.get())
+            : nullptr;
     require(restoredOctagonState &&
                 !restoredOctagonState->config().strongClosure &&
                 !restoredOctagonState->config().integerTightening,
@@ -812,16 +859,16 @@ void testPolyhedraDualRepresentation()
     const Variable y(2);
     const Variable z(3);
     const Variable w(4);
-    const VariableEnvironment environment(
-        {{x, NumericType::real(), "x"}, {y, NumericType::real(), "y"},
-         {z, NumericType::real(), "z"}, {w, NumericType::real(), "w"}});
+    const VariableEnvironment environment({{x, NumericType::real(), "x"},
+                                           {y, NumericType::real(), "y"},
+                                           {z, NumericType::real(), "z"},
+                                           {w, NumericType::real(), "w"}});
     Z3SoundnessChecker checker(environment);
 
     // A lower-dimensional, unbounded polyhedron exercises points, rays and
     // lines. Joining it with itself forces H -> V -> H without changing its
     // mathematical value.
-    ConvexPolyhedraState halfPlane =
-        ConvexPolyhedraState::top(environment);
+    ConvexPolyhedraState halfPlane = ConvexPolyhedraState::top(environment);
     LinearExpression equality(x);
     equality.setCoefficient(y, Rational(-1));
     halfPlane.assume(equal(equality, LinearExpression(Rational(2))));
@@ -838,31 +885,25 @@ void testPolyhedraDualRepresentation()
     // The V form of top contains a point plus a line in every dimension. A
     // finite operand must therefore be redundant in its convex hull.
     ConvexPolyhedraState point = ConvexPolyhedraState::top(environment);
-    point.assumeAll({equalsValue(x, Rational(1)),
-                     equalsValue(y, Rational(2)),
-                     equalsValue(z, Rational(3)),
-                     equalsValue(w, Rational(4))});
+    point.assumeAll({equalsValue(x, Rational(1)), equalsValue(y, Rational(2)),
+                     equalsValue(z, Rational(3)), equalsValue(w, Rational(4))});
     const ConvexPolyhedraState topHull =
         ConvexPolyhedraState::top(environment).join(point);
     require(topHull.isTop(),
             "joining top through V representation must remain top");
 
     ConvexPolyhedraState otherPoint = ConvexPolyhedraState::top(environment);
-    otherPoint.assumeAll({equalsValue(x, Rational(-1)),
-                          equalsValue(y, Rational(-2)),
-                          equalsValue(z, Rational(-3)),
-                          equalsValue(w, Rational(-4))});
-    checkRawRoundTrip(point.join(otherPoint),
-                      "V-only Convex Polyhedra hull");
+    otherPoint.assumeAll(
+        {equalsValue(x, Rational(-1)), equalsValue(y, Rational(-2)),
+         equalsValue(z, Rational(-3)), equalsValue(w, Rational(-4))});
+    checkRawRoundTrip(point.join(otherPoint), "V-only Convex Polyhedra hull");
 
     // Repeated hulls remain in V form between calls. The resulting 4D simplex
     // has five vertices and is intentionally the shape that made the old
     // lifted Fourier-Motzkin join expensive.
-    ConvexPolyhedraState simplex =
-        ConvexPolyhedraState::bottom(environment);
+    ConvexPolyhedraState simplex = ConvexPolyhedraState::bottom(environment);
     const std::vector<std::vector<std::int64_t>> vertices{
-        {0, 0, 0, 0}, {5, 0, 0, 0}, {0, 5, 0, 0},
-        {0, 0, 5, 0}, {0, 0, 0, 5}};
+        {0, 0, 0, 0}, {5, 0, 0, 0}, {0, 5, 0, 0}, {0, 0, 5, 0}, {0, 0, 0, 5}};
     for (const std::vector<std::int64_t>& vertex : vertices)
     {
         ConvexPolyhedraState next = ConvexPolyhedraState::top(environment);
@@ -882,9 +923,8 @@ void testPolyhedraDualRepresentation()
                 simplex.entails(atLeast(y, Rational(0))) == CheckResult::True &&
                 simplex.entails(atLeast(z, Rational(0))) == CheckResult::True &&
                 simplex.entails(atLeast(w, Rational(0))) == CheckResult::True &&
-                simplex.entails(lessEqual(sum,
-                                           LinearExpression(Rational(5)))) ==
-                    CheckResult::True,
+                simplex.entails(lessEqual(
+                    sum, LinearExpression(Rational(5)))) == CheckResult::True,
             "V-form repeated joins must recover the exact 4D simplex facets: " +
                 simplex.toString());
 
@@ -919,17 +959,19 @@ void testPolyhedraDualRepresentation()
     // coordinate and add both a free and a zero-initialized coordinate.
     const Variable q(5);
     const VariableEnvironment projectedEnvironment(
-        {{w, NumericType::real(), "w"}, {x, NumericType::real(), "x"},
-         {z, NumericType::real(), "z"}, {q, NumericType::real(), "q"}});
+        {{w, NumericType::real(), "w"},
+         {x, NumericType::real(), "x"},
+         {z, NumericType::real(), "z"},
+         {q, NumericType::real(), "q"}});
     ConvexPolyhedraState projected = simplex;
     projected.changeEnvironment(projectedEnvironment);
-    require(!projected.environment().contains(y) && projected.bound(q).isTop() &&
-                projected.entails(atLeast(x, Rational(0))) ==
-                    CheckResult::True,
+    require(!projected.environment().contains(y) &&
+                projected.bound(q).isTop() &&
+                projected.entails(atLeast(x, Rational(0))) == CheckResult::True,
             "V-only environment change must project removed variables, "
             "permute retained coordinates and add free coordinates");
-    const VariableEnvironment zeroExtended = projectedEnvironment.add(
-        {{Variable(6), NumericType::real(), "zero"}});
+    const VariableEnvironment zeroExtended =
+        projectedEnvironment.add({{Variable(6), NumericType::real(), "zero"}});
     projected.changeEnvironment(zeroExtended, true);
     const Interval zeroBound = projected.bound(Variable(6));
     require(zeroBound.lower().isFinite() && zeroBound.upper().isFinite() &&
@@ -950,9 +992,9 @@ void testPolyhedraDualRepresentation()
     requireProof(checker.checkAssignment(beforeAssign, x, image, alternating));
     alternating.forget(w);
     require(alternating.bound(w).isTop() &&
-                alternating.entails(equal(
-                    LinearExpression(x) - image,
-                    LinearExpression(Rational()))) == CheckResult::True,
+                alternating.entails(equal(LinearExpression(x) - image,
+                                          LinearExpression(Rational()))) ==
+                    CheckResult::True,
             "assume/assign/forget must transparently refresh H/V caches");
 
     // Exercise repeated representation changes. No public operation is told
@@ -973,22 +1015,20 @@ void testPolyhedraDualRepresentation()
         chained.forget(w);
     }
     require(chained.entails(atMost(x, Rational(5))) == CheckResult::True &&
-                chained.entails(equal(LinearExpression(z) -
-                                          (LinearExpression(y) +
+                chained.entails(
+                    equal(LinearExpression(z) - (LinearExpression(y) +
                                            LinearExpression(Rational(1))),
-                                      LinearExpression(Rational()))) ==
-                    CheckResult::True,
+                          LinearExpression(Rational()))) == CheckResult::True,
             "long H/V operation chains must preserve exact affine facts");
     checkRawRoundTrip(chained, "long H/V Convex Polyhedra operation chain");
 
     // NNC generators distinguish included points (epsilon>0) from closure
     // points (epsilon=0), so strictness survives every V-native operation.
     ConvexPolyhedraState strict = ConvexPolyhedraState::top(environment);
-    strict.assume(lessThan(LinearExpression(x),
-                           LinearExpression(Rational(0))));
+    strict.assume(lessThan(LinearExpression(x), LinearExpression(Rational(0))));
     const ConvexPolyhedraState strictSelfHull = strict.join(strict);
-    require(strictSelfHull.entails(lessThan(
-                LinearExpression(x), LinearExpression(Rational(0)))) ==
+    require(strictSelfHull.entails(
+                lessThan(LinearExpression(x), LinearExpression(Rational(0)))) ==
                 CheckResult::True &&
                 strictSelfHull.bound(x).upper().isStrict(),
             "NNC self-join must retain an open boundary through V");
@@ -996,19 +1036,17 @@ void testPolyhedraDualRepresentation()
     endpoint.assume(equalsValue(x, Rational(1)));
     const ConvexPolyhedraState closedHull = strict.join(endpoint);
     require(closedHull.entails(atMost(x, Rational(1))) == CheckResult::True &&
-                closedHull.entails(lessThan(
-                    LinearExpression(x), LinearExpression(Rational(1)))) ==
+                closedHull.entails(lessThan(LinearExpression(x),
+                                            LinearExpression(Rational(1)))) ==
                     CheckResult::Unknown,
             "an included endpoint must close only its own NNC hull boundary");
     strict.assign(y, LinearExpression(x));
-    require(strict.entails(lessThan(LinearExpression(x),
-                                    LinearExpression(Rational(0)))) ==
+    require(strict.entails(
+                lessThan(LinearExpression(x), LinearExpression(Rational(0)))) ==
                 CheckResult::True,
             "NNC V-native assignment must preserve strict constraints");
-    checkRawRoundTrip(strict,
-                      "strict NNC Convex Polyhedra operation chain");
-    checkRawRoundTrip(closedHull,
-                      "mixed closed/NNC Convex Polyhedra hull");
+    checkRawRoundTrip(strict, "strict NNC Convex Polyhedra operation chain");
+    checkRawRoundTrip(closedHull, "mixed closed/NNC Convex Polyhedra hull");
 
     const VariableEnvironment emptyEnvironment;
     require(ConvexPolyhedraState::top(emptyEnvironment)
@@ -1016,8 +1054,7 @@ void testPolyhedraDualRepresentation()
                 .isTop(),
             "zero-dimensional top must survive H/V conversion");
 
-    ConvexPolyhedraState inconsistent =
-        ConvexPolyhedraState::top(environment);
+    ConvexPolyhedraState inconsistent = ConvexPolyhedraState::top(environment);
     LinearExpression inconsistentSum(x);
     inconsistentSum.setCoefficient(y, Rational(1));
     inconsistent.assumeAll(
@@ -1035,15 +1072,13 @@ void testExtendedApronSurface()
     const Variable z(3);
     const Variable a(4);
     const Variable b(5);
-    const VariableEnvironment realEnvironment(
-        {{x, NumericType::real(), "x"}, {y, NumericType::real(), "y"},
+    const VariableEnvironment realEnvironment({{x, NumericType::real(), "x"},
+                                               {y, NumericType::real(), "y"},
          {z, NumericType::real(), "z"}});
 
-    const auto checkSharedCapabilities = [&](const auto& state)
-    {
+    const auto checkSharedCapabilities = [&](const auto& state) {
         const DomainCapabilities capabilities = state.capabilities();
-        require(capabilities.expandFold &&
-                    capabilities.operationMetadata &&
+        require(capabilities.expandFold && capabilities.operationMetadata &&
                     capabilities.ieeeTreeExpressions &&
                     capabilities.nonlinearTreeExpressions,
                 std::string(state.name()) +
@@ -1073,8 +1108,7 @@ void testExtendedApronSurface()
                 metadataWidened.lastOperation().best,
             "widening metadata must distinguish exact from best");
 
-    const auto checkNoOpMetadata = [&](auto state)
-    {
+    const auto checkNoOpMetadata = [&](auto state) {
         state.assign(x, LinearExpression(Rational(1)));
         require(state.lastOperation().operation == OperationKind::Assignment,
                 std::string(state.name()) +
@@ -1084,8 +1118,7 @@ void testExtendedApronSurface()
                 std::string(state.name()) +
                     " empty assignment batch left stale metadata");
         state.substituteParallel(LinearAssignmentList{});
-        require(state.lastOperation().operation ==
-                    OperationKind::Substitution,
+        require(state.lastOperation().operation == OperationKind::Substitution,
                 std::string(state.name()) +
                     " empty substitution batch left stale metadata");
         state.assumeAll({});
@@ -1112,10 +1145,8 @@ void testExtendedApronSurface()
     const TreeExpression product = TreeExpression::binary(
         BinaryOperator::Multiply,
         TreeExpression::variable(x, NumericType::real()),
-        TreeExpression::variable(y, NumericType::real()),
-        NumericType::real());
-    const auto checkNonlinear = [&](auto state)
-    {
+        TreeExpression::variable(y, NumericType::real()), NumericType::real());
+    const auto checkNonlinear = [&](auto state) {
         state.assumeAll({atLeast(x, Rational(2)), atMost(x, Rational(3)),
                          atLeast(y, Rational(-1)), atMost(y, Rational(4))});
         state.assign(z, product);
@@ -1125,8 +1156,7 @@ void testExtendedApronSurface()
                     Rational(12) <= result.upper().value(),
                 std::string(state.name()) +
                     " nonlinear multiplication lost a concrete endpoint");
-        require(!state.lastOperation().exact &&
-                    !state.lastOperation().best &&
+        require(!state.lastOperation().exact && !state.lastOperation().best &&
                     state.lastOperation().approximation ==
                         ApproximationKind::SoundOverApproximation,
                 std::string(state.name()) +
@@ -1137,8 +1167,8 @@ void testExtendedApronSurface()
     checkNonlinear(ConvexPolyhedraState::top(realEnvironment));
 
     BoxState parallel = BoxState::top(realEnvironment);
-    parallel.assumeAll({equalsValue(x, Rational(2)),
-                        equalsValue(y, Rational(3))});
+    parallel.assumeAll(
+        {equalsValue(x, Rational(2)), equalsValue(y, Rational(3))});
     parallel.assignParallel(TreeAssignmentList{
         {x, TreeExpression::binary(
                 BinaryOperator::Multiply,
@@ -1165,12 +1195,10 @@ void testExtendedApronSurface()
         BinaryOperator::Subtract, product,
         TreeExpression::constant(Rational(5), NumericType::real()),
         NumericType::real());
-    const auto checkShiftedProductGuard = [&](auto state)
-    {
+    const auto checkShiftedProductGuard = [&](auto state) {
         state.assumeAll({atLeast(x, Rational(2)), atMost(x, Rational(3)),
                          atLeast(y, Rational(2)), atMost(y, Rational(3))});
-        state.assume(
-            TreeConstraint(shiftedProduct, ConstraintKind::LessEqual));
+        state.assume(TreeConstraint(shiftedProduct, ConstraintKind::LessEqual));
         require(state.bound(x).upper().isFinite() &&
                     state.bound(x).upper().value() <= Rational("5/2") &&
                     state.bound(y).upper().isFinite() &&
@@ -1180,8 +1208,7 @@ void testExtendedApronSurface()
     };
     checkShiftedProductGuard(BoxState::top(realEnvironment));
     checkShiftedProductGuard(OctagonState::top(realEnvironment));
-    checkShiftedProductGuard(
-        ConvexPolyhedraState::top(realEnvironment));
+    checkShiftedProductGuard(ConvexPolyhedraState::top(realEnvironment));
 
     BoxState nonlinearOperators = BoxState::top(realEnvironment);
     nonlinearOperators.assumeAll(
@@ -1189,17 +1216,14 @@ void testExtendedApronSurface()
     const TreeExpression quotient = TreeExpression::binary(
         BinaryOperator::Divide,
         TreeExpression::variable(x, NumericType::real()),
-        TreeExpression::variable(y, NumericType::real()),
-        NumericType::real());
+        TreeExpression::variable(y, NumericType::real()), NumericType::real());
     const TreeExpression remainder = TreeExpression::binary(
         BinaryOperator::Remainder,
         TreeExpression::variable(x, NumericType::real()),
-        TreeExpression::variable(y, NumericType::real()),
-        NumericType::real());
+        TreeExpression::variable(y, NumericType::real()), NumericType::real());
     const TreeExpression squareRoot = TreeExpression::unary(
         UnaryOperator::SquareRoot,
-        TreeExpression::variable(y, NumericType::real()),
-        NumericType::real());
+        TreeExpression::variable(y, NumericType::real()), NumericType::real());
     require(nonlinearOperators.bound(quotient) ==
                     Interval::singleton(Rational("9/4")) &&
                 nonlinearOperators.bound(remainder) ==
@@ -1216,17 +1240,16 @@ void testExtendedApronSurface()
             "possible division by zero must conservatively produce top");
 
     BoxState unboundedOperators = BoxState::top(realEnvironment);
-    unboundedOperators.assumeAll(
-        {atLeast(x, Rational(2)), atLeast(y, Rational(3)),
+    unboundedOperators.assumeAll({atLeast(x, Rational(2)),
+                                  atLeast(y, Rational(3)),
          atMost(y, Rational(4))});
     const Interval unboundedProduct = unboundedOperators.bound(product);
     require(unboundedProduct.lower().isFinite() &&
                 unboundedProduct.lower().value() == Rational(6) &&
                 unboundedProduct.upper().isPlusInfinity(),
             "semi-infinite multiplication lost its finite lower endpoint");
-    const Interval unboundedQuotient =
-        unboundedOperators.bound(TreeExpression::binary(
-            BinaryOperator::Divide,
+    const Interval unboundedQuotient = unboundedOperators.bound(
+        TreeExpression::binary(BinaryOperator::Divide,
             TreeExpression::variable(x, NumericType::real()),
             TreeExpression::variable(y, NumericType::real()),
             NumericType::real()));
@@ -1239,12 +1262,11 @@ void testExtendedApronSurface()
     castSource.assumeAll(
         {atLeast(x, Rational("-3/2")), atMost(x, Rational("7/2"))});
     const TreeExpression integerCast = TreeExpression::unary(
-        UnaryOperator::Cast,
-        TreeExpression::variable(x, NumericType::real()),
+        UnaryOperator::Cast, TreeExpression::variable(x, NumericType::real()),
         NumericType::integer(), RoundingMode::TowardZero);
-    require(castSource.bound(integerCast) ==
-                Interval(Bound::finite(Rational(-1)),
-                         Bound::finite(Rational(3))),
+    require(
+        castSource.bound(integerCast) ==
+            Interval(Bound::finite(Rational(-1)), Bound::finite(Rational(3))),
             "real-to-integer casts must truncate toward zero");
 
     const Variable f(11);
@@ -1254,12 +1276,9 @@ void testExtendedApronSurface()
     const VariableEnvironment floatEnvironment(
         {{f, binary32, "f"}, {g, binary32, "g"}, {h, binary32, "h"}});
     BoxState floating = BoxState::top(floatEnvironment);
-    floating.assign(
-        f, TreeExpression::constant(Rational("1/10"), binary32));
-    floating.assign(
-        g, TreeExpression::constant(Rational("1/5"), binary32));
-    floating.assign(
-        h, TreeExpression::binary(
+    floating.assign(f, TreeExpression::constant(Rational("1/10"), binary32));
+    floating.assign(g, TreeExpression::constant(Rational("1/5"), binary32));
+    floating.assign(h, TreeExpression::binary(
                BinaryOperator::Add,
                TreeExpression::variable(f, binary32),
                TreeExpression::variable(g, binary32), binary32));
@@ -1283,10 +1302,9 @@ void testExtendedApronSurface()
         const TreeExpression roundedAddition = TreeExpression::binary(
             BinaryOperator::Add,
             TreeExpression::constant(Rational(1), binary32),
-            TreeExpression::constant(halfUlp, binary32), binary32,
-            rounding);
-        const Rational expected = FloatSemantics::add(
-            Rational(1), halfUlp, 24, rounding);
+            TreeExpression::constant(halfUlp, binary32), binary32, rounding);
+        const Rational expected =
+            FloatSemantics::add(Rational(1), halfUlp, 24, rounding);
         require(floating.bound(roundedAddition) ==
                     Interval::singleton(expected),
                 "binary32 addition did not honor its rounding mode");
@@ -1303,9 +1321,9 @@ void testExtendedApronSurface()
                 Interval::singleton(minimumSubnormal * Rational(2)),
             "binary32 subnormal ties must round to an even significand");
     floating.assign(
-        h, TreeExpression::constant(
-               Rational("10000000000000000000000000000000000000000"),
-               binary32));
+        h,
+        TreeExpression::constant(
+            Rational("10000000000000000000000000000000000000000"), binary32));
     require(floating.bound(h).isTop(),
             "IEEE overflow must conservatively produce top");
 
@@ -1315,8 +1333,7 @@ void testExtendedApronSurface()
     const std::vector<VariableDeclaration> copies{
         {a, NumericType::real(), "materialized_a"},
         {b, NumericType::real(), "materialized_b"}};
-    const auto checkExpandFold = [&](auto state)
-    {
+    const auto checkExpandFold = [&](auto state) {
         state.assume(equalsValue(x, Rational(1)));
         state.assume(equalsValue(y, Rational(2)));
         state.expand(x, copies);
@@ -1345,17 +1362,14 @@ void testExtendedApronSurface()
     const VariableEnvironment generatorEnvironment(
         {{x, NumericType::real(), "x"}, {y, NumericType::real(), "y"}});
     const PolyhedraGeneratorSet nncGenerators{
-        {PolyhedraGeneratorKind::ClosurePoint,
-         {Rational(0), Rational(0)}},
+        {PolyhedraGeneratorKind::ClosurePoint, {Rational(0), Rational(0)}},
         {PolyhedraGeneratorKind::Point, {Rational(1), Rational(0)}},
         {PolyhedraGeneratorKind::Ray, {Rational(0), Rational(1)}}};
-    ConvexPolyhedraState generated =
-        ConvexPolyhedraState::fromGenerators(generatorEnvironment,
-                                              nncGenerators);
-    require(generated.lastOperation().operation ==
-                    OperationKind::GeneratorImport &&
-                generated.lastOperation().exact &&
-                generated.lastOperation().best &&
+    ConvexPolyhedraState generated = ConvexPolyhedraState::fromGenerators(
+        generatorEnvironment, nncGenerators);
+    require(
+        generated.lastOperation().operation == OperationKind::GeneratorImport &&
+            generated.lastOperation().exact && generated.lastOperation().best &&
                 generated.bound(x).lower().isStrict() &&
                 !generated.bound(x).upper().isStrict() &&
                 generated.bound(x).lower().value() == Rational(0) &&
@@ -1376,9 +1390,8 @@ void testExtendedApronSurface()
     const PolyhedraGeneratorSet lineGenerators{
         {PolyhedraGeneratorKind::Point, {Rational(0), Rational(0)}},
         {PolyhedraGeneratorKind::Line, {Rational(0), Rational(1)}}};
-    const ConvexPolyhedraState line =
-        ConvexPolyhedraState::fromGenerators(generatorEnvironment,
-                                              lineGenerators);
+    const ConvexPolyhedraState line = ConvexPolyhedraState::fromGenerators(
+        generatorEnvironment, lineGenerators);
     require(line.bound(x) == Interval::singleton(Rational(0)) &&
                 line.bound(y).isTop(),
             "public line generator did not create a bidirectional direction");
@@ -1389,12 +1402,10 @@ void testExtendedApronSurface()
                     OperationKind::GeneratorImport,
             "an empty public generator system must denote bottom");
     requireThrows(
-        [&]
-        {
+        [&] {
             (void)ConvexPolyhedraState::fromGenerators(
                 generatorEnvironment,
-                {{PolyhedraGeneratorKind::Ray,
-                  {Rational(1), Rational(0)}}});
+                {{PolyhedraGeneratorKind::Ray, {Rational(1), Rational(0)}}});
         },
         "a generator system without an included point must be rejected");
 }
@@ -1538,6 +1549,7 @@ int main()
     {
         testBoxState();
         testBoxLatticeAndFallbacks();
+        testPagedBoxCopyOnWrite();
         testConvexPolyhedraState();
         testPolyhedraLatticeAndFallbacks();
         testParallelAssignments();

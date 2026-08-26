@@ -9,8 +9,6 @@
 #include "AE/Svfexe/AbstractInterpretation.h"
 #include "AE/Svfexe/SVFIRAdapter.h"
 
-#include <set>
-
 namespace SVF
 {
 
@@ -22,14 +20,13 @@ template <typename NumericalStateT>
 class DenseAbstractInterpretation final : public AbstractInterpretation
 {
 public:
-    using DenseState =
-        AbstractDomain::DomainProductState<NumericalStateT>;
+    using DenseState = AbstractDomain::DomainProductState<NumericalStateT>;
 
     DenseAbstractInterpretation();
     ~DenseAbstractInterpretation() override = default;
 
-    const AbstractDomain::AbstractState&
-    getAbstractState(const ICFGNode* node) const override;
+    const AbstractDomain::AbstractState& getAbstractState(
+        const ICFGNode* node) const override;
 
     const AbstractValue& getAbsValue(const ValVar* var,
                                      const ICFGNode* node) override;
@@ -38,12 +35,9 @@ public:
     const AbstractValue& getAbsValue(const SVFVar* var,
                                      const ICFGNode* node) override;
 
-    bool hasAbsValue(const ValVar* var,
-                     const ICFGNode* node) const override;
-    bool hasAbsValue(const ObjVar* var,
-                     const ICFGNode* node) const override;
-    bool hasAbsValue(const SVFVar* var,
-                     const ICFGNode* node) const override;
+    bool hasAbsValue(const ValVar* var, const ICFGNode* node) const override;
+    bool hasAbsValue(const ObjVar* var, const ICFGNode* node) const override;
+    bool hasAbsValue(const SVFVar* var, const ICFGNode* node) const override;
 
     void updateAbsValue(const ValVar* var, const AbstractValue& value,
                         const ICFGNode* node) override;
@@ -61,14 +55,14 @@ protected:
     void resetAbstractState(const ICFGNode* node) override;
     void copyAbstractState(const ICFGNode* source,
                            const ICFGNode* destination) override;
-    std::unique_ptr<AbstractDomain::AbstractState>
-    cloneAbstractState(const ICFGNode* node) const override;
+    std::unique_ptr<AbstractDomain::AbstractState> cloneAbstractState(
+        const ICFGNode* node) const override;
     bool isAbstractStateEquivalent(
         const ICFGNode* node,
         const AbstractDomain::AbstractState& snapshot) const override;
 
-    std::unique_ptr<AbstractDomain::AbstractState>
-    cloneCycleHeadState(const ICFGCycleWTO* cycle) override;
+    std::unique_ptr<AbstractDomain::AbstractState> cloneCycleHeadState(
+        const ICFGCycleWTO* cycle) override;
     bool widenCycleState(const AbstractDomain::AbstractState& previous,
                          const AbstractDomain::AbstractState& current,
                          const ICFGCycleWTO* cycle) override;
@@ -85,8 +79,7 @@ protected:
     void updateDomainCopyValue(const ICFGNode* node, const SVFVar* target,
                                const SVFVar* source,
                                bool exactMathematicalCopy) override;
-    void synchronizeDomainFromIntervalView(
-        const ICFGNode* node) override;
+    void synchronizeDomainFromIntervalView(const ICFGNode* node) override;
 
 private:
     DenseState& ensureState(const ICFGNode* node);
@@ -102,21 +95,19 @@ private:
                         AbstractDomain::Variable variable) const;
     void assignInterval(DenseState& state, AbstractDomain::Variable variable,
                         const IntervalValue& interval);
-    void constrainInterval(DenseState& state,
-                           AbstractDomain::Variable variable,
+    void constrainInterval(DenseState& state, AbstractDomain::Variable variable,
                            const IntervalValue& interval);
+    void rebuildCompatibilityValue(const ICFGNode* node,
+                                   AbstractDomain::Variable variable);
     void rebuildCompatibilityProjection(const ICFGNode* node);
     void assumeBranch(const IntraCFGEdge* edge, DenseState& state) const;
 
     SVFIRAdapter adapter_;
     Map<const ICFGNode*, DenseState> denseTrace_;
-    Map<const ICFGNode*, std::set<AbstractDomain::Variable>>
-        definedVariables_;
 };
 
 extern template class DenseAbstractInterpretation<AbstractDomain::BoxState>;
-extern template class
-    DenseAbstractInterpretation<AbstractDomain::OctagonState>;
+extern template class DenseAbstractInterpretation<AbstractDomain::OctagonState>;
 
 } // namespace SVF
 

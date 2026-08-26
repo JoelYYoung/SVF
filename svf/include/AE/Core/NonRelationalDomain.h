@@ -98,6 +98,10 @@ public:
 private:
     explicit AddressState(bool defaultTop) : defaultTop_(defaultTop) {}
 
+    const void* dynamicTypeToken() const noexcept override
+    {
+        return staticTypeToken<AddressState>();
+    }
     bool hasCompatibleDomain(const AbstractState& other) const override;
     void joinState(const AbstractState& other) override;
     void meetState(const AbstractState& other) override;
@@ -144,11 +148,14 @@ public:
     bool mustBeFreed(Location location) const;
 
 private:
-    explicit LifetimeState(Lifetime defaultValue)
-        : defaultValue_(defaultValue)
+    explicit LifetimeState(Lifetime defaultValue) : defaultValue_(defaultValue)
     {
     }
 
+    const void* dynamicTypeToken() const noexcept override
+    {
+        return staticTypeToken<LifetimeState>();
+    }
     bool hasCompatibleDomain(const AbstractState& other) const override;
     void joinState(const AbstractState& other) override;
     void meetState(const AbstractState& other) override;
@@ -170,29 +177,30 @@ private:
 class MemoryLayout
 {
 public:
-    MemoryLayout() = default;
+    MemoryLayout() : cells_(std::make_shared<const Cells>()) {}
     explicit MemoryLayout(std::map<Location, Variable> cells)
-        : cells_(std::move(cells))
+        : cells_(std::make_shared<const Cells>(std::move(cells)))
     {
     }
 
     bool contains(Location location) const
     {
-        return cells_.count(location) != 0;
+        return cells_->count(location) != 0;
     }
     Variable contentOf(Location location) const;
     const std::map<Location, Variable>& cells() const
     {
-        return cells_;
+        return *cells_;
     }
 
     friend bool operator==(const MemoryLayout& lhs, const MemoryLayout& rhs)
     {
-        return lhs.cells_ == rhs.cells_;
+        return lhs.cells_ == rhs.cells_ || *lhs.cells_ == *rhs.cells_;
     }
 
 private:
-    std::map<Location, Variable> cells_;
+    using Cells = std::map<Location, Variable>;
+    std::shared_ptr<const Cells> cells_;
 };
 
 /// Complete dense state. NumericalStateT may be BoxState, OctagonState, or
@@ -206,8 +214,7 @@ public:
                        LifetimeState lifetimes = LifetimeState::bottom())
         : numerical_(std::move(numerical)),
           memoryLayout_(std::move(memoryLayout)),
-          addresses_(std::move(addresses)),
-          lifetimes_(std::move(lifetimes))
+          addresses_(std::move(addresses)), lifetimes_(std::move(lifetimes))
     {
     }
 
@@ -283,8 +290,7 @@ public:
     void changeEnvironment(const VariableEnvironment& environment,
                            bool initializeNewVariablesToZero = false)
     {
-        numerical_.changeEnvironment(environment,
-                                     initializeNewVariablesToZero);
+        numerical_.changeEnvironment(environment, initializeNewVariablesToZero);
     }
 
     void load(Variable target, Variable pointer)
@@ -306,8 +312,8 @@ public:
             DomainProductState alternative(*this);
             const Variable content = memoryLayout_.contentOf(location);
             alternative.numerical_.assign(target, LinearExpression(content));
-            alternative.addresses_.assign(target,
-                                          alternative.addresses_.addressesOf(content));
+            alternative.addresses_.assign(
+                target, alternative.addresses_.addressesOf(content));
             if (first)
             {
                 result = std::move(alternative);
@@ -379,9 +385,16 @@ public:
     }
 
 private:
+    const void* dynamicTypeToken() const noexcept override
+    {
+        return staticTypeToken<DomainProductState>();
+    }
     bool hasCompatibleDomain(const AbstractState& other) const override
     {
-        const auto* product = dynamic_cast<const DomainProductState*>(&other);
+        const auto* product =
+            other.template isState<DomainProductState>()
+                ? &static_cast<const DomainProductState&>(other)
+                : nullptr;
         return product && memoryLayout_ == product->memoryLayout_ &&
                numerical_.environment() == product->numerical_.environment() &&
                numerical_.config().operationCompatible(
@@ -433,17 +446,16 @@ private:
     bool leqState(const AbstractState& other) const override
     {
         const DomainProductState& product = requireProduct(other);
-        return
-            numerical_.isSubsetOf(product.numerical_) == CheckResult::True &&
+        return numerical_.isSubsetOf(product.numerical_) == CheckResult::True &&
             addresses_.isSubsetOf(product.addresses_) == CheckResult::True &&
             lifetimes_.isSubsetOf(product.lifetimes_) == CheckResult::True;
     }
 
     std::string stateToString() const override
     {
-        return "numeric=" + numerical_.toString() + ", addresses=" +
-               addresses_.toString() + ", lifetimes=" +
-               lifetimes_.toString();
+        return "numeric=" + numerical_.toString() +
+               ", addresses=" + addresses_.toString() +
+               ", lifetimes=" + lifetimes_.toString();
     }
 
     const DomainProductState& requireProduct(const AbstractState& other) const

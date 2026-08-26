@@ -6,7 +6,9 @@
 #include "AE/Core/AbstractState.h"
 #include "AE/Core/NumericalDomain.h"
 
+#include <array>
 #include <memory>
+#include <optional>
 #include <vector>
 
 namespace SVF::AbstractDomain
@@ -40,8 +42,7 @@ public:
     static BoxState fromBox(const VariableEnvironment& environment,
                             const IntervalBox& box,
                             const BoxConfig& config = {});
-    static BoxState fromConstraints(
-        const VariableEnvironment& environment,
+    static BoxState fromConstraints(const VariableEnvironment& environment,
         const LinearConstraintSet& constraints,
         const BoxConfig& config = {});
 
@@ -58,14 +59,12 @@ public:
         return config_;
     }
 
-    void assign(Variable target,
-                const LinearExpression& expression) override;
+    void assign(Variable target, const LinearExpression& expression) override;
     void assign(Variable target, const TreeExpression& expression) override;
     void assignParallel(const LinearAssignmentList& assignments) override;
     void substitute(Variable target,
                     const LinearExpression& expression) override;
-    void substituteParallel(
-        const LinearAssignmentList& assignments) override;
+    void substituteParallel(const LinearAssignmentList& assignments) override;
     void assume(const LinearConstraint& constraint) override;
     void assume(const TreeConstraint& constraint) override;
     void forget(Variable variable) override;
@@ -73,8 +72,7 @@ public:
                            bool initializeNewVariablesToZero = false) override;
     void expand(Variable source,
                 const std::vector<VariableDeclaration>& copies) override;
-    void fold(Variable target,
-              const std::vector<Variable>& folded) override;
+    void fold(Variable target, const std::vector<Variable>& folded) override;
 
     CheckResult entails(const LinearConstraint& constraint) const override;
     Interval bound(Variable variable) const override;
@@ -91,8 +89,25 @@ public:
     BoxState narrow(const BoxState& next) const;
 
 private:
+    static constexpr std::size_t BoundsPerPage = 64;
+
+    struct BoundPage
+    {
+        std::array<std::optional<Interval>, BoundsPerPage> bounds;
+    };
+
+    struct BoundPageEntry
+    {
+        std::size_t index;
+        std::shared_ptr<BoundPage> page;
+    };
+
     BoxState(VariableEnvironment environment, BoxConfig config, bool bottom);
 
+    const void* dynamicTypeToken() const noexcept override
+    {
+        return staticTypeToken<BoxState>();
+    }
     bool hasCompatibleDomain(const AbstractState& other) const override;
     void joinState(const AbstractState& other) override;
     void meetState(const AbstractState& other) override;
@@ -104,6 +119,12 @@ private:
     std::string stateToString() const override;
 
     const BoxState& requireBox(const AbstractState& other) const;
+    const Interval& boundAt(Dimension dimension) const;
+    BoundPage& writablePage(std::size_t pageIndex);
+    void eraseBound(Dimension dimension);
+    static bool pageIsEmpty(const BoundPage& page);
+    std::vector<Dimension> boundedDimensions() const;
+    void makeBottom();
     void canonicalize(Dimension dimension);
     void setBound(Dimension dimension, Interval interval);
     void report(OperationKind operation, ApproximationKind approximation,
@@ -111,7 +132,10 @@ private:
 
     VariableEnvironment environment_;
     BoxConfig config_;
-    std::vector<Interval> bounds_;
+    /// Missing pages and empty slots denote top. Active pages are kept sorted,
+    /// shared by state copies, and detached only when one of their bounds
+    /// changes.
+    std::vector<BoundPageEntry> boundPages_;
     bool bottom_ = false;
 };
 

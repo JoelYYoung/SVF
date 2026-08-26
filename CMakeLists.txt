@@ -301,7 +301,7 @@ install(TARGETS SvfFlags EXPORT SVFTargets)
 # =================================================================================
 
 # If ./Test-Suite exists, add & run the tests
-if(EXISTS "${SVF_SOURCE_DIR}/Test-Suite")
+if(EXISTS "${SVF_SOURCE_DIR}/Test-Suite/CMakeLists.txt")
   enable_testing()
   add_subdirectory(Test-Suite)
 endif()
@@ -314,6 +314,7 @@ add_subdirectory(svf)
 add_subdirectory(svf-llvm)
 
 if(SVF_BUILD_ABSTRACT_DOMAINS AND SVF_BUILD_ABSTRACT_DOMAIN_TESTS)
+  enable_testing()
   add_subdirectory(svf/lib/AE/Test)
 endif()
 
@@ -324,6 +325,18 @@ endif()
 # Expose the required ABI flags (e.g., whether RTTI was disabled) in the build & install trees
 target_compile_options(SvfFlags INTERFACE $<$<NOT:$<BOOL:${SVF_ENABLE_RTTI}>>:-fno-rtti>)
 target_link_options(SvfFlags INTERFACE $<$<NOT:$<BOOL:${SVF_ENABLE_RTTI}>>:-fno-rtti>)
+if(TARGET AbstractStateCore)
+  target_compile_options(
+    AbstractStateCore PUBLIC
+    $<$<NOT:$<BOOL:${SVF_ENABLE_RTTI}>>:-fno-rtti>
+  )
+endif()
+if(TARGET AbstractDomainCore)
+  target_compile_options(
+    AbstractDomainCore PUBLIC
+    $<$<NOT:$<BOOL:${SVF_ENABLE_RTTI}>>:-fno-rtti>
+  )
+endif()
 
 # Expose build/link flags not required for users of SVF only in the build tree
 target_compile_options(

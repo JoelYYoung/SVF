@@ -262,11 +262,11 @@ ConstraintKind decodeConstraintKind(std::uint8_t value)
 
 DomainTag domainTag(const NumericalState& state)
 {
-    if (dynamic_cast<const BoxState*>(&state))
+    if (state.isState<BoxState>())
         return DomainTag::Box;
-    if (dynamic_cast<const OctagonState*>(&state))
+    if (state.isState<OctagonState>())
         return DomainTag::Octagon;
-    if (dynamic_cast<const ConvexPolyhedraState*>(&state))
+    if (state.isState<ConvexPolyhedraState>())
         return DomainTag::ConvexPolyhedra;
     throw std::invalid_argument(
         "raw serialization does not support this domain");
@@ -1236,12 +1236,10 @@ NumericalState::RawBuffer NumericalState::serializeRaw() const
     // independent boundary, so canonicalize an isolated copy here.
     const NumericalState* canonical = this;
     std::unique_ptr<AbstractState> cloned;
-    if (dynamic_cast<const ConvexPolyhedraState*>(this) != nullptr)
+    if (isState<ConvexPolyhedraState>())
     {
         cloned = clone();
-        auto* numerical = dynamic_cast<NumericalState*>(cloned.get());
-        if (numerical == nullptr)
-            throw std::logic_error("numerical clone has an incompatible type");
+        auto* numerical = static_cast<NumericalState*>(cloned.get());
         numerical->canonicalize();
         canonical = numerical;
     }

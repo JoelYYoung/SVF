@@ -361,7 +361,7 @@ bool IntervalState::geqVarToValMap(const VarToAbsValMap&lhs, const VarToAbsValMa
 bool IntervalState::hasCompatibleDomain(
     const AbstractDomain::AbstractState& other) const
 {
-    return dynamic_cast<const IntervalState*>(&other) != nullptr;
+    return other.isState<IntervalState>();
 }
 
 void IntervalState::joinState(const AbstractDomain::AbstractState& other)

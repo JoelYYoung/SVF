@@ -66,10 +66,11 @@ SVFIRAdapter::SVFIRAdapter(const SVFIR& svfir)
 
             const Variable variable = nextVariable(nextVariableId);
             variables_.emplace(value, variable);
-            trackedValues_.push_back(value);
-            VariableDeclaration declaration{
-                variable, NumericType::integer(),
-                "svf_value_" + std::to_string(value->getId())};
+            valuesByVariableId_.resize(variable.id() + 1);
+            valuesByVariableId_[variable.id()] = value;
+            VariableDeclaration declaration{variable, NumericType::integer(),
+                                            "svf_value_" +
+                                                std::to_string(value->getId())};
             declarations_.emplace(variable, declaration);
             const FunObjVar* owner = value->getFunction();
             if (owner)
@@ -87,7 +88,8 @@ SVFIRAdapter::SVFIRAdapter(const SVFIR& svfir)
         locations_.emplace(object, location);
         objects_.emplace(location, object);
         contentVariables_.emplace(object, content);
-        trackedObjects_.push_back(object);
+        contentObjectsByVariableId_.resize(content.id() + 1);
+        contentObjectsByVariableId_[content.id()] = object;
         commonDeclarations.push_back(
             {content, NumericType::integer(),
              "svf_object_" + std::to_string(object->getId()) + "_content"});
@@ -128,8 +130,14 @@ Variable SVFIRAdapter::variable(const ValVar& value) const
     return iterator->second;
 }
 
-const VariableDeclaration& SVFIRAdapter::declaration(
-    Variable variable) const
+const ValVar* SVFIRAdapter::value(Variable variable) const
+{
+    return variable.id() < valuesByVariableId_.size()
+               ? valuesByVariableId_[variable.id()]
+               : nullptr;
+}
+
+const VariableDeclaration& SVFIRAdapter::declaration(Variable variable) const
 {
     const auto iterator = declarations_.find(variable);
     if (iterator == declarations_.end())
@@ -153,6 +161,13 @@ Variable SVFIRAdapter::contentVariable(const ObjVar& object) const
     return iterator->second;
 }
 
+const ObjVar* SVFIRAdapter::contentObject(Variable variable) const
+{
+    return variable.id() < contentObjectsByVariableId_.size()
+               ? contentObjectsByVariableId_[variable.id()]
+               : nullptr;
+}
+
 const ObjVar& SVFIRAdapter::object(Location location) const
 {
     const auto iterator = objects_.find(location);
@@ -161,7 +176,8 @@ const ObjVar& SVFIRAdapter::object(Location location) const
     return *iterator->second;
 }
 
-const VariableEnvironment& SVFIRAdapter::environment(const FunObjVar* function) const
+const VariableEnvironment& SVFIRAdapter::environment(
+    const FunObjVar* function) const
 {
     if (!function)
         return globalEnvironment_;
@@ -181,14 +197,14 @@ LinearExpression SVFIRAdapter::linearExpression(
             throw std::invalid_argument("affine term has a null ValVar");
         if (const auto* integer = SVFUtil::dyn_cast<ConstIntValVar>(value))
         {
-            expression.setConstant(
-                expression.constant() +
-                coefficient * Rational(integer->getSExtValue()));
+            expression.setConstant(expression.constant() +
+                                   coefficient *
+                                       Rational(integer->getSExtValue()));
             continue;
         }
         const Variable symbol = variable(*value);
-        expression.setCoefficient(
-            symbol, expression.coefficient(symbol) + coefficient);
+        expression.setCoefficient(symbol,
+                                  expression.coefficient(symbol) + coefficient);
     }
     return expression;
 }
@@ -199,9 +215,8 @@ TreeExpression SVFIRAdapter::treeExpression(const ValVar& value) const
         return TreeExpression::constant(Rational(integer->getSExtValue()),
                                         NumericType::integer());
     const Variable symbol = variable(value);
-    return TreeExpression::variable(symbol,
-                                    environment(value.getFunction())
-                                        .typeOf(symbol));
+    return TreeExpression::variable(
+        symbol, environment(value.getFunction()).typeOf(symbol));
 }
 
 } // namespace SVF

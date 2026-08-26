@@ -115,6 +115,10 @@ private:
     OctagonState(VariableEnvironment environment, OctagonConfig config, bool bottom);
     OctagonState(VariableEnvironment environment, std::unique_ptr<Impl> impl);
 
+    const void* dynamicTypeToken() const noexcept override
+    {
+        return staticTypeToken<OctagonState>();
+    }
     DiagnosticSink* diagnosticSink() const;
     void report(OperationKind operation, ApproximationKind approximation,
                 std::string reason, bool best = true) const;

@@ -43,6 +43,13 @@ public:
     CheckResult isEquivalentTo(const AbstractState& other) const;
     std::string toString() const;
 
+    /// RTTI-free concrete-state query. SVF is commonly built with -fno-rtti,
+    /// so abstract domains use stable per-C++-type tokens for checked dispatch.
+    template <typename StateT> bool isState() const noexcept
+    {
+        return dynamicTypeToken() == staticTypeToken<StateT>();
+    }
+
 protected:
     AbstractState() = default;
     AbstractState(const AbstractState&) = default;
@@ -52,7 +59,14 @@ protected:
 
     void requireCompatible(const AbstractState& other) const;
 
+    template <typename StateT> static const void* staticTypeToken() noexcept
+    {
+        static const char token = 0;
+        return &token;
+    }
+
 private:
+    virtual const void* dynamicTypeToken() const noexcept = 0;
     virtual bool hasCompatibleDomain(const AbstractState& other) const = 0;
     virtual void joinState(const AbstractState& other) = 0;
     virtual void meetState(const AbstractState& other) = 0;

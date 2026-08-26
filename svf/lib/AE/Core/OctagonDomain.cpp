@@ -1750,6 +1750,12 @@ void OctagonState::projectLowerBounds()
 void OctagonState::changeEnvironment(const VariableEnvironment& environment,
                                      bool initializeNewVariablesToZero)
 {
+    if (environment_ == environment)
+    {
+        recordOperation(OperationKind::EnvironmentChange,
+                        ApproximationKind::Exact, true);
+        return;
+    }
     const VariableEnvironment oldEnvironment = environment_;
     changeEnvironmentState(oldEnvironment, environment, initializeNewVariablesToZero);
     environment_ = environment;
@@ -2033,7 +2039,9 @@ DiagnosticSink* OctagonState::diagnosticSink() const
 const OctagonState& OctagonState::requireOctagon(
     const AbstractState& other) const
 {
-    const auto* octagon = dynamic_cast<const OctagonState*>(&other);
+    const auto* octagon = other.isState<OctagonState>()
+                              ? &static_cast<const OctagonState&>(other)
+                              : nullptr;
     if (!octagon)
         throw std::invalid_argument("relational state is not an OctagonState");
     return *octagon;
@@ -2041,7 +2049,9 @@ const OctagonState& OctagonState::requireOctagon(
 
 bool OctagonState::hasCompatibleDomain(const AbstractState& other) const
 {
-    const auto* octagon = dynamic_cast<const OctagonState*>(&other);
+    const auto* octagon = other.isState<OctagonState>()
+                              ? &static_cast<const OctagonState&>(other)
+                              : nullptr;
     return octagon && environment_ == octagon->environment_ &&
            config().operationCompatible(octagon->config());
 }

@@ -591,7 +591,7 @@ SemiSparseAbstractInterpretation::cloneCycleHeadState(
     // Start from the dense snapshot (ObjVars + any ValVars that happen to
     // be cached at cycle_head's trace entry).
     auto baseSnapshot = AbstractInterpretation::cloneCycleHeadState(cycle);
-    IntervalState snap = dynamic_cast<const IntervalState&>(*baseSnapshot);
+    IntervalState snap = static_cast<const IntervalState&>(*baseSnapshot);
 
     const Set<const ValVar*>& valVars = preAnalysis->getCycleValVars(cycle);
     if (valVars.empty())

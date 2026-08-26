@@ -172,7 +172,7 @@ void AddressState::forget(Variable variable)
 
 bool AddressState::hasCompatibleDomain(const AbstractState& other) const
 {
-    return dynamic_cast<const AddressState*>(&other) != nullptr;
+    return other.isState<AddressState>();
 }
 
 void AddressState::joinState(const AbstractState& other)
@@ -238,8 +238,7 @@ bool AddressState::leqState(const AbstractState& other) const
         return false;
     const std::set<Variable> variables = combinedKeys(values_, state.values_);
     return std::all_of(variables.begin(), variables.end(),
-                       [&](Variable variable)
-                       {
+                       [&](Variable variable) {
                            return addressesOf(variable).isSubsetOf(
                                state.addressesOf(variable));
                        });
@@ -364,7 +363,7 @@ bool LifetimeState::mustBeFreed(Location location) const
 
 bool LifetimeState::hasCompatibleDomain(const AbstractState& other) const
 {
-    return dynamic_cast<const LifetimeState*>(&other) != nullptr;
+    return other.isState<LifetimeState>();
 }
 
 void LifetimeState::joinState(const AbstractState& other)
@@ -428,8 +427,7 @@ bool LifetimeState::leqState(const AbstractState& other) const
         return false;
     const std::set<Location> locations = combinedKeys(values_, state.values_);
     return std::all_of(locations.begin(), locations.end(),
-                       [&](Location location)
-                       {
+                       [&](Location location) {
                            return SVF::AbstractDomain::isSubsetOf(
                                statusOf(location), state.statusOf(location));
                        });
@@ -446,8 +444,7 @@ std::string LifetimeState::stateToString() const
         if (!first)
             output << ", ";
         first = false;
-        output << location.id() << "="
-               << SVF::AbstractDomain::toString(value);
+        output << location.id() << "=" << SVF::AbstractDomain::toString(value);
     }
     output << "}";
     return output.str();
@@ -463,8 +460,8 @@ void LifetimeState::set(Location location, Lifetime lifetime)
 
 Variable MemoryLayout::contentOf(Location location) const
 {
-    const auto it = cells_.find(location);
-    if (it == cells_.end())
+    const auto it = cells_->find(location);
+    if (it == cells_->end())
         throw std::out_of_range("location has no content symbol");
     return it->second;
 }

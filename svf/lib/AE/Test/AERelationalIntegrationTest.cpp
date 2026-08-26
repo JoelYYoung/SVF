@@ -1,8 +1,9 @@
 //===- AERelationalIntegrationTest.cpp -- End-to-end AE/Octagon test ----===//
 
-#include "AE/Svfexe/AbstractInterpretation.h"
+#include "AE/Core/BoxDomain.h"
 #include "AE/Core/NonRelationalDomain.h"
 #include "AE/Core/OctagonDomain.h"
+#include "AE/Svfexe/AbstractInterpretation.h"
 #include "AE/Svfexe/SVFIRAdapter.h"
 #include "SVF-LLVM/SVFIRBuilder.h"
 #include "Util/CommandLine.h"
@@ -23,20 +24,36 @@ namespace
 namespace AD = SVF::AbstractDomain;
 
 using DenseOctagonState = AD::DomainProductState<AD::OctagonState>;
+using DenseBoxState = AD::DomainProductState<AD::BoxState>;
 
 const DenseOctagonState& requireDenseOctagonState(
     AbstractInterpretation& analysis, const ICFGNode* node)
 {
-    const auto* state = dynamic_cast<const DenseOctagonState*>(
-        &analysis.getAbstractState(node));
+    const AD::AbstractState& abstractState = analysis.getAbstractState(node);
+    const auto* state =
+        abstractState.isState<DenseOctagonState>()
+            ? &static_cast<const DenseOctagonState&>(abstractState)
+            : nullptr;
     if (!state)
         throw std::runtime_error(
             "dense AE is not using DomainProductState<OctagonState>");
     return *state;
 }
 
-bool hasIntegerBounds(const AD::Interval& interval, s64_t lower,
-                      s64_t upper)
+const DenseBoxState& requireDenseBoxState(AbstractInterpretation& analysis,
+                                          const ICFGNode* node)
+{
+    const AD::AbstractState& abstractState = analysis.getAbstractState(node);
+    const auto* state = abstractState.isState<DenseBoxState>()
+                            ? &static_cast<const DenseBoxState&>(abstractState)
+                            : nullptr;
+    if (!state)
+        throw std::runtime_error(
+            "dense AE is not using DomainProductState<BoxState>");
+    return *state;
+}
+
+bool hasIntegerBounds(const AD::Interval& interval, s64_t lower, s64_t upper)
 {
     return interval.lower().isFinite() && interval.upper().isFinite() &&
            interval.lower().value() == AD::Rational(lower) &&
@@ -50,8 +67,7 @@ void validateSparseStorage(AbstractInterpretation& analysis)
     for (const auto& [node, projection] : analysis.getIntervalTraceView())
     {
         (void)projection;
-        if (!dynamic_cast<const IntervalState*>(
-                &analysis.getAbstractState(node)))
+        if (!analysis.getAbstractState(node).isState<IntervalState>())
         {
             throw std::runtime_error(
                 "sparse AE stopped using its IntervalState storage");
@@ -112,8 +128,8 @@ void validateReducedProductFixture(const SVFIR& graph,
             continue;
 
         const AbstractValue& value = analysis.getAbsValue(result, node);
-        if (value.isInterval() && value.getInterval().equals(
-                IntervalValue((s64_t)1, (s64_t)6)))
+        if (value.isInterval() &&
+            value.getInterval().equals(IntervalValue((s64_t)1, (s64_t)6)))
             sawReducedInterval = true;
 
         const DenseOctagonState& domainState =
@@ -123,24 +139,21 @@ void validateReducedProductFixture(const SVFIR& graph,
             adapter.variable(*inputValue));
         const AD::LinearExpression affineExpression(
             adapter.variable(*affineValue));
-        if (hasIntegerBounds(octagon.bound(adapter.variable(*resultValue)),
-                             1, 6) &&
-                octagon.entails(AD::equal(inputExpression,
-                                          affineExpression)) ==
+        if (hasIntegerBounds(octagon.bound(adapter.variable(*resultValue)), 1,
+                             6) &&
+            octagon.entails(AD::equal(inputExpression, affineExpression)) ==
                     AD::CheckResult::True)
             sawReducedRelation = true;
     }
 
-    if (!sawReducedInterval || !sawReducedRelation ||
-            analyzedImpossibleValue)
+    if (!sawReducedInterval || !sawReducedRelation || analyzedImpossibleValue)
     {
         std::cerr << "relational integration trace:\n";
         for (const auto& [node, state] : analysis.getIntervalTraceView())
         {
             (void)state;
             bool wroteNode = false;
-            for (const SVFVar* value :
-                    {input, affine, result, impossible})
+            for (const SVFVar* value : {input, affine, result, impossible})
             {
                 const bool hasInterval = analysis.hasAbsValue(value, node);
                 if (!hasInterval)
@@ -153,7 +166,8 @@ void validateReducedProductFixture(const SVFIR& graph,
                 std::cerr << "    " << value->getValueName() << " AE=";
                 if (hasInterval)
                     std::cerr << analysis.getAbsValue(value, node)
-                                     .getInterval().toString();
+                                     .getInterval()
+                                     .toString();
                 else
                     std::cerr << "<absent>";
                 const auto* scalar = SVFUtil::dyn_cast<ValVar>(value);
@@ -185,8 +199,7 @@ void validateReducedProductFixture(const SVFIR& graph,
         << " reduced_interval=1 reduced_relation=1 impossible_reachable=0\n";
 }
 
-void validateLoopFixture(const SVFIR& graph,
-                         AbstractInterpretation& analysis)
+void validateLoopFixture(const SVFIR& graph, AbstractInterpretation& analysis)
 {
     const SVFVar* induction = requireValue(graph, "i");
     const SVFVar* result = requireValue(graph, "loop_result");
@@ -205,12 +218,13 @@ void validateLoopFixture(const SVFIR& graph,
         if (!analysis.hasAbsValue(result, node))
             continue;
         const AbstractValue& value = analysis.getAbsValue(result, node);
-        if (value.isInterval() && value.getInterval().equals(
-                IntervalValue((s64_t)4)))
+        if (value.isInterval() &&
+            value.getInterval().equals(IntervalValue((s64_t)4)))
             sawPreciseResultInterval = true;
         const AD::Interval inductionBound =
-            requireDenseOctagonState(analysis, node).numerical().bound(
-                adapter.variable(*inductionValue));
+            requireDenseOctagonState(analysis, node)
+                .numerical()
+                .bound(adapter.variable(*inductionValue));
         if (inductionBound.lower().isFinite() &&
                 inductionBound.lower().value() == AD::Rational(4))
             sawExitRelation = true;
@@ -229,7 +243,8 @@ void validateLoopFixture(const SVFIR& graph,
                 std::cerr << ' ' << value->getValueName() << "=";
                 if (analysis.hasAbsValue(value, node))
                     std::cerr << analysis.getAbsValue(value, node)
-                                     .getInterval().toString();
+                                     .getInterval()
+                                     .toString();
                 else
                     std::cerr << "<absent>";
                 std::cerr << '/';
@@ -256,10 +271,69 @@ void validateLoopFixture(const SVFIR& graph,
         throw std::runtime_error(
             "post-loop infeasible branch remained reachable");
 
-    std::cout
-        << "AE_RELATIONAL_OBSERVATION fixture=loop"
+    std::cout << "AE_RELATIONAL_OBSERVATION fixture=loop"
         << " result_interval=[4,4] induction_lower_bound=4"
         << " impossible_reachable=0\n";
+}
+
+void validateBoxProjection(const SVFIR& graph, AbstractInterpretation& analysis)
+{
+    const bool loopFixture =
+        findValueIfPresent(graph, "loop_result") != nullptr;
+    const SVFVar* result =
+        requireValue(graph, loopFixture ? "loop_result" : "z");
+    const auto* resultValue = SVFUtil::cast<ValVar>(result);
+    const s64_t expectedLower = loopFixture ? 4 : 1;
+    // Box cannot carry the x == y relation through the x <= 5 branch, so the
+    // reduced-product fixture intentionally retains y in [0,10].
+    const s64_t expectedUpper = loopFixture ? 4 : 11;
+    SVFIRAdapter adapter(graph);
+    const AD::Variable resultVariable = adapter.variable(*resultValue);
+    bool sawExpectedProjection = false;
+
+    for (const auto& [node, projection] : analysis.getIntervalTraceView())
+    {
+        (void)projection;
+        if (!analysis.hasAbsValue(result, node))
+            continue;
+        const AbstractValue& cached = analysis.getAbsValue(result, node);
+        const AD::Interval domainBound = requireDenseBoxState(analysis, node)
+                                             .numerical()
+                                             .bound(resultVariable);
+        if (cached.isInterval() &&
+            cached.getInterval().equals(
+                IntervalValue(expectedLower, expectedUpper)) &&
+            hasIntegerBounds(domainBound, expectedLower, expectedUpper))
+            sawExpectedProjection = true;
+    }
+
+    if (!sawExpectedProjection)
+    {
+        std::cerr << "Box projection trace for " << result->getValueName()
+                  << ":\n";
+        for (const auto& [node, projection] : analysis.getIntervalTraceView())
+        {
+            (void)projection;
+            std::cerr << "  node " << node->getId() << " projection=";
+            if (analysis.hasAbsValue(result, node))
+                std::cerr << analysis.getAbsValue(result, node).toString();
+            else
+                std::cerr << "<absent>";
+            const AD::BoxState& numerical =
+                requireDenseBoxState(analysis, node).numerical();
+            std::cerr << " box=";
+            if (numerical.environment().contains(resultVariable))
+                std::cerr << numerical.bound(resultVariable).toString();
+            else
+                std::cerr << "<absent>";
+            std::cerr << '\n';
+        }
+        throw std::runtime_error(
+            "Dense Box state and compatibility projection diverged");
+    }
+    std::cout << "AE_BOX_OBSERVATION fixture="
+              << (loopFixture ? "loop" : "reduced-product")
+              << " projection_matches_domain=1\n";
 }
 
 } // namespace
@@ -271,10 +345,6 @@ int main(int argc, char** argv)
         const std::vector<std::string> modules = OptionBase::parseOptions(
             argc, argv, "AE relational integration test",
             "[options] <input-bitcode>");
-        if (!Options::AEDenseOctagon())
-            throw std::runtime_error(
-                "test requires -ae-dense-octagon=true");
-
         LLVMModuleSet::getLLVMModuleSet()->buildSVFModule(modules);
         SVFIRBuilder builder;
         SVFIR* graph = builder.build();
@@ -288,6 +358,8 @@ int main(int argc, char** argv)
 
         if (Options::AESparsity() != AbstractInterpretation::Dense)
             validateSparseStorage(analysis);
+        else if (!Options::AEDenseOctagon())
+            validateBoxProjection(*graph, analysis);
         else if (findValueIfPresent(*graph, "loop_result"))
             validateLoopFixture(*graph, analysis);
         else

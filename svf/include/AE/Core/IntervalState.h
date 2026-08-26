@@ -325,6 +325,10 @@ public:
     }
 
 private:
+    const void* dynamicTypeToken() const noexcept override
+    {
+        return staticTypeToken<IntervalState>();
+    }
     bool hasCompatibleDomain(
         const AbstractDomain::AbstractState& other) const override;
     void joinState(const AbstractDomain::AbstractState& other) override;

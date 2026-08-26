@@ -27,27 +27,20 @@ public:
     bool contains(const ObjVar& object) const;
 
     AbstractDomain::Variable variable(const ValVar& value) const;
+    const ValVar* value(AbstractDomain::Variable variable) const;
     const AbstractDomain::VariableDeclaration& declaration(
         AbstractDomain::Variable variable) const;
     AbstractDomain::Location location(const ObjVar& object) const;
     AbstractDomain::Variable contentVariable(const ObjVar& object) const;
+    const ObjVar* contentObject(AbstractDomain::Variable variable) const;
     const ObjVar& object(AbstractDomain::Location location) const;
 
-    const AbstractDomain::VariableEnvironment&
-    environment(const FunObjVar* function = nullptr) const;
+    const AbstractDomain::VariableEnvironment& environment(
+        const FunObjVar* function = nullptr) const;
 
     const AbstractDomain::MemoryLayout& memoryLayout() const
     {
         return memoryLayout_;
-    }
-
-    const std::vector<const ValVar*>& trackedValues() const
-    {
-        return trackedValues_;
-    }
-    const std::vector<const ObjVar*>& trackedObjects() const
-    {
-        return trackedObjects_;
     }
 
     AbstractDomain::LinearExpression linearExpression(
@@ -58,13 +51,13 @@ public:
 
 private:
     std::map<const ValVar*, AbstractDomain::Variable> variables_;
-    std::map<AbstractDomain::Variable,
-             AbstractDomain::VariableDeclaration> declarations_;
+    std::vector<const ValVar*> valuesByVariableId_;
+    std::map<AbstractDomain::Variable, AbstractDomain::VariableDeclaration>
+        declarations_;
     std::map<const ObjVar*, AbstractDomain::Location> locations_;
     std::map<AbstractDomain::Location, const ObjVar*> objects_;
     std::map<const ObjVar*, AbstractDomain::Variable> contentVariables_;
-    std::vector<const ValVar*> trackedValues_;
-    std::vector<const ObjVar*> trackedObjects_;
+    std::vector<const ObjVar*> contentObjectsByVariableId_;
     AbstractDomain::VariableEnvironment globalEnvironment_;
     std::map<const FunObjVar*, AbstractDomain::VariableEnvironment>
         functionEnvironments_;

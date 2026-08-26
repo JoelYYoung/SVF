@@ -7,6 +7,7 @@
 
 #include <limits>
 #include <stdexcept>
+#include <type_traits>
 #include <utility>
 
 namespace SVF
@@ -31,8 +32,8 @@ BoundedInt lowerBound(const AD::Bound& bound)
         return IntervalValue::minus_infinity();
     if (bound.isPlusInfinity())
         return IntervalValue::plus_infinity();
-    AD::Rational integer = bound.isStrict() ? bound.value().floor() +
-                                                  AD::Rational(1)
+    AD::Rational integer = bound.isStrict()
+                               ? bound.value().floor() + AD::Rational(1)
                                             : bound.value().ceil();
     return BoundedInt(toSigned64(integer.value().get_num(), false));
 }
@@ -43,8 +44,8 @@ BoundedInt upperBound(const AD::Bound& bound)
         return IntervalValue::plus_infinity();
     if (bound.isMinusInfinity())
         return IntervalValue::minus_infinity();
-    AD::Rational integer = bound.isStrict() ? bound.value().ceil() -
-                                                  AD::Rational(1)
+    AD::Rational integer = bound.isStrict()
+                               ? bound.value().ceil() - AD::Rational(1)
                                             : bound.value().floor();
     return BoundedInt(toSigned64(integer.value().get_num(), true));
 }
@@ -113,9 +114,8 @@ DenseAbstractInterpretation<NumericalStateT>::DenseAbstractInterpretation()
 }
 
 template <typename NumericalStateT>
-const AbstractDomain::AbstractState&
-DenseAbstractInterpretation<NumericalStateT>::getAbstractState(
-    const ICFGNode* node) const
+const AbstractDomain::AbstractState& DenseAbstractInterpretation<
+    NumericalStateT>::getAbstractState(const ICFGNode* node) const
 {
     return state(node);
 }
@@ -125,9 +125,8 @@ typename DenseAbstractInterpretation<NumericalStateT>::DenseState
 DenseAbstractInterpretation<NumericalStateT>::topState(
     const ICFGNode* node) const
 {
-    return DenseState(
-        NumericalStateT::top(adapter_.environment(node ? node->getFun()
-                                                        : nullptr)),
+    return DenseState(NumericalStateT::top(adapter_.environment(
+                          node ? node->getFun() : nullptr)),
         adapter_.memoryLayout());
 }
 
@@ -136,16 +135,14 @@ typename DenseAbstractInterpretation<NumericalStateT>::DenseState
 DenseAbstractInterpretation<NumericalStateT>::bottomState(
     const ICFGNode* node) const
 {
-    return DenseState(
-        NumericalStateT::bottom(adapter_.environment(node ? node->getFun()
-                                                           : nullptr)),
+    return DenseState(NumericalStateT::bottom(adapter_.environment(
+                          node ? node->getFun() : nullptr)),
         adapter_.memoryLayout());
 }
 
 template <typename NumericalStateT>
 typename DenseAbstractInterpretation<NumericalStateT>::DenseState&
-DenseAbstractInterpretation<NumericalStateT>::ensureState(
-    const ICFGNode* node)
+DenseAbstractInterpretation<NumericalStateT>::ensureState(const ICFGNode* node)
 {
     auto iterator = denseTrace_.find(node);
     if (iterator == denseTrace_.end())
@@ -170,7 +167,6 @@ void DenseAbstractInterpretation<NumericalStateT>::resetAbstractState(
 {
     denseTrace_.insert_or_assign(node, topState(node));
     abstractTrace[node] = IntervalState();
-    definedVariables_[node].clear();
 }
 
 template <typename NumericalStateT>
@@ -178,43 +174,39 @@ void DenseAbstractInterpretation<NumericalStateT>::copyAbstractState(
     const ICFGNode* source, const ICFGNode* destination)
 {
     DenseState copy = state(source);
-    copy.changeEnvironment(adapter_.environment(destination->getFun()));
-    std::set<AD::Variable> copiedDefinitions = definedVariables_[source];
-    for (auto iterator = copiedDefinitions.begin();
-            iterator != copiedDefinitions.end();)
+    const AD::VariableEnvironment& destinationEnvironment =
+        adapter_.environment(destination->getFun());
+    if (copy.numerical().environment() == destinationEnvironment)
     {
-        if (!copy.numerical().environment().contains(*iterator))
-            iterator = copiedDefinitions.erase(iterator);
-        else
-            ++iterator;
+        denseTrace_.insert_or_assign(destination, std::move(copy));
+        abstractTrace[destination] = abstractTrace[source];
+        return;
     }
+
+    copy.changeEnvironment(destinationEnvironment);
     denseTrace_.insert_or_assign(destination, std::move(copy));
-    definedVariables_[destination] = std::move(copiedDefinitions);
     abstractTrace[destination] = abstractTrace[source];
     rebuildCompatibilityProjection(destination);
 }
 
 template <typename NumericalStateT>
-std::unique_ptr<AbstractDomain::AbstractState>
-DenseAbstractInterpretation<NumericalStateT>::cloneAbstractState(
-    const ICFGNode* node) const
+std::unique_ptr<AbstractDomain::AbstractState> DenseAbstractInterpretation<
+    NumericalStateT>::cloneAbstractState(const ICFGNode* node) const
 {
     return state(node).clone();
 }
 
 template <typename NumericalStateT>
 bool DenseAbstractInterpretation<NumericalStateT>::isAbstractStateEquivalent(
-    const ICFGNode* node,
-    const AbstractDomain::AbstractState& snapshot) const
+    const ICFGNode* node, const AbstractDomain::AbstractState& snapshot) const
 {
     return state(node).isEquivalentTo(snapshot) ==
            AbstractDomain::CheckResult::True;
 }
 
 template <typename NumericalStateT>
-std::unique_ptr<AbstractDomain::AbstractState>
-DenseAbstractInterpretation<NumericalStateT>::cloneCycleHeadState(
-    const ICFGCycleWTO* cycle)
+std::unique_ptr<AbstractDomain::AbstractState> DenseAbstractInterpretation<
+    NumericalStateT>::cloneCycleHeadState(const ICFGCycleWTO* cycle)
 {
     return cloneAbstractState(cycle->head()->getICFGNode());
 }
@@ -222,16 +214,14 @@ DenseAbstractInterpretation<NumericalStateT>::cloneCycleHeadState(
 template <typename NumericalStateT>
 bool DenseAbstractInterpretation<NumericalStateT>::widenCycleState(
     const AbstractDomain::AbstractState& previous,
-    const AbstractDomain::AbstractState& current,
-    const ICFGCycleWTO* cycle)
+    const AbstractDomain::AbstractState& current, const ICFGCycleWTO* cycle)
 {
-    const auto& previousDense = dynamic_cast<const DenseState&>(previous);
-    const auto& currentDense = dynamic_cast<const DenseState&>(current);
+    const auto& previousDense = static_cast<const DenseState&>(previous);
+    const auto& currentDense = static_cast<const DenseState&>(current);
     DenseState next = previousDense;
     next.widenWith(currentDense);
     const bool fixpoint =
-        next.isEquivalentTo(previousDense) ==
-        AbstractDomain::CheckResult::True;
+        next.isEquivalentTo(previousDense) == AbstractDomain::CheckResult::True;
     const ICFGNode* head = cycle->head()->getICFGNode();
     denseTrace_.insert_or_assign(head, std::move(next));
     rebuildCompatibilityProjection(head);
@@ -241,19 +231,17 @@ bool DenseAbstractInterpretation<NumericalStateT>::widenCycleState(
 template <typename NumericalStateT>
 bool DenseAbstractInterpretation<NumericalStateT>::narrowCycleState(
     const AbstractDomain::AbstractState& previous,
-    const AbstractDomain::AbstractState& current,
-    const ICFGCycleWTO* cycle)
+    const AbstractDomain::AbstractState& current, const ICFGCycleWTO* cycle)
 {
     const ICFGNode* head = cycle->head()->getICFGNode();
     if (!shouldApplyNarrowing(head->getFun()))
         return true;
-    const auto& previousDense = dynamic_cast<const DenseState&>(previous);
-    const auto& currentDense = dynamic_cast<const DenseState&>(current);
+    const auto& previousDense = static_cast<const DenseState&>(previous);
+    const auto& currentDense = static_cast<const DenseState&>(current);
     DenseState next = previousDense;
     next.narrowWith(currentDense);
     const bool fixpoint =
-        next.isEquivalentTo(previousDense) ==
-        AbstractDomain::CheckResult::True;
+        next.isEquivalentTo(previousDense) == AbstractDomain::CheckResult::True;
     if (!fixpoint)
     {
         denseTrace_.insert_or_assign(head, std::move(next));
@@ -268,8 +256,7 @@ void DenseAbstractInterpretation<NumericalStateT>::ensureVariable(
 {
     if (denseState.numerical().environment().contains(variable))
         return;
-    denseState.changeEnvironment(
-        denseState.numerical().environment().add(
+    denseState.changeEnvironment(denseState.numerical().environment().add(
             {adapter_.declaration(variable)}));
 }
 
@@ -296,15 +283,13 @@ void DenseAbstractInterpretation<NumericalStateT>::constrainInterval(
     {
         denseState.assume(AD::greaterEqual(
             expression,
-            AD::LinearExpression(
-                AD::Rational(interval.lb().getIntNumeral()))));
+            AD::LinearExpression(AD::Rational(interval.lb().getIntNumeral()))));
     }
     if (!interval.ub().is_plus_infinity())
     {
         denseState.assume(AD::lessEqual(
             expression,
-            AD::LinearExpression(
-                AD::Rational(interval.ub().getIntNumeral()))));
+            AD::LinearExpression(AD::Rational(interval.ub().getIntNumeral()))));
     }
 }
 
@@ -317,20 +302,32 @@ void DenseAbstractInterpretation<NumericalStateT>::initializeDomainState(
 
 template <typename NumericalStateT>
 void DenseAbstractInterpretation<NumericalStateT>::assignDomainInterval(
-    const ICFGNode* node, const SVFVar* target,
-    const IntervalValue& interval)
+    const ICFGNode* node, const SVFVar* target, const IntervalValue& interval)
 {
     DenseState& denseState = ensureState(node);
     if (const auto* value = SVFUtil::dyn_cast<ValVar>(target))
     {
         if (adapter_.contains(*value))
-            assignInterval(denseState, adapter_.variable(*value), interval);
+        {
+            const AD::Variable variable = adapter_.variable(*value);
+            if (interval.isBottom() ||
+                projectInterval(denseState.numerical().bound(variable))
+                    .equals(interval))
+                return;
+            assignInterval(denseState, variable, interval);
+        }
     }
     else if (const auto* object = SVFUtil::dyn_cast<ObjVar>(target))
     {
         if (adapter_.contains(*object))
-            assignInterval(denseState, adapter_.contentVariable(*object),
-                           interval);
+        {
+            const AD::Variable variable = adapter_.contentVariable(*object);
+            if (interval.isBottom() ||
+                projectInterval(denseState.numerical().bound(variable))
+                    .equals(interval))
+                return;
+            assignInterval(denseState, variable, interval);
+        }
     }
 }
 
@@ -345,12 +342,11 @@ void DenseAbstractInterpretation<NumericalStateT>::updateDomainOnBinary(
     const AD::Variable targetVariable = adapter_.variable(*target);
 
     auto operand = [&](const SVFVar* value,
-                       AD::LinearExpression& expression) -> bool
-    {
+                       AD::LinearExpression& expression) -> bool {
         if (const auto* integer = SVFUtil::dyn_cast<ConstIntValVar>(value))
         {
-            expression = AD::LinearExpression(
-                AD::Rational(integer->getSExtValue()));
+            expression =
+                AD::LinearExpression(AD::Rational(integer->getSExtValue()));
             return true;
         }
         const auto* scalar = SVFUtil::dyn_cast<ValVar>(value);
@@ -363,8 +359,7 @@ void DenseAbstractInterpretation<NumericalStateT>::updateDomainOnBinary(
 
     AD::LinearExpression lhs;
     AD::LinearExpression rhs;
-    const bool affine =
-        (binary->getOpcode() == BinaryOPStmt::Add ||
+    const bool affine = (binary->getOpcode() == BinaryOPStmt::Add ||
          binary->getOpcode() == BinaryOPStmt::Sub) &&
         operand(binary->getOpVar(0), lhs) &&
         operand(binary->getOpVar(1), rhs);
@@ -379,7 +374,7 @@ void DenseAbstractInterpretation<NumericalStateT>::updateDomainOnBinary(
         targetVariable,
         binary->getOpcode() == BinaryOPStmt::Add ? lhs + rhs : lhs - rhs);
     constrainInterval(denseState, targetVariable, result);
-    rebuildCompatibilityProjection(binary->getICFGNode());
+    rebuildCompatibilityValue(binary->getICFGNode(), targetVariable);
 }
 
 template <typename NumericalStateT>
@@ -400,20 +395,19 @@ void DenseAbstractInterpretation<NumericalStateT>::updateDomainCopyValue(
     }
 
     const auto* sourceValue = SVFUtil::dyn_cast<ValVar>(source);
-    if (exactMathematicalCopy && sourceValue &&
-            adapter_.contains(*sourceValue))
+    if (exactMathematicalCopy && sourceValue && adapter_.contains(*sourceValue))
     {
         const AD::Variable sourceVariable = adapter_.variable(*sourceValue);
         ensureVariable(denseState, sourceVariable);
-        denseState.numerical().assign(
-            targetVariable, AD::LinearExpression(sourceVariable));
+        denseState.numerical().assign(targetVariable,
+                                      AD::LinearExpression(sourceVariable));
         constrainInterval(denseState, targetVariable, result.getInterval());
     }
     else
     {
         assignInterval(denseState, targetVariable, result.getInterval());
     }
-    rebuildCompatibilityProjection(node);
+    rebuildCompatibilityValue(node, targetVariable);
 }
 
 template <typename NumericalStateT>
@@ -427,16 +421,15 @@ void DenseAbstractInterpretation<NumericalStateT>::updateDomainOnCopy(
 }
 
 template <typename NumericalStateT>
-void DenseAbstractInterpretation<NumericalStateT>::
-synchronizeDomainFromIntervalView(const ICFGNode* node)
+void DenseAbstractInterpretation<
+    NumericalStateT>::synchronizeDomainFromIntervalView(const ICFGNode* node)
 {
     DenseState& denseState = ensureState(node);
     const IntervalState& projection = abstractTrace[node];
 
     for (const auto& [id, value] : projection.getVarToVal())
     {
-        const auto* scalar =
-            SVFUtil::dyn_cast<ValVar>(svfir->getGNode(id));
+        const auto* scalar = SVFUtil::dyn_cast<ValVar>(svfir->getGNode(id));
         if (!scalar || !adapter_.contains(*scalar))
             continue;
         const AD::Variable variable = adapter_.variable(*scalar);
@@ -445,7 +438,6 @@ synchronizeDomainFromIntervalView(const ICFGNode* node)
             current.interval = IntervalValue::bottom();
         if (!current.equals(value))
             assignValue(denseState, variable, value);
-        definedVariables_[node].insert(variable);
     }
 
     for (const auto& [objectId, value] : projection.getLocToVal())
@@ -457,7 +449,6 @@ synchronizeDomainFromIntervalView(const ICFGNode* node)
         const AD::Variable content = adapter_.contentVariable(*object);
         if (!projectValue(denseState, content).equals(value))
             assignValue(denseState, content, value);
-        definedVariables_[node].insert(content);
     }
 
     for (NodeID address : projection.getFreedAddrs())
@@ -472,8 +463,7 @@ synchronizeDomainFromIntervalView(const ICFGNode* node)
 
 template <typename NumericalStateT>
 void DenseAbstractInterpretation<NumericalStateT>::assignValue(
-    DenseState& denseState, AD::Variable variable,
-    const AbstractValue& value)
+    DenseState& denseState, AD::Variable variable, const AbstractValue& value)
 {
     ensureVariable(denseState, variable);
     if (value.isInterval())
@@ -485,7 +475,8 @@ void DenseAbstractInterpretation<NumericalStateT>::assignValue(
     for (u32_t address : value.getAddrs())
     {
         const NodeID objectId = address & FlippedAddressMask;
-        const auto* object = SVFUtil::dyn_cast<ObjVar>(svfir->getGNode(objectId));
+        const auto* object =
+            SVFUtil::dyn_cast<ObjVar>(svfir->getGNode(objectId));
         if (object && adapter_.contains(*object))
             addresses.insert(adapter_.location(*object));
     }
@@ -498,8 +489,10 @@ AbstractValue DenseAbstractInterpretation<NumericalStateT>::projectValue(
 {
     if (!denseState.numerical().environment().contains(variable))
         return AbstractValue(IntervalValue::top());
-    AbstractValue result(projectInterval(denseState.numerical().bound(variable)));
-    const AD::AddressSet addresses = denseState.addresses().addressesOf(variable);
+    AbstractValue result(
+        projectInterval(denseState.numerical().bound(variable)));
+    const AD::AddressSet addresses =
+        denseState.addresses().addressesOf(variable);
     if (addresses.isTop())
     {
         result.getAddrs().insert(BlackHoleObjAddr);
@@ -527,8 +520,8 @@ const AbstractValue& DenseAbstractInterpretation<NumericalStateT>::getAbsValue(
     if (!adapter_.contains(*var))
         return AbstractInterpretation::getAbsValue(var, node);
 
-    definedVariables_[node].insert(adapter_.variable(*var));
-    AbstractValue value = projectValue(ensureState(node), adapter_.variable(*var));
+    AbstractValue value =
+        projectValue(ensureState(node), adapter_.variable(*var));
     if (var->isPointer())
         value.interval = IntervalValue::bottom();
     abstractTrace[node][var->getId()] = std::move(value);
@@ -541,7 +534,6 @@ const AbstractValue& DenseAbstractInterpretation<NumericalStateT>::getAbsValue(
 {
     if (!adapter_.contains(*var))
         return AbstractInterpretation::getAbsValue(var, node);
-    definedVariables_[node].insert(adapter_.contentVariable(*var));
     AbstractValue value =
         projectValue(ensureState(node), adapter_.contentVariable(*var));
     const u32_t address = IntervalState::getVirtualMemAddress(var->getId());
@@ -568,9 +560,9 @@ bool DenseAbstractInterpretation<NumericalStateT>::hasAbsValue(
         return true;
     if (denseTrace_.count(node) == 0 || !adapter_.contains(*var))
         return false;
-    const auto definitions = definedVariables_.find(node);
-    return definitions != definedVariables_.end() &&
-           definitions->second.count(adapter_.variable(*var)) != 0;
+    const auto projection = abstractTrace.find(node);
+    return projection != abstractTrace.end() &&
+           projection->second.getVarToVal().count(var->getId()) != 0;
 }
 
 template <typename NumericalStateT>
@@ -579,9 +571,9 @@ bool DenseAbstractInterpretation<NumericalStateT>::hasAbsValue(
 {
     if (denseTrace_.count(node) == 0 || !adapter_.contains(*var))
         return false;
-    const auto definitions = definedVariables_.find(node);
-    return definitions != definedVariables_.end() &&
-           definitions->second.count(adapter_.contentVariable(*var)) != 0;
+    const auto projection = abstractTrace.find(node);
+    return projection != abstractTrace.end() &&
+           projection->second.getLocToVal().count(var->getId()) != 0;
 }
 
 template <typename NumericalStateT>
@@ -602,7 +594,6 @@ void DenseAbstractInterpretation<NumericalStateT>::updateAbsValue(
     if (adapter_.contains(*var))
     {
         assignValue(ensureState(node), adapter_.variable(*var), value);
-        definedVariables_[node].insert(adapter_.variable(*var));
     }
     abstractTrace[node][var->getId()] = value;
 }
@@ -614,10 +605,9 @@ void DenseAbstractInterpretation<NumericalStateT>::updateAbsValue(
     if (adapter_.contains(*var))
     {
         assignValue(ensureState(node), adapter_.contentVariable(*var), value);
-        definedVariables_[node].insert(adapter_.contentVariable(*var));
     }
-    abstractTrace[node].store(
-        IntervalState::getVirtualMemAddress(var->getId()), value);
+    abstractTrace[node].store(IntervalState::getVirtualMemAddress(var->getId()),
+                              value);
 }
 
 template <typename NumericalStateT>
@@ -663,8 +653,7 @@ AbstractValue DenseAbstractInterpretation<NumericalStateT>::loadValue(
 
 template <typename NumericalStateT>
 void DenseAbstractInterpretation<NumericalStateT>::storeValue(
-    const ValVar* pointer, const AbstractValue& value,
-    const ICFGNode* node)
+    const ValVar* pointer, const AbstractValue& value, const ICFGNode* node)
 {
     if (!adapter_.contains(*pointer))
     {
@@ -675,8 +664,7 @@ void DenseAbstractInterpretation<NumericalStateT>::storeValue(
     const AD::AddressSet pointees =
         denseState.addresses().addressesOf(adapter_.variable(*pointer));
     const bool strong = pointees.isSingleton();
-    auto write = [&](AD::Location location)
-    {
+    auto write = [&](AD::Location location) {
         if (!denseState.memoryLayout().contains(location))
             return;
         const AD::Variable content =
@@ -684,13 +672,13 @@ void DenseAbstractInterpretation<NumericalStateT>::storeValue(
         if (strong)
         {
             assignValue(denseState, content, value);
-            definedVariables_[node].insert(content);
+            rebuildCompatibilityValue(node, content);
             return;
         }
         AbstractValue joined = projectValue(denseState, content);
         joined.join_with(value);
         assignValue(denseState, content, joined);
-        definedVariables_[node].insert(content);
+        rebuildCompatibilityValue(node, content);
     };
 
     if (pointees.isTop())
@@ -707,7 +695,6 @@ void DenseAbstractInterpretation<NumericalStateT>::storeValue(
         for (AD::Location location : pointees.locations())
             write(location);
     }
-    rebuildCompatibilityProjection(node);
 }
 
 template <typename NumericalStateT>
@@ -717,8 +704,8 @@ void DenseAbstractInterpretation<NumericalStateT>::assumeBranch(
     const SVFVar* condition = edge->getCondition();
     if (!condition || condition->getInEdges().empty())
         return;
-    const auto* comparison = SVFUtil::dyn_cast<CmpStmt>(
-        *condition->getInEdges().begin());
+    const auto* comparison =
+        SVFUtil::dyn_cast<CmpStmt>(*condition->getInEdges().begin());
     if (!comparison)
     {
         const auto* value = SVFUtil::dyn_cast<ValVar>(condition);
@@ -726,8 +713,7 @@ void DenseAbstractInterpretation<NumericalStateT>::assumeBranch(
             return;
         denseState.assume(AD::equal(
             AD::LinearExpression(adapter_.variable(*value)),
-            AD::LinearExpression(
-                AD::Rational(edge->getSuccessorCondValue()))));
+            AD::LinearExpression(AD::Rational(edge->getSuccessorCondValue()))));
         return;
     }
 
@@ -738,12 +724,11 @@ void DenseAbstractInterpretation<NumericalStateT>::assumeBranch(
         kind = negatePredicate(kind);
 
     auto operand = [&](const SVFVar* variable,
-                       AD::LinearExpression& expression) -> bool
-    {
+                       AD::LinearExpression& expression) -> bool {
         if (const auto* integer = SVFUtil::dyn_cast<ConstIntValVar>(variable))
         {
-            expression = AD::LinearExpression(
-                AD::Rational(integer->getSExtValue()));
+            expression =
+                AD::LinearExpression(AD::Rational(integer->getSExtValue()));
             return true;
         }
         const auto* value = SVFUtil::dyn_cast<ValVar>(variable);
@@ -767,8 +752,8 @@ bool DenseAbstractInterpretation<NumericalStateT>::mergeStatesFromPredecessors(
 {
     DenseState merged = bottomState(node);
     IntervalState mergedProjection;
-    std::set<AD::Variable> mergedDefinitions;
     bool hasFeasiblePredecessor = false;
+    bool branchRefinedDomain = false;
 
     for (const ICFGEdge* edge : node->getInEdges())
     {
@@ -777,13 +762,12 @@ bool DenseAbstractInterpretation<NumericalStateT>::mergeStatesFromPredecessors(
             continue;
 
         bool shouldMerge = false;
-        const IntraCFGEdge* conditional =
-            SVFUtil::dyn_cast<IntraCFGEdge>(edge);
+        const IntraCFGEdge* conditional = SVFUtil::dyn_cast<IntraCFGEdge>(edge);
         if (conditional)
         {
-            shouldMerge = !conditional->getCondition() ||
-                          isBranchEdgeFeasible(
-                              conditional, abstractTrace[predecessor]);
+            shouldMerge =
+                !conditional->getCondition() ||
+                isBranchEdgeFeasible(conditional, abstractTrace[predecessor]);
         }
         else if (SVFUtil::isa<CallCFGEdge>(edge))
         {
@@ -794,9 +778,9 @@ bool DenseAbstractInterpretation<NumericalStateT>::mergeStatesFromPredecessors(
             shouldMerge = Options::HandleRecur() == TOP;
             if (!shouldMerge)
             {
-                const auto* returnSite =
-                    SVFUtil::dyn_cast<RetICFGNode>(node);
-                shouldMerge = returnSite &&
+                const auto* returnSite = SVFUtil::dyn_cast<RetICFGNode>(node);
+                shouldMerge =
+                    returnSite &&
                     denseTrace_.count(returnSite->getCallICFGNode()) != 0;
             }
         }
@@ -806,64 +790,95 @@ bool DenseAbstractInterpretation<NumericalStateT>::mergeStatesFromPredecessors(
         DenseState source = state(predecessor);
         source.changeEnvironment(adapter_.environment(node->getFun()));
         if (conditional && conditional->getCondition())
+        {
             assumeBranch(conditional, source);
+            branchRefinedDomain = true;
+        }
         if (source.isBottom())
             continue;
 
         merged.joinWith(source);
         mergedProjection.joinWith(abstractTrace[predecessor]);
-        const auto definitions = definedVariables_.find(predecessor);
-        if (definitions != definedVariables_.end())
-        {
-            mergedDefinitions.insert(definitions->second.begin(),
-                                     definitions->second.end());
-        }
         hasFeasiblePredecessor = true;
     }
 
     if (!hasFeasiblePredecessor)
         return false;
-    for (auto iterator = mergedDefinitions.begin();
-            iterator != mergedDefinitions.end();)
-    {
-        if (!merged.numerical().environment().contains(*iterator))
-            iterator = mergedDefinitions.erase(iterator);
-        else
-            ++iterator;
-    }
     denseTrace_.insert_or_assign(node, std::move(merged));
-    definedVariables_[node] = std::move(mergedDefinitions);
     abstractTrace[node] = std::move(mergedProjection);
+    // Box join is pointwise interval join, so the already-joined compatibility
+    // projection is exact unless a branch assumption refined the domain copy.
+    // Relational domains may retain tighter projected bounds across a join.
+    if constexpr (std::is_same_v<NumericalStateT, AD::BoxState>)
+    {
+        if (branchRefinedDomain)
     rebuildCompatibilityProjection(node);
+    }
+    else
+    {
+        rebuildCompatibilityProjection(node);
+    }
     return true;
 }
 
 template <typename NumericalStateT>
-void DenseAbstractInterpretation<NumericalStateT>::
-rebuildCompatibilityProjection(const ICFGNode* node)
+void DenseAbstractInterpretation<NumericalStateT>::rebuildCompatibilityValue(
+    const ICFGNode* node, AD::Variable variable)
+{
+    DenseState& denseState = ensureState(node);
+    if (!denseState.numerical().environment().contains(variable))
+        return;
+    if (const ValVar* value = adapter_.value(variable))
+    {
+        if (value->getFunction() && value->getFunction() != node->getFun())
+            return;
+        AbstractValue projected = projectValue(denseState, variable);
+        if (value->isPointer())
+            projected.interval = IntervalValue::bottom();
+        abstractTrace[node][value->getId()] = std::move(projected);
+        return;
+    }
+    if (const ObjVar* object = adapter_.contentObject(variable))
+    {
+        abstractTrace[node].store(
+            IntervalState::getVirtualMemAddress(object->getId()),
+            projectValue(denseState, variable));
+    }
+}
+
+template <typename NumericalStateT>
+void DenseAbstractInterpretation<
+    NumericalStateT>::rebuildCompatibilityProjection(const ICFGNode* node)
 {
     DenseState& denseState = ensureState(node);
     IntervalState& projection = abstractTrace[node];
-    for (const ValVar* value : adapter_.trackedValues())
+    for (const auto& [id, cached] : projection.getVarToVal())
     {
-        if (value->getFunction() && value->getFunction() != node->getFun())
+        (void)cached;
+        const auto* value = SVFUtil::dyn_cast<ValVar>(svfir->getGNode(id));
+        if (!value || !adapter_.contains(*value))
             continue;
-        if (definedVariables_[node].count(adapter_.variable(*value)) == 0)
+        const AD::Variable variable = adapter_.variable(*value);
+        if (!denseState.numerical().environment().contains(variable) ||
+            (value->getFunction() && value->getFunction() != node->getFun()))
             continue;
-        AbstractValue projected =
-            projectValue(denseState, adapter_.variable(*value));
+        AbstractValue projected = projectValue(denseState, variable);
         if (value->isPointer())
             projected.interval = IntervalValue::bottom();
-        projection[value->getId()] = std::move(projected);
+        projection[id] = std::move(projected);
     }
-    for (const ObjVar* object : adapter_.trackedObjects())
+    for (const auto& [objectId, cached] : projection.getLocToVal())
     {
-        if (definedVariables_[node].count(
-                adapter_.contentVariable(*object)) == 0)
+        (void)cached;
+        const auto* object =
+            SVFUtil::dyn_cast<ObjVar>(svfir->getGNode(objectId));
+        if (!object || !adapter_.contains(*object))
             continue;
-        projection.store(
-            IntervalState::getVirtualMemAddress(object->getId()),
-            projectValue(denseState, adapter_.contentVariable(*object)));
+        const AD::Variable variable = adapter_.contentVariable(*object);
+        if (!denseState.numerical().environment().contains(variable))
+            continue;
+        projection.store(IntervalState::getVirtualMemAddress(objectId),
+                         projectValue(denseState, variable));
     }
 }
 

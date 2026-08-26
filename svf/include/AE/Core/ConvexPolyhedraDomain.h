@@ -136,6 +136,10 @@ private:
     ConvexPolyhedraState(VariableEnvironment environment,
                          ConvexPolyhedraConfig config, bool bottom);
 
+    const void* dynamicTypeToken() const noexcept override
+    {
+        return staticTypeToken<ConvexPolyhedraState>();
+    }
     bool hasCompatibleDomain(const AbstractState& other) const override;
     void joinState(const AbstractState& other) override;
     void meetState(const AbstractState& other) override;

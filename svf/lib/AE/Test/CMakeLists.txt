@@ -178,6 +178,24 @@ if(TARGET SvfLLVM)
   add_relational_ae_loop_test(
     relational-domain-ae-loop-sparse sparse
   )
+  function(add_box_ae_projection_test test_name fixture)
+    add_test(
+      NAME ${test_name}
+      COMMAND svf-ae-relational-integration-test
+              -ae-dense-octagon=false
+              -ae-sparsity=dense
+              -widen-delay=1
+              -stat=false
+              -extapi=${CMAKE_BINARY_DIR}/lib/extapi.bc
+              ${CMAKE_CURRENT_LIST_DIR}/${fixture}
+    )
+  endfunction()
+  add_box_ae_projection_test(
+    box-domain-ae-projection RelationalReducedProduct.ll
+  )
+  add_box_ae_projection_test(
+    box-domain-ae-loop-projection RelationalLoop.ll
+  )
 endif()
 
 # Some standalone macOS Z3 packages use the bare install name
