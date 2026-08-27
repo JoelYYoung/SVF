@@ -1,0 +1,11 @@
+fixture,project,bitcode_bytes,implementation,repetition,status,wall_ns,user_seconds,system_seconds,peak_rss_bytes,note
+c-ares-expanded-min-active-1k,c-ares,183348,native,1,completed,12400705625,11.669818000,0.095167000,631783424,
+c-ares-expanded-min-active-1k,c-ares,183348,legacy,1,completed,26610934166,23.806742000,1.378626000,8348499968,
+c-ares-expanded-min-active-1k,c-ares,183348,legacy,2,completed,24137850459,21.729287000,1.362817000,7862927360,
+c-ares-expanded-min-active-1k,c-ares,183348,native,2,completed,12789009750,11.913952000,0.106738000,631242752,
+c-ares-expanded-min-active-1k,c-ares,183348,native,3,completed,13182711917,12.036802000,0.117057000,631291904,
+c-ares-expanded-min-active-1k,c-ares,183348,legacy,3,completed,25093360167,22.229565000,1.377175000,8768061440,
+c-blosc2-active-driver-10x-min,c-blosc2,2368940,native,1,completed,38609767375,38.438077000,0.138026000,1059930112,
+c-blosc2-active-driver-10x-min,c-blosc2,2368940,native,2,completed,37779121916,37.590715000,0.149948000,1061322752,
+c-blosc2-active-driver-10x-min,c-blosc2,2368940,native,3,completed,37923161167,37.737156000,0.153049000,1060110336,
+c-blosc2-active-driver-10x-min,c-blosc2,2368940,legacy,1,right-censored,335210000000,313.750000000,1.340000000,4639883264,manually stopped after more than five minutes without completion

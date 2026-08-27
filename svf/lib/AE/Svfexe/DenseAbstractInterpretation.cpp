@@ -105,6 +105,17 @@ bool constraintKind(u32_t predicate, AD::ConstraintKind& kind)
     }
 }
 
+template <typename DenseStateT>
+void alignEnvironments(DenseStateT& lhs, DenseStateT& rhs)
+{
+    const AD::VariableEnvironment environment =
+        lhs.numerical().environment().merge(rhs.numerical().environment());
+    if (lhs.numerical().environment() != environment)
+        lhs.changeEnvironment(environment);
+    if (rhs.numerical().environment() != environment)
+        rhs.changeEnvironment(environment);
+}
+
 } // namespace
 
 template <typename NumericalStateT>
@@ -243,7 +254,10 @@ template <typename NumericalStateT>
 bool DenseAbstractInterpretation<NumericalStateT>::isAbstractStateEquivalent(
     const ICFGNode* node, const AbstractDomain::AbstractState& snapshot) const
 {
-    return state(node).isEquivalentTo(snapshot) ==
+    DenseState current = state(node);
+    DenseState previous = static_cast<const DenseState&>(snapshot);
+    alignEnvironments(current, previous);
+    return current.isEquivalentTo(previous) ==
            AbstractDomain::CheckResult::True;
 }
 
@@ -259,8 +273,9 @@ bool DenseAbstractInterpretation<NumericalStateT>::widenCycleState(
     const AbstractDomain::AbstractState& previous,
     const AbstractDomain::AbstractState& current, const ICFGCycleWTO* cycle)
 {
-    const auto& previousDense = static_cast<const DenseState&>(previous);
-    const auto& currentDense = static_cast<const DenseState&>(current);
+    DenseState previousDense = static_cast<const DenseState&>(previous);
+    DenseState currentDense = static_cast<const DenseState&>(current);
+    alignEnvironments(previousDense, currentDense);
     DenseState next = previousDense;
     next.widenWith(currentDense);
     const bool fixpoint =
@@ -278,8 +293,9 @@ bool DenseAbstractInterpretation<NumericalStateT>::narrowCycleState(
     const ICFGNode* head = cycle->head()->getICFGNode();
     if (!shouldApplyNarrowing(head->getFun()))
         return true;
-    const auto& previousDense = static_cast<const DenseState&>(previous);
-    const auto& currentDense = static_cast<const DenseState&>(current);
+    DenseState previousDense = static_cast<const DenseState&>(previous);
+    DenseState currentDense = static_cast<const DenseState&>(current);
+    alignEnvironments(previousDense, currentDense);
     DenseState next = previousDense;
     next.narrowWith(currentDense);
     const bool fixpoint =

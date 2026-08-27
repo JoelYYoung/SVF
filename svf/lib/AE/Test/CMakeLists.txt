@@ -262,6 +262,23 @@ if(TARGET SvfLLVM)
   add_legacy_dense_ae_test(
     legacy-interval-dense-ae-loop RelationalLoop.ll
   )
+  function(add_dense_environment_alignment_test test_name use_octagon)
+    add_test(
+      NAME ${test_name}
+      COMMAND ae
+              -ae-dense-octagon=${use_octagon}
+              -ae-sparsity=dense
+              -stat=false
+              -extapi=${CMAKE_BINARY_DIR}/lib/extapi.bc
+              ${CMAKE_CURRENT_LIST_DIR}/DenseEnvironmentAlignment.ll
+    )
+  endfunction()
+  add_dense_environment_alignment_test(
+    dense-ae-environment-alignment-box false
+  )
+  add_dense_environment_alignment_test(
+    dense-ae-environment-alignment-octagon true
+  )
 endif()
 
 # Some standalone macOS Z3 packages use the bare install name
