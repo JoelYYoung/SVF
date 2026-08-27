@@ -59,6 +59,23 @@ target_link_libraries(
 )
 add_test(NAME abstract-domain-state COMMAND svf-abstract-domain-state-test)
 
+add_executable(svf-box-storage-benchmark BoxStorageBenchmark.cpp)
+target_link_libraries(svf-box-storage-benchmark PRIVATE AbstractDomainCore)
+foreach(box_storage_scheme IN ITEMS dimension-page variable-page variable-hash)
+  add_test(
+    NAME box-storage-${box_storage_scheme}-smoke
+    COMMAND svf-box-storage-benchmark
+            --scheme ${box_storage_scheme}
+            --page-size 64
+            --workload resident-fork
+            --variables 64
+            --density 0.1
+            --id-stride 8
+            --operations 32
+            --repetitions 3
+  )
+endforeach()
+
 # APRON is an optional test oracle, never a production dependency. Point
 # APRON_ROOT at an installation containing libapron and libpolkaMPQ to enable
 # both the correctness differential and the standalone timing comparison.
