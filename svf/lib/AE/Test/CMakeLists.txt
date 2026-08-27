@@ -59,6 +59,18 @@ target_link_libraries(
 )
 add_test(NAME abstract-domain-state COMMAND svf-abstract-domain-state-test)
 
+add_executable(
+  svf-octagon-abstract-interpreter-test
+  OctagonAbstractInterpreterTest.cpp
+)
+target_link_libraries(
+  svf-octagon-abstract-interpreter-test PRIVATE AbstractDomainCore
+)
+add_test(
+  NAME octagon-abstract-interpreter
+  COMMAND svf-octagon-abstract-interpreter-test
+)
+
 add_executable(svf-box-storage-benchmark BoxStorageBenchmark.cpp)
 target_link_libraries(svf-box-storage-benchmark PRIVATE AbstractDomainCore)
 foreach(box_storage_scheme IN ITEMS
@@ -182,6 +194,15 @@ if(TARGET SvfLLVM)
   )
   add_relational_ae_integration_test(
     relational-domain-ae-integration-sparse sparse
+  )
+  add_test(
+    NAME relational-domain-ae-assert-copy
+    COMMAND svf-ae-relational-integration-test
+            -ae-dense-octagon=true
+            -ae-sparsity=dense
+            -stat=false
+            -extapi=${CMAKE_BINARY_DIR}/lib/extapi.bc
+            ${CMAKE_CURRENT_LIST_DIR}/RelationalAssert.ll
   )
   function(add_relational_ae_loop_test test_name sparsity)
     add_test(

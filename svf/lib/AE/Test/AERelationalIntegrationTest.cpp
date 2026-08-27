@@ -273,6 +273,70 @@ void validateReducedProductFixture(const SVFIR& graph,
         << " reduced_interval=1 reduced_relation=1 impossible_reachable=0\n";
 }
 
+void validateRelationalAssertFixture(const SVFIR& graph,
+                                     AbstractInterpretation& analysis)
+{
+    const SVFVar* input = requireValue(graph, "a");
+    const SVFVar* copy = requireValue(graph, "assert_x");
+    const SVFVar* failure = requireValue(graph, "assert_bad");
+    const auto* inputValue = SVFUtil::cast<ValVar>(input);
+    const auto* copyValue = SVFUtil::cast<ValVar>(copy);
+    SVFIRAdapter adapter(graph);
+    const AD::Variable inputVariable = adapter.variable(*inputValue);
+    const AD::Variable copyVariable = adapter.variable(*copyValue);
+    const AD::LinearConstraint copyRelation = AD::equal(
+        AD::LinearExpression(copyVariable),
+        AD::LinearExpression(inputVariable));
+    const AD::LinearConstraint assertion = AD::greaterThan(
+        AD::LinearExpression(copyVariable),
+        AD::LinearExpression(AD::Rational(0)));
+    bool sawProvedAssertion = false;
+    bool analyzedFailure = false;
+
+    for (const ICFGNode* node : analysis.getAnalyzedNodes())
+    {
+        if (analysis.hasAbsValue(failure, node))
+            analyzedFailure = true;
+        if (!analysis.hasAbsValue(copy, node))
+            continue;
+
+        const AD::OctagonState& octagon =
+            requireDenseOctagonState(analysis, node).numerical();
+        if (octagon.entails(copyRelation) == AD::CheckResult::True &&
+            octagon.entails(assertion) == AD::CheckResult::True)
+            sawProvedAssertion = true;
+    }
+
+    if (!sawProvedAssertion || analyzedFailure)
+    {
+        std::cerr << "relational assertion trace:\n";
+        for (const ICFGNode* node : analysis.getAnalyzedNodes())
+        {
+            std::cerr << "  node " << node->getId();
+            for (const SVFVar* value : {input, copy, failure})
+            {
+                std::cerr << ' ' << value->getValueName() << '=';
+                if (analysis.hasAbsValue(value, node))
+                    std::cerr << analysis.getAbsValue(value, node).toString();
+                else
+                    std::cerr << "<absent>";
+            }
+            std::cerr << '\n';
+        }
+    }
+
+    if (!sawProvedAssertion)
+        throw std::runtime_error(
+            "Octagon did not propagate a > 0 through x == a");
+    if (analyzedFailure)
+        throw std::runtime_error(
+            "the relationally impossible assertion failure was reachable");
+
+    std::cout << "AE_RELATIONAL_OBSERVATION fixture=assert-copy"
+              << " copy_relation=1 assertion_proved=1"
+              << " failure_reachable=0\n";
+}
+
 void validateLoopFixture(const SVFIR& graph, AbstractInterpretation& analysis)
 {
     const SVFVar* induction = requireValue(graph, "i");
@@ -437,6 +501,11 @@ int main(int argc, char** argv)
         {
             validateNativeDenseStorage<DenseBoxState>(analysis);
             validateBoxProjection(*graph, analysis);
+        }
+        else if (findValueIfPresent(*graph, "assert_bad"))
+        {
+            validateNativeDenseStorage<DenseOctagonState>(analysis);
+            validateRelationalAssertFixture(*graph, analysis);
         }
         else if (findValueIfPresent(*graph, "loop_result"))
         {
