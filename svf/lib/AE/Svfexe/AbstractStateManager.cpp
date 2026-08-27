@@ -72,7 +72,7 @@ void AbstractInterpretation::joinStates(IntervalState& dst, const IntervalState&
     dst.joinWith(src);
 }
 
-bool AbstractInterpretation::hasAbsState(const ICFGNode* node)
+bool AbstractInterpretation::hasAbsState(const ICFGNode* node) const
 {
     return abstractTrace.count(node) != 0;
 }
@@ -120,7 +120,8 @@ bool AbstractInterpretation::isAbstractStateEquivalent(
 /// (interval=bottom ∧ addrs=∅); those predicates would falsely report
 /// such an entry as "not present", and the top fallback below would
 /// then clobber the very signal NullptrDerefDetector::isUninit keys off.
-const AbstractValue& AbstractInterpretation::getAbsValue(const ValVar* var, const ICFGNode* node)
+AbstractValue AbstractInterpretation::getAbsValue(const ValVar* var,
+                                                  const ICFGNode* node)
 {
     u32_t id = var->getId();
     IntervalState& as = abstractTrace[node];
@@ -130,14 +131,16 @@ const AbstractValue& AbstractInterpretation::getAbsValue(const ValVar* var, cons
     return as[id];
 }
 
-const AbstractValue& AbstractInterpretation::getAbsValue(const ObjVar* var, const ICFGNode* node)
+AbstractValue AbstractInterpretation::getAbsValue(const ObjVar* var,
+                                                  const ICFGNode* node)
 {
     IntervalState& as = getIntervalStateView(node);
     u32_t addr = IntervalState::getVirtualMemAddress(var->getId());
     return as.load(addr);
 }
 
-const AbstractValue& AbstractInterpretation::getAbsValue(const SVFVar* var, const ICFGNode* node)
+AbstractValue AbstractInterpretation::getAbsValue(const SVFVar* var,
+                                                  const ICFGNode* node)
 {
     if (const ObjVar* objVar = SVFUtil::dyn_cast<ObjVar>(var))
         return getAbsValue(objVar, node);
@@ -196,6 +199,42 @@ void AbstractInterpretation::updateAbsValue(const SVFVar* var, const AbstractVal
         updateAbsValue(valVar, val, node);
     else
         assert(false && "Unknown SVFVar kind");
+}
+
+AbstractValue AbstractInterpretation::getMemoryValue(u32_t address,
+                                                     const ICFGNode* node)
+{
+    return getIntervalStateView(node).load(address);
+}
+
+bool AbstractInterpretation::hasMemoryValue(u32_t address,
+                                            const ICFGNode* node) const
+{
+    const auto state = abstractTrace.find(node);
+    if (state == abstractTrace.end())
+        return false;
+    const NodeID objectId = objectIdFromAddress(address);
+    return state->second.getLocToVal().count(objectId) != 0;
+}
+
+void AbstractInterpretation::updateMemoryValue(u32_t address,
+                                               const AbstractValue& value,
+                                               const ICFGNode* node)
+{
+    getIntervalStateView(node).store(address, value);
+}
+
+void AbstractInterpretation::markFreedMemory(u32_t address,
+                                             const ICFGNode* node)
+{
+    getIntervalStateView(node).addToFreedAddrs(address);
+}
+
+bool AbstractInterpretation::isFreedMemory(u32_t address,
+                                           const ICFGNode* node) const
+{
+    const auto state = abstractTrace.find(node);
+    return state != abstractTrace.end() && state->second.isFreedMem(address);
 }
 
 IntervalValue AbstractInterpretation::getGepElementIndex(const GepStmt* gep)
@@ -319,7 +358,6 @@ AddressValue AbstractInterpretation::getGepObjAddrs(const ValVar* pointer, Inter
 {
     const ICFGNode* node = pointer->getICFGNode();
     AddressValue gepAddrs;
-    IntervalState& as = getIntervalStateView(node);
     APOffset lb = offset.lb().getIntNumeral() < Options::MaxFieldLimit() ? offset.lb().getIntNumeral()
                   : Options::MaxFieldLimit();
     APOffset ub = offset.ub().getIntNumeral() < Options::MaxFieldLimit() ? offset.ub().getIntNumeral()
@@ -329,10 +367,9 @@ AddressValue AbstractInterpretation::getGepObjAddrs(const ValVar* pointer, Inter
         const AbstractValue& addrs = getAbsValue(pointer, node);
         for (const auto& addr : addrs.getAddrs())
         {
-            s64_t baseObj = as.getIDFromAddr(addr);
+            s64_t baseObj = objectIdFromAddress(addr);
             assert(SVFUtil::isa<ObjVar>(svfir->getSVFVar(baseObj)) && "Fail to get the base object address!");
             NodeID gepObj = svfir->getGepObjVar(baseObj, i);
-            as[gepObj] = AddressValue(IntervalState::getVirtualMemAddress(gepObj));
             gepAddrs.insert(IntervalState::getVirtualMemAddress(gepObj));
         }
     }
@@ -342,12 +379,10 @@ AddressValue AbstractInterpretation::getGepObjAddrs(const ValVar* pointer, Inter
 AbstractValue AbstractInterpretation::loadValue(const ValVar* pointer, const ICFGNode* node)
 {
     const AbstractValue& ptrVal = getAbsValue(pointer, node);
-    IntervalState& as = getIntervalStateView(node);
     AbstractValue res;
     for (auto addr : ptrVal.getAddrs())
     {
-        res.join_with(
-            getAbsValue(svfir->getSVFVar(as.getIDFromAddr(addr)), node));
+        res.join_with(getMemoryValue(addr, node));
     }
     return res;
 }
@@ -355,9 +390,8 @@ AbstractValue AbstractInterpretation::loadValue(const ValVar* pointer, const ICF
 void AbstractInterpretation::storeValue(const ValVar* pointer, const AbstractValue& val, const ICFGNode* node)
 {
     const AbstractValue& ptrVal = getAbsValue(pointer, node);
-    IntervalState& as = getIntervalStateView(node);
     for (auto addr : ptrVal.getAddrs())
-        updateAbsValue(svfir->getSVFVar(as.getIDFromAddr(addr)), val, node);
+        updateMemoryValue(addr, val, node);
 }
 
 const SVFType* AbstractInterpretation::getPointeeElement(const ObjVar* var, const ICFGNode* node)
@@ -367,7 +401,7 @@ const SVFType* AbstractInterpretation::getPointeeElement(const ObjVar* var, cons
         return nullptr;
     for (auto addr : ptrVal.getAddrs())
     {
-        NodeID objId = getIntervalStateView(node).getIDFromAddr(addr);
+        NodeID objId = objectIdFromAddress(addr);
         if (objId == 0)
             continue;
         return svfir->getBaseObject(objId)->getType();

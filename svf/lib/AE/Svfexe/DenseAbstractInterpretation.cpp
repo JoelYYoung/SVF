@@ -114,10 +114,58 @@ DenseAbstractInterpretation<NumericalStateT>::DenseAbstractInterpretation()
 }
 
 template <typename NumericalStateT>
+void DenseAbstractInterpretation<NumericalStateT>::handleGlobalNode()
+{
+    const ICFGNode* node = icfg->getGlobalICFGNode();
+    resetAbstractState(node);
+    for (const SVFStmt* statement : node->getSVFStmts())
+        handleSVFStatement(statement);
+
+    AbstractValue blackHole(IntervalValue::top());
+    blackHole.getAddrs().insert(BlackHoleObjAddr);
+    if (const auto* variable = SVFUtil::dyn_cast<ValVar>(
+            svfir->getGNode(PAG::getPAG()->getBlkPtr())))
+        updateAbsValue(variable, blackHole, node);
+}
+
+template <typename NumericalStateT>
+AbstractValue DenseAbstractInterpretation<
+    NumericalStateT>::initializeObjectAddress(const ObjVar* object,
+                                              const ICFGNode* node)
+{
+    DenseState& denseState = ensureState(node);
+    if (adapter_.contains(*object))
+        denseState.allocate(adapter_.location(*object));
+
+    const BaseObjVar* base = PAG::getPAG()->getBaseObject(object->getId());
+    if (base->isConstDataOrConstGlobal() || base->isConstantArray() ||
+        base->isConstantStruct())
+    {
+        if (const auto* integer = SVFUtil::dyn_cast<ConstIntObjVar>(object))
+            return IntervalValue(integer->getSExtValue());
+        if (const auto* floating = SVFUtil::dyn_cast<ConstFPObjVar>(object))
+            return IntervalValue(floating->getFPValue(),
+                                 floating->getFPValue());
+        if (SVFUtil::isa<ConstNullPtrObjVar>(object))
+            return IntervalValue(0, 0);
+        if (!SVFUtil::isa<GlobalObjVar>(object))
+            return IntervalValue::top();
+    }
+    return AddressValue(IntervalState::getVirtualMemAddress(object->getId()));
+}
+
+template <typename NumericalStateT>
 const AbstractDomain::AbstractState& DenseAbstractInterpretation<
     NumericalStateT>::getAbstractState(const ICFGNode* node) const
 {
     return state(node);
+}
+
+template <typename NumericalStateT>
+bool DenseAbstractInterpretation<NumericalStateT>::hasAbsState(
+    const ICFGNode* node) const
+{
+    return denseTrace_.count(node) != 0;
 }
 
 template <typename NumericalStateT>
@@ -147,7 +195,6 @@ DenseAbstractInterpretation<NumericalStateT>::ensureState(const ICFGNode* node)
     auto iterator = denseTrace_.find(node);
     if (iterator == denseTrace_.end())
         iterator = denseTrace_.emplace(node, topState(node)).first;
-    abstractTrace.try_emplace(node);
     return iterator->second;
 }
 
@@ -166,7 +213,6 @@ void DenseAbstractInterpretation<NumericalStateT>::resetAbstractState(
     const ICFGNode* node)
 {
     denseTrace_.insert_or_assign(node, topState(node));
-    abstractTrace[node] = IntervalState();
 }
 
 template <typename NumericalStateT>
@@ -179,14 +225,11 @@ void DenseAbstractInterpretation<NumericalStateT>::copyAbstractState(
     if (copy.numerical().environment() == destinationEnvironment)
     {
         denseTrace_.insert_or_assign(destination, std::move(copy));
-        abstractTrace[destination] = abstractTrace[source];
         return;
     }
 
     copy.changeEnvironment(destinationEnvironment);
     denseTrace_.insert_or_assign(destination, std::move(copy));
-    abstractTrace[destination] = abstractTrace[source];
-    rebuildCompatibilityProjection(destination);
 }
 
 template <typename NumericalStateT>
@@ -224,7 +267,6 @@ bool DenseAbstractInterpretation<NumericalStateT>::widenCycleState(
         next.isEquivalentTo(previousDense) == AbstractDomain::CheckResult::True;
     const ICFGNode* head = cycle->head()->getICFGNode();
     denseTrace_.insert_or_assign(head, std::move(next));
-    rebuildCompatibilityProjection(head);
     return fixpoint;
 }
 
@@ -243,10 +285,7 @@ bool DenseAbstractInterpretation<NumericalStateT>::narrowCycleState(
     const bool fixpoint =
         next.isEquivalentTo(previousDense) == AbstractDomain::CheckResult::True;
     if (!fixpoint)
-    {
         denseTrace_.insert_or_assign(head, std::move(next));
-        rebuildCompatibilityProjection(head);
-    }
     return fixpoint;
 }
 
@@ -374,7 +413,6 @@ void DenseAbstractInterpretation<NumericalStateT>::updateDomainOnBinary(
         targetVariable,
         binary->getOpcode() == BinaryOPStmt::Add ? lhs + rhs : lhs - rhs);
     constrainInterval(denseState, targetVariable, result);
-    rebuildCompatibilityValue(binary->getICFGNode(), targetVariable);
 }
 
 template <typename NumericalStateT>
@@ -387,7 +425,7 @@ void DenseAbstractInterpretation<NumericalStateT>::updateDomainCopyValue(
         return;
     DenseState& denseState = ensureState(node);
     const AD::Variable targetVariable = adapter_.variable(*targetValue);
-    const AbstractValue& result = getAbsValue(targetValue, node);
+    const AbstractValue result = getAbsValue(targetValue, node);
     if (!result.isInterval())
     {
         denseState.numerical().forget(targetVariable);
@@ -407,7 +445,6 @@ void DenseAbstractInterpretation<NumericalStateT>::updateDomainCopyValue(
     {
         assignInterval(denseState, targetVariable, result.getInterval());
     }
-    rebuildCompatibilityValue(node, targetVariable);
 }
 
 template <typename NumericalStateT>
@@ -418,47 +455,6 @@ void DenseAbstractInterpretation<NumericalStateT>::updateDomainOnCopy(
                        copy->getCopyKind() == CopyStmt::SEXT;
     updateDomainCopyValue(copy->getICFGNode(), copy->getLHSVar(),
                               copy->getRHSVar(), exact);
-}
-
-template <typename NumericalStateT>
-void DenseAbstractInterpretation<
-    NumericalStateT>::synchronizeDomainFromIntervalView(const ICFGNode* node)
-{
-    DenseState& denseState = ensureState(node);
-    const IntervalState& projection = abstractTrace[node];
-
-    for (const auto& [id, value] : projection.getVarToVal())
-    {
-        const auto* scalar = SVFUtil::dyn_cast<ValVar>(svfir->getGNode(id));
-        if (!scalar || !adapter_.contains(*scalar))
-            continue;
-        const AD::Variable variable = adapter_.variable(*scalar);
-        AbstractValue current = projectValue(denseState, variable);
-        if (scalar->isPointer())
-            current.interval = IntervalValue::bottom();
-        if (!current.equals(value))
-            assignValue(denseState, variable, value);
-    }
-
-    for (const auto& [objectId, value] : projection.getLocToVal())
-    {
-        const auto* object =
-            SVFUtil::dyn_cast<ObjVar>(svfir->getGNode(objectId));
-        if (!object || !adapter_.contains(*object))
-            continue;
-        const AD::Variable content = adapter_.contentVariable(*object);
-        if (!projectValue(denseState, content).equals(value))
-            assignValue(denseState, content, value);
-    }
-
-    for (NodeID address : projection.getFreedAddrs())
-    {
-        const NodeID objectId = address & FlippedAddressMask;
-        const auto* object =
-            SVFUtil::dyn_cast<ObjVar>(svfir->getGNode(objectId));
-        if (object && adapter_.contains(*object))
-            denseState.lifetimes().release(adapter_.location(*object));
-    }
 }
 
 template <typename NumericalStateT>
@@ -481,6 +477,7 @@ void DenseAbstractInterpretation<NumericalStateT>::assignValue(
             addresses.insert(adapter_.location(*object));
     }
     denseState.addresses().assign(variable, std::move(addresses));
+    denseState.shapes().assign(variable, value.isInterval());
 }
 
 template <typename NumericalStateT>
@@ -489,8 +486,12 @@ AbstractValue DenseAbstractInterpretation<NumericalStateT>::projectValue(
 {
     if (!denseState.numerical().environment().contains(variable))
         return AbstractValue(IntervalValue::top());
-    AbstractValue result(
-        projectInterval(denseState.numerical().bound(variable)));
+    if (!denseState.shapes().isDefined(variable))
+        return AbstractValue();
+    AbstractValue result;
+    if (denseState.shapes().hasNumeric(variable))
+        result.interval =
+            projectInterval(denseState.numerical().bound(variable));
     const AD::AddressSet addresses =
         denseState.addresses().addressesOf(variable);
     if (addresses.isTop())
@@ -508,41 +509,39 @@ AbstractValue DenseAbstractInterpretation<NumericalStateT>::projectValue(
 }
 
 template <typename NumericalStateT>
-const AbstractValue& DenseAbstractInterpretation<NumericalStateT>::getAbsValue(
+AbstractValue DenseAbstractInterpretation<NumericalStateT>::getAbsValue(
     const ValVar* var, const ICFGNode* node)
 {
     if (const auto* integer = SVFUtil::dyn_cast<ConstIntValVar>(var))
-    {
-        abstractTrace[node][var->getId()] =
-            IntervalValue(integer->getSExtValue());
-        return abstractTrace[node][var->getId()];
-    }
+        return IntervalValue(integer->getSExtValue());
     if (!adapter_.contains(*var))
-        return AbstractInterpretation::getAbsValue(var, node);
+        return IntervalValue::top();
 
-    AbstractValue value =
-        projectValue(ensureState(node), adapter_.variable(*var));
+    DenseState& denseState = ensureState(node);
+    const AD::Variable variable = adapter_.variable(*var);
+    if (!denseState.shapes().isDefined(variable))
+        assignValue(denseState, variable, IntervalValue::top());
+    AbstractValue value = projectValue(denseState, variable);
     if (var->isPointer())
         value.interval = IntervalValue::bottom();
-    abstractTrace[node][var->getId()] = std::move(value);
-    return abstractTrace[node][var->getId()];
+    return value;
 }
 
 template <typename NumericalStateT>
-const AbstractValue& DenseAbstractInterpretation<NumericalStateT>::getAbsValue(
+AbstractValue DenseAbstractInterpretation<NumericalStateT>::getAbsValue(
     const ObjVar* var, const ICFGNode* node)
 {
     if (!adapter_.contains(*var))
-        return AbstractInterpretation::getAbsValue(var, node);
-    AbstractValue value =
-        projectValue(ensureState(node), adapter_.contentVariable(*var));
-    const u32_t address = IntervalState::getVirtualMemAddress(var->getId());
-    abstractTrace[node].store(address, value);
-    return abstractTrace[node].load(address);
+        return AbstractValue();
+    DenseState& denseState = ensureState(node);
+    const AD::Variable content = adapter_.contentVariable(*var);
+    if (!denseState.shapes().isDefined(content))
+        assignValue(denseState, content, AbstractValue());
+    return projectValue(denseState, content);
 }
 
 template <typename NumericalStateT>
-const AbstractValue& DenseAbstractInterpretation<NumericalStateT>::getAbsValue(
+AbstractValue DenseAbstractInterpretation<NumericalStateT>::getAbsValue(
     const SVFVar* var, const ICFGNode* node)
 {
     if (const auto* object = SVFUtil::dyn_cast<ObjVar>(var))
@@ -560,9 +559,7 @@ bool DenseAbstractInterpretation<NumericalStateT>::hasAbsValue(
         return true;
     if (denseTrace_.count(node) == 0 || !adapter_.contains(*var))
         return false;
-    const auto projection = abstractTrace.find(node);
-    return projection != abstractTrace.end() &&
-           projection->second.getVarToVal().count(var->getId()) != 0;
+    return state(node).shapes().isDefined(adapter_.variable(*var));
 }
 
 template <typename NumericalStateT>
@@ -571,9 +568,7 @@ bool DenseAbstractInterpretation<NumericalStateT>::hasAbsValue(
 {
     if (denseTrace_.count(node) == 0 || !adapter_.contains(*var))
         return false;
-    const auto projection = abstractTrace.find(node);
-    return projection != abstractTrace.end() &&
-           projection->second.getLocToVal().count(var->getId()) != 0;
+    return state(node).shapes().isDefined(adapter_.contentVariable(*var));
 }
 
 template <typename NumericalStateT>
@@ -592,10 +587,7 @@ void DenseAbstractInterpretation<NumericalStateT>::updateAbsValue(
     const ValVar* var, const AbstractValue& value, const ICFGNode* node)
 {
     if (adapter_.contains(*var))
-    {
         assignValue(ensureState(node), adapter_.variable(*var), value);
-    }
-    abstractTrace[node][var->getId()] = value;
 }
 
 template <typename NumericalStateT>
@@ -603,11 +595,57 @@ void DenseAbstractInterpretation<NumericalStateT>::updateAbsValue(
     const ObjVar* var, const AbstractValue& value, const ICFGNode* node)
 {
     if (adapter_.contains(*var))
-    {
         assignValue(ensureState(node), adapter_.contentVariable(*var), value);
-    }
-    abstractTrace[node].store(IntervalState::getVirtualMemAddress(var->getId()),
-                              value);
+}
+
+template <typename NumericalStateT>
+AbstractValue DenseAbstractInterpretation<NumericalStateT>::getMemoryValue(
+    u32_t address, const ICFGNode* node)
+{
+    const auto* object = SVFUtil::dyn_cast<ObjVar>(
+        svfir->getGNode(objectIdFromAddress(address)));
+    return object ? getAbsValue(object, node) : AbstractValue();
+}
+
+template <typename NumericalStateT>
+bool DenseAbstractInterpretation<NumericalStateT>::hasMemoryValue(
+    u32_t address, const ICFGNode* node) const
+{
+    const auto* object = SVFUtil::dyn_cast<ObjVar>(
+        svfir->getGNode(objectIdFromAddress(address)));
+    return object && hasAbsValue(object, node);
+}
+
+template <typename NumericalStateT>
+void DenseAbstractInterpretation<NumericalStateT>::updateMemoryValue(
+    u32_t address, const AbstractValue& value, const ICFGNode* node)
+{
+    const auto* object = SVFUtil::dyn_cast<ObjVar>(
+        svfir->getGNode(objectIdFromAddress(address)));
+    if (object)
+        updateAbsValue(object, value, node);
+}
+
+template <typename NumericalStateT>
+void DenseAbstractInterpretation<NumericalStateT>::markFreedMemory(
+    u32_t address, const ICFGNode* node)
+{
+    const auto* object = SVFUtil::dyn_cast<ObjVar>(
+        svfir->getGNode(objectIdFromAddress(address)));
+    if (object && adapter_.contains(*object))
+        ensureState(node).lifetimes().release(adapter_.location(*object));
+}
+
+template <typename NumericalStateT>
+bool DenseAbstractInterpretation<NumericalStateT>::isFreedMemory(
+    u32_t address, const ICFGNode* node) const
+{
+    if (denseTrace_.count(node) == 0)
+        return false;
+    const auto* object = SVFUtil::dyn_cast<ObjVar>(
+        svfir->getGNode(objectIdFromAddress(address)));
+    return object && adapter_.contains(*object) &&
+           state(node).lifetimes().mayBeFreed(adapter_.location(*object));
 }
 
 template <typename NumericalStateT>
@@ -672,13 +710,11 @@ void DenseAbstractInterpretation<NumericalStateT>::storeValue(
         if (strong)
         {
             assignValue(denseState, content, value);
-            rebuildCompatibilityValue(node, content);
             return;
         }
         AbstractValue joined = projectValue(denseState, content);
         joined.join_with(value);
         assignValue(denseState, content, joined);
-        rebuildCompatibilityValue(node, content);
     };
 
     if (pointees.isTop())
@@ -751,9 +787,7 @@ bool DenseAbstractInterpretation<NumericalStateT>::mergeStatesFromPredecessors(
     const ICFGNode* node)
 {
     DenseState merged = bottomState(node);
-    IntervalState mergedProjection;
     bool hasFeasiblePredecessor = false;
-    bool branchRefinedDomain = false;
 
     for (const ICFGEdge* edge : node->getInEdges())
     {
@@ -764,11 +798,7 @@ bool DenseAbstractInterpretation<NumericalStateT>::mergeStatesFromPredecessors(
         bool shouldMerge = false;
         const IntraCFGEdge* conditional = SVFUtil::dyn_cast<IntraCFGEdge>(edge);
         if (conditional)
-        {
-            shouldMerge =
-                !conditional->getCondition() ||
-                isBranchEdgeFeasible(conditional, abstractTrace[predecessor]);
-        }
+            shouldMerge = true;
         else if (SVFUtil::isa<CallCFGEdge>(edge))
         {
             shouldMerge = true;
@@ -790,96 +820,27 @@ bool DenseAbstractInterpretation<NumericalStateT>::mergeStatesFromPredecessors(
         DenseState source = state(predecessor);
         source.changeEnvironment(adapter_.environment(node->getFun()));
         if (conditional && conditional->getCondition())
-        {
             assumeBranch(conditional, source);
-            branchRefinedDomain = true;
-        }
         if (source.isBottom())
             continue;
 
         merged.joinWith(source);
-        mergedProjection.joinWith(abstractTrace[predecessor]);
         hasFeasiblePredecessor = true;
     }
 
     if (!hasFeasiblePredecessor)
         return false;
     denseTrace_.insert_or_assign(node, std::move(merged));
-    abstractTrace[node] = std::move(mergedProjection);
-    // Box join is pointwise interval join, so the already-joined compatibility
-    // projection is exact unless a branch assumption refined the domain copy.
-    // Relational domains may retain tighter projected bounds across a join.
-    if constexpr (std::is_same_v<NumericalStateT, AD::BoxState>)
-    {
-        if (branchRefinedDomain)
-    rebuildCompatibilityProjection(node);
-    }
-    else
-    {
-        rebuildCompatibilityProjection(node);
-    }
     return true;
 }
 
 template <typename NumericalStateT>
-void DenseAbstractInterpretation<NumericalStateT>::rebuildCompatibilityValue(
-    const ICFGNode* node, AD::Variable variable)
+bool DenseAbstractInterpretation<NumericalStateT>::isBranchEdgeFeasibleAt(
+    const IntraCFGEdge* edge, const ICFGNode* predecessor)
 {
-    DenseState& denseState = ensureState(node);
-    if (!denseState.numerical().environment().contains(variable))
-        return;
-    if (const ValVar* value = adapter_.value(variable))
-    {
-        if (value->getFunction() && value->getFunction() != node->getFun())
-            return;
-        AbstractValue projected = projectValue(denseState, variable);
-        if (value->isPointer())
-            projected.interval = IntervalValue::bottom();
-        abstractTrace[node][value->getId()] = std::move(projected);
-        return;
-    }
-    if (const ObjVar* object = adapter_.contentObject(variable))
-    {
-        abstractTrace[node].store(
-            IntervalState::getVirtualMemAddress(object->getId()),
-            projectValue(denseState, variable));
-    }
-}
-
-template <typename NumericalStateT>
-void DenseAbstractInterpretation<
-    NumericalStateT>::rebuildCompatibilityProjection(const ICFGNode* node)
-{
-    DenseState& denseState = ensureState(node);
-    IntervalState& projection = abstractTrace[node];
-    for (const auto& [id, cached] : projection.getVarToVal())
-    {
-        (void)cached;
-        const auto* value = SVFUtil::dyn_cast<ValVar>(svfir->getGNode(id));
-        if (!value || !adapter_.contains(*value))
-            continue;
-        const AD::Variable variable = adapter_.variable(*value);
-        if (!denseState.numerical().environment().contains(variable) ||
-            (value->getFunction() && value->getFunction() != node->getFun()))
-            continue;
-        AbstractValue projected = projectValue(denseState, variable);
-        if (value->isPointer())
-            projected.interval = IntervalValue::bottom();
-        projection[id] = std::move(projected);
-    }
-    for (const auto& [objectId, cached] : projection.getLocToVal())
-    {
-        (void)cached;
-        const auto* object =
-            SVFUtil::dyn_cast<ObjVar>(svfir->getGNode(objectId));
-        if (!object || !adapter_.contains(*object))
-            continue;
-        const AD::Variable variable = adapter_.contentVariable(*object);
-        if (!denseState.numerical().environment().contains(variable))
-            continue;
-        projection.store(IntervalState::getVirtualMemAddress(objectId),
-                         projectValue(denseState, variable));
-    }
+    DenseState candidate = state(predecessor);
+    assumeBranch(edge, candidate);
+    return !candidate.isBottom();
 }
 
 template class DenseAbstractInterpretation<AD::BoxState>;

@@ -800,6 +800,9 @@ const OptionMap<u32_t> Options::AEFunEntry(
 });
 const Option<u32_t> Options::WidenDelay(
     "widen-delay", "Loop Widen Delay", 3);
+const Option<bool> Options::AEDenseLegacyInterval(
+    "ae-dense-legacy-interval",
+    "Use the legacy map-backed IntervalState dense AE", false);
 const Option<bool> Options::AEDenseOctagon(
     "ae-dense-octagon",
     "Use the GMP Octagon as dense AE's numerical domain", false);

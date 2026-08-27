@@ -12,10 +12,10 @@
 namespace SVF
 {
 
-/// Dense AE storage backed by one complete AbstractDomain state per ICFG
-/// node. IntervalState remains only as a compatibility projection for legacy
-/// detectors and external-call models; merge, widening, and fixpoint checks
-/// operate on DomainProductState directly.
+/// Native dense AE storage backed by one complete AbstractDomain state per
+/// ICFG node. Values, memory, lifetimes, definedness, joins, widening, and
+/// fixpoint checks all operate on DomainProductState; no IntervalState trace is
+/// maintained by this implementation.
 template <typename NumericalStateT>
 class DenseAbstractInterpretation final : public AbstractInterpretation
 {
@@ -27,12 +27,13 @@ public:
 
     const AbstractDomain::AbstractState& getAbstractState(
         const ICFGNode* node) const override;
+    bool hasAbsState(const ICFGNode* node) const override;
 
-    const AbstractValue& getAbsValue(const ValVar* var,
+    AbstractValue getAbsValue(const ValVar* var,
                                      const ICFGNode* node) override;
-    const AbstractValue& getAbsValue(const ObjVar* var,
+    AbstractValue getAbsValue(const ObjVar* var,
                                      const ICFGNode* node) override;
-    const AbstractValue& getAbsValue(const SVFVar* var,
+    AbstractValue getAbsValue(const SVFVar* var,
                                      const ICFGNode* node) override;
 
     bool hasAbsValue(const ValVar* var, const ICFGNode* node) const override;
@@ -46,12 +47,22 @@ public:
     void updateAbsValue(const SVFVar* var, const AbstractValue& value,
                         const ICFGNode* node) override;
 
+    AbstractValue getMemoryValue(u32_t address, const ICFGNode* node) override;
+    bool hasMemoryValue(u32_t address, const ICFGNode* node) const override;
+    void updateMemoryValue(u32_t address, const AbstractValue& value,
+                           const ICFGNode* node) override;
+    void markFreedMemory(u32_t address, const ICFGNode* node) override;
+    bool isFreedMemory(u32_t address, const ICFGNode* node) const override;
+
     AbstractValue loadValue(const ValVar* pointer,
                             const ICFGNode* node) override;
     void storeValue(const ValVar* pointer, const AbstractValue& value,
                     const ICFGNode* node) override;
 
 protected:
+    void handleGlobalNode() override;
+    AbstractValue initializeObjectAddress(const ObjVar* object,
+                                          const ICFGNode* node) override;
     void resetAbstractState(const ICFGNode* node) override;
     void copyAbstractState(const ICFGNode* source,
                            const ICFGNode* destination) override;
@@ -70,6 +81,8 @@ protected:
                           const AbstractDomain::AbstractState& current,
                           const ICFGCycleWTO* cycle) override;
     bool mergeStatesFromPredecessors(const ICFGNode* node) override;
+    bool isBranchEdgeFeasibleAt(const IntraCFGEdge* edge,
+                                const ICFGNode* predecessor) override;
     void initializeDomainState(const ICFGNode* node) override;
     void assignDomainInterval(const ICFGNode* node, const SVFVar* target,
                               const IntervalValue& interval) override;
@@ -79,7 +92,6 @@ protected:
     void updateDomainCopyValue(const ICFGNode* node, const SVFVar* target,
                                const SVFVar* source,
                                bool exactMathematicalCopy) override;
-    void synchronizeDomainFromIntervalView(const ICFGNode* node) override;
 
 private:
     DenseState& ensureState(const ICFGNode* node);
@@ -97,9 +109,6 @@ private:
                         const IntervalValue& interval);
     void constrainInterval(DenseState& state, AbstractDomain::Variable variable,
                            const IntervalValue& interval);
-    void rebuildCompatibilityValue(const ICFGNode* node,
-                                   AbstractDomain::Variable variable);
-    void rebuildCompatibilityProjection(const ICFGNode* node);
     void assumeBranch(const IntraCFGEdge* edge, DenseState& state) const;
 
     SVFIRAdapter adapter_;

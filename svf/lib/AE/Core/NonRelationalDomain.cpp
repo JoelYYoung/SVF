@@ -155,19 +155,37 @@ const char* AddressState::name() const
 
 AddressSet AddressState::addressesOf(Variable variable) const
 {
-    const auto it = values_.find(variable);
-    return it == values_.end() ? defaultValue() : it->second;
+    const auto it = values_->find(variable);
+    return it == values_->end() ? defaultValue() : it->second;
 }
 
 void AddressState::assign(Variable variable, AddressSet addresses)
 {
-    values_[variable] = std::move(addresses);
+    writableValues()[variable] = std::move(addresses);
     normalize(variable);
 }
 
 void AddressState::forget(Variable variable)
 {
     assign(variable, AddressSet::top());
+}
+
+void AddressState::changeEnvironment(const VariableEnvironment& environment)
+{
+    const bool hasOutOfScope =
+        std::any_of(values_->begin(), values_->end(), [&](const auto& entry) {
+            return !environment.contains(entry.first);
+        });
+    if (!hasOutOfScope)
+        return;
+    Values& values = writableValues();
+    for (auto iterator = values.begin(); iterator != values.end();)
+    {
+        if (!environment.contains(iterator->first))
+            iterator = values.erase(iterator);
+        else
+            ++iterator;
+    }
 }
 
 bool AddressState::hasCompatibleDomain(const AbstractState& other) const
@@ -178,7 +196,14 @@ bool AddressState::hasCompatibleDomain(const AbstractState& other) const
 void AddressState::joinState(const AbstractState& other)
 {
     const auto& state = static_cast<const AddressState&>(other);
-    const std::set<Variable> variables = combinedKeys(values_, state.values_);
+    if (state.isBottomState())
+        return;
+    if (isBottomState())
+    {
+        *this = state;
+        return;
+    }
+    const std::set<Variable> variables = combinedKeys(*values_, * state.values_);
     const bool nextDefaultTop = defaultTop_ || state.defaultTop_;
     std::map<Variable, AddressSet> next;
     for (Variable variable : variables)
@@ -190,13 +215,20 @@ void AddressState::joinState(const AbstractState& other)
             next.emplace(variable, std::move(value));
     }
     defaultTop_ = nextDefaultTop;
-    values_ = std::move(next);
+    values_ = std::make_shared<Values>(std::move(next));
 }
 
 void AddressState::meetState(const AbstractState& other)
 {
     const auto& state = static_cast<const AddressState&>(other);
-    const std::set<Variable> variables = combinedKeys(values_, state.values_);
+    if (state.isTopState())
+        return;
+    if (isTopState())
+    {
+        *this = state;
+        return;
+    }
+    const std::set<Variable> variables = combinedKeys(*values_, * state.values_);
     const bool nextDefaultTop = defaultTop_ && state.defaultTop_;
     std::map<Variable, AddressSet> next;
     for (Variable variable : variables)
@@ -208,7 +240,7 @@ void AddressState::meetState(const AbstractState& other)
             next.emplace(variable, std::move(value));
     }
     defaultTop_ = nextDefaultTop;
-    values_ = std::move(next);
+    values_ = std::make_shared<Values>(std::move(next));
 }
 
 void AddressState::widenState(const AbstractState& next)
@@ -223,12 +255,12 @@ void AddressState::narrowState(const AbstractState& next)
 
 bool AddressState::isBottomState() const
 {
-    return !defaultTop_ && values_.empty();
+    return !defaultTop_ && values_->empty();
 }
 
 bool AddressState::isTopState() const
 {
-    return defaultTop_ && values_.empty();
+    return defaultTop_ && values_->empty();
 }
 
 bool AddressState::leqState(const AbstractState& other) const
@@ -236,7 +268,7 @@ bool AddressState::leqState(const AbstractState& other) const
     const auto& state = static_cast<const AddressState&>(other);
     if (defaultTop_ && !state.defaultTop_)
         return false;
-    const std::set<Variable> variables = combinedKeys(values_, state.values_);
+    const std::set<Variable> variables = combinedKeys(*values_, * state.values_);
     return std::all_of(variables.begin(), variables.end(),
                        [&](Variable variable) {
                            return addressesOf(variable).isSubsetOf(
@@ -249,7 +281,7 @@ std::string AddressState::stateToString() const
     std::ostringstream output;
     output << "default=" << defaultValue().toString() << " {";
     bool first = true;
-    for (const auto& [variable, value] : values_)
+    for (const auto& [variable, value] : * values_)
     {
         if (!first)
             output << ", ";
@@ -262,9 +294,16 @@ std::string AddressState::stateToString() const
 
 void AddressState::normalize(Variable variable)
 {
-    const auto it = values_.find(variable);
-    if (it != values_.end() && it->second == defaultValue())
-        values_.erase(it);
+    const auto it = values_->find(variable);
+    if (it != values_->end() && it->second == defaultValue())
+        writableValues().erase(variable);
+}
+
+AddressState::Values& AddressState::writableValues()
+{
+    if (values_.use_count() != 1)
+        values_ = std::make_shared<Values>(*values_);
+    return *values_;
 }
 
 AddressSet AddressState::defaultValue() const
@@ -321,6 +360,309 @@ LifetimeState LifetimeState::bottom()
     return LifetimeState(Lifetime::Bottom);
 }
 
+ValueShapeState ValueShapeState::top()
+{
+    return ValueShapeState(true, true);
+}
+
+ValueShapeState ValueShapeState::bottom()
+{
+    return ValueShapeState(false, false);
+}
+
+std::unique_ptr<AbstractState> ValueShapeState::clone() const
+{
+    return std::make_unique<ValueShapeState>(*this);
+}
+
+const char* ValueShapeState::name() const
+{
+    return "ValueShapeState";
+}
+
+ValueShapeState::Shape ValueShapeState::shapeOf(Variable variable) const
+{
+    return decode(encodedShapeOf(variable));
+}
+
+bool ValueShapeState::isDefined(Variable variable) const
+{
+    return shapeOf(variable).defined;
+}
+
+bool ValueShapeState::hasNumeric(Variable variable) const
+{
+    return shapeOf(variable).numeric;
+}
+
+void ValueShapeState::assign(Variable variable, bool numeric)
+{
+    setEncodedShape(variable, encode({true, numeric}));
+}
+
+void ValueShapeState::forget(Variable variable)
+{
+    setEncodedShape(variable, encode({false, false}));
+}
+
+void ValueShapeState::changeEnvironment(const VariableEnvironment& environment)
+{
+    std::vector<ShapePageEntry> next;
+    next.reserve(pages_.size());
+    for (const ShapePageEntry& entry : pages_)
+    {
+        std::shared_ptr<ShapePage> page = entry.page;
+        bool changed = false;
+        for (std::size_t offset = 0; offset < ShapesPerPage; ++offset)
+        {
+            if (page->shapes[offset] == default_)
+                continue;
+            const Variable variable(static_cast<std::uint32_t>(
+                entry.index * ShapesPerPage + offset));
+            if (!environment.contains(variable))
+            {
+                if (!changed)
+                    page = std::make_shared<ShapePage>(*page);
+                page->shapes[offset] = default_;
+                changed = true;
+            }
+        }
+        if (!pageIsDefault(*page, default_))
+            next.push_back({entry.index, std::move(page)});
+    }
+    pages_ = std::move(next);
+}
+
+bool ValueShapeState::hasCompatibleDomain(const AbstractState& other) const
+{
+    return other.isState<ValueShapeState>();
+}
+
+void ValueShapeState::joinState(const AbstractState& other)
+{
+    const auto& state = static_cast<const ValueShapeState&>(other);
+    if (state.isBottomState())
+        return;
+    if (isBottomState())
+    {
+        *this = state;
+        return;
+    }
+    const std::uint8_t nextDefault = default_ | state.default_;
+    std::vector<ShapePageEntry> next;
+    next.reserve(pages_.size() + state.pages_.size());
+    std::size_t lhs = 0;
+    std::size_t rhs = 0;
+    while (lhs < pages_.size() || rhs < state.pages_.size())
+    {
+        const std::size_t pageIndex =
+            rhs == state.pages_.size() ||
+                    (lhs < pages_.size() &&
+                     pages_[lhs].index < state.pages_[rhs].index)
+                ? pages_[lhs].index
+                : state.pages_[rhs].index;
+        const ShapePage* lhsPage =
+            lhs < pages_.size() && pages_[lhs].index == pageIndex
+                ? pages_[lhs++].page.get()
+                : nullptr;
+        const ShapePage* rhsPage =
+            rhs < state.pages_.size() && state.pages_[rhs].index == pageIndex
+                ? state.pages_[rhs++].page.get()
+                : nullptr;
+        auto page = std::make_shared<ShapePage>();
+        for (std::size_t offset = 0; offset < ShapesPerPage; ++offset)
+            page->shapes[offset] =
+                (lhsPage ? lhsPage->shapes[offset] : default_) |
+                (rhsPage ? rhsPage->shapes[offset] : state.default_);
+        if (!pageIsDefault(*page, nextDefault))
+            next.push_back({pageIndex, std::move(page)});
+    }
+    default_ = nextDefault;
+    pages_ = std::move(next);
+}
+
+void ValueShapeState::meetState(const AbstractState& other)
+{
+    const auto& state = static_cast<const ValueShapeState&>(other);
+    if (state.isTopState())
+        return;
+    if (isTopState())
+    {
+        *this = state;
+        return;
+    }
+    const std::uint8_t nextDefault = default_ & state.default_;
+    std::vector<ShapePageEntry> next;
+    next.reserve(pages_.size() + state.pages_.size());
+    std::size_t lhs = 0;
+    std::size_t rhs = 0;
+    while (lhs < pages_.size() || rhs < state.pages_.size())
+    {
+        const std::size_t pageIndex =
+            rhs == state.pages_.size() ||
+                    (lhs < pages_.size() &&
+                     pages_[lhs].index < state.pages_[rhs].index)
+                ? pages_[lhs].index
+                : state.pages_[rhs].index;
+        const ShapePage* lhsPage =
+            lhs < pages_.size() && pages_[lhs].index == pageIndex
+                ? pages_[lhs++].page.get()
+                : nullptr;
+        const ShapePage* rhsPage =
+            rhs < state.pages_.size() && state.pages_[rhs].index == pageIndex
+                ? state.pages_[rhs++].page.get()
+                : nullptr;
+        auto page = std::make_shared<ShapePage>();
+        for (std::size_t offset = 0; offset < ShapesPerPage; ++offset)
+            page->shapes[offset] =
+                (lhsPage ? lhsPage->shapes[offset] : default_) &
+                (rhsPage ? rhsPage->shapes[offset] : state.default_);
+        if (!pageIsDefault(*page, nextDefault))
+            next.push_back({pageIndex, std::move(page)});
+    }
+    default_ = nextDefault;
+    pages_ = std::move(next);
+}
+
+void ValueShapeState::widenState(const AbstractState& next)
+{
+    joinState(next);
+}
+
+void ValueShapeState::narrowState(const AbstractState& next)
+{
+    meetState(next);
+}
+
+bool ValueShapeState::isBottomState() const
+{
+    return default_ == encode({false, false}) && pages_.empty();
+}
+
+bool ValueShapeState::isTopState() const
+{
+    return default_ == encode({true, true}) && pages_.empty();
+}
+
+bool ValueShapeState::leqState(const AbstractState& other) const
+{
+    const auto& state = static_cast<const ValueShapeState&>(other);
+    if ((default_ & ~state.default_) != 0)
+        return false;
+    std::size_t lhs = 0;
+    std::size_t rhs = 0;
+    while (lhs < pages_.size() || rhs < state.pages_.size())
+    {
+        const std::size_t pageIndex =
+            rhs == state.pages_.size() ||
+                    (lhs < pages_.size() &&
+                     pages_[lhs].index < state.pages_[rhs].index)
+                ? pages_[lhs].index
+                : state.pages_[rhs].index;
+        const ShapePage* lhsPage =
+            lhs < pages_.size() && pages_[lhs].index == pageIndex
+                ? pages_[lhs++].page.get()
+                : nullptr;
+        const ShapePage* rhsPage =
+            rhs < state.pages_.size() && state.pages_[rhs].index == pageIndex
+                ? state.pages_[rhs++].page.get()
+                : nullptr;
+        for (std::size_t offset = 0; offset < ShapesPerPage; ++offset)
+        {
+            const std::uint8_t lhsShape =
+                lhsPage ? lhsPage->shapes[offset] : default_;
+            const std::uint8_t rhsShape =
+                rhsPage ? rhsPage->shapes[offset] : state.default_;
+            if ((lhsShape & ~rhsShape) != 0)
+                return false;
+        }
+    }
+    return true;
+}
+
+std::string ValueShapeState::stateToString() const
+{
+    std::ostringstream output;
+    const Shape defaultShape = decode(default_);
+    output << "default=(defined=" << defaultShape.defined
+           << ",numeric=" << defaultShape.numeric << ") {";
+    bool first = true;
+    for (const ShapePageEntry& entry : pages_)
+    {
+        for (std::size_t offset = 0; offset < ShapesPerPage; ++offset)
+        {
+            if (entry.page->shapes[offset] == default_)
+                continue;
+            if (!first)
+                output << ", ";
+            first = false;
+            const Shape shape = decode(entry.page->shapes[offset]);
+            output << entry.index * ShapesPerPage + offset
+                   << "=(defined=" << shape.defined
+                   << ",numeric=" << shape.numeric << ")";
+        }
+    }
+    output << "}";
+    return output.str();
+}
+
+std::uint8_t ValueShapeState::encode(Shape shape)
+{
+    return static_cast<std::uint8_t>((shape.defined ? 1U : 0U) |
+                                     (shape.numeric ? 2U : 0U));
+}
+
+ValueShapeState::Shape ValueShapeState::decode(std::uint8_t shape)
+{
+    return {(shape & 1U) != 0, (shape & 2U) != 0};
+}
+
+std::uint8_t ValueShapeState::encodedShapeOf(Variable variable) const
+{
+    const std::size_t pageIndex = variable.id() / ShapesPerPage;
+    const auto iterator =
+        std::lower_bound(pages_.begin(), pages_.end(), pageIndex,
+                         [](const ShapePageEntry& entry, std::size_t index) {
+                             return entry.index < index;
+                         });
+    if (iterator == pages_.end() || iterator->index != pageIndex)
+        return default_;
+    return iterator->page->shapes[variable.id() % ShapesPerPage];
+}
+
+void ValueShapeState::setEncodedShape(Variable variable, std::uint8_t shape)
+{
+    const std::size_t pageIndex = variable.id() / ShapesPerPage;
+    auto iterator =
+        std::lower_bound(pages_.begin(), pages_.end(), pageIndex,
+                         [](const ShapePageEntry& entry, std::size_t index) {
+                             return entry.index < index;
+                         });
+    if (iterator == pages_.end() || iterator->index != pageIndex)
+    {
+        if (shape == default_)
+            return;
+        auto page = std::make_shared<ShapePage>();
+        page->shapes.fill(default_);
+        iterator = pages_.insert(iterator, {pageIndex, std::move(page)});
+    }
+    else if (iterator->page.use_count() != 1)
+    {
+        iterator->page = std::make_shared<ShapePage>(*iterator->page);
+    }
+    iterator->page->shapes[variable.id() % ShapesPerPage] = shape;
+    if (pageIsDefault(*iterator->page, default_))
+        pages_.erase(iterator);
+}
+
+bool ValueShapeState::pageIsDefault(const ShapePage& page,
+                                    std::uint8_t defaultShape)
+{
+    return std::all_of(
+        page.shapes.begin(), page.shapes.end(),
+        [defaultShape](std::uint8_t shape) { return shape == defaultShape; });
+}
+
 std::unique_ptr<AbstractState> LifetimeState::clone() const
 {
     return std::make_unique<LifetimeState>(*this);
@@ -333,8 +675,8 @@ const char* LifetimeState::name() const
 
 Lifetime LifetimeState::statusOf(Location location) const
 {
-    const auto it = values_.find(location);
-    return it == values_.end() ? defaultValue_ : it->second;
+    const auto it = values_->find(location);
+    return it == values_->end() ? defaultValue_ : it->second;
 }
 
 void LifetimeState::allocate(Location location)
@@ -369,7 +711,14 @@ bool LifetimeState::hasCompatibleDomain(const AbstractState& other) const
 void LifetimeState::joinState(const AbstractState& other)
 {
     const auto& state = static_cast<const LifetimeState&>(other);
-    const std::set<Location> locations = combinedKeys(values_, state.values_);
+    if (state.isBottomState())
+        return;
+    if (isBottomState())
+    {
+        *this = state;
+        return;
+    }
+    const std::set<Location> locations = combinedKeys(*values_, * state.values_);
     const Lifetime nextDefault = join(defaultValue_, state.defaultValue_);
     std::map<Location, Lifetime> next;
     for (Location location : locations)
@@ -380,13 +729,20 @@ void LifetimeState::joinState(const AbstractState& other)
             next.emplace(location, value);
     }
     defaultValue_ = nextDefault;
-    values_ = std::move(next);
+    values_ = std::make_shared<Values>(std::move(next));
 }
 
 void LifetimeState::meetState(const AbstractState& other)
 {
     const auto& state = static_cast<const LifetimeState&>(other);
-    const std::set<Location> locations = combinedKeys(values_, state.values_);
+    if (state.isTopState())
+        return;
+    if (isTopState())
+    {
+        *this = state;
+        return;
+    }
+    const std::set<Location> locations = combinedKeys(*values_, * state.values_);
     const Lifetime nextDefault = meet(defaultValue_, state.defaultValue_);
     std::map<Location, Lifetime> next;
     for (Location location : locations)
@@ -397,7 +753,7 @@ void LifetimeState::meetState(const AbstractState& other)
             next.emplace(location, value);
     }
     defaultValue_ = nextDefault;
-    values_ = std::move(next);
+    values_ = std::make_shared<Values>(std::move(next));
 }
 
 void LifetimeState::widenState(const AbstractState& next)
@@ -412,12 +768,12 @@ void LifetimeState::narrowState(const AbstractState& next)
 
 bool LifetimeState::isBottomState() const
 {
-    return defaultValue_ == Lifetime::Bottom && values_.empty();
+    return defaultValue_ == Lifetime::Bottom && values_->empty();
 }
 
 bool LifetimeState::isTopState() const
 {
-    return defaultValue_ == Lifetime::MaybeFreed && values_.empty();
+    return defaultValue_ == Lifetime::MaybeFreed && values_->empty();
 }
 
 bool LifetimeState::leqState(const AbstractState& other) const
@@ -425,7 +781,7 @@ bool LifetimeState::leqState(const AbstractState& other) const
     const auto& state = static_cast<const LifetimeState&>(other);
     if (!SVF::AbstractDomain::isSubsetOf(defaultValue_, state.defaultValue_))
         return false;
-    const std::set<Location> locations = combinedKeys(values_, state.values_);
+    const std::set<Location> locations = combinedKeys(*values_, * state.values_);
     return std::all_of(locations.begin(), locations.end(),
                        [&](Location location) {
                            return SVF::AbstractDomain::isSubsetOf(
@@ -439,7 +795,7 @@ std::string LifetimeState::stateToString() const
     output << "default=" << SVF::AbstractDomain::toString(defaultValue_)
            << " {";
     bool first = true;
-    for (const auto& [location, value] : values_)
+    for (const auto& [location, value] : * values_)
     {
         if (!first)
             output << ", ";
@@ -453,9 +809,16 @@ std::string LifetimeState::stateToString() const
 void LifetimeState::set(Location location, Lifetime lifetime)
 {
     if (lifetime == defaultValue_)
-        values_.erase(location);
+        writableValues().erase(location);
     else
-        values_[location] = lifetime;
+        writableValues()[location] = lifetime;
+}
+
+LifetimeState::Values& LifetimeState::writableValues()
+{
+    if (values_.use_count() != 1)
+        values_ = std::make_shared<Values>(*values_);
+    return *values_;
 }
 
 Variable MemoryLayout::contentOf(Location location) const

@@ -1454,6 +1454,16 @@ void testNonRelationalState()
     addressTop.forget(pointer);
     require(addressTop.addressesOf(pointer).isTop(),
             "AddressState forget must assign unknown addresses");
+    AddressState copiedAddresses = addressBottom;
+    copiedAddresses.assign(pointer, AddressSet::singleton(second));
+    require(addressBottom.addressesOf(pointer).contains(first) &&
+                !addressBottom.addressesOf(pointer).contains(second) &&
+                copiedAddresses.addressesOf(pointer).contains(second),
+            "address-state copies must detach only when written");
+    addressBottom.changeEnvironment(VariableEnvironment());
+    require(addressBottom.isBottom(),
+            "AddressState environment changes must discard out-of-scope "
+            "address facts");
 
     LifetimeState lifetime = LifetimeState::bottom();
     lifetime.allocate(first);
@@ -1466,6 +1476,8 @@ void testNonRelationalState()
     alive.allocate(first);
     LifetimeState freed = alive;
     freed.release(first);
+    require(!alive.mayBeFreed(first) && freed.mustBeFreed(first),
+            "lifetime-state copies must detach only when written");
     LifetimeState maybe = alive;
     maybe.joinWith(freed);
     require(maybe.statusOf(first) == Lifetime::MaybeFreed &&
@@ -1475,6 +1487,31 @@ void testNonRelationalState()
     maybe.narrowWith(freed);
     require(maybe.isEquivalentTo(freed) == CheckResult::True,
             "Lifetime narrowing must meet a more precise successor");
+
+    ValueShapeState shapes = ValueShapeState::bottom();
+    require(!shapes.isDefined(pointer),
+            "missing value shape must represent an undefined value");
+    shapes.assign(pointer, false);
+    require(shapes.isDefined(pointer) && !shapes.hasNumeric(pointer),
+            "address-only and explicit bottom values need a non-numeric shape");
+    ValueShapeState numericShapes = ValueShapeState::bottom();
+    numericShapes.assign(pointer, true);
+    shapes.joinWith(numericShapes);
+    require(shapes.isDefined(pointer) && shapes.hasNumeric(pointer),
+            "shape join must preserve a numerical value from either path");
+    const Variable distantShape(4097);
+    shapes.assign(distantShape, true);
+    ValueShapeState copiedShapes = shapes;
+    copiedShapes.assign(pointer, false);
+    copiedShapes.forget(distantShape);
+    require(shapes.hasNumeric(pointer) && shapes.hasNumeric(distantShape) &&
+                copiedShapes.isDefined(pointer) &&
+                !copiedShapes.hasNumeric(pointer) &&
+                !copiedShapes.isDefined(distantShape),
+            "shape pages must detach on write without modifying their source");
+    shapes.changeEnvironment(VariableEnvironment());
+    require(!shapes.isDefined(pointer),
+            "environment changes must discard out-of-scope value shapes");
 
     const Variable source(2);
     const Variable target(3);
@@ -1492,6 +1529,10 @@ void testNonRelationalState()
     state.allocate(first);
     state.assignAddress(pointer, AddressSet::singleton(first));
     state.assignNumeric(source, LinearExpression(Rational(7)));
+    require(state.shapes().isDefined(pointer) &&
+                !state.shapes().hasNumeric(pointer) &&
+                state.shapes().hasNumeric(source),
+            "product assignments must update value shape metadata");
     state.store(pointer, source);
     state.load(target, pointer);
     const Interval loaded = state.numerical().bound(target);
@@ -1499,6 +1540,23 @@ void testNonRelationalState()
                 loaded.lower().value() == Rational(7) &&
                 loaded.upper().value() == Rational(7),
             "strong store followed by load must preserve the exact value");
+
+    DomainProductState<BoxState> unknownLoad = state;
+    unknownLoad.addresses().forget(pointer);
+    unknownLoad.load(target, pointer);
+    require(unknownLoad.shapes().hasNumeric(target) &&
+                unknownLoad.numerical().bound(target).isTop() &&
+                unknownLoad.addresses().addressesOf(target).isTop(),
+            "a load through an unknown pointer must produce a fully unknown "
+            "defined value");
+    DomainProductState<BoxState> emptyLoad = state;
+    emptyLoad.addresses().assign(pointer, AddressSet::bottom());
+    emptyLoad.load(target, pointer);
+    require(emptyLoad.shapes().isDefined(target) &&
+                !emptyLoad.shapes().hasNumeric(target) &&
+                emptyLoad.addresses().addressesOf(target).isBottom(),
+            "a load through an empty points-to set must produce explicit "
+            "abstract bottom");
     state.release(pointer);
     require(state.lifetimes().mustBeFreed(first),
             "release through a singleton address must update lifetime");

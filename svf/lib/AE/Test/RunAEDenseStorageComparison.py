@@ -1,6 +1,12 @@
 #!/usr/bin/env python3
 
-"""Interleaved end-to-end dense-AE timing for storage implementations."""
+"""Interleaved end-to-end dense-AE timing for storage implementations.
+
+Fixtures can be reproduced with GenerateAEDenseBenchmark.py and an LLVM clang:
+
+  GenerateAEDenseBenchmark.py --blocks 64 > fixture.c
+  clang -O0 -emit-llvm -c fixture.c -o fixture.bc
+"""
 
 import argparse
 import csv
@@ -11,21 +17,29 @@ import time
 def implementation(value):
     fields = value.split("=", 1)
     if len(fields) != 2:
-        raise argparse.ArgumentTypeError("implementation must be NAME=AE,EXTAPI")
-    paths = fields[1].split(",", 1)
-    if len(paths) != 2:
-        raise argparse.ArgumentTypeError("implementation must be NAME=AE,EXTAPI")
-    return fields[0], paths[0], paths[1]
+        raise argparse.ArgumentTypeError(
+            "implementation must be NAME=AE,EXTAPI[,native|legacy]")
+    parts = fields[1].split(",")
+    if len(parts) not in (2, 3):
+        raise argparse.ArgumentTypeError(
+            "implementation must be NAME=AE,EXTAPI[,native|legacy]")
+    mode = parts[2] if len(parts) == 3 else "native"
+    if mode not in ("native", "legacy"):
+        raise argparse.ArgumentTypeError("mode must be native or legacy")
+    return fields[0], parts[0], parts[1], mode
 
 
-def measure(executable, extapi, fixture, library_path):
+def measure(executable, extapi, mode, fixture, library_path):
     arguments = [
         executable,
         "-ae-sparsity=dense",
+        "-ae-dense-octagon=false",
         "-stat=false",
         "-extapi=" + extapi,
         fixture,
     ]
+    if mode == "legacy":
+        arguments.insert(2, "-ae-dense-legacy-interval=true")
     start = time.perf_counter_ns()
     pid = os.fork()
     if pid == 0:
@@ -62,15 +76,17 @@ def main():
             "user_seconds", "system_seconds", "peak_rss_raw",
         ])
         for fixture in options.fixture:
-            for _, executable, extapi in options.implementation:
-                measure(executable, extapi, fixture, options.library_path)
+            for _, executable, extapi, mode in options.implementation:
+                measure(executable, extapi, mode, fixture,
+                        options.library_path)
             for repetition in range(options.repetitions):
                 offset = repetition % len(options.implementation)
                 ordered = (options.implementation[offset:] +
                            options.implementation[:offset])
-                for name, executable, extapi in ordered:
+                for name, executable, extapi, mode in ordered:
                     wall, user, system, rss = measure(
-                        executable, extapi, fixture, options.library_path)
+                        executable, extapi, mode, fixture,
+                        options.library_path)
                     writer.writerow([
                         name, os.path.basename(fixture), repetition + 1,
                         wall, f"{user:.9f}", f"{system:.9f}", rss,

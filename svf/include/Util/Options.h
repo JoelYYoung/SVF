@@ -236,6 +236,9 @@ public:
     static const OptionMap<u32_t> AESparsity;
     static const OptionMap<u32_t> AEFunEntry;
     static const Option<u32_t> WidenDelay;
+    /// Keep the historical map-backed IntervalState dense engine available as
+    /// a semantic and performance baseline.
+    static const Option<bool> AEDenseLegacyInterval;
     /// Enable the opt-in per-function Octagon reduced product.
     static const Option<bool> AEDenseOctagon;
     /// Cap tracked integer ValVars per function (Octagon is quadratic).

@@ -60,6 +60,9 @@ bool hasIntegerBounds(const AD::Interval& interval, s64_t lower, s64_t upper)
            interval.upper().value() == AD::Rational(upper);
 }
 
+const SVFVar* findValueIfPresent(const SVFIR& graph, const std::string& name);
+const SVFVar* requireValue(const SVFIR& graph, const std::string& name);
+
 void validateSparseStorage(AbstractInterpretation& analysis)
 {
     if (analysis.getIntervalTraceView().empty())
@@ -75,6 +78,79 @@ void validateSparseStorage(AbstractInterpretation& analysis)
     }
     std::cout << "AE_STORAGE_OBSERVATION mode=sparse"
               << " authoritative_state=IntervalState\n";
+}
+
+void validateLegacyDenseStorage(AbstractInterpretation& analysis)
+{
+    if (analysis.getIntervalTraceView().empty())
+        throw std::runtime_error("legacy dense AE produced an empty trace");
+    for (const auto& [node, state] : analysis.getIntervalTraceView())
+    {
+        (void)state;
+        if (!analysis.getAbstractState(node).isState<IntervalState>())
+            throw std::runtime_error(
+                "legacy dense AE stopped using IntervalState storage");
+    }
+    std::cout << "AE_STORAGE_OBSERVATION mode=dense-legacy"
+              << " authoritative_state=IntervalState\n";
+}
+
+void validateLegacyDenseSemantics(const SVFIR& graph,
+                                  AbstractInterpretation& analysis)
+{
+    const bool loopFixture =
+        findValueIfPresent(graph, "loop_result") != nullptr;
+    const SVFVar* result =
+        requireValue(graph, loopFixture ? "loop_result" : "z");
+    // This is intentionally the historical baseline, not an equivalence
+    // oracle: the original IntervalState engine loses these loop/branch
+    // bounds, while native Box retains [4,4] and [1,11], respectively.
+    const IntervalValue expected = IntervalValue::top();
+    bool sawExpectedResult = false;
+    for (const ICFGNode* node : analysis.getAnalyzedNodes())
+    {
+        if (!analysis.hasAbsValue(result, node))
+            continue;
+        const AbstractValue value = analysis.getAbsValue(result, node);
+        if (value.isInterval() && value.getInterval().equals(expected))
+            sawExpectedResult = true;
+    }
+    if (!sawExpectedResult)
+    {
+        std::cerr << "legacy result trace for " << result->getValueName()
+                  << ":\n";
+        for (const ICFGNode* node : analysis.getAnalyzedNodes())
+        {
+            if (analysis.hasAbsValue(result, node))
+                std::cerr << "  node " << node->getId() << " = "
+                          << analysis.getAbsValue(result, node).toString()
+                          << '\n';
+        }
+        throw std::runtime_error(
+            "legacy dense AE changed its historical interval result");
+    }
+    std::cout << "AE_LEGACY_OBSERVATION fixture="
+              << (loopFixture ? "loop" : "reduced-product")
+              << " historical_result=top\n";
+}
+
+template <typename DenseStateT>
+void validateNativeDenseStorage(AbstractInterpretation& analysis)
+{
+    if (!analysis.getIntervalTraceView().empty())
+        throw std::runtime_error(
+            "native dense AE retained a compatibility IntervalState trace");
+    if (analysis.getAnalyzedNodes().empty())
+        throw std::runtime_error("native dense AE analyzed no nodes");
+    for (const ICFGNode* node : analysis.getAnalyzedNodes())
+    {
+        if (!analysis.getAbstractState(node).isState<DenseStateT>())
+            throw std::runtime_error(
+                "native dense AE exposed a non-product authoritative state");
+    }
+    std::cout << "AE_STORAGE_OBSERVATION mode=dense-native"
+              << " authoritative_state=DomainProductState"
+              << " compatibility_trace_entries=0\n";
 }
 
 const SVFVar* findValueIfPresent(const SVFIR& graph, const std::string& name)
@@ -119,9 +195,8 @@ void validateReducedProductFixture(const SVFIR& graph,
     bool sawReducedRelation = false;
     bool analyzedImpossibleValue = false;
 
-    for (const auto& [node, state] : analysis.getIntervalTraceView())
+    for (const ICFGNode* node : analysis.getAnalyzedNodes())
     {
-        (void)state;
         if (analysis.hasAbsValue(impossible, node))
             analyzedImpossibleValue = true;
         if (!analysis.hasAbsValue(result, node))
@@ -142,16 +217,15 @@ void validateReducedProductFixture(const SVFIR& graph,
         if (hasIntegerBounds(octagon.bound(adapter.variable(*resultValue)), 1,
                              6) &&
             octagon.entails(AD::equal(inputExpression, affineExpression)) ==
-                    AD::CheckResult::True)
+                AD::CheckResult::True)
             sawReducedRelation = true;
     }
 
     if (!sawReducedInterval || !sawReducedRelation || analyzedImpossibleValue)
     {
         std::cerr << "relational integration trace:\n";
-        for (const auto& [node, state] : analysis.getIntervalTraceView())
+        for (const ICFGNode* node : analysis.getAnalyzedNodes())
         {
-            (void)state;
             bool wroteNode = false;
             for (const SVFVar* value : {input, affine, result, impossible})
             {
@@ -210,9 +284,8 @@ void validateLoopFixture(const SVFIR& graph, AbstractInterpretation& analysis)
     bool sawExitRelation = false;
     bool analyzedImpossibleValue = false;
 
-    for (const auto& [node, state] : analysis.getIntervalTraceView())
+    for (const ICFGNode* node : analysis.getAnalyzedNodes())
     {
-        (void)state;
         if (analysis.hasAbsValue(impossible, node))
             analyzedImpossibleValue = true;
         if (!analysis.hasAbsValue(result, node))
@@ -226,17 +299,16 @@ void validateLoopFixture(const SVFIR& graph, AbstractInterpretation& analysis)
                 .numerical()
                 .bound(adapter.variable(*inductionValue));
         if (inductionBound.lower().isFinite() &&
-                inductionBound.lower().value() == AD::Rational(4))
+            inductionBound.lower().value() == AD::Rational(4))
             sawExitRelation = true;
     }
 
     if (!sawPreciseResultInterval || !sawExitRelation ||
-            analyzedImpossibleValue)
+        analyzedImpossibleValue)
     {
         std::cerr << "loop integration trace:\n";
-        for (const auto& [node, state] : analysis.getIntervalTraceView())
+        for (const ICFGNode* node : analysis.getAnalyzedNodes())
         {
-            (void)state;
             std::cerr << "  node " << node->getId() << ':';
             for (const SVFVar* value : {induction, result, impossible})
             {
@@ -272,8 +344,8 @@ void validateLoopFixture(const SVFIR& graph, AbstractInterpretation& analysis)
             "post-loop infeasible branch remained reachable");
 
     std::cout << "AE_RELATIONAL_OBSERVATION fixture=loop"
-        << " result_interval=[4,4] induction_lower_bound=4"
-        << " impossible_reachable=0\n";
+              << " result_interval=[4,4] induction_lower_bound=4"
+              << " impossible_reachable=0\n";
 }
 
 void validateBoxProjection(const SVFIR& graph, AbstractInterpretation& analysis)
@@ -291,9 +363,8 @@ void validateBoxProjection(const SVFIR& graph, AbstractInterpretation& analysis)
     const AD::Variable resultVariable = adapter.variable(*resultValue);
     bool sawExpectedProjection = false;
 
-    for (const auto& [node, projection] : analysis.getIntervalTraceView())
+    for (const ICFGNode* node : analysis.getAnalyzedNodes())
     {
-        (void)projection;
         if (!analysis.hasAbsValue(result, node))
             continue;
         const AbstractValue& cached = analysis.getAbsValue(result, node);
@@ -311,9 +382,8 @@ void validateBoxProjection(const SVFIR& graph, AbstractInterpretation& analysis)
     {
         std::cerr << "Box projection trace for " << result->getValueName()
                   << ":\n";
-        for (const auto& [node, projection] : analysis.getIntervalTraceView())
+        for (const ICFGNode* node : analysis.getAnalyzedNodes())
         {
-            (void)projection;
             std::cerr << "  node " << node->getId() << " projection=";
             if (analysis.hasAbsValue(result, node))
                 std::cerr << analysis.getAbsValue(result, node).toString();
@@ -358,12 +428,26 @@ int main(int argc, char** argv)
 
         if (Options::AESparsity() != AbstractInterpretation::Dense)
             validateSparseStorage(analysis);
+        else if (Options::AEDenseLegacyInterval())
+        {
+            validateLegacyDenseStorage(analysis);
+            validateLegacyDenseSemantics(*graph, analysis);
+        }
         else if (!Options::AEDenseOctagon())
+        {
+            validateNativeDenseStorage<DenseBoxState>(analysis);
             validateBoxProjection(*graph, analysis);
+        }
         else if (findValueIfPresent(*graph, "loop_result"))
+        {
+            validateNativeDenseStorage<DenseOctagonState>(analysis);
             validateLoopFixture(*graph, analysis);
+        }
         else
+        {
+            validateNativeDenseStorage<DenseOctagonState>(analysis);
             validateReducedProductFixture(*graph, analysis);
+        }
 
         AndersenWaveDiff::releaseAndersenWaveDiff();
         LLVMModuleSet::releaseLLVMModuleSet();

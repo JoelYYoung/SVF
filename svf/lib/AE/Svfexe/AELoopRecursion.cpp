@@ -88,12 +88,8 @@ void AbstractInterpretation::skipRecursionWithTop(const CallICFGNode *callNode)
                         {
                             for (const auto& addr : addrs.getAddrs())
                             {
-                                const NodeID objectId =
-                                    getIntervalStateView(callNode)
-                                        .getIDFromAddr(addr);
-                                updateAbsValue(
-                                    svfir->getSVFVar(objectId),
-                                    IntervalValue::top(), callNode);
+                                updateMemoryValue(addr, IntervalValue::top(),
+                                                  callNode);
                             }
                         }
                     }

@@ -145,6 +145,8 @@ AbstractInterpretation& AbstractInterpretation::getAEInstance()
         case AESparsity::Dense:
         default:
 #ifdef SVF_BUILD_ABSTRACT_DOMAINS
+            if (Options::AEDenseLegacyInterval())
+                return new AbstractInterpretation();
             if (Options::AEDenseOctagon())
             {
                 const std::size_t dimensions =
@@ -202,10 +204,6 @@ void AbstractInterpretation::updateDomainCopyValue(
 {
 }
 
-void AbstractInterpretation::synchronizeDomainFromIntervalView(
-    const ICFGNode*)
-{
-}
 
 /// Collect entry point functions for analysis.
 /// In main mode, entry is main/svf.main. In no-main mode,
@@ -349,6 +347,14 @@ void AbstractInterpretation::handleGlobalNode()
     AbstractValue blkPtrValue(IntervalValue::top());
     blkPtrValue.getAddrs().insert(BlackHoleObjAddr);
     abstractTrace[node][PAG::getPAG()->getBlkPtr()] = blkPtrValue;
+}
+
+AbstractValue AbstractInterpretation::initializeObjectAddress(
+    const ObjVar* object, const ICFGNode* node)
+{
+    IntervalState& state = getIntervalStateView(node);
+    state.initObjVar(object);
+    return state[object->getId()];
 }
 
 /// Pull-based state merge: for each predecessor that has an abstract state,
@@ -809,6 +815,13 @@ bool AbstractInterpretation::isBranchEdgeFeasible(const IntraCFGEdge* edge,
     return intervalFeasible;
 }
 
+bool AbstractInterpretation::isBranchEdgeFeasibleAt(
+    const IntraCFGEdge* edge, const ICFGNode* predecessor)
+{
+    IntervalState state = getIntervalStateView(predecessor);
+    return isBranchEdgeFeasible(edge, state);
+}
+
 /**
  * Handle an ICFG node: execute statements on the current abstract state.
  * The node's pre-state must already be in getIntervalStateView(node) (set by
@@ -938,7 +951,6 @@ void AbstractInterpretation::handleExtCall(const CallICFGNode *callNode)
     {
         detector->handleStubFunctions(callNode);
     }
-    synchronizeDomainFromIntervalView(callNode);
 }
 
 /// Get callee function: directly for direct calls, via pointer analysis for indirect calls
@@ -963,7 +975,7 @@ const FunObjVar* AbstractInterpretation::getCallee(const CallICFGNode* callNode)
         return nullptr;
 
     NodeID addr = *Addrs.getAddrs().begin();
-    const SVFVar* func_var = getSVFVar(getIntervalStateView(callNode).getIDFromAddr(addr));
+    const SVFVar* func_var = getSVFVar(objectIdFromAddress(addr));
     return SVFUtil::dyn_cast<FunObjVar>(func_var);
 }
 
@@ -1070,13 +1082,6 @@ void AbstractInterpretation::handleSVFStatement(const SVFStmt *stmt)
     // NullPtr should not be changed by any statement. If the entry is missing
     // (not yet auto-inserted) we treat that as "unchanged" — only check the
     // entry if it actually exists.
-    {
-        const auto& vmap = getIntervalStateView(stmt->getICFGNode()).getVarToVal();
-        auto it = vmap.find(IRGraph::NullPtr);
-        (void)it; // Suppress warning of unused variable under release build
-        assert(it == vmap.end() ||
-               (!it->second.isInterval() && !it->second.isAddr()));
-    }
 }
 
 void AbstractInterpretation::updateStateOnGep(const GepStmt *gep)
@@ -1116,7 +1121,6 @@ void AbstractInterpretation::updateStateOnPhi(const PhiStmt *phi)
         const ICFGNode* opICFGNode = phi->getOpICFGNode(i);
         if (hasAbsState(opICFGNode))
         {
-            IntervalState tmpState = getIntervalStateView(opICFGNode);
             const AbstractValue& opVal = getAbsValue(phi->getOpVar(i), opICFGNode);
             const ICFGEdge* edge = icfg->getICFGEdge(opICFGNode, icfgNode, ICFGEdge::IntraCF);
             if (edge)
@@ -1124,7 +1128,7 @@ void AbstractInterpretation::updateStateOnPhi(const PhiStmt *phi)
                 const IntraCFGEdge* intraEdge = SVFUtil::cast<IntraCFGEdge>(edge);
                 if (intraEdge->getCondition())
                 {
-                    if (isBranchEdgeFeasible(intraEdge, tmpState))
+                    if (isBranchEdgeFeasibleAt(intraEdge, opICFGNode))
                         rhs.join_with(opVal);
                 }
                 else
@@ -1174,19 +1178,12 @@ void AbstractInterpretation::updateStateOnRet(const RetPE *retPE)
 void AbstractInterpretation::updateStateOnAddr(const AddrStmt *addr)
 {
     const ICFGNode* node = addr->getICFGNode();
-    // initObjVar mutates _varToAbsVal/_addrToAbsVal directly, so we need
-    // mutable access; route via the sparsity-aware state API.
-    IntervalState& as = getIntervalStateView(node);
-    as.initObjVar(SVFUtil::cast<ObjVar>(addr->getRHSVar()));
-    synchronizeDomainFromIntervalView(node);
-    // AddrStmt: lhs(ValVar) = &rhs(ObjVar).
-    // as[rhsId] stores the ObjVar's virtual address in _varToVal,
-    // NOT the object contents. So we must use as[] directly for ObjVar.
-    u32_t rhsId = addr->getRHSVarID();
+    AbstractValue value = initializeObjectAddress(
+        SVFUtil::cast<ObjVar>(addr->getRHSVar()), node);
     if (addr->getRHSVar()->getType()->getKind() == SVFType::SVFIntegerTy)
-        as[rhsId].getInterval().meet_with(utils->getRangeLimitFromType(addr->getRHSVar()->getType()));
-    // LHS is a ValVar (pointer), write through the API
-    updateAbsValue(addr->getLHSVar(), as[rhsId], node);
+        value.getInterval().meet_with(
+            utils->getRangeLimitFromType(addr->getRHSVar()->getType()));
+    updateAbsValue(addr->getLHSVar(), value, node);
 }
 
 

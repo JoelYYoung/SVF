@@ -714,7 +714,7 @@ void SemiSparseAbstractInterpretation::updateAbsValue(const ValVar* var,
     abstractTrace[defNode ? defNode : node][var->getId()] = val;
 }
 
-const AbstractValue& SemiSparseAbstractInterpretation::getAbsValue(
+AbstractValue SemiSparseAbstractInterpretation::getAbsValue(
     const ValVar* var, const ICFGNode* node)
 {
     // Read from the var's def-site (where updateAbsValue wrote it).

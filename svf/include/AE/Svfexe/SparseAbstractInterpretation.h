@@ -63,7 +63,7 @@ protected:
                           const AbstractDomain::AbstractState& cur,
                           const ICFGCycleWTO* cycle) override;
 
-    const AbstractValue& getAbsValue(const ValVar* var, const ICFGNode* node) override;
+    AbstractValue getAbsValue(const ValVar* var, const ICFGNode* node) override;
     using AbstractInterpretation::getAbsValue;
 
     bool hasAbsValue(const ValVar* var, const ICFGNode* node) const override;
