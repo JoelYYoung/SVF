@@ -61,7 +61,16 @@ add_test(NAME abstract-domain-state COMMAND svf-abstract-domain-state-test)
 
 add_executable(svf-box-storage-benchmark BoxStorageBenchmark.cpp)
 target_link_libraries(svf-box-storage-benchmark PRIVATE AbstractDomainCore)
-foreach(box_storage_scheme IN ITEMS dimension-page variable-page variable-hash)
+foreach(box_storage_scheme IN ITEMS
+        dimension-page
+        variable-page
+        dimension-hash-page
+        variable-hash-page
+        dimension-radix-page
+        variable-radix-page
+        variable-hash
+        variable-cow-hash
+        variable-radix-cow)
   add_test(
     NAME box-storage-${box_storage_scheme}-smoke
     COMMAND svf-box-storage-benchmark

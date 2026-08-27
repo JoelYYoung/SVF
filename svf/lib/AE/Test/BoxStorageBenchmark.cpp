@@ -390,6 +390,716 @@ private:
     std::vector<Entry> pages_;
 };
 
+/// Same page payload and page-level COW as PagedStorage, but with a hash-table
+/// directory. The directory is held by value so state copies measure the real
+/// std::unordered_map copy cost while Interval payloads remain page-shared.
+template <std::size_t PageSize, bool VariableKeyed> class HashPagedStorage
+{
+public:
+    explicit HashPagedStorage(VariableEnvironment environment)
+        : environment_(std::move(environment))
+    {
+    }
+
+    const VariableEnvironment& environment() const
+    {
+        return environment_;
+    }
+
+    const Interval& bound(Variable variable) const
+    {
+        if (!environment_.contains(variable))
+            throw std::invalid_argument("variable is outside the environment");
+        return boundAt(storageKey(variable));
+    }
+
+    void set(Variable variable, Interval interval)
+    {
+        if (!environment_.contains(variable))
+            throw std::invalid_argument("variable is outside the environment");
+        setAt(storageKey(variable), std::move(interval));
+    }
+
+    void changeEnvironment(const VariableEnvironment& nextEnvironment,
+                           bool initializeNewVariablesToZero = false)
+    {
+        if (environment_ == nextEnvironment)
+            return;
+        validateTypes(nextEnvironment);
+        if constexpr (VariableKeyed)
+        {
+            for (Variable variable : boundedVariables())
+            {
+                if (!nextEnvironment.contains(variable))
+                    eraseAt(variable.id());
+            }
+            if (initializeNewVariablesToZero)
+            {
+                for (const VariableDeclaration& item :
+                     nextEnvironment.variables())
+                {
+                    if (!environment_.contains(item.variable))
+                        setAt(item.variable.id(),
+                              Interval::singleton(Rational()));
+                }
+            }
+            environment_ = nextEnvironment;
+            return;
+        }
+
+        HashPagedStorage next(nextEnvironment);
+        next.pages_.reserve(pages_.size());
+        for (std::size_t oldKey : boundedKeys())
+        {
+            const Variable variable = environment_.variableOf(oldKey);
+            if (nextEnvironment.contains(variable))
+                next.setAt(nextEnvironment.dimensionOf(variable),
+                           boundAt(oldKey));
+        }
+        if (initializeNewVariablesToZero)
+        {
+            for (const VariableDeclaration& item : nextEnvironment.variables())
+            {
+                if (!environment_.contains(item.variable))
+                    next.setAt(nextEnvironment.dimensionOf(item.variable),
+                               Interval::singleton(Rational()));
+            }
+        }
+        *this = std::move(next);
+    }
+
+    std::size_t storageUnits() const
+    {
+        return pages_.bucket_count();
+    }
+
+    std::size_t materializedValues() const
+    {
+        std::size_t result = 0;
+        for (const auto& [index, page] : pages_)
+        {
+            (void)index;
+            result += static_cast<std::size_t>(std::count_if(
+                page->values.begin(), page->values.end(),
+                [](const auto& value) { return value.has_value(); }));
+        }
+        return result;
+    }
+
+    std::size_t allocatedPageSlots() const
+    {
+        return pages_.size() * PageSize;
+    }
+
+private:
+    struct Page
+    {
+        std::array<std::optional<Interval>, PageSize> values;
+    };
+
+    std::size_t storageKey(Variable variable) const
+    {
+        if constexpr (VariableKeyed)
+            return variable.id();
+        return environment_.dimensionOf(variable);
+    }
+
+    const Interval& boundAt(std::size_t key) const
+    {
+        static const Interval top = Interval::top();
+        const auto iterator = pages_.find(key / PageSize);
+        if (iterator == pages_.end())
+            return top;
+        const auto& value = iterator->second->values[key % PageSize];
+        return value ? *value : top;
+    }
+
+    Page& writablePage(std::size_t pageIndex)
+    {
+        auto [iterator, inserted] =
+            pages_.try_emplace(pageIndex, std::make_shared<Page>());
+        if (!inserted && iterator->second.use_count() != 1)
+            iterator->second = std::make_shared<Page>(*iterator->second);
+        return *iterator->second;
+    }
+
+    void setAt(std::size_t key, Interval interval)
+    {
+        if (interval.isTop())
+        {
+            eraseAt(key);
+            return;
+        }
+        writablePage(key / PageSize).values[key % PageSize] =
+            std::move(interval);
+    }
+
+    void eraseAt(std::size_t key)
+    {
+        const std::size_t pageIndex = key / PageSize;
+        auto iterator = pages_.find(pageIndex);
+        if (iterator == pages_.end() ||
+            !iterator->second->values[key % PageSize])
+            return;
+        if (iterator->second.use_count() != 1)
+            iterator->second = std::make_shared<Page>(*iterator->second);
+        iterator->second->values[key % PageSize].reset();
+        if (std::none_of(iterator->second->values.begin(),
+                         iterator->second->values.end(),
+                         [](const auto& item) { return item.has_value(); }))
+            pages_.erase(iterator);
+    }
+
+    std::vector<std::size_t> boundedKeys() const
+    {
+        std::vector<std::size_t> result;
+        for (const auto& [pageIndex, page] : pages_)
+        {
+            for (std::size_t offset = 0; offset < PageSize; ++offset)
+            {
+                if (page->values[offset])
+                    result.push_back(pageIndex * PageSize + offset);
+            }
+        }
+        return result;
+    }
+
+    std::vector<Variable> boundedVariables() const
+    {
+        std::vector<Variable> result;
+        for (std::size_t key : boundedKeys())
+            result.emplace_back(static_cast<std::uint32_t>(key));
+        return result;
+    }
+
+    void validateTypes(const VariableEnvironment& nextEnvironment) const
+    {
+        for (const VariableDeclaration& item : nextEnvironment.variables())
+        {
+            if (environment_.contains(item.variable) &&
+                environment_.typeOf(item.variable) != item.type)
+                throw std::invalid_argument(
+                    "environment change modifies a variable type");
+        }
+    }
+
+    VariableEnvironment environment_;
+    std::unordered_map<std::size_t, std::shared_ptr<Page>> pages_;
+};
+
+/// Page payloads indexed by a persistent radix directory. Both the directory
+/// and untouched pages are shared by state copies; changing one slot copies
+/// one page plus one fixed-depth directory path.
+template <std::size_t PageSize, bool VariableKeyed> class RadixPagedStorage
+{
+public:
+    explicit RadixPagedStorage(VariableEnvironment environment)
+        : environment_(std::move(environment))
+    {
+    }
+
+    const VariableEnvironment& environment() const
+    {
+        return environment_;
+    }
+
+    const Interval& bound(Variable variable) const
+    {
+        if (!environment_.contains(variable))
+            throw std::invalid_argument("variable is outside the environment");
+        return boundAt(storageKey(variable));
+    }
+
+    void set(Variable variable, Interval interval)
+    {
+        if (!environment_.contains(variable))
+            throw std::invalid_argument("variable is outside the environment");
+        setAt(storageKey(variable), std::move(interval));
+    }
+
+    void changeEnvironment(const VariableEnvironment& nextEnvironment,
+                           bool initializeNewVariablesToZero = false)
+    {
+        if (environment_ == nextEnvironment)
+            return;
+        validateTypes(nextEnvironment);
+        if constexpr (VariableKeyed)
+        {
+            for (Variable variable : boundedVariables())
+            {
+                if (!nextEnvironment.contains(variable))
+                    eraseAt(variable.id());
+            }
+            if (initializeNewVariablesToZero)
+            {
+                for (const VariableDeclaration& item :
+                     nextEnvironment.variables())
+                {
+                    if (!environment_.contains(item.variable))
+                        setAt(item.variable.id(),
+                              Interval::singleton(Rational()));
+                }
+            }
+            environment_ = nextEnvironment;
+            return;
+        }
+
+        RadixPagedStorage next(nextEnvironment);
+        for (std::size_t oldKey : boundedKeys())
+        {
+            const Variable variable = environment_.variableOf(oldKey);
+            if (nextEnvironment.contains(variable))
+                next.setAt(nextEnvironment.dimensionOf(variable),
+                           boundAt(oldKey));
+        }
+        if (initializeNewVariablesToZero)
+        {
+            for (const VariableDeclaration& item : nextEnvironment.variables())
+            {
+                if (!environment_.contains(item.variable))
+                    next.setAt(nextEnvironment.dimensionOf(item.variable),
+                               Interval::singleton(Rational()));
+            }
+        }
+        *this = std::move(next);
+    }
+
+    std::size_t storageUnits() const
+    {
+        return countNodes(root_);
+    }
+
+    std::size_t materializedValues() const
+    {
+        std::size_t result = 0;
+        for (const auto& [index, page] : pages())
+        {
+            (void)index;
+            result += static_cast<std::size_t>(std::count_if(
+                page->values.begin(), page->values.end(),
+                [](const auto& value) { return value.has_value(); }));
+        }
+        return result;
+    }
+
+    std::size_t allocatedPageSlots() const
+    {
+        return pageCount_ * PageSize;
+    }
+
+private:
+    static constexpr unsigned BitsPerLevel = 2;
+    static constexpr unsigned Fanout = 1U << BitsPerLevel;
+    static constexpr unsigned Levels = 32 / BitsPerLevel;
+
+    struct Page
+    {
+        std::array<std::optional<Interval>, PageSize> values;
+    };
+
+    struct Node
+    {
+        std::array<std::shared_ptr<const Node>, Fanout> children;
+        std::shared_ptr<Page> page;
+    };
+
+    static unsigned branch(std::uint32_t key, unsigned level)
+    {
+        const unsigned shift = 32 - BitsPerLevel * (level + 1);
+        return (key >> shift) & (Fanout - 1);
+    }
+
+    static bool empty(const Node& node)
+    {
+        return !node.page &&
+               std::none_of(
+                   node.children.begin(), node.children.end(),
+                   [](const auto& child) { return static_cast<bool>(child); });
+    }
+
+    static const std::shared_ptr<Page>& lookup(
+        const std::shared_ptr<const Node>& root, std::uint32_t key)
+    {
+        static const std::shared_ptr<Page> missing;
+        const Node* node = root.get();
+        for (unsigned level = 0; level < Levels && node; ++level)
+            node = node->children[branch(key, level)].get();
+        return node ? node->page : missing;
+    }
+
+    static std::shared_ptr<const Node> update(
+        const std::shared_ptr<const Node>& current, std::uint32_t key,
+        unsigned level, std::shared_ptr<Page> page)
+    {
+        auto next = current ? std::make_shared<Node>(*current)
+                            : std::make_shared<Node>();
+        if (level == Levels)
+        {
+            next->page = std::move(page);
+            return next;
+        }
+        const unsigned index = branch(key, level);
+        next->children[index] =
+            update(next->children[index], key, level + 1, std::move(page));
+        return next;
+    }
+
+    static std::shared_ptr<const Node> erase(
+        const std::shared_ptr<const Node>& current, std::uint32_t key,
+        unsigned level)
+    {
+        if (!current)
+            return nullptr;
+        auto next = std::make_shared<Node>(*current);
+        if (level == Levels)
+            next->page.reset();
+        else
+        {
+            const unsigned index = branch(key, level);
+            next->children[index] =
+                erase(next->children[index], key, level + 1);
+        }
+        return empty(*next) ? nullptr : next;
+    }
+
+    static void collectPages(
+        const std::shared_ptr<const Node>& node, unsigned level,
+        std::uint32_t prefix,
+        std::vector<std::pair<std::uint32_t, std::shared_ptr<Page>>>& result)
+    {
+        if (!node)
+            return;
+        if (level == Levels)
+        {
+            if (node->page)
+                result.emplace_back(prefix, node->page);
+            return;
+        }
+        const unsigned shift = 32 - BitsPerLevel * (level + 1);
+        for (unsigned index = 0; index < Fanout; ++index)
+            collectPages(node->children[index], level + 1,
+                         prefix | (static_cast<std::uint32_t>(index) << shift),
+                         result);
+    }
+
+    static std::size_t countNodes(const std::shared_ptr<const Node>& node)
+    {
+        if (!node)
+            return 0;
+        std::size_t result = 1;
+        for (const auto& child : node->children)
+            result += countNodes(child);
+        return result;
+    }
+
+    std::vector<std::pair<std::uint32_t, std::shared_ptr<Page>>> pages() const
+    {
+        std::vector<std::pair<std::uint32_t, std::shared_ptr<Page>>> result;
+        result.reserve(pageCount_);
+        collectPages(root_, 0, 0, result);
+        return result;
+    }
+
+    std::size_t storageKey(Variable variable) const
+    {
+        if constexpr (VariableKeyed)
+            return variable.id();
+        return environment_.dimensionOf(variable);
+    }
+
+    const Interval& boundAt(std::size_t key) const
+    {
+        static const Interval top = Interval::top();
+        const auto& page = lookup(root_, checkedPageIndex(key));
+        if (!page)
+            return top;
+        const auto& value = page->values[key % PageSize];
+        return value ? *value : top;
+    }
+
+    void setAt(std::size_t key, Interval interval)
+    {
+        if (interval.isTop())
+        {
+            eraseAt(key);
+            return;
+        }
+        const std::uint32_t pageIndex = checkedPageIndex(key);
+        const auto& current = lookup(root_, pageIndex);
+        auto page = current ? std::make_shared<Page>(*current)
+                            : std::make_shared<Page>();
+        if (!current)
+            ++pageCount_;
+        page->values[key % PageSize] = std::move(interval);
+        root_ = update(root_, pageIndex, 0, std::move(page));
+    }
+
+    void eraseAt(std::size_t key)
+    {
+        const std::uint32_t pageIndex = checkedPageIndex(key);
+        const auto& current = lookup(root_, pageIndex);
+        if (!current || !current->values[key % PageSize])
+            return;
+        auto page = std::make_shared<Page>(*current);
+        page->values[key % PageSize].reset();
+        if (std::none_of(page->values.begin(), page->values.end(),
+                         [](const auto& item) { return item.has_value(); }))
+        {
+            root_ = erase(root_, pageIndex, 0);
+            --pageCount_;
+        }
+        else
+        {
+            root_ = update(root_, pageIndex, 0, std::move(page));
+        }
+    }
+
+    std::vector<std::size_t> boundedKeys() const
+    {
+        std::vector<std::size_t> result;
+        for (const auto& [pageIndex, page] : pages())
+        {
+            for (std::size_t offset = 0; offset < PageSize; ++offset)
+            {
+                if (page->values[offset])
+                    result.push_back(static_cast<std::size_t>(pageIndex) *
+                                         PageSize +
+                                     offset);
+            }
+        }
+        return result;
+    }
+
+    std::vector<Variable> boundedVariables() const
+    {
+        std::vector<Variable> result;
+        for (std::size_t key : boundedKeys())
+            result.emplace_back(static_cast<std::uint32_t>(key));
+        return result;
+    }
+
+    static std::uint32_t checkedPageIndex(std::size_t key)
+    {
+        const std::size_t pageIndex = key / PageSize;
+        if (pageIndex > std::numeric_limits<std::uint32_t>::max())
+            throw std::overflow_error(
+                "page index exceeds persistent radix key");
+        return static_cast<std::uint32_t>(pageIndex);
+    }
+
+    void validateTypes(const VariableEnvironment& nextEnvironment) const
+    {
+        for (const VariableDeclaration& item : nextEnvironment.variables())
+        {
+            if (environment_.contains(item.variable) &&
+                environment_.typeOf(item.variable) != item.type)
+                throw std::invalid_argument(
+                    "environment change modifies a variable type");
+        }
+    }
+
+    VariableEnvironment environment_;
+    std::shared_ptr<const Node> root_;
+    std::size_t pageCount_ = 0;
+};
+
+/// Persistent sparse radix map keyed by the 32-bit Variable ID. A state copy
+/// shares the root; a write path-copies 16 four-way nodes, leaving every other
+/// value and index path shared.
+class VariableRadixCOWStorage
+{
+public:
+    explicit VariableRadixCOWStorage(VariableEnvironment environment)
+        : environment_(std::move(environment))
+    {
+    }
+
+    const VariableEnvironment& environment() const
+    {
+        return environment_;
+    }
+
+    const Interval& bound(Variable variable) const
+    {
+        static const Interval top = Interval::top();
+        if (!environment_.contains(variable))
+            throw std::invalid_argument("variable is outside the environment");
+        const Node* node = root_.get();
+        for (unsigned level = 0; level < Levels && node; ++level)
+            node = node->children[branch(variable.id(), level)].get();
+        return node && node->value ? *node->value : top;
+    }
+
+    void set(Variable variable, Interval interval)
+    {
+        if (!environment_.contains(variable))
+            throw std::invalid_argument("variable is outside the environment");
+        const bool existed = !bound(variable).isTop();
+        if (interval.isTop())
+        {
+            if (existed)
+            {
+                root_ = erase(root_, variable.id(), 0);
+                --size_;
+            }
+            return;
+        }
+        root_ = update(root_, variable.id(), 0, std::move(interval));
+        if (!existed)
+            ++size_;
+    }
+
+    void changeEnvironment(const VariableEnvironment& nextEnvironment,
+                           bool initializeNewVariablesToZero = false)
+    {
+        if (environment_ == nextEnvironment)
+            return;
+        validateTypes(nextEnvironment);
+        std::vector<std::pair<std::uint32_t, Interval>> entries;
+        entries.reserve(size_);
+        collect(root_, 0, 0, entries);
+        for (const auto& [id, value] : entries)
+        {
+            (void)value;
+            if (!nextEnvironment.contains(Variable(id)))
+            {
+                root_ = erase(root_, id, 0);
+                --size_;
+            }
+        }
+        if (initializeNewVariablesToZero)
+        {
+            for (const VariableDeclaration& item : nextEnvironment.variables())
+            {
+                if (!environment_.contains(item.variable))
+                {
+                    root_ = update(root_, item.variable.id(), 0,
+                                   Interval::singleton(Rational()));
+                    ++size_;
+                }
+            }
+        }
+        environment_ = nextEnvironment;
+    }
+
+    std::size_t storageUnits() const
+    {
+        return countNodes(root_);
+    }
+    std::size_t materializedValues() const
+    {
+        return size_;
+    }
+    std::size_t allocatedPageSlots() const
+    {
+        return 0;
+    }
+
+private:
+    static constexpr unsigned BitsPerLevel = 2;
+    static constexpr unsigned Fanout = 1U << BitsPerLevel;
+    static constexpr unsigned Levels = 32 / BitsPerLevel;
+
+    struct Node
+    {
+        std::array<std::shared_ptr<const Node>, Fanout> children;
+        std::optional<Interval> value;
+    };
+
+    static unsigned branch(std::uint32_t id, unsigned level)
+    {
+        const unsigned shift = 32 - BitsPerLevel * (level + 1);
+        return (id >> shift) & (Fanout - 1);
+    }
+
+    static bool empty(const Node& node)
+    {
+        return !node.value &&
+               std::none_of(
+                   node.children.begin(), node.children.end(),
+                   [](const auto& child) { return static_cast<bool>(child); });
+    }
+
+    static std::shared_ptr<const Node> update(
+        const std::shared_ptr<const Node>& current, std::uint32_t id,
+        unsigned level, Interval value)
+    {
+        auto next = current ? std::make_shared<Node>(*current)
+                            : std::make_shared<Node>();
+        if (level == Levels)
+        {
+            next->value = std::move(value);
+            return next;
+        }
+        const unsigned index = branch(id, level);
+        next->children[index] =
+            update(next->children[index], id, level + 1, std::move(value));
+        return next;
+    }
+
+    static std::shared_ptr<const Node> erase(
+        const std::shared_ptr<const Node>& current, std::uint32_t id,
+        unsigned level)
+    {
+        if (!current)
+            return nullptr;
+        auto next = std::make_shared<Node>(*current);
+        if (level == Levels)
+            next->value.reset();
+        else
+        {
+            const unsigned index = branch(id, level);
+            next->children[index] = erase(next->children[index], id, level + 1);
+        }
+        return empty(*next) ? nullptr : next;
+    }
+
+    static void collect(
+        const std::shared_ptr<const Node>& node, unsigned level,
+        std::uint32_t prefix,
+        std::vector<std::pair<std::uint32_t, Interval>>& entries)
+    {
+        if (!node)
+            return;
+        if (level == Levels)
+        {
+            if (node->value)
+                entries.emplace_back(prefix, *node->value);
+            return;
+        }
+        const unsigned shift = 32 - BitsPerLevel * (level + 1);
+        for (unsigned index = 0; index < Fanout; ++index)
+            collect(node->children[index], level + 1,
+                    prefix | (static_cast<std::uint32_t>(index) << shift),
+                    entries);
+    }
+
+    static std::size_t countNodes(const std::shared_ptr<const Node>& node)
+    {
+        if (!node)
+            return 0;
+        std::size_t result = 1;
+        for (const auto& child : node->children)
+            result += countNodes(child);
+        return result;
+    }
+
+    void validateTypes(const VariableEnvironment& nextEnvironment) const
+    {
+        for (const VariableDeclaration& item : nextEnvironment.variables())
+        {
+            if (environment_.contains(item.variable) &&
+                environment_.typeOf(item.variable) != item.type)
+                throw std::invalid_argument(
+                    "environment change modifies a variable type");
+        }
+    }
+
+    VariableEnvironment environment_;
+    std::shared_ptr<const Node> root_;
+    std::size_t size_ = 0;
+};
+
 class VariableHashStorage
 {
 public:
@@ -473,6 +1183,101 @@ private:
     std::unordered_map<std::uint32_t, Interval> bounds_;
 };
 
+/// Conventional whole-container COW applied to the legacy-style hash layout.
+/// Copies are O(1), but the first mutation must still clone every hash entry;
+/// this distinguishes container COW from fine-grained persistent sharing.
+class VariableCOWHashStorage
+{
+public:
+    explicit VariableCOWHashStorage(VariableEnvironment environment)
+        : environment_(std::move(environment)),
+          bounds_(std::make_shared<Bounds>())
+    {
+    }
+
+    const VariableEnvironment& environment() const
+    {
+        return environment_;
+    }
+
+    const Interval& bound(Variable variable) const
+    {
+        static const Interval top = Interval::top();
+        if (!environment_.contains(variable))
+            throw std::invalid_argument("variable is outside the environment");
+        const auto iterator = bounds_->find(variable.id());
+        return iterator == bounds_->end() ? top : iterator->second;
+    }
+
+    void set(Variable variable, Interval interval)
+    {
+        if (!environment_.contains(variable))
+            throw std::invalid_argument("variable is outside the environment");
+        ensureUnique();
+        if (interval.isTop())
+            bounds_->erase(variable.id());
+        else
+            bounds_->insert_or_assign(variable.id(), std::move(interval));
+    }
+
+    void changeEnvironment(const VariableEnvironment& nextEnvironment,
+                           bool initializeNewVariablesToZero = false)
+    {
+        if (environment_ == nextEnvironment)
+            return;
+        for (const VariableDeclaration& item : nextEnvironment.variables())
+        {
+            if (environment_.contains(item.variable) &&
+                environment_.typeOf(item.variable) != item.type)
+                throw std::invalid_argument(
+                    "environment change modifies a variable type");
+        }
+        ensureUnique();
+        for (auto iterator = bounds_->begin(); iterator != bounds_->end();)
+        {
+            if (!nextEnvironment.contains(Variable(iterator->first)))
+                iterator = bounds_->erase(iterator);
+            else
+                ++iterator;
+        }
+        if (initializeNewVariablesToZero)
+        {
+            for (const VariableDeclaration& item : nextEnvironment.variables())
+            {
+                if (!environment_.contains(item.variable))
+                    bounds_->insert_or_assign(item.variable.id(),
+                                              Interval::singleton(Rational()));
+            }
+        }
+        environment_ = nextEnvironment;
+    }
+
+    std::size_t storageUnits() const
+    {
+        return bounds_->bucket_count();
+    }
+    std::size_t materializedValues() const
+    {
+        return bounds_->size();
+    }
+    std::size_t allocatedPageSlots() const
+    {
+        return 0;
+    }
+
+private:
+    using Bounds = std::unordered_map<std::uint32_t, Interval>;
+
+    void ensureUnique()
+    {
+        if (bounds_.use_count() != 1)
+            bounds_ = std::make_shared<Bounds>(*bounds_);
+    }
+
+    VariableEnvironment environment_;
+    std::shared_ptr<Bounds> bounds_;
+};
+
 template <typename Storage> void validateStorage()
 {
     const Variable a(1);
@@ -508,6 +1313,8 @@ std::size_t automaticOperations(const Options& options, std::size_t activeCount)
         return options.operations;
     if (options.workload == "read")
         return 500000;
+    if (options.workload == "copy-only")
+        return std::clamp<std::size_t>(500000 / activeCount, 16, 5000);
     if (options.workload == "copy-update")
         return std::clamp<std::size_t>(500000 / activeCount, 16, 5000);
     if (options.workload == "environment-change")
@@ -558,6 +1365,16 @@ void run(const Options& options, const char* schemeName)
                 const Variable variable =
                     active[mix(operation) % active.size()];
                 localChecksum += finiteValue(base.bound(variable));
+            }
+        }
+        else if (options.workload == "copy-only")
+        {
+            for (std::size_t operation = 0; operation < operations; ++operation)
+            {
+                Storage copy = base;
+                const Variable variable =
+                    active[mix(operation) % active.size()];
+                localChecksum += finiteValue(copy.bound(variable));
             }
         }
         else if (options.workload == "copy-update")
@@ -640,8 +1457,12 @@ void run(const Options& options, const char* schemeName)
 #else
     constexpr const char* rssUnit = "kibibytes";
 #endif
+    const std::string scheme(schemeName);
     const std::size_t reportedPageSize =
-        std::string(schemeName) == "variable-hash" ? 0 : options.pageSize;
+        scheme == "variable-hash" || scheme == "variable-cow-hash" ||
+                scheme == "variable-radix-cow"
+            ? 0
+            : options.pageSize;
     const std::size_t materialized = base.materializedValues();
     const std::size_t allocatedSlots = base.allocatedPageSlots();
     const double pageUtilization =
@@ -682,6 +1503,64 @@ void dispatchPageSize(const Options& options, const char* schemeName)
         return;
     case 256:
         run<PagedStorage<256, VariableKeyed>>(options, schemeName);
+        return;
+    default:
+        throw std::invalid_argument(
+            "page size must be one of 8,16,32,64,128,256");
+    }
+}
+
+template <bool VariableKeyed>
+void dispatchHashPageSize(const Options& options, const char* schemeName)
+{
+    switch (options.pageSize)
+    {
+    case 8:
+        run<HashPagedStorage<8, VariableKeyed>>(options, schemeName);
+        return;
+    case 16:
+        run<HashPagedStorage<16, VariableKeyed>>(options, schemeName);
+        return;
+    case 32:
+        run<HashPagedStorage<32, VariableKeyed>>(options, schemeName);
+        return;
+    case 64:
+        run<HashPagedStorage<64, VariableKeyed>>(options, schemeName);
+        return;
+    case 128:
+        run<HashPagedStorage<128, VariableKeyed>>(options, schemeName);
+        return;
+    case 256:
+        run<HashPagedStorage<256, VariableKeyed>>(options, schemeName);
+        return;
+    default:
+        throw std::invalid_argument(
+            "page size must be one of 8,16,32,64,128,256");
+    }
+}
+
+template <bool VariableKeyed>
+void dispatchRadixPageSize(const Options& options, const char* schemeName)
+{
+    switch (options.pageSize)
+    {
+    case 8:
+        run<RadixPagedStorage<8, VariableKeyed>>(options, schemeName);
+        return;
+    case 16:
+        run<RadixPagedStorage<16, VariableKeyed>>(options, schemeName);
+        return;
+    case 32:
+        run<RadixPagedStorage<32, VariableKeyed>>(options, schemeName);
+        return;
+    case 64:
+        run<RadixPagedStorage<64, VariableKeyed>>(options, schemeName);
+        return;
+    case 128:
+        run<RadixPagedStorage<128, VariableKeyed>>(options, schemeName);
+        return;
+    case 256:
+        run<RadixPagedStorage<256, VariableKeyed>>(options, schemeName);
         return;
     default:
         throw std::invalid_argument(
@@ -757,8 +1636,20 @@ int main(int argc, char** argv)
             dispatchPageSize<false>(options, "dimension-page");
         else if (options.scheme == "variable-page")
             dispatchPageSize<true>(options, "variable-page");
+        else if (options.scheme == "dimension-hash-page")
+            dispatchHashPageSize<false>(options, "dimension-hash-page");
+        else if (options.scheme == "variable-hash-page")
+            dispatchHashPageSize<true>(options, "variable-hash-page");
+        else if (options.scheme == "dimension-radix-page")
+            dispatchRadixPageSize<false>(options, "dimension-radix-page");
+        else if (options.scheme == "variable-radix-page")
+            dispatchRadixPageSize<true>(options, "variable-radix-page");
         else if (options.scheme == "variable-hash")
             run<VariableHashStorage>(options, "variable-hash");
+        else if (options.scheme == "variable-cow-hash")
+            run<VariableCOWHashStorage>(options, "variable-cow-hash");
+        else if (options.scheme == "variable-radix-cow")
+            run<VariableRadixCOWStorage>(options, "variable-radix-cow");
         else
             throw std::invalid_argument("unknown scheme: " + options.scheme);
         return EXIT_SUCCESS;
