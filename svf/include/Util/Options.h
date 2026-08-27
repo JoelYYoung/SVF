@@ -242,6 +242,8 @@ public:
     /// Keep the historical IntervalState semi/full-sparse engines available
     /// while native DomainProductState sparse storage is validated.
     static const Option<bool> AESparseLegacyInterval;
+    /// Print inclusive phase timings for native semi/full-sparse AE.
+    static const Option<bool> AESparseProfile;
     /// Enable the opt-in per-function Octagon reduced product.
     static const Option<bool> AEDenseOctagon;
     /// Cap tracked integer ValVars per function (Octagon is quadratic).

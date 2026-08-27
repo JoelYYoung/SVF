@@ -3,6 +3,7 @@
 #ifndef SVF_AE_NATIVE_SPARSE_ABSTRACT_INTERPRETATION_H
 #define SVF_AE_NATIVE_SPARSE_ABSTRACT_INTERPRETATION_H
 
+#include <cstdint>
 #include <memory>
 
 #include "AE/Svfexe/DenseAbstractInterpretation.h"
@@ -27,8 +28,33 @@ public:
 
     NativeSemiSparseAbstractInterpretation();
     ~NativeSemiSparseAbstractInterpretation() override = default;
+    void runOnModule() override;
 
 protected:
+    struct PhaseMetric
+    {
+        std::uint64_t calls = 0;
+        std::uint64_t nanoseconds = 0;
+    };
+
+    struct SparsePhaseProfile
+    {
+        PhaseMetric total;
+        PhaseMetric stateCopy;
+        PhaseMetric stateMerge;
+        PhaseMetric environmentAlignment;
+        PhaseMetric stateJoin;
+        PhaseMetric stateEquivalence;
+        PhaseMetric scalarMaterialization;
+        PhaseMetric scalarCheckpoint;
+        PhaseMetric stateFiltering;
+        PhaseMetric cycle;
+        PhaseMetric svfgBuild;
+        PhaseMetric objectPull;
+        PhaseMetric pathFeasibility;
+        PhaseMetric memoryRefinement;
+    };
+
     AbstractValue getAbsValue(const ValVar* var, const ICFGNode* node) override;
     using Base::getAbsValue;
     bool hasAbsValue(const ValVar* var, const ICFGNode* node) const override;
@@ -40,6 +66,9 @@ protected:
     void copyAbstractState(const ICFGNode* source,
                            const ICFGNode* destination) override;
     bool mergeStatesFromPredecessors(const ICFGNode* node) override;
+    bool isAbstractStateEquivalent(
+        const ICFGNode* node,
+        const AbstractDomain::AbstractState& snapshot) const override;
 
     std::unique_ptr<AbstractDomain::AbstractState> cloneCycleHeadState(
         const ICFGCycleWTO* cycle) override;
@@ -65,11 +94,15 @@ protected:
 
     const ICFGNode* definitionNode(const ValVar* value,
                                    const ICFGNode* fallback) const;
+    void forgetActiveScalarValues(DenseState& state) const;
     void forgetMemoryValues(DenseState& state) const;
     void applyScalarCheckpoint(DenseState& state, const DenseState& checkpoint);
     void scatterCycleValues(const ICFGCycleWTO* cycle, const DenseState& state);
+    virtual const char* sparseProfileMode() const;
+    void reportSparseProfile() const;
 
     Map<const ICFGNode*, DenseState> refinementTrace_;
+    mutable SparsePhaseProfile sparseProfile_;
 };
 
 /// Full-sparse AE backed by DomainProductState. Scalar SSA values remain at
@@ -99,6 +132,7 @@ protected:
                                 const ICFGNode* successor) override;
 
 private:
+    const char* sparseProfileMode() const override;
     void pullObjectValueFlows(const ICFGNode* node);
     bool isIndirectSVFGEdgeFeasible(const IndirectSVFGEdge* edge,
                                     const VFGNode* destination);

@@ -1509,6 +1509,14 @@ void testNonRelationalState()
                 !copiedShapes.hasNumeric(pointer) &&
                 !copiedShapes.isDefined(distantShape),
             "shape pages must detach on write without modifying their source");
+    const VariableEnvironment shapeEnvironment(
+        {{pointer, NumericType::integer(), "pointer"},
+         {distantShape, NumericType::integer(), "distant"}});
+    const std::vector<Variable> definedShapes =
+        shapes.definedVariables(shapeEnvironment);
+    require(definedShapes.size() == 2 && definedShapes[0] == pointer &&
+                definedShapes[1] == distantShape,
+            "defined shape enumeration must span sparse pages in ID order");
     shapes.changeEnvironment(VariableEnvironment());
     require(!shapes.isDefined(pointer),
             "environment changes must discard out-of-scope value shapes");

@@ -851,6 +851,23 @@ bool BoxState::isTopState() const
 bool BoxState::leqState(const AbstractState& other) const
 {
     const BoxState& box = requireBox(other);
+    if (bottom_ == box.bottom_ && boundPages_.size() == box.boundPages_.size())
+    {
+        bool equal = true;
+        for (std::size_t index = 0; index < boundPages_.size(); ++index)
+        {
+            if (boundPages_[index].index != box.boundPages_[index].index ||
+                (boundPages_[index].page != box.boundPages_[index].page &&
+                 boundPages_[index].page->bounds !=
+                     box.boundPages_[index].page->bounds))
+            {
+                equal = false;
+                break;
+            }
+        }
+        if (equal)
+            return true;
+    }
     if (bottom_)
         return true;
     if (box.bottom_)

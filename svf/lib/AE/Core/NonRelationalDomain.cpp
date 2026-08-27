@@ -266,6 +266,9 @@ bool AddressState::isTopState() const
 bool AddressState::leqState(const AbstractState& other) const
 {
     const auto& state = static_cast<const AddressState&>(other);
+    if (defaultTop_ == state.defaultTop_ &&
+        (values_ == state.values_ || *values_ == *state.values_))
+        return true;
     if (defaultTop_ && !state.defaultTop_)
         return false;
     const std::set<Variable> variables = combinedKeys(*values_, * state.values_);
@@ -393,6 +396,36 @@ bool ValueShapeState::isDefined(Variable variable) const
 bool ValueShapeState::hasNumeric(Variable variable) const
 {
     return shapeOf(variable).numeric;
+}
+
+std::vector<Variable> ValueShapeState::definedVariables(
+    const VariableEnvironment& environment) const
+{
+    std::vector<Variable> result;
+    if (decode(default_).defined)
+    {
+        result.reserve(environment.size());
+        for (const VariableDeclaration& declaration : environment.variables())
+        {
+            if (isDefined(declaration.variable))
+                result.push_back(declaration.variable);
+        }
+        return result;
+    }
+
+    for (const ShapePageEntry& entry : pages_)
+    {
+        for (std::size_t offset = 0; offset < ShapesPerPage; ++offset)
+        {
+            if (!decode(entry.page->shapes[offset]).defined)
+                continue;
+            const Variable variable(static_cast<std::uint32_t>(
+                entry.index * ShapesPerPage + offset));
+            if (environment.contains(variable))
+                result.push_back(variable);
+        }
+    }
+    return result;
 }
 
 void ValueShapeState::assign(Variable variable, bool numeric)
@@ -547,6 +580,23 @@ bool ValueShapeState::isTopState() const
 bool ValueShapeState::leqState(const AbstractState& other) const
 {
     const auto& state = static_cast<const ValueShapeState&>(other);
+    if (default_ == state.default_ && pages_.size() == state.pages_.size())
+    {
+        bool equal = true;
+        for (std::size_t index = 0; index < pages_.size(); ++index)
+        {
+            if (pages_[index].index != state.pages_[index].index ||
+                (pages_[index].page != state.pages_[index].page &&
+                 pages_[index].page->shapes !=
+                     state.pages_[index].page->shapes))
+            {
+                equal = false;
+                break;
+            }
+        }
+        if (equal)
+            return true;
+    }
     if ((default_ & ~state.default_) != 0)
         return false;
     std::size_t lhs = 0;
@@ -779,6 +829,9 @@ bool LifetimeState::isTopState() const
 bool LifetimeState::leqState(const AbstractState& other) const
 {
     const auto& state = static_cast<const LifetimeState&>(other);
+    if (defaultValue_ == state.defaultValue_ &&
+        (values_ == state.values_ || *values_ == *state.values_))
+        return true;
     if (!SVF::AbstractDomain::isSubsetOf(defaultValue_, state.defaultValue_))
         return false;
     const std::set<Location> locations = combinedKeys(*values_, * state.values_);

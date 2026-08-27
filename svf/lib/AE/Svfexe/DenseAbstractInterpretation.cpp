@@ -108,6 +108,8 @@ bool constraintKind(u32_t predicate, AD::ConstraintKind& kind)
 template <typename DenseStateT>
 void alignEnvironments(DenseStateT& lhs, DenseStateT& rhs)
 {
+    if (lhs.numerical().environment() == rhs.numerical().environment())
+        return;
     const AD::VariableEnvironment environment =
         lhs.numerical().environment().merge(rhs.numerical().environment());
     if (lhs.numerical().environment() != environment)
@@ -514,7 +516,10 @@ void DenseAbstractInterpretation<NumericalStateT>::forgetValue(
     if (!denseState.numerical().environment().contains(variable))
         return;
     denseState.numerical().forget(variable);
-    denseState.addresses().forget(variable);
+    // This helper removes an AE value; it does not model an unknown pointer.
+    // AddressState::forget means address-top and would retain an explicit map
+    // entry for every purged sparse scalar.
+    denseState.addresses().assign(variable, AD::AddressSet::bottom());
     denseState.shapes().forget(variable);
 }
 
@@ -872,7 +877,10 @@ bool DenseAbstractInterpretation<NumericalStateT>::mergeStatesFromPredecessors(
             continue;
 
         DenseState source = state(predecessor);
-        source.changeEnvironment(adapter_.environment(node->getFun()));
+        const AD::VariableEnvironment& destinationEnvironment =
+            adapter_.environment(node->getFun());
+        if (source.numerical().environment() != destinationEnvironment)
+            source.changeEnvironment(destinationEnvironment);
         if (conditional && conditional->getCondition())
             assumeBranch(conditional, source);
         if (source.isBottom())

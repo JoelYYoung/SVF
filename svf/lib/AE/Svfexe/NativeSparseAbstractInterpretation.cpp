@@ -7,18 +7,113 @@
 #include "SVFIR/SVFIR.h"
 #include "Util/Options.h"
 
+#include <chrono>
+#include <iomanip>
+#include <iostream>
 #include <optional>
+#include <type_traits>
 
 namespace SVF
 {
 
 namespace AD = AbstractDomain;
 
+namespace
+{
+
+template <typename MetricT>
+class PhaseTimer
+{
+public:
+    PhaseTimer(MetricT& metric, bool enabled)
+        : metric_(metric), enabled_(enabled)
+    {
+        if (enabled_)
+            start_ = Clock::now();
+    }
+
+    ~PhaseTimer()
+    {
+        if (!enabled_)
+            return;
+        ++metric_.calls;
+        metric_.nanoseconds += static_cast<std::uint64_t>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now() -
+                                                                 start_)
+                .count());
+    }
+
+private:
+    using Clock = std::chrono::steady_clock;
+    MetricT& metric_;
+    bool enabled_;
+    Clock::time_point start_{};
+};
+
+} // namespace
+
 template <typename NumericalStateT>
 NativeSemiSparseAbstractInterpretation<
     NumericalStateT>::NativeSemiSparseAbstractInterpretation()
 {
     this->preAnalysis->initCycleValVars();
+}
+
+template <typename NumericalStateT>
+void NativeSemiSparseAbstractInterpretation<NumericalStateT>::runOnModule()
+{
+    {
+        PhaseTimer timer(sparseProfile_.total, Options::AESparseProfile());
+        Base::runOnModule();
+    }
+    if (Options::AESparseProfile())
+        reportSparseProfile();
+}
+
+template <typename NumericalStateT>
+const char* NativeSemiSparseAbstractInterpretation<
+    NumericalStateT>::sparseProfileMode() const
+{
+    return "semi";
+}
+
+template <typename NumericalStateT>
+void NativeSemiSparseAbstractInterpretation<
+    NumericalStateT>::reportSparseProfile() const
+{
+    const std::ios::fmtflags previousFlags = std::cout.flags();
+    const std::streamsize previousPrecision = std::cout.precision();
+    auto report = [&](const char* phase, const PhaseMetric& metric)
+    {
+        const double seconds =
+            static_cast<double>(metric.nanoseconds) / 1'000'000'000.0;
+        const double nanosecondsPerCall =
+            metric.calls == 0
+                ? 0.0
+                : static_cast<double>(metric.nanoseconds) /
+                      static_cast<double>(metric.calls);
+        std::cout << "AE_SPARSE_PHASE mode=" << sparseProfileMode()
+                  << " phase=" << phase << " calls=" << metric.calls
+                  << " seconds=" << std::fixed << std::setprecision(6)
+                  << seconds << " ns_per_call=" << std::setprecision(1)
+                  << nanosecondsPerCall << '\n';
+    };
+    report("total", sparseProfile_.total);
+    report("state-copy", sparseProfile_.stateCopy);
+    report("state-merge", sparseProfile_.stateMerge);
+    report("environment-alignment", sparseProfile_.environmentAlignment);
+    report("state-join", sparseProfile_.stateJoin);
+    report("state-equivalence", sparseProfile_.stateEquivalence);
+    report("scalar-materialization", sparseProfile_.scalarMaterialization);
+    report("scalar-checkpoint", sparseProfile_.scalarCheckpoint);
+    report("state-filtering", sparseProfile_.stateFiltering);
+    report("cycle", sparseProfile_.cycle);
+    report("svfg-build", sparseProfile_.svfgBuild);
+    report("object-pull", sparseProfile_.objectPull);
+    report("path-feasibility", sparseProfile_.pathFeasibility);
+    report("memory-refinement", sparseProfile_.memoryRefinement);
+    std::cout.flags(previousFlags);
+    std::cout.precision(previousPrecision);
 }
 
 template <typename NumericalStateT>
@@ -62,19 +157,56 @@ template <typename NumericalStateT>
 void NativeSemiSparseAbstractInterpretation<NumericalStateT>::copyAbstractState(
     const ICFGNode* source, const ICFGNode* destination)
 {
+    PhaseTimer timer(sparseProfile_.stateCopy, Options::AESparseProfile());
     Base::copyAbstractState(source, destination);
-    this->forgetScalarValues(this->ensureState(destination));
+    forgetActiveScalarValues(this->ensureState(destination));
+}
+
+template <typename NumericalStateT>
+bool NativeSemiSparseAbstractInterpretation<
+    NumericalStateT>::isAbstractStateEquivalent(
+    const ICFGNode* node, const AD::AbstractState& snapshot) const
+{
+    PhaseTimer timer(sparseProfile_.stateEquivalence,
+                     Options::AESparseProfile());
+    return Base::isAbstractStateEquivalent(node, snapshot);
+}
+
+template <typename NumericalStateT>
+void NativeSemiSparseAbstractInterpretation<
+    NumericalStateT>::forgetActiveScalarValues(DenseState& denseState) const
+{
+    if constexpr (std::is_same_v<NumericalStateT, AD::BoxState>)
+    {
+        const std::vector<AD::Variable> defined =
+            denseState.shapes().definedVariables(
+                denseState.numerical().environment());
+        for (AD::Variable variable : defined)
+        {
+            if (this->adapter_.value(variable))
+                this->forgetValue(denseState, variable);
+        }
+    }
+    else
+    {
+        // Relational checkpoints may constrain a variable without exposing
+        // it through the definedness facet, so relational domains retain the
+        // conservative full-environment purge.
+        this->forgetScalarValues(denseState);
+    }
 }
 
 template <typename NumericalStateT>
 void NativeSemiSparseAbstractInterpretation<
     NumericalStateT>::forgetMemoryValues(DenseState& denseState) const
 {
-    for (const AD::VariableDeclaration& declaration :
-         denseState.numerical().environment().variables())
+    const std::vector<AD::Variable> defined =
+        denseState.shapes().definedVariables(
+            denseState.numerical().environment());
+    for (AD::Variable variable : defined)
     {
-        if (this->adapter_.contentObject(declaration.variable))
-            this->forgetValue(denseState, declaration.variable);
+        if (this->adapter_.contentObject(variable))
+            this->forgetValue(denseState, variable);
     }
 }
 
@@ -83,6 +215,33 @@ void NativeSemiSparseAbstractInterpretation<
     NumericalStateT>::applyScalarCheckpoint(DenseState& denseState,
                                             const DenseState& checkpoint)
 {
+    PhaseTimer timer(sparseProfile_.scalarCheckpoint,
+                     Options::AESparseProfile());
+    if constexpr (std::is_same_v<NumericalStateT, AD::BoxState>)
+    {
+        const AD::VariableEnvironment& destinationEnvironment =
+            denseState.numerical().environment();
+        const std::vector<AD::Variable> defined =
+            checkpoint.shapes().definedVariables(
+                checkpoint.numerical().environment());
+        for (AD::Variable variable : defined)
+        {
+            if (!this->adapter_.value(variable) ||
+                !destinationEnvironment.contains(variable) ||
+                !checkpoint.shapes().hasNumeric(variable))
+                continue;
+            const AbstractValue value =
+                this->projectValue(checkpoint, variable);
+            if (!value.isInterval())
+                continue;
+            this->constrainInterval(denseState, variable,
+                                    value.getInterval());
+            denseState.addresses().assign(variable, AD::AddressSet::bottom());
+            denseState.shapes().assign(variable, true);
+        }
+        return;
+    }
+
     if (checkpoint.isTop())
         return;
     DenseState scalar = checkpoint;
@@ -103,13 +262,22 @@ template <typename NumericalStateT>
 void NativeSemiSparseAbstractInterpretation<NumericalStateT>::materializeValue(
     DenseState& denseState, const ValVar* value, const ICFGNode* node)
 {
+    PhaseTimer timer(sparseProfile_.scalarMaterialization,
+                     Options::AESparseProfile());
     if (!value || !this->adapter_.contains(*value))
         return;
+    const AD::Variable variable = this->adapter_.variable(*value);
+    if constexpr (std::is_same_v<NumericalStateT, AD::BoxState>)
+    {
+        if (!denseState.shapes().isDefined(variable))
+            this->assignValue(denseState, variable, getAbsValue(value, node));
+        return;
+    }
+
     const ICFGNode* definition = definitionNode(value, node);
     if (this->hasAbsState(definition))
         applyScalarCheckpoint(denseState, this->state(definition));
 
-    const AD::Variable variable = this->adapter_.variable(*value);
     if (denseState.shapes().isDefined(variable))
         return;
     const AbstractValue projected = getAbsValue(value, node);
@@ -129,7 +297,9 @@ template <typename NumericalStateT>
 void NativeSemiSparseAbstractInterpretation<
     NumericalStateT>::filterPropagatedState(DenseState& denseState) const
 {
-    this->forgetScalarValues(denseState);
+    PhaseTimer timer(sparseProfile_.stateFiltering,
+                     Options::AESparseProfile());
+    forgetActiveScalarValues(denseState);
 }
 
 template <typename NumericalStateT>
@@ -142,6 +312,7 @@ template <typename NumericalStateT>
 bool NativeSemiSparseAbstractInterpretation<
     NumericalStateT>::mergeStatesFromPredecessors(const ICFGNode* node)
 {
+    PhaseTimer timer(sparseProfile_.stateMerge, Options::AESparseProfile());
     DenseState merged = this->bottomState(node);
     std::optional<DenseState> mergedRefinement;
     bool refinementIsTop = false;
@@ -182,8 +353,16 @@ bool NativeSemiSparseAbstractInterpretation<
             refinement = refinementIterator != refinementTrace_.end()
                              ? refinementIterator->second
                              : this->topState(node);
-            refinement->changeEnvironment(
-                this->adapter_.environment(node->getFun()));
+            const AD::VariableEnvironment& destinationEnvironment =
+                this->adapter_.environment(node->getFun());
+            if (refinement->numerical().environment() !=
+                destinationEnvironment)
+            {
+                PhaseTimer environmentTimer(
+                    sparseProfile_.environmentAlignment,
+                    Options::AESparseProfile());
+                refinement->changeEnvironment(destinationEnvironment);
+            }
             if (hasConditional)
                 this->assumeBranch(conditional, *refinement);
             if (refinement->isBottom())
@@ -193,12 +372,24 @@ bool NativeSemiSparseAbstractInterpretation<
         }
 
         DenseState source = this->state(predecessor);
-        source.changeEnvironment(this->adapter_.environment(node->getFun()));
-
-        // Scalar SSA values are resolved from their definition sites. Keep
-        // only memory-like facets on ordinary ICFG propagation.
+        // Sparse scalar/object facets do not cross ordinary CFG edges. Purge
+        // them before a call/return environment switch so changeEnvironment
+        // only projects the memory side channel that actually propagates.
         filterPropagatedState(source);
-        merged.joinWith(source);
+        const AD::VariableEnvironment& destinationEnvironment =
+            this->adapter_.environment(node->getFun());
+        if (source.numerical().environment() != destinationEnvironment)
+        {
+            PhaseTimer environmentTimer(sparseProfile_.environmentAlignment,
+                                        Options::AESparseProfile());
+            source.changeEnvironment(destinationEnvironment);
+        }
+
+        {
+            PhaseTimer joinTimer(sparseProfile_.stateJoin,
+                                 Options::AESparseProfile());
+            merged.joinWith(source);
+        }
         if (!refinement || refinement->isTop())
         {
             refinementIsTop = true;
@@ -234,6 +425,7 @@ template <typename NumericalStateT>
 std::unique_ptr<AD::AbstractState> NativeSemiSparseAbstractInterpretation<
     NumericalStateT>::cloneCycleHeadState(const ICFGCycleWTO* cycle)
 {
+    PhaseTimer timer(sparseProfile_.cycle, Options::AESparseProfile());
     const ICFGNode* head = cycle->head()->getICFGNode();
     DenseState snapshot = this->state(head);
     for (const ValVar* value : this->preAnalysis->getCycleValVars(cycle))
@@ -270,6 +462,7 @@ bool NativeSemiSparseAbstractInterpretation<NumericalStateT>::widenCycleState(
     const AD::AbstractState& previous, const AD::AbstractState& current,
     const ICFGCycleWTO* cycle)
 {
+    PhaseTimer timer(sparseProfile_.cycle, Options::AESparseProfile());
     const bool fixpoint = Base::widenCycleState(previous, current, cycle);
     scatterCycleValues(cycle, this->state(cycle->head()->getICFGNode()));
     return fixpoint;
@@ -280,6 +473,7 @@ bool NativeSemiSparseAbstractInterpretation<NumericalStateT>::narrowCycleState(
     const AD::AbstractState& previous, const AD::AbstractState& current,
     const ICFGCycleWTO* cycle)
 {
+    PhaseTimer timer(sparseProfile_.cycle, Options::AESparseProfile());
     const bool fixpoint = Base::narrowCycleState(previous, current, cycle);
     if (!fixpoint)
     {
@@ -319,6 +513,8 @@ template <typename NumericalStateT>
 NativeFullSparseAbstractInterpretation<
     NumericalStateT>::NativeFullSparseAbstractInterpretation()
 {
+    PhaseTimer timer(this->sparseProfile_.svfgBuild,
+                     Options::AESparseProfile());
     svfgBuilder_ = std::make_unique<SVFGBuilder>(true);
     svfgBuilder_->buildFullSVFG(this->preAnalysis->getPointerAnalysis());
 }
@@ -328,17 +524,27 @@ NativeFullSparseAbstractInterpretation<
     NumericalStateT>::~NativeFullSparseAbstractInterpretation() = default;
 
 template <typename NumericalStateT>
+const char* NativeFullSparseAbstractInterpretation<
+    NumericalStateT>::sparseProfileMode() const
+{
+    return "full";
+}
+
+template <typename NumericalStateT>
 void NativeFullSparseAbstractInterpretation<
     NumericalStateT>::filterPropagatedState(DenseState& denseState) const
 {
-    Base::filterPropagatedState(denseState);
-    for (const AD::VariableDeclaration& declaration :
-         denseState.numerical().environment().variables())
+    PhaseTimer timer(this->sparseProfile_.stateFiltering,
+                     Options::AESparseProfile());
+    this->forgetActiveScalarValues(denseState);
+    const std::vector<AD::Variable> defined =
+        denseState.shapes().definedVariables(
+            denseState.numerical().environment());
+    for (AD::Variable variable : defined)
     {
-        const ObjVar* object =
-            this->adapter_.contentObject(declaration.variable);
+        const ObjVar* object = this->adapter_.contentObject(variable);
         if (object && !SVFUtil::isa<GepObjVar>(object))
-            this->forgetValue(denseState, declaration.variable);
+            this->forgetValue(denseState, variable);
     }
 }
 
@@ -403,15 +609,18 @@ template <typename NumericalStateT>
 void NativeFullSparseAbstractInterpretation<
     NumericalStateT>::pullObjectValueFlows(const ICFGNode* node)
 {
+    PhaseTimer timer(this->sparseProfile_.objectPull,
+                     Options::AESparseProfile());
     NodeBS denseLocalObjects;
     const DenseState& destination = this->state(node);
-    for (const AD::VariableDeclaration& declaration :
-         destination.numerical().environment().variables())
+    const std::vector<AD::Variable> defined =
+        destination.shapes().definedVariables(
+            destination.numerical().environment());
+    for (AD::Variable variable : defined)
     {
-        const ObjVar* object =
-            this->adapter_.contentObject(declaration.variable);
+        const ObjVar* object = this->adapter_.contentObject(variable);
         if (object && SVFUtil::isa<GepObjVar>(object) &&
-            destination.shapes().isDefined(declaration.variable))
+            destination.shapes().isDefined(variable))
             denseLocalObjects.set(object->getId());
     }
 
@@ -479,6 +688,8 @@ bool NativeFullSparseAbstractInterpretation<
     NumericalStateT>::isIndirectSVFGEdgeFeasible(const IndirectSVFGEdge* edge,
                                                  const VFGNode* destination)
 {
+    PhaseTimer timer(this->sparseProfile_.pathFeasibility,
+                     Options::AESparseProfile());
     assert(edge && destination && "SVFG edge and destination must exist");
     const auto* sourceNode = SVFUtil::dyn_cast<SVFGNode>(edge->getSrcNode());
     assert(sourceNode && "indirect SVFG edge must have an SVFG source");
@@ -533,6 +744,8 @@ template <typename NumericalStateT>
 void NativeFullSparseAbstractInterpretation<
     NumericalStateT>::propagateAndApplyMemoryRefinement(const ICFGNode* node)
 {
+    PhaseTimer timer(this->sparseProfile_.memoryRefinement,
+                     Options::AESparseProfile());
     Map<NodeID, IntervalValue> inherited;
     bool canInherit = true;
     bool first = true;

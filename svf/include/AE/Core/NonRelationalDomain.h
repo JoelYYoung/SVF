@@ -211,6 +211,8 @@ public:
     Shape shapeOf(Variable variable) const;
     bool isDefined(Variable variable) const;
     bool hasNumeric(Variable variable) const;
+    std::vector<Variable> definedVariables(
+        const VariableEnvironment& environment) const;
     void assign(Variable variable, bool numeric);
     void forget(Variable variable);
     void changeEnvironment(const VariableEnvironment& environment);
