@@ -17,7 +17,7 @@ namespace SVF
 /// fixpoint checks all operate on DomainProductState; no IntervalState trace is
 /// maintained by this implementation.
 template <typename NumericalStateT>
-class DenseAbstractInterpretation final : public AbstractInterpretation
+class DenseAbstractInterpretation : public AbstractInterpretation
 {
 public:
     using DenseState = AbstractDomain::DomainProductState<NumericalStateT>;
@@ -93,7 +93,7 @@ protected:
                                const SVFVar* source,
                                bool exactMathematicalCopy) override;
 
-private:
+protected:
     DenseState& ensureState(const ICFGNode* node);
     const DenseState& state(const ICFGNode* node) const;
     DenseState topState(const ICFGNode* node) const;
@@ -109,7 +109,12 @@ private:
                         const IntervalValue& interval);
     void constrainInterval(DenseState& state, AbstractDomain::Variable variable,
                            const IntervalValue& interval);
-    void assumeBranch(const IntraCFGEdge* edge, DenseState& state) const;
+    virtual void materializeValue(DenseState& state, const ValVar* value,
+                                  const ICFGNode* node);
+    void forgetValue(DenseState& state,
+                     AbstractDomain::Variable variable) const;
+    void forgetScalarValues(DenseState& state) const;
+    void assumeBranch(const IntraCFGEdge* edge, DenseState& state);
 
     SVFIRAdapter adapter_;
     Map<const ICFGNode*, DenseState> denseTrace_;

@@ -195,14 +195,23 @@ if(TARGET SvfLLVM)
   add_relational_ae_integration_test(
     relational-domain-ae-integration-sparse sparse
   )
-  add_test(
-    NAME relational-domain-ae-assert-copy
-    COMMAND svf-ae-relational-integration-test
-            -ae-dense-octagon=true
-            -ae-sparsity=dense
-            -stat=false
-            -extapi=${CMAKE_BINARY_DIR}/lib/extapi.bc
-            ${CMAKE_CURRENT_LIST_DIR}/RelationalAssert.ll
+  function(add_relational_assert_test test_name sparsity)
+    add_test(
+      NAME ${test_name}
+      COMMAND svf-ae-relational-integration-test
+              -ae-dense-octagon=true
+              -ae-sparsity=${sparsity}
+              -stat=false
+              -extapi=${CMAKE_BINARY_DIR}/lib/extapi.bc
+              ${CMAKE_CURRENT_LIST_DIR}/RelationalAssert.ll
+    )
+  endfunction()
+  add_relational_assert_test(relational-domain-ae-assert-copy dense)
+  add_relational_assert_test(
+    relational-domain-ae-assert-copy-semi-sparse semi-sparse
+  )
+  add_relational_assert_test(
+    relational-domain-ae-assert-copy-sparse sparse
   )
   function(add_relational_ae_loop_test test_name sparsity)
     add_test(
@@ -225,12 +234,30 @@ if(TARGET SvfLLVM)
   add_relational_ae_loop_test(
     relational-domain-ae-loop-sparse sparse
   )
-  function(add_box_ae_projection_test test_name fixture)
+  function(add_sparse_memory_test test_name legacy)
     add_test(
       NAME ${test_name}
       COMMAND svf-ae-relational-integration-test
               -ae-dense-octagon=false
-              -ae-sparsity=dense
+              -ae-sparsity=sparse
+              -ae-sparse-legacy-interval=${legacy}
+              -stat=false
+              -extapi=${CMAKE_BINARY_DIR}/lib/extapi.bc
+              ${CMAKE_CURRENT_LIST_DIR}/SparseMemoryFlow.ll
+    )
+  endfunction()
+  add_sparse_memory_test(
+    relational-domain-ae-sparse-memory-native false
+  )
+  add_sparse_memory_test(
+    relational-domain-ae-sparse-memory-legacy true
+  )
+  function(add_box_ae_projection_test test_name fixture sparsity)
+    add_test(
+      NAME ${test_name}
+      COMMAND svf-ae-relational-integration-test
+              -ae-dense-octagon=false
+              -ae-sparsity=${sparsity}
               -widen-delay=1
               -stat=false
               -extapi=${CMAKE_BINARY_DIR}/lib/extapi.bc
@@ -238,10 +265,24 @@ if(TARGET SvfLLVM)
     )
   endfunction()
   add_box_ae_projection_test(
-    box-domain-ae-projection RelationalReducedProduct.ll
+    box-domain-ae-projection RelationalReducedProduct.ll dense
   )
   add_box_ae_projection_test(
-    box-domain-ae-loop-projection RelationalLoop.ll
+    box-domain-ae-loop-projection RelationalLoop.ll dense
+  )
+  add_box_ae_projection_test(
+    box-domain-ae-projection-semi-sparse
+    RelationalReducedProduct.ll semi-sparse
+  )
+  add_box_ae_projection_test(
+    box-domain-ae-loop-projection-semi-sparse
+    RelationalLoop.ll semi-sparse
+  )
+  add_box_ae_projection_test(
+    box-domain-ae-projection-sparse RelationalReducedProduct.ll sparse
+  )
+  add_box_ae_projection_test(
+    box-domain-ae-loop-projection-sparse RelationalLoop.ll sparse
   )
   function(add_legacy_dense_ae_test test_name fixture)
     add_test(

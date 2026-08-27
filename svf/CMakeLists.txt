@@ -28,10 +28,12 @@ set(ABSTRACT_DOMAIN_CORE_SOURCES
 )
 set(ABSTRACT_DOMAIN_INTEGRATION_HEADERS
     ${CMAKE_CURRENT_LIST_DIR}/include/AE/Svfexe/DenseAbstractInterpretation.h
+    ${CMAKE_CURRENT_LIST_DIR}/include/AE/Svfexe/NativeSparseAbstractInterpretation.h
     ${CMAKE_CURRENT_LIST_DIR}/include/AE/Svfexe/SVFIRAdapter.h
 )
 set(ABSTRACT_DOMAIN_INTEGRATION_SOURCES
     ${CMAKE_CURRENT_LIST_DIR}/lib/AE/Svfexe/DenseAbstractInterpretation.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/lib/AE/Svfexe/NativeSparseAbstractInterpretation.cpp
     ${CMAKE_CURRENT_LIST_DIR}/lib/AE/Svfexe/SVFIRAdapter.cpp
 )
 

@@ -239,6 +239,9 @@ public:
     /// Keep the historical map-backed IntervalState dense engine available as
     /// a semantic and performance baseline.
     static const Option<bool> AEDenseLegacyInterval;
+    /// Keep the historical IntervalState semi/full-sparse engines available
+    /// while native DomainProductState sparse storage is validated.
+    static const Option<bool> AESparseLegacyInterval;
     /// Enable the opt-in per-function Octagon reduced product.
     static const Option<bool> AEDenseOctagon;
     /// Cap tracked integer ValVars per function (Octagon is quadratic).

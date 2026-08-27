@@ -296,6 +296,9 @@ bool DenseAbstractInterpretation<NumericalStateT>::narrowCycleState(
     DenseState previousDense = static_cast<const DenseState&>(previous);
     DenseState currentDense = static_cast<const DenseState&>(current);
     alignEnvironments(previousDense, currentDense);
+    // Sparse transfers may materialize a new MemorySSA/cycle facet during the
+    // descending phase. Enforce narrowing's generic next <= current contract.
+    currentDense.meetWith(previousDense);
     DenseState next = previousDense;
     next.narrowWith(currentDense);
     const bool fixpoint =
@@ -407,6 +410,7 @@ void DenseAbstractInterpretation<NumericalStateT>::updateDomainOnBinary(
         const auto* scalar = SVFUtil::dyn_cast<ValVar>(value);
         if (!scalar || !adapter_.contains(*scalar))
             return false;
+        materializeValue(denseState, scalar, binary->getICFGNode());
         ensureVariable(denseState, adapter_.variable(*scalar));
         expression = AD::LinearExpression(adapter_.variable(*scalar));
         return true;
@@ -451,6 +455,7 @@ void DenseAbstractInterpretation<NumericalStateT>::updateDomainCopyValue(
     const auto* sourceValue = SVFUtil::dyn_cast<ValVar>(source);
     if (exactMathematicalCopy && sourceValue && adapter_.contains(*sourceValue))
     {
+        materializeValue(denseState, sourceValue, node);
         const AD::Variable sourceVariable = adapter_.variable(*sourceValue);
         ensureVariable(denseState, sourceVariable);
         denseState.numerical().assign(targetVariable,
@@ -494,6 +499,35 @@ void DenseAbstractInterpretation<NumericalStateT>::assignValue(
     }
     denseState.addresses().assign(variable, std::move(addresses));
     denseState.shapes().assign(variable, value.isInterval());
+}
+
+template <typename NumericalStateT>
+void DenseAbstractInterpretation<NumericalStateT>::materializeValue(
+    DenseState&, const ValVar*, const ICFGNode*)
+{
+}
+
+template <typename NumericalStateT>
+void DenseAbstractInterpretation<NumericalStateT>::forgetValue(
+    DenseState& denseState, AD::Variable variable) const
+{
+    if (!denseState.numerical().environment().contains(variable))
+        return;
+    denseState.numerical().forget(variable);
+    denseState.addresses().forget(variable);
+    denseState.shapes().forget(variable);
+}
+
+template <typename NumericalStateT>
+void DenseAbstractInterpretation<NumericalStateT>::forgetScalarValues(
+    DenseState& denseState) const
+{
+    for (const AD::VariableDeclaration& declaration :
+         denseState.numerical().environment().variables())
+    {
+        if (adapter_.value(declaration.variable))
+            forgetValue(denseState, declaration.variable);
+    }
 }
 
 template <typename NumericalStateT>
@@ -682,7 +716,8 @@ AbstractValue DenseAbstractInterpretation<NumericalStateT>::loadValue(
 {
     if (!adapter_.contains(*pointer))
         return AbstractInterpretation::loadValue(pointer, node);
-    const DenseState& denseState = state(node);
+    DenseState& denseState = ensureState(node);
+    materializeValue(denseState, pointer, node);
     const AD::AddressSet pointees =
         denseState.addresses().addressesOf(adapter_.variable(*pointer));
     if (pointees.isTop())
@@ -715,6 +750,7 @@ void DenseAbstractInterpretation<NumericalStateT>::storeValue(
         return;
     }
     DenseState& denseState = ensureState(node);
+    materializeValue(denseState, pointer, node);
     const AD::AddressSet pointees =
         denseState.addresses().addressesOf(adapter_.variable(*pointer));
     const bool strong = pointees.isSingleton();
@@ -751,7 +787,7 @@ void DenseAbstractInterpretation<NumericalStateT>::storeValue(
 
 template <typename NumericalStateT>
 void DenseAbstractInterpretation<NumericalStateT>::assumeBranch(
-    const IntraCFGEdge* edge, DenseState& denseState) const
+    const IntraCFGEdge* edge, DenseState& denseState)
 {
     const SVFVar* condition = edge->getCondition();
     if (!condition || condition->getInEdges().empty())
@@ -763,6 +799,7 @@ void DenseAbstractInterpretation<NumericalStateT>::assumeBranch(
         const auto* value = SVFUtil::dyn_cast<ValVar>(condition);
         if (!value || !adapter_.contains(*value))
             return;
+        materializeValue(denseState, value, edge->getSrcNode());
         denseState.assume(AD::equal(
             AD::LinearExpression(adapter_.variable(*value)),
             AD::LinearExpression(AD::Rational(edge->getSuccessorCondValue()))));
@@ -786,6 +823,7 @@ void DenseAbstractInterpretation<NumericalStateT>::assumeBranch(
         const auto* value = SVFUtil::dyn_cast<ValVar>(variable);
         if (!value || !adapter_.contains(*value))
             return false;
+        materializeValue(denseState, value, edge->getSrcNode());
         expression = AD::LinearExpression(adapter_.variable(*value));
         return true;
     };

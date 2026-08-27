@@ -30,6 +30,7 @@
 #include "AE/Svfexe/SparseAbstractInterpretation.h"
 #ifdef SVF_BUILD_ABSTRACT_DOMAINS
 #include "AE/Svfexe/DenseAbstractInterpretation.h"
+#include "AE/Svfexe/NativeSparseAbstractInterpretation.h"
 #endif
 #include "AE/Svfexe/AbsExtAPI.h"
 #include "SVFIR/SVFIR.h"
@@ -139,8 +140,36 @@ AbstractInterpretation& AbstractInterpretation::getAEInstance()
         switch (Options::AESparsity())
         {
         case AESparsity::SemiSparse:
+#ifdef SVF_BUILD_ABSTRACT_DOMAINS
+            if (!Options::AESparseLegacyInterval())
+            {
+                if (Options::AEDenseOctagon() &&
+                    largestDenseEnvironment(*PAG::getPAG()) <=
+                        Options::AEDenseOctagonMaxDimensions())
+                {
+                    return new NativeSemiSparseAbstractInterpretation<
+                        SVF::AbstractDomain::OctagonState>();
+                }
+                return new NativeSemiSparseAbstractInterpretation<
+                    SVF::AbstractDomain::BoxState>();
+            }
+#endif
             return new SemiSparseAbstractInterpretation();
         case AESparsity::Sparse:
+#ifdef SVF_BUILD_ABSTRACT_DOMAINS
+            if (!Options::AESparseLegacyInterval())
+            {
+                if (Options::AEDenseOctagon() &&
+                    largestDenseEnvironment(*PAG::getPAG()) <=
+                        Options::AEDenseOctagonMaxDimensions())
+                {
+                    return new NativeFullSparseAbstractInterpretation<
+                        SVF::AbstractDomain::OctagonState>();
+                }
+                return new NativeFullSparseAbstractInterpretation<
+                    SVF::AbstractDomain::BoxState>();
+            }
+#endif
             return new FullSparseAbstractInterpretation();
         case AESparsity::Dense:
         default:

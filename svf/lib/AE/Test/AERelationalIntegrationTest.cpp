@@ -135,20 +135,26 @@ void validateLegacyDenseSemantics(const SVFIR& graph,
 }
 
 template <typename DenseStateT>
-void validateNativeDenseStorage(AbstractInterpretation& analysis)
+void validateNativeProductStorage(AbstractInterpretation& analysis)
 {
     if (!analysis.getIntervalTraceView().empty())
         throw std::runtime_error(
-            "native dense AE retained a compatibility IntervalState trace");
+            "native product AE retained a compatibility IntervalState trace");
     if (analysis.getAnalyzedNodes().empty())
-        throw std::runtime_error("native dense AE analyzed no nodes");
+        throw std::runtime_error("native product AE analyzed no nodes");
     for (const ICFGNode* node : analysis.getAnalyzedNodes())
     {
         if (!analysis.getAbstractState(node).isState<DenseStateT>())
             throw std::runtime_error(
-                "native dense AE exposed a non-product authoritative state");
+                "native product AE exposed a non-product authoritative state");
     }
-    std::cout << "AE_STORAGE_OBSERVATION mode=dense-native"
+    const char* mode = Options::AESparsity() == AbstractInterpretation::Dense
+                           ? "dense-native"
+                       : Options::AESparsity() ==
+                                 AbstractInterpretation::SemiSparse
+                           ? "semi-sparse-native"
+                           : "sparse-native";
+    std::cout << "AE_STORAGE_OBSERVATION mode=" << mode
               << " authoritative_state=DomainProductState"
               << " compatibility_trace_entries=0\n";
 }
@@ -470,6 +476,33 @@ void validateBoxProjection(const SVFIR& graph, AbstractInterpretation& analysis)
               << " projection_matches_domain=1\n";
 }
 
+void validateSparseMemoryFixture(const SVFIR& graph,
+                                 AbstractInterpretation& analysis,
+                                 bool requireRefinement)
+{
+    const SVFVar* result = requireValue(graph, "memory_result");
+    bool sawPositiveResult = false;
+    for (const ICFGNode* node : analysis.getAnalyzedNodes())
+    {
+        if (!analysis.hasAbsValue(result, node))
+            continue;
+        const AbstractValue value = analysis.getAbsValue(result, node);
+        if (value.isInterval() && !value.getInterval().lb().is_infinity() &&
+            value.getInterval().lb().getNumeral() == 1)
+            sawPositiveResult = true;
+    }
+    if (requireRefinement && !sawPositiveResult)
+        throw std::runtime_error(
+            "sparse memory branch refinement did not reach the second load");
+    if (!requireRefinement && sawPositiveResult)
+        throw std::runtime_error(
+            "legacy sparse memory result unexpectedly changed");
+    std::cout << "AE_SPARSE_MEMORY_OBSERVATION reaching_store=1"
+              << " branch_refinement=" << sawPositiveResult
+              << " result_lower_bound="
+              << (sawPositiveResult ? "1" : "top") << '\n';
+}
+
 } // namespace
 
 int main(int argc, char** argv)
@@ -490,33 +523,46 @@ int main(int argc, char** argv)
             AbstractInterpretation::getAEInstance();
         analysis.runOnModule();
 
-        if (Options::AESparsity() != AbstractInterpretation::Dense)
+        const bool nativeProduct = analysis.getIntervalTraceView().empty();
+        if (Options::AESparsity() != AbstractInterpretation::Dense &&
+            !nativeProduct)
             validateSparseStorage(analysis);
         else if (Options::AEDenseLegacyInterval())
         {
             validateLegacyDenseStorage(analysis);
-            validateLegacyDenseSemantics(*graph, analysis);
+            if (findValueIfPresent(*graph, "z") ||
+                findValueIfPresent(*graph, "loop_result"))
+                validateLegacyDenseSemantics(*graph, analysis);
         }
         else if (!Options::AEDenseOctagon())
         {
-            validateNativeDenseStorage<DenseBoxState>(analysis);
-            validateBoxProjection(*graph, analysis);
+            validateNativeProductStorage<DenseBoxState>(analysis);
+            if (findValueIfPresent(*graph, "z") ||
+                findValueIfPresent(*graph, "loop_result"))
+                validateBoxProjection(*graph, analysis);
         }
         else if (findValueIfPresent(*graph, "assert_bad"))
         {
-            validateNativeDenseStorage<DenseOctagonState>(analysis);
+            validateNativeProductStorage<DenseOctagonState>(analysis);
             validateRelationalAssertFixture(*graph, analysis);
         }
         else if (findValueIfPresent(*graph, "loop_result"))
         {
-            validateNativeDenseStorage<DenseOctagonState>(analysis);
+            validateNativeProductStorage<DenseOctagonState>(analysis);
             validateLoopFixture(*graph, analysis);
         }
-        else
+        else if (findValueIfPresent(*graph, "z"))
         {
-            validateNativeDenseStorage<DenseOctagonState>(analysis);
+            validateNativeProductStorage<DenseOctagonState>(analysis);
             validateReducedProductFixture(*graph, analysis);
         }
+        else
+            validateNativeProductStorage<DenseOctagonState>(analysis);
+
+        if (findValueIfPresent(*graph, "memory_result"))
+            validateSparseMemoryFixture(*graph, analysis, nativeProduct);
+        std::cout << "AE_GENERIC_OBSERVATION analyzed_nodes="
+                  << analysis.getAnalyzedNodes().size() << '\n';
 
         AndersenWaveDiff::releaseAndersenWaveDiff();
         LLVMModuleSet::releaseLLVMModuleSet();
