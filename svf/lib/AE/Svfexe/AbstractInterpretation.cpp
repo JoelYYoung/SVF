@@ -40,6 +40,7 @@
 #include "WPA/Andersen.h"
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
 #include <memory>
 
 using namespace SVF;
@@ -79,6 +80,20 @@ std::size_t largestDenseEnvironment(const SVFIR& graph)
         largest = std::max(largest, commonDimensions + dimensions);
     }
     return largest;
+}
+
+void reportOctagonSelection(const char* sparsity, std::size_t dimensions,
+                            bool selected)
+{
+    const char* telemetry = std::getenv("SVF_OCTAGON_TELEMETRY");
+    if (telemetry == nullptr || telemetry[0] == '\0' ||
+        std::string(telemetry) == "0")
+        return;
+    SVFUtil::outs() << "OCTAGON_SELECTION sparsity=" << sparsity
+                    << " dimensions=" << dimensions
+                    << " limit=" << Options::AEDenseOctagonMaxDimensions()
+                    << " selected=" << static_cast<unsigned>(selected)
+                    << '\n';
 }
 #endif
 
@@ -143,9 +158,14 @@ AbstractInterpretation& AbstractInterpretation::getAEInstance()
 #ifdef SVF_BUILD_ABSTRACT_DOMAINS
             if (!Options::AESparseLegacyInterval())
             {
-                if (Options::AEDenseOctagon() &&
-                    largestDenseEnvironment(*PAG::getPAG()) <=
-                        Options::AEDenseOctagonMaxDimensions())
+                const std::size_t dimensions =
+                    largestDenseEnvironment(*PAG::getPAG());
+                const bool selected = Options::AEDenseOctagon() &&
+                    dimensions <= Options::AEDenseOctagonMaxDimensions();
+                if (Options::AEDenseOctagon())
+                    reportOctagonSelection("semi-sparse", dimensions,
+                                           selected);
+                if (selected)
                 {
                     return new NativeSemiSparseAbstractInterpretation<
                         SVF::AbstractDomain::OctagonState>();
@@ -159,9 +179,13 @@ AbstractInterpretation& AbstractInterpretation::getAEInstance()
 #ifdef SVF_BUILD_ABSTRACT_DOMAINS
             if (!Options::AESparseLegacyInterval())
             {
-                if (Options::AEDenseOctagon() &&
-                    largestDenseEnvironment(*PAG::getPAG()) <=
-                        Options::AEDenseOctagonMaxDimensions())
+                const std::size_t dimensions =
+                    largestDenseEnvironment(*PAG::getPAG());
+                const bool selected = Options::AEDenseOctagon() &&
+                    dimensions <= Options::AEDenseOctagonMaxDimensions();
+                if (Options::AEDenseOctagon())
+                    reportOctagonSelection("sparse", dimensions, selected);
+                if (selected)
                 {
                     return new NativeFullSparseAbstractInterpretation<
                         SVF::AbstractDomain::OctagonState>();
@@ -180,8 +204,10 @@ AbstractInterpretation& AbstractInterpretation::getAEInstance()
             {
                 const std::size_t dimensions =
                     largestDenseEnvironment(*PAG::getPAG());
-                if (dimensions <=
-                        Options::AEDenseOctagonMaxDimensions())
+                const bool selected =
+                    dimensions <= Options::AEDenseOctagonMaxDimensions();
+                reportOctagonSelection("dense", dimensions, selected);
+                if (selected)
                     return new DenseAbstractInterpretation<
                         SVF::AbstractDomain::OctagonState>();
                 SVFUtil::writeWrnMsg(

@@ -1,0 +1,10 @@
+input,path,bytes,sparsity,limit,dimensions,selected,status,seconds,telemetry_rows,operation_calls
+reduced,/Users/xavier/Projects/relational-domain/SVF-relational-domain/svf/lib/AE/Test/RelationalReducedProduct.ll,737,dense,64,16,1,pass,0.023141,32,372
+reduced,/Users/xavier/Projects/relational-domain/SVF-relational-domain/svf/lib/AE/Test/RelationalReducedProduct.ll,737,semi-sparse,64,16,1,pass,0.024627,46,1143
+reduced,/Users/xavier/Projects/relational-domain/SVF-relational-domain/svf/lib/AE/Test/RelationalReducedProduct.ll,737,sparse,64,16,1,pass,0.026559,46,1623
+assert-copy,/Users/xavier/Projects/relational-domain/SVF-relational-domain/svf/lib/AE/Test/RelationalAssert.ll,782,dense,64,13,1,pass,0.018881,31,353
+assert-copy,/Users/xavier/Projects/relational-domain/SVF-relational-domain/svf/lib/AE/Test/RelationalAssert.ll,782,semi-sparse,64,13,1,pass,0.019113,43,622
+assert-copy,/Users/xavier/Projects/relational-domain/SVF-relational-domain/svf/lib/AE/Test/RelationalAssert.ll,782,sparse,64,13,1,pass,0.021678,43,849
+loop,/Users/xavier/Projects/relational-domain/SVF-relational-domain/svf/lib/AE/Test/RelationalLoop.ll,683,dense,64,13,1,pass,0.026462,35,719
+loop,/Users/xavier/Projects/relational-domain/SVF-relational-domain/svf/lib/AE/Test/RelationalLoop.ll,683,semi-sparse,64,13,1,pass,0.040223,45,2034
+loop,/Users/xavier/Projects/relational-domain/SVF-relational-domain/svf/lib/AE/Test/RelationalLoop.ll,683,sparse,64,13,1,pass,0.040462,45,2643

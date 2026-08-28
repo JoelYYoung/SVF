@@ -3,13 +3,20 @@
 #include "AE/Core/OctagonDomain.h"
 
 #include <algorithm>
+#include <chrono>
+#include <cstdlib>
+#include <exception>
+#include <fstream>
+#include <iostream>
 #include <map>
-#include <vector>
+#include <mutex>
 #include <optional>
 #include <set>
 #include <sstream>
 #include <stdexcept>
+#include <tuple>
 #include <utility>
+#include <vector>
 
 namespace SVF::AbstractDomain
 {
@@ -122,6 +129,293 @@ private:
     }
 };
 
+struct OctagonShape
+{
+    std::size_t dimensions = 0;
+    std::size_t finiteStored = 0;
+    std::size_t allocatedSlots = 0;
+    std::size_t components = 0;
+    std::size_t maximumComponent = 0;
+    std::size_t unaryAnchors = 0;
+    bool bottom = false;
+};
+
+OctagonShape measureShape(const OctagonStorage& state)
+{
+    OctagonShape result;
+    result.dimensions = state.dimensions;
+    result.allocatedSlots = state.matrix.size();
+    result.bottom = state.bottom;
+    for (const Bound& bound : state.matrix)
+        result.finiteStored += static_cast<std::size_t>(bound.isFinite());
+
+    std::vector<std::size_t> parent(state.dimensions);
+    std::vector<std::size_t> componentSize(state.dimensions, 1);
+    for (std::size_t dimension = 0; dimension < state.dimensions; ++dimension)
+        parent[dimension] = dimension;
+    const auto rootOf = [&](std::size_t start)
+    {
+        std::size_t root = start;
+        while (parent[root] != root)
+            root = parent[root];
+        return root;
+    };
+    const auto unite = [&](std::size_t lhs, std::size_t rhs)
+    {
+        lhs = rootOf(lhs);
+        rhs = rootOf(rhs);
+        if (lhs == rhs)
+            return;
+        if (componentSize[lhs] < componentSize[rhs])
+            std::swap(lhs, rhs);
+        parent[rhs] = lhs;
+        componentSize[lhs] += componentSize[rhs];
+    };
+
+    for (std::size_t lhs = 0; lhs < state.dimensions; ++lhs)
+    {
+        const std::size_t positive = positiveNode(lhs);
+        const std::size_t negative = negativeNode(lhs);
+        if (state.at(positive, negative).isFinite() ||
+            state.at(negative, positive).isFinite())
+            ++result.unaryAnchors;
+        for (std::size_t rhs = lhs + 1; rhs < state.dimensions; ++rhs)
+        {
+            bool related = false;
+            for (std::size_t lhsSign = 0; lhsSign < 2 && !related; ++lhsSign)
+                for (std::size_t rhsSign = 0; rhsSign < 2; ++rhsSign)
+                    if (state.at(2 * lhs + lhsSign,
+                                 2 * rhs + rhsSign).isFinite())
+                    {
+                        related = true;
+                        break;
+                    }
+            if (related)
+                unite(lhs, rhs);
+        }
+    }
+    for (std::size_t dimension = 0; dimension < state.dimensions; ++dimension)
+    {
+        if (rootOf(dimension) != dimension)
+            continue;
+        ++result.components;
+        result.maximumComponent =
+            std::max(result.maximumComponent, componentSize[dimension]);
+    }
+    return result;
+}
+
+std::string densityBucket(const OctagonShape& shape)
+{
+    if (shape.bottom)
+        return "bottom";
+    if (shape.finiteStored <= 2 * shape.dimensions)
+        return "top";
+    if (shape.allocatedSlots == 0)
+        return "empty";
+    const long double density =
+        static_cast<long double>(shape.finiteStored) /
+        static_cast<long double>(shape.allocatedSlots);
+    if (density <= 0.01L)
+        return "le-1pct";
+    if (density <= 0.10L)
+        return "le-10pct";
+    if (density <= 0.50L)
+        return "le-50pct";
+    if (density < 1.0L)
+        return "le-99pct";
+    return "dense";
+}
+
+struct TelemetryKey
+{
+    std::string layer;
+    std::string operation;
+    std::size_t dimensions = 0;
+    std::string density;
+
+    bool operator<(const TelemetryKey& other) const
+    {
+        return std::tie(layer, operation, dimensions, density) <
+               std::tie(other.layer, other.operation, other.dimensions,
+                        other.density);
+    }
+};
+
+struct TelemetryValue
+{
+    std::uint64_t count = 0;
+    std::uint64_t totalNanoseconds = 0;
+    std::uint64_t maximumNanoseconds = 0;
+    std::uint64_t finiteStoredSum = 0;
+    std::uint64_t allocatedSlotsSum = 0;
+    std::uint64_t componentCountSum = 0;
+    std::uint64_t maximumComponentSum = 0;
+    std::uint64_t unaryAnchorSum = 0;
+    std::uint64_t bottomCount = 0;
+};
+
+struct TelemetryState;
+TelemetryState& telemetryState();
+void flushTelemetry();
+
+struct TelemetryState
+{
+    TelemetryState()
+    {
+        const char* configured = std::getenv("SVF_OCTAGON_TELEMETRY");
+        if (configured == nullptr || configured[0] == '\0' ||
+            std::string(configured) == "0")
+            return;
+        enabled = true;
+        output = configured;
+        std::atexit(flushTelemetry);
+    }
+
+    bool enabled = false;
+    std::string output;
+    std::mutex mutex;
+    std::map<TelemetryKey, TelemetryValue> values;
+};
+
+TelemetryState& telemetryState()
+{
+    static TelemetryState* state = new TelemetryState();
+    return *state;
+}
+
+bool telemetryEnabled()
+{
+    return telemetryState().enabled;
+}
+
+void recordTelemetry(const char* layer, const char* operation,
+                     std::uint64_t nanoseconds,
+                     const OctagonStorage& state, bool sampleShape)
+{
+    TelemetryState& telemetry = telemetryState();
+    if (!telemetry.enabled)
+        return;
+    OctagonShape shape;
+    shape.dimensions = state.dimensions;
+    shape.allocatedSlots = state.matrix.size();
+    std::string density = "not-sampled";
+    if (sampleShape)
+    {
+        shape = measureShape(state);
+        density = densityBucket(shape);
+    }
+    std::lock_guard<std::mutex> lock(telemetry.mutex);
+    TelemetryValue& value =
+        telemetry.values[{layer, operation, shape.dimensions, density}];
+    ++value.count;
+    value.totalNanoseconds += nanoseconds;
+    value.maximumNanoseconds =
+        std::max(value.maximumNanoseconds, nanoseconds);
+    value.finiteStoredSum += shape.finiteStored;
+    value.allocatedSlotsSum += shape.allocatedSlots;
+    value.componentCountSum += shape.components;
+    value.maximumComponentSum += shape.maximumComponent;
+    value.unaryAnchorSum += shape.unaryAnchors;
+    value.bottomCount += static_cast<std::uint64_t>(shape.bottom);
+}
+
+void flushTelemetry()
+{
+    TelemetryState& telemetry = telemetryState();
+    std::lock_guard<std::mutex> lock(telemetry.mutex);
+    std::ofstream file;
+    std::ostream* output = &std::cerr;
+    if (telemetry.output != "1" && telemetry.output != "-" &&
+        telemetry.output != "stderr")
+    {
+        file.open(telemetry.output, std::ios::out | std::ios::trunc);
+        if (file)
+            output = &file;
+    }
+    *output << "layer,operation,dimensions,density_bucket,count,total_ns,"
+               "max_ns,finite_stored_sum,allocated_slots_sum,"
+               "component_count_sum,max_component_size_sum,"
+               "unary_anchor_sum,bottom_count\n";
+    for (const auto& [key, value] : telemetry.values)
+    {
+        *output << key.layer << ',' << key.operation << ',' << key.dimensions
+                << ',' << key.density << ',' << value.count << ','
+                << value.totalNanoseconds << ',' << value.maximumNanoseconds
+                << ',' << value.finiteStoredSum << ','
+                << value.allocatedSlotsSum << ',' << value.componentCountSum
+                << ',' << value.maximumComponentSum << ','
+                << value.unaryAnchorSum << ',' << value.bottomCount << '\n';
+    }
+}
+
+class StorageTelemetryScope
+{
+public:
+    StorageTelemetryScope(const char* layer, const char* operation,
+                          const OctagonStorage& state,
+                          bool sampleShape = false)
+        : layer_(layer), operation_(operation), state_(state),
+          sampleShape_(sampleShape), enabled_(telemetryEnabled()),
+          exceptions_(std::uncaught_exceptions())
+    {
+        if (enabled_)
+            start_ = Clock::now();
+    }
+
+    ~StorageTelemetryScope()
+    {
+        if (!enabled_ || std::uncaught_exceptions() != exceptions_)
+            return;
+        const std::uint64_t nanoseconds =
+            static_cast<std::uint64_t>(
+                std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    Clock::now() - start_)
+                    .count());
+        recordTelemetry(layer_, operation_, nanoseconds, state_, sampleShape_);
+    }
+
+private:
+    using Clock = std::chrono::steady_clock;
+    const char* layer_;
+    const char* operation_;
+    const OctagonStorage& state_;
+    bool sampleShape_;
+    bool enabled_;
+    int exceptions_;
+    Clock::time_point start_{};
+};
+
+OctagonStorage constructStorageForTelemetry(
+    const VariableEnvironment& environment, bool bottom)
+{
+    if (!telemetryEnabled())
+        return OctagonStorage(environment, bottom);
+    const auto start = std::chrono::steady_clock::now();
+    OctagonStorage result(environment, bottom);
+    const std::uint64_t nanoseconds = static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now() - start)
+            .count());
+    recordTelemetry("lifecycle", bottom ? "construct-bottom" : "construct-top",
+                    nanoseconds, result, false);
+    return result;
+}
+
+OctagonStorage copyStorageForTelemetry(const OctagonStorage& source)
+{
+    if (!telemetryEnabled())
+        return source;
+    const auto start = std::chrono::steady_clock::now();
+    OctagonStorage result(source);
+    const std::uint64_t nanoseconds = static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now() - start)
+            .count());
+    recordTelemetry("lifecycle", "copy", nanoseconds, result, false);
+    return result;
+}
+
 const OctagonStorage& asOctagon(const OctagonStorage& state)
 {
     return static_cast<const OctagonStorage&>(state);
@@ -165,7 +459,8 @@ class OctagonState::Impl final
 {
 public:
     Impl(const VariableEnvironment& environment, OctagonConfig options, bool bottom)
-        : options_(std::move(options)), state_(environment, bottom)
+        : options_(std::move(options)),
+          state_(constructStorageForTelemetry(environment, bottom))
     {
     }
 
@@ -174,7 +469,10 @@ public:
     {
     }
 
-    Impl(const Impl&) = default;
+    Impl(const Impl& other)
+        : options_(other.options_), state_(copyStorageForTelemetry(other.state_))
+    {
+    }
 
     const char* name() const
     {
@@ -787,23 +1085,27 @@ public:
                                     Variable target,
                                     const LinearExpression& expression)
     {
+        StorageTelemetryScope telemetry("abstract", "assign", state_);
         return assign(state_, environment, target, expression);
     }
 
     ApproximationKind assumeCurrent(const VariableEnvironment& environment,
                                     const LinearConstraint& constraint)
     {
+        StorageTelemetryScope telemetry("abstract", "assume", state_);
         return assume(state_, environment, constraint);
     }
 
     void forgetCurrent(const VariableEnvironment& environment, Variable variable)
     {
+        StorageTelemetryScope telemetry("abstract", "forget", state_, true);
         forget(state_, environment, variable);
     }
 
     void assignIntervalCurrent(const VariableEnvironment& environment,
                                Variable target, const Interval& value)
     {
+        StorageTelemetryScope telemetry("abstract", "assign-interval", state_);
         if (!environment.contains(target))
             throw std::invalid_argument(
                 "assignment target is not in relational environment");
@@ -836,61 +1138,74 @@ public:
 
     void canonicalizeCurrent()
     {
+        StorageTelemetryScope telemetry("abstract", "canonicalize", state_);
         normalize(state_);
     }
 
     void joinCurrent(const Impl& other)
     {
+        StorageTelemetryScope telemetry("abstract", "join", state_, true);
         state_ = std::move(*join(state_, other.state_));
     }
 
     std::unique_ptr<Impl> joined(const Impl& other) const
     {
+        StorageTelemetryScope telemetry("abstract", "join", state_);
         return std::make_unique<Impl>(
             options_, std::move(*join(state_, other.state_)));
     }
 
     void meetCurrent(const Impl& other)
     {
+        StorageTelemetryScope telemetry("abstract", "meet", state_, true);
         state_ = std::move(*meet(state_, other.state_));
     }
 
     std::unique_ptr<Impl> met(const Impl& other) const
     {
+        StorageTelemetryScope telemetry("abstract", "meet", state_);
         return std::make_unique<Impl>(
             options_, std::move(*meet(state_, other.state_)));
     }
 
     void widenCurrent(const Impl& other, const WideningPolicy& policy)
     {
+        StorageTelemetryScope telemetry("abstract", "widen", state_, true);
         state_ = std::move(*widen(state_, other.state_, policy));
     }
 
     std::unique_ptr<Impl> widened(
         const Impl& other, const WideningPolicy& policy) const
     {
+        StorageTelemetryScope telemetry("abstract", "widen", state_);
         return std::make_unique<Impl>(
             options_, std::move(*widen(state_, other.state_, policy)));
     }
 
     void narrowCurrent(const Impl& other)
     {
+        StorageTelemetryScope telemetry("abstract", "narrow", state_, true);
         state_ = std::move(*narrow(state_, other.state_));
     }
 
     std::unique_ptr<Impl> narrowed(const Impl& other) const
     {
+        StorageTelemetryScope telemetry("abstract", "narrow", state_);
         return std::make_unique<Impl>(
             options_, std::move(*narrow(state_, other.state_)));
     }
 
     void projectLowerBoundsCurrent()
     {
+        StorageTelemetryScope telemetry(
+            "abstract", "project-lower-bounds", state_, true);
         state_ = std::move(*projectLowerBounds(state_));
     }
 
     std::unique_ptr<Impl> projectedLowerBounds() const
     {
+        StorageTelemetryScope telemetry(
+            "abstract", "project-lower-bounds", state_);
         return std::make_unique<Impl>(
             options_, std::move(*projectLowerBounds(state_)));
     }
@@ -899,6 +1214,8 @@ public:
                                   const VariableEnvironment& newEnvironment,
                                   bool initializeNewVariablesToZero)
     {
+        StorageTelemetryScope telemetry(
+            "abstract", "change-environment", state_, true);
         state_ = std::move(*changeEnvironment(
             state_, oldEnvironment, newEnvironment, initializeNewVariablesToZero));
     }
@@ -907,6 +1224,8 @@ public:
         const VariableEnvironment& oldEnvironment, const VariableEnvironment& newEnvironment,
         bool initializeNewVariablesToZero) const
     {
+        StorageTelemetryScope telemetry(
+            "abstract", "change-environment", state_);
         return std::make_unique<Impl>(
             options_, std::move(*changeEnvironment(
                           state_, oldEnvironment, newEnvironment,
@@ -915,22 +1234,26 @@ public:
 
     bool isBottomCurrent() const
     {
+        StorageTelemetryScope telemetry("query", "is-bottom", state_);
         return isBottom(state_);
     }
 
     bool isTopCurrent() const
     {
+        StorageTelemetryScope telemetry("query", "is-top", state_);
         return isTop(state_);
     }
 
     bool leqCurrent(const Impl& other) const
     {
+        StorageTelemetryScope telemetry("query", "leq", state_);
         return leq(state_, other.state_);
     }
 
     Interval boundCurrent(const VariableEnvironment& environment,
                           Variable variable) const
     {
+        StorageTelemetryScope telemetry("query", "bound-variable", state_);
         return bound(state_, environment, variable);
     }
 
@@ -938,17 +1261,20 @@ public:
         const VariableEnvironment& environment,
         const LinearExpression& expression) const
     {
+        StorageTelemetryScope telemetry("query", "bound-expression", state_);
         return boundExpression(state_, environment, expression);
     }
 
     LinearConstraintSet constraintsCurrent(
         const VariableEnvironment& environment) const
     {
+        StorageTelemetryScope telemetry("query", "to-constraints", state_);
         return constraints(state_, environment);
     }
 
     std::string toStringCurrent(const VariableEnvironment& environment) const
     {
+        StorageTelemetryScope telemetry("query", "to-string", state_);
         return toString(state_, environment);
     }
 
@@ -1398,6 +1724,8 @@ private:
 
     void shortestPathClosure(OctagonStorage& state) const
     {
+        StorageTelemetryScope telemetry(
+            "primitive", "shortest-path-closure", state);
         for (std::size_t middle = 0; middle < state.nodes(); ++middle)
         {
             for (std::size_t row = 0; row < state.nodes(); ++row)
@@ -1436,6 +1764,7 @@ private:
 
     void strongClosure(OctagonStorage& state) const
     {
+        StorageTelemetryScope telemetry("primitive", "strong-closure", state);
         if (!options_.strongClosure)
             return;
         for (std::size_t row = 0; row < state.nodes(); ++row)
@@ -1470,7 +1799,13 @@ private:
     void normalize(OctagonStorage& state) const
     {
         if (state.bottom || state.stronglyClosed)
+        {
+            StorageTelemetryScope telemetry(
+                "primitive", "normalize-skip", state);
             return;
+        }
+        StorageTelemetryScope telemetry(
+            "primitive", "normalize-dirty", state, true);
         enforceCoherence(state);
         shortestPathClosure(state);
         if (detectBottom(state))
