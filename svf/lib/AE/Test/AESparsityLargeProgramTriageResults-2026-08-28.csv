@@ -1,0 +1,11 @@
+input,mode,repetition,status,seconds,peak_rss_bytes,rss_source,sampled_peak_rss_bytes,rss_samples,analyzed_nodes,return_code
+cf14-3.65m,semi-legacy,1,pass,0.595135,161562624,time,151322624,5,1603,0
+cf14-3.65m,semi-native,1,pass,0.602031,205832192,time,198017024,5,1614,0
+cf14-3.65m,full-legacy,1,pass,0.470308,174473216,time,174440448,4,1613,0
+cf14-3.65m,full-native,1,pass,1.014319,230326272,time,228884480,8,1614,0
+ferret-760k,semi-legacy,1,timeout,10.008633,547078144,process-group-sample,547078144,77,,-9
+ferret-760k,semi-native,1,timeout,10.008300,544571392,process-group-sample,544571392,77,,-9
+ferret-760k,full-legacy,1,timeout,10.008245,543539200,process-group-sample,543539200,77,,-9
+ferret-760k,full-native,1,timeout,10.008251,544784384,process-group-sample,544784384,77,,-9
+libpri-3.02m,semi-legacy,1,pass,1.156124,464420864,time,463962112,9,213,0
+libpri-3.02m,semi-native,1,fail,1.153138,827539456,time,768016384,9,,-11
