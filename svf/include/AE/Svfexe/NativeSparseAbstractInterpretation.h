@@ -123,6 +123,7 @@ protected:
     void scatterCycleValues(const ICFGCycleWTO* cycle, const DenseState& state);
     virtual const char* sparseProfileMode() const;
     void reportSparseProfile() const;
+    void sampleBoxResidentStates() const override;
 
     Map<const ICFGNode*, DenseState> refinementTrace_;
     Map<const FunObjVar*, DenseState> scalarStates_;

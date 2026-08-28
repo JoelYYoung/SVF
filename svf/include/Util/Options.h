@@ -244,6 +244,10 @@ public:
     static const Option<bool> AESparseLegacyInterval;
     /// Print inclusive phase timings for native semi/full-sparse AE.
     static const Option<bool> AESparseProfile;
+    /// Print opt-in Box operation and storage-shape telemetry.
+    static const Option<bool> AEBoxStorageProfile;
+    static const Option<bool> AEBoxDirectoryCOW;
+    static const Option<bool> AEBoxHashDirectoryCOW;
     /// Enable the opt-in per-function Octagon reduced product.
     static const Option<bool> AEDenseOctagon;
     /// Cap tracked integer ValVars per function (Octagon is quadratic).

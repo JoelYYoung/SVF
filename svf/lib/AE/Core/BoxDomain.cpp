@@ -3,6 +3,8 @@
 #include "AE/Core/BoxDomain.h"
 
 #include <algorithm>
+#include <iomanip>
+#include <limits>
 #include <set>
 #include <sstream>
 #include <stdexcept>
@@ -13,6 +15,91 @@ namespace SVF::AbstractDomain
 
 namespace
 {
+
+constexpr std::size_t telemetryRoleIndex(BoxStorageRole role)
+{
+    return static_cast<std::size_t>(role);
+}
+
+constexpr std::size_t telemetryOperationIndex(BoxStorageOperation operation)
+{
+    return static_cast<std::size_t>(operation);
+}
+
+const char* telemetryRoleName(BoxStorageRole role)
+{
+    switch (role)
+    {
+    case BoxStorageRole::General:
+        return "general";
+    case BoxStorageRole::Scalar:
+        return "scalar";
+    case BoxStorageRole::Flow:
+        return "flow";
+    case BoxStorageRole::Count:
+        break;
+    }
+    return "unknown";
+}
+
+const char* telemetryOperationName(BoxStorageOperation operation)
+{
+    switch (operation)
+    {
+    case BoxStorageOperation::CreateTop: return "create-top";
+    case BoxStorageOperation::CreateBottom: return "create-bottom";
+    case BoxStorageOperation::ImportBox: return "import-box";
+    case BoxStorageOperation::ImportConstraints: return "import-constraints";
+    case BoxStorageOperation::BoundVariable: return "bound-variable";
+    case BoxStorageOperation::BoundExpression: return "bound-expression";
+    case BoxStorageOperation::AssignLinear: return "assign-linear";
+    case BoxStorageOperation::AssignTree: return "assign-tree";
+    case BoxStorageOperation::AssignParallel: return "assign-parallel";
+    case BoxStorageOperation::Substitute: return "substitute";
+    case BoxStorageOperation::SubstituteParallel: return "substitute-parallel";
+    case BoxStorageOperation::AssumeLinear: return "assume-linear";
+    case BoxStorageOperation::AssumeTree: return "assume-tree";
+    case BoxStorageOperation::Forget: return "forget";
+    case BoxStorageOperation::EnvironmentChange: return "environment-change";
+    case BoxStorageOperation::EnvironmentNoop: return "environment-noop";
+    case BoxStorageOperation::Expand: return "expand";
+    case BoxStorageOperation::Fold: return "fold";
+    case BoxStorageOperation::Entails: return "entails";
+    case BoxStorageOperation::ExportBox: return "export-box";
+    case BoxStorageOperation::ExportConstraints: return "export-constraints";
+    case BoxStorageOperation::Close: return "close";
+    case BoxStorageOperation::Canonicalize: return "canonicalize";
+    case BoxStorageOperation::Join: return "join";
+    case BoxStorageOperation::Meet: return "meet";
+    case BoxStorageOperation::Widen: return "widen";
+    case BoxStorageOperation::Narrow: return "narrow";
+    case BoxStorageOperation::Leq: return "leq";
+    case BoxStorageOperation::Clone: return "clone";
+    case BoxStorageOperation::PageLookupHit: return "page-lookup-hit";
+    case BoxStorageOperation::PageLookupMiss: return "page-lookup-miss";
+    case BoxStorageOperation::SlotLookupHit: return "slot-lookup-hit";
+    case BoxStorageOperation::SlotLookupMiss: return "slot-lookup-miss";
+    case BoxStorageOperation::PageCreate: return "page-create";
+    case BoxStorageOperation::PageDetach: return "page-detach";
+    case BoxStorageOperation::DirectoryDetach: return "directory-detach";
+    case BoxStorageOperation::PageErase: return "page-erase";
+    case BoxStorageOperation::Count: break;
+    }
+    return "unknown";
+}
+
+std::size_t logarithmicBucket(std::size_t value, std::size_t bins)
+{
+    if (value == 0)
+        return 0;
+    std::size_t bucket = 1;
+    while (value > 1 && bucket + 1 < bins)
+    {
+        value >>= 1;
+        ++bucket;
+    }
+    return bucket;
+}
 
 int compareLower(const Bound& lhs, const Bound& rhs)
 {
@@ -142,29 +229,178 @@ LinearConstraint normalizedLessEqual(const LinearConstraint& constraint,
 
 } // namespace
 
+bool BoxStorageTelemetry::record(BoxStorageRole role,
+                                 BoxStorageOperation operation,
+                                 bool shapeEligible)
+{
+    ++operations_[telemetryRoleIndex(role)]
+                 [telemetryOperationIndex(operation)];
+    if (!shapeEligible)
+        return false;
+    const std::uint64_t event = ++events_[telemetryRoleIndex(role)];
+    return event == 1 || event % 512 == 0;
+}
+
+void BoxStorageTelemetry::accumulateShape(ShapeAggregate& shape,
+                                          const BoxStorageMetrics& metrics)
+{
+    ++shape.samples;
+    shape.environmentDimensions += metrics.environmentDimensions;
+    shape.materializedBounds += metrics.materializedBounds;
+    shape.pageReferences += metrics.pageReferences;
+    shape.allocatedSlots += metrics.allocatedSlots;
+    shape.maxEnvironmentDimensions =
+        std::max(shape.maxEnvironmentDimensions,
+                 metrics.environmentDimensions);
+    shape.maxMaterializedBounds =
+        std::max(shape.maxMaterializedBounds, metrics.materializedBounds);
+    shape.maxPageReferences =
+        std::max(shape.maxPageReferences, metrics.pageReferences);
+    ++shape.environmentHistogram[logarithmicBucket(
+        metrics.environmentDimensions, HistogramBins)];
+    ++shape.materializedHistogram[logarithmicBucket(
+        metrics.materializedBounds, HistogramBins)];
+    ++shape.pageHistogram[logarithmicBucket(metrics.pageReferences,
+                                            HistogramBins)];
+}
+
+void BoxStorageTelemetry::recordShape(BoxStorageRole role,
+                                      const BoxStorageMetrics& metrics)
+{
+    accumulateShape(shapes_[telemetryRoleIndex(role)], metrics);
+}
+
+void BoxStorageTelemetry::recordResidentShape(
+    BoxStorageRole role, const BoxStorageMetrics& metrics)
+{
+    accumulateShape(residentShapes_[telemetryRoleIndex(role)], metrics);
+}
+
+void BoxStorageTelemetry::recordPageDetach(BoxStorageRole role,
+                                           std::size_t sharingFanout)
+{
+    const std::size_t index = telemetryRoleIndex(role);
+    detachedSharingFanout_[index] += sharingFanout;
+    maxDetachedSharingFanout_[index] =
+        std::max(maxDetachedSharingFanout_[index], sharingFanout);
+}
+
+void BoxStorageTelemetry::recordDirectoryShift(BoxStorageRole role,
+                                               std::size_t entries)
+{
+    directoryEntriesShifted_[telemetryRoleIndex(role)] += entries;
+}
+
+void BoxStorageTelemetry::report(std::ostream& output) const
+{
+    for (std::size_t role = 0; role < RoleCount; ++role)
+    {
+        const auto storageRole = static_cast<BoxStorageRole>(role);
+        for (std::size_t operation = 0; operation < OperationCount;
+             ++operation)
+        {
+            const std::uint64_t calls = operations_[role][operation];
+            if (calls == 0)
+                continue;
+            output << "BOX_STORAGE_OP role=" << telemetryRoleName(storageRole)
+                   << " operation="
+                   << telemetryOperationName(
+                          static_cast<BoxStorageOperation>(operation))
+                   << " calls=" << calls << '\n';
+        }
+        auto reportShape = [&](const char* kind,
+                               const ShapeAggregate& shape)
+        {
+            const double utilization =
+                shape.allocatedSlots == 0
+                    ? 0.0
+                    : static_cast<double>(shape.materializedBounds) /
+                          static_cast<double>(shape.allocatedSlots);
+            output << "BOX_STORAGE_SHAPE role="
+                   << telemetryRoleName(storageRole)
+                   << " kind=" << kind
+                   << " samples=" << shape.samples
+                   << " environment_sum=" << shape.environmentDimensions
+                   << " materialized_sum=" << shape.materializedBounds
+                   << " page_references_sum=" << shape.pageReferences
+                   << " allocated_slots_sum=" << shape.allocatedSlots
+                   << " utilization=" << std::fixed << std::setprecision(6)
+                   << utilization
+                   << " max_environment=" << shape.maxEnvironmentDimensions
+                   << " max_materialized=" << shape.maxMaterializedBounds
+                   << " max_pages=" << shape.maxPageReferences
+                   << " detach_fanout_sum=" << detachedSharingFanout_[role]
+                   << " max_detach_fanout=" << maxDetachedSharingFanout_[role]
+                   << " directory_entries_shifted="
+                   << directoryEntriesShifted_[role] << '\n';
+            auto reportHistogram = [&](const char* name,
+                                       const auto& histogram)
+            {
+                for (std::size_t bucket = 0; bucket < histogram.size();
+                     ++bucket)
+                {
+                    if (histogram[bucket] == 0)
+                        continue;
+                    output << "BOX_STORAGE_HIST role="
+                           << telemetryRoleName(storageRole)
+                           << " kind=" << kind << " metric=" << name
+                           << " log2_bucket=" << bucket
+                           << " samples=" << histogram[bucket] << '\n';
+                }
+            };
+            reportHistogram("environment", shape.environmentHistogram);
+            reportHistogram("materialized", shape.materializedHistogram);
+            reportHistogram("pages", shape.pageHistogram);
+        };
+        reportShape("operation-sample", shapes_[role]);
+        reportShape("resident", residentShapes_[role]);
+    }
+}
+
 BoxState::BoxState(VariableEnvironment environment, BoxConfig config,
                    bool bottom)
     : environment_(std::move(environment)), config_(std::move(config)),
       bottom_(bottom)
 {
+    if (config_.directoryCOW && config_.hashDirectoryCOW)
+        throw std::invalid_argument(
+            "Box vector-directory COW and hash-directory COW are exclusive");
+    if (config_.hashDirectoryCOW)
+        cowHashBoundPages_ = std::make_shared<BoundPageHashDirectory>();
+    else if (config_.directoryCOW)
+        cowBoundPages_ = std::make_shared<BoundPageDirectory>();
+}
+
+BoxState::BoxState(const BoxState& other)
+    : NumericalState(other), environment_(other.environment_),
+      config_(other.config_), boundPages_(other.boundPages_),
+      cowBoundPages_(other.cowBoundPages_),
+      cowHashBoundPages_(other.cowHashBoundPages_), bottom_(other.bottom_)
+{
+    profileStorage(BoxStorageOperation::Clone);
 }
 
 BoxState BoxState::top(const VariableEnvironment& environment,
                        const BoxConfig& config)
 {
-    return BoxState(environment, config, false);
+    BoxState result(environment, config, false);
+    result.profileStorage(BoxStorageOperation::CreateTop);
+    return result;
 }
 
 BoxState BoxState::bottom(const VariableEnvironment& environment,
                           const BoxConfig& config)
 {
-    return BoxState(environment, config, true);
+    BoxState result(environment, config, true);
+    result.profileStorage(BoxStorageOperation::CreateBottom);
+    return result;
 }
 
 BoxState BoxState::fromBox(const VariableEnvironment& environment,
                            const IntervalBox& box, const BoxConfig& config)
 {
     BoxState result = top(environment, config);
+    result.profileStorage(BoxStorageOperation::ImportBox);
     for (const auto& [variable, interval] : box.bounds)
     {
         if (!environment.contains(variable))
@@ -179,6 +415,7 @@ BoxState BoxState::fromConstraints(const VariableEnvironment& environment,
                                    const BoxConfig& config)
 {
     BoxState result = top(environment, config);
+    result.profileStorage(BoxStorageOperation::ImportConstraints);
     result.assumeAll(constraints);
     return result;
 }
@@ -214,6 +451,7 @@ DomainCapabilities BoxState::capabilities() const
 
 void BoxState::assign(Variable target, const LinearExpression& expression)
 {
+    profileStorage(BoxStorageOperation::AssignLinear);
     if (!environment_.contains(target))
         throw std::invalid_argument("assignment target is not in environment");
     for (const auto& [variable, coefficient] : expression.terms())
@@ -231,6 +469,7 @@ void BoxState::assign(Variable target, const LinearExpression& expression)
 
 void BoxState::assign(Variable target, const TreeExpression& expression)
 {
+    profileStorage(BoxStorageOperation::AssignTree);
     const std::optional<LinearExpression> linear = expression.asLinear();
     if (linear)
     {
@@ -247,6 +486,7 @@ void BoxState::assign(Variable target, const TreeExpression& expression)
 
 void BoxState::assignParallel(const LinearAssignmentList& assignments)
 {
+    profileStorage(BoxStorageOperation::AssignParallel);
     std::set<Variable> targets;
     for (const LinearAssignment& assignment : assignments)
     {
@@ -280,11 +520,13 @@ void BoxState::assignParallel(const LinearAssignmentList& assignments)
 
 void BoxState::substitute(Variable target, const LinearExpression& expression)
 {
+    profileStorage(BoxStorageOperation::Substitute);
     substituteParallel({{target, expression}});
 }
 
 void BoxState::substituteParallel(const LinearAssignmentList& assignments)
 {
+    profileStorage(BoxStorageOperation::SubstituteParallel);
     std::map<Variable, LinearExpression> replacements;
     for (const LinearAssignment& assignment : assignments)
     {
@@ -318,6 +560,7 @@ void BoxState::substituteParallel(const LinearAssignmentList& assignments)
 
 void BoxState::assume(const LinearConstraint& constraint)
 {
+    profileStorage(BoxStorageOperation::AssumeLinear);
     recordOperation(OperationKind::Assumption, ApproximationKind::Exact, true);
     if (bottom_)
         return;
@@ -405,6 +648,7 @@ void BoxState::assume(const LinearConstraint& constraint)
 
 void BoxState::assume(const TreeConstraint& constraint)
 {
+    profileStorage(BoxStorageOperation::AssumeTree);
     const std::optional<LinearExpression> linear =
         constraint.expression().asLinear();
     if (linear)
@@ -424,6 +668,7 @@ void BoxState::assume(const TreeConstraint& constraint)
 
 void BoxState::forget(Variable variable)
 {
+    profileStorage(BoxStorageOperation::Forget);
     if (!environment_.contains(variable))
         throw std::invalid_argument("forgotten variable is not in environment");
     if (!bottom_)
@@ -436,10 +681,12 @@ void BoxState::changeEnvironment(const VariableEnvironment& environment,
 {
     if (environment_ == environment)
     {
+        profileStorage(BoxStorageOperation::EnvironmentNoop);
         recordOperation(OperationKind::EnvironmentChange,
                         ApproximationKind::Exact, true);
         return;
     }
+    profileStorage(BoxStorageOperation::EnvironmentChange);
     for (const VariableDeclaration& declaration : environment.variables())
     {
         if (environment_.contains(declaration.variable) &&
@@ -472,6 +719,8 @@ void BoxState::changeEnvironment(const VariableEnvironment& environment,
     }
     environment_ = std::move(next.environment_);
     boundPages_ = std::move(next.boundPages_);
+    cowBoundPages_ = std::move(next.cowBoundPages_);
+    cowHashBoundPages_ = std::move(next.cowHashBoundPages_);
     bottom_ = next.bottom_;
     recordOperation(OperationKind::EnvironmentChange, ApproximationKind::Exact,
                     true);
@@ -480,6 +729,7 @@ void BoxState::changeEnvironment(const VariableEnvironment& environment,
 void BoxState::expand(Variable source,
                       const std::vector<VariableDeclaration>& copies)
 {
+    profileStorage(BoxStorageOperation::Expand);
     if (!environment_.contains(source))
         throw std::invalid_argument("expanded variable is not in environment");
     std::set<Variable> seen;
@@ -508,6 +758,7 @@ void BoxState::expand(Variable source,
 
 void BoxState::fold(Variable target, const std::vector<Variable>& folded)
 {
+    profileStorage(BoxStorageOperation::Fold);
     if (!environment_.contains(target))
         throw std::invalid_argument("fold target is not in environment");
     std::set<Variable> seen;
@@ -544,6 +795,7 @@ void BoxState::fold(Variable target, const std::vector<Variable>& folded)
 
 CheckResult BoxState::entails(const LinearConstraint& constraint) const
 {
+    profileStorage(BoxStorageOperation::Entails);
     if (bottom_)
         return CheckResult::True;
     const Interval value = evaluate(*this, constraint.expression());
@@ -588,6 +840,7 @@ CheckResult BoxState::entails(const LinearConstraint& constraint) const
 
 Interval BoxState::bound(Variable variable) const
 {
+    profileStorage(BoxStorageOperation::BoundVariable);
     if (!environment_.contains(variable))
         throw std::invalid_argument("bounded variable is not in environment");
     if (bottom_)
@@ -597,6 +850,7 @@ Interval BoxState::bound(Variable variable) const
 
 Interval BoxState::bound(const LinearExpression& expression) const
 {
+    profileStorage(BoxStorageOperation::BoundExpression);
     for (const auto& [variable, coefficient] : expression.terms())
     {
         (void)coefficient;
@@ -611,6 +865,7 @@ Interval BoxState::bound(const LinearExpression& expression) const
 
 IntervalBox BoxState::toBox() const
 {
+    profileStorage(BoxStorageOperation::ExportBox);
     IntervalBox result;
     for (Dimension dimension = 0; dimension < environment_.size(); ++dimension)
         result.bounds.emplace(environment_.variableOf(dimension),
@@ -622,6 +877,7 @@ IntervalBox BoxState::toBox() const
 
 LinearConstraintSet BoxState::toConstraints() const
 {
+    profileStorage(BoxStorageOperation::ExportConstraints);
     LinearConstraintSet result;
     if (bottom_)
     {
@@ -655,6 +911,7 @@ LinearConstraintSet BoxState::toConstraints() const
 
 void BoxState::close()
 {
+    profileStorage(BoxStorageOperation::Close);
     recordOperation(OperationKind::TopologicalClosure, ApproximationKind::Exact,
                     true, "topological closure");
     if (bottom_)
@@ -674,6 +931,7 @@ void BoxState::close()
 
 void BoxState::canonicalize()
 {
+    profileStorage(BoxStorageOperation::Canonicalize);
     for (Dimension dimension : boundedDimensions())
         canonicalize(dimension);
     recordOperation(OperationKind::Canonicalization, ApproximationKind::Exact,
@@ -699,6 +957,7 @@ BoxState BoxState::meet(const BoxState& other) const
 BoxState BoxState::widen(const BoxState& next,
                               const WideningPolicy& policy) const
 {
+    profileStorage(BoxStorageOperation::Widen);
     requireBox(next);
     if (bottom_)
     {
@@ -761,6 +1020,7 @@ BoxState BoxState::widen(const BoxState& next,
 
 BoxState BoxState::narrow(const BoxState& next) const
 {
+    profileStorage(BoxStorageOperation::Narrow);
     requireBox(next);
     if (bottom_ || next.bottom_)
     {
@@ -796,6 +1056,7 @@ bool BoxState::hasCompatibleDomain(const AbstractState& other) const
 
 void BoxState::joinState(const AbstractState& other)
 {
+    profileStorage(BoxStorageOperation::Join);
     const BoxState& box = requireBox(other);
     if (box.bottom_)
         return;
@@ -811,6 +1072,7 @@ void BoxState::joinState(const AbstractState& other)
 
 void BoxState::meetState(const AbstractState& other)
 {
+    profileStorage(BoxStorageOperation::Meet);
     const BoxState& box = requireBox(other);
     if (bottom_ || box.bottom_)
     {
@@ -845,21 +1107,45 @@ bool BoxState::isTopState() const
 {
     if (bottom_)
         return false;
-    return boundPages_.empty();
+    if (config_.hashDirectoryCOW)
+        return cowHashBoundPages_->empty();
+    return pageDirectory().empty();
 }
 
 bool BoxState::leqState(const AbstractState& other) const
 {
+    profileStorage(BoxStorageOperation::Leq);
     const BoxState& box = requireBox(other);
-    if (bottom_ == box.bottom_ && boundPages_.size() == box.boundPages_.size())
+    if (config_.hashDirectoryCOW && box.config_.hashDirectoryCOW &&
+        bottom_ == box.bottom_ &&
+        cowHashBoundPages_->size() == box.cowHashBoundPages_->size())
     {
         bool equal = true;
-        for (std::size_t index = 0; index < boundPages_.size(); ++index)
+        for (const auto& [pageIndex, page] : *cowHashBoundPages_)
         {
-            if (boundPages_[index].index != box.boundPages_[index].index ||
-                (boundPages_[index].page != box.boundPages_[index].page &&
-                 boundPages_[index].page->bounds !=
-                     box.boundPages_[index].page->bounds))
+            const auto iterator = box.cowHashBoundPages_->find(pageIndex);
+            if (iterator == box.cowHashBoundPages_->end() ||
+                (page != iterator->second &&
+                 page->bounds != iterator->second->bounds))
+            {
+                equal = false;
+                break;
+            }
+        }
+        if (equal)
+            return true;
+    }
+    const BoundPageDirectory& pages = pageDirectory();
+    const BoundPageDirectory& boxPages = box.pageDirectory();
+    if (!config_.hashDirectoryCOW && !box.config_.hashDirectoryCOW &&
+        bottom_ == box.bottom_ && pages.size() == boxPages.size())
+    {
+        bool equal = true;
+        for (std::size_t index = 0; index < pages.size(); ++index)
+        {
+            if (pages[index].index != boxPages[index].index ||
+                (pages[index].page != boxPages[index].page &&
+                 pages[index].page->bounds != boxPages[index].page->bounds))
             {
                 equal = false;
                 break;
@@ -937,35 +1223,122 @@ void BoxState::setBound(Dimension dimension, Interval interval)
     canonicalize(dimension);
 }
 
+const BoxState::BoundPageDirectory& BoxState::pageDirectory() const
+{
+    return config_.directoryCOW ? *cowBoundPages_ : boundPages_;
+}
+
+BoxState::BoundPageDirectory& BoxState::writablePageDirectory()
+{
+    if (!config_.directoryCOW)
+        return boundPages_;
+    if (!cowBoundPages_)
+        cowBoundPages_ = std::make_shared<BoundPageDirectory>();
+    else if (cowBoundPages_.use_count() != 1)
+    {
+        recordStorage(BoxStorageOperation::DirectoryDetach);
+        cowBoundPages_ =
+            std::make_shared<BoundPageDirectory>(*cowBoundPages_);
+    }
+    return *cowBoundPages_;
+}
+
+BoxState::BoundPageHashDirectory& BoxState::writableHashPageDirectory()
+{
+    if (!cowHashBoundPages_)
+        cowHashBoundPages_ = std::make_shared<BoundPageHashDirectory>();
+    else if (cowHashBoundPages_.use_count() != 1)
+    {
+        recordStorage(BoxStorageOperation::DirectoryDetach);
+        cowHashBoundPages_ =
+            std::make_shared<BoundPageHashDirectory>(*cowHashBoundPages_);
+    }
+    return *cowHashBoundPages_;
+}
+
 const Interval& BoxState::boundAt(Dimension dimension) const
 {
     static const Interval top = Interval::top();
     const std::size_t pageIndex = dimension / BoundsPerPage;
+    if (config_.hashDirectoryCOW)
+    {
+        const auto iterator = cowHashBoundPages_->find(pageIndex);
+        if (iterator == cowHashBoundPages_->end())
+        {
+            recordStorage(BoxStorageOperation::PageLookupMiss);
+            recordStorage(BoxStorageOperation::SlotLookupMiss);
+            return top;
+        }
+        recordStorage(BoxStorageOperation::PageLookupHit);
+        const auto& slot =
+            iterator->second->bounds[dimension % BoundsPerPage];
+        recordStorage(slot ? BoxStorageOperation::SlotLookupHit
+                           : BoxStorageOperation::SlotLookupMiss);
+        return slot ? *slot : top;
+    }
+    const BoundPageDirectory& pages = pageDirectory();
     const auto iterator =
-        std::lower_bound(boundPages_.begin(), boundPages_.end(), pageIndex,
+        std::lower_bound(pages.begin(), pages.end(), pageIndex,
                          [](const BoundPageEntry& entry, std::size_t index) {
                              return entry.index < index;
                          });
-    if (iterator == boundPages_.end() || iterator->index != pageIndex)
+    if (iterator == pages.end() || iterator->index != pageIndex)
+    {
+        recordStorage(BoxStorageOperation::PageLookupMiss);
+        recordStorage(BoxStorageOperation::SlotLookupMiss);
         return top;
+    }
+    recordStorage(BoxStorageOperation::PageLookupHit);
     const auto& slot = iterator->page->bounds[dimension % BoundsPerPage];
+    recordStorage(slot ? BoxStorageOperation::SlotLookupHit
+                       : BoxStorageOperation::SlotLookupMiss);
     return slot ? *slot : top;
 }
 
 BoxState::BoundPage& BoxState::writablePage(std::size_t pageIndex)
 {
+    if (config_.hashDirectoryCOW)
+    {
+        BoundPageHashDirectory& pages = writableHashPageDirectory();
+        auto [iterator, inserted] =
+            pages.try_emplace(pageIndex, std::make_shared<BoundPage>());
+        if (inserted)
+            recordStorage(BoxStorageOperation::PageCreate);
+        else if (iterator->second.use_count() != 1)
+        {
+            const std::size_t sharingFanout = iterator->second.use_count();
+            recordStorage(BoxStorageOperation::PageDetach);
+            if (config_.storageTelemetry)
+                config_.storageTelemetry->recordPageDetach(
+                    config_.storageRole, sharingFanout);
+            iterator->second =
+                std::make_shared<BoundPage>(*iterator->second);
+        }
+        return *iterator->second;
+    }
+    BoundPageDirectory& pages = writablePageDirectory();
     auto iterator =
-        std::lower_bound(boundPages_.begin(), boundPages_.end(), pageIndex,
+        std::lower_bound(pages.begin(), pages.end(), pageIndex,
                          [](const BoundPageEntry& entry, std::size_t index) {
                              return entry.index < index;
                          });
-    if (iterator == boundPages_.end() || iterator->index != pageIndex)
+    if (iterator == pages.end() || iterator->index != pageIndex)
     {
-        iterator = boundPages_.insert(
+        recordStorage(BoxStorageOperation::PageCreate);
+        if (config_.storageTelemetry)
+            config_.storageTelemetry->recordDirectoryShift(
+                config_.storageRole,
+                static_cast<std::size_t>(pages.end() - iterator));
+        iterator = pages.insert(
             iterator, {pageIndex, std::make_shared<BoundPage>()});
     }
     else if (iterator->page.use_count() != 1)
     {
+        const std::size_t sharingFanout = iterator->page.use_count();
+        recordStorage(BoxStorageOperation::PageDetach);
+        if (config_.storageTelemetry)
+            config_.storageTelemetry->recordPageDetach(config_.storageRole,
+                                                       sharingFanout);
         iterator->page = std::make_shared<BoundPage>(*iterator->page);
     }
     return *iterator->page;
@@ -974,21 +1347,66 @@ BoxState::BoundPage& BoxState::writablePage(std::size_t pageIndex)
 void BoxState::eraseBound(Dimension dimension)
 {
     const std::size_t pageIndex = dimension / BoundsPerPage;
-    auto iterator =
-        std::lower_bound(boundPages_.begin(), boundPages_.end(), pageIndex,
+    if (config_.hashDirectoryCOW)
+    {
+        const auto existing = cowHashBoundPages_->find(pageIndex);
+        if (existing == cowHashBoundPages_->end())
+            return;
+        const std::size_t offset = dimension % BoundsPerPage;
+        if (!existing->second->bounds[offset])
+            return;
+        BoundPageHashDirectory& pages = writableHashPageDirectory();
+        auto iterator = pages.find(pageIndex);
+        if (iterator->second.use_count() != 1)
+        {
+            const std::size_t sharingFanout = iterator->second.use_count();
+            recordStorage(BoxStorageOperation::PageDetach);
+            if (config_.storageTelemetry)
+                config_.storageTelemetry->recordPageDetach(
+                    config_.storageRole, sharingFanout);
+            iterator->second =
+                std::make_shared<BoundPage>(*iterator->second);
+        }
+        iterator->second->bounds[offset].reset();
+        if (pageIsEmpty(*iterator->second))
+        {
+            recordStorage(BoxStorageOperation::PageErase);
+            pages.erase(iterator);
+        }
+        return;
+    }
+    const BoundPageDirectory& existingPages = pageDirectory();
+    auto existing =
+        std::lower_bound(existingPages.begin(), existingPages.end(), pageIndex,
                          [](const BoundPageEntry& entry, std::size_t index) {
                              return entry.index < index;
                          });
-    if (iterator == boundPages_.end() || iterator->index != pageIndex)
+    if (existing == existingPages.end() || existing->index != pageIndex)
         return;
     const std::size_t offset = dimension % BoundsPerPage;
-    if (!iterator->page->bounds[offset])
+    if (!existing->page->bounds[offset])
         return;
+    BoundPageDirectory& pages = writablePageDirectory();
+    auto iterator =
+        std::lower_bound(pages.begin(), pages.end(), pageIndex,
+                         [](const BoundPageEntry& entry, std::size_t index) {
+                             return entry.index < index;
+                         });
     if (iterator->page.use_count() != 1)
+    {
+        const std::size_t sharingFanout = iterator->page.use_count();
+        recordStorage(BoxStorageOperation::PageDetach);
+        if (config_.storageTelemetry)
+            config_.storageTelemetry->recordPageDetach(config_.storageRole,
+                                                       sharingFanout);
         iterator->page = std::make_shared<BoundPage>(*iterator->page);
+    }
     iterator->page->bounds[offset].reset();
     if (pageIsEmpty(*iterator->page))
-        boundPages_.erase(iterator);
+    {
+        recordStorage(BoxStorageOperation::PageErase);
+        pages.erase(iterator);
+    }
 }
 
 bool BoxState::pageIsEmpty(const BoundPage& page)
@@ -1000,7 +1418,22 @@ bool BoxState::pageIsEmpty(const BoundPage& page)
 std::vector<Dimension> BoxState::boundedDimensions() const
 {
     std::vector<Dimension> dimensions;
-    for (const BoundPageEntry& entry : boundPages_)
+    if (config_.hashDirectoryCOW)
+    {
+        for (const auto& [pageIndex, page] : *cowHashBoundPages_)
+        {
+            for (std::size_t offset = 0; offset < BoundsPerPage; ++offset)
+            {
+                const Dimension dimension =
+                    pageIndex * BoundsPerPage + offset;
+                if (dimension < environment_.size() && page->bounds[offset])
+                    dimensions.push_back(dimension);
+            }
+        }
+        std::sort(dimensions.begin(), dimensions.end());
+        return dimensions;
+    }
+    for (const BoundPageEntry& entry : pageDirectory())
     {
         for (std::size_t offset = 0; offset < BoundsPerPage; ++offset)
         {
@@ -1014,10 +1447,51 @@ std::vector<Dimension> BoxState::boundedDimensions() const
     return dimensions;
 }
 
+BoxStorageMetrics BoxState::storageMetrics() const
+{
+    BoxStorageMetrics metrics;
+    metrics.environmentDimensions = environment_.size();
+    if (config_.hashDirectoryCOW)
+    {
+        metrics.pageReferences = cowHashBoundPages_->size();
+        metrics.allocatedSlots =
+            cowHashBoundPages_->size() * BoundsPerPage;
+        for (const auto& [pageIndex, page] : *cowHashBoundPages_)
+        {
+            (void)pageIndex;
+            metrics.materializedBounds +=
+                static_cast<std::size_t>(std::count_if(
+                    page->bounds.begin(), page->bounds.end(),
+                    [](const auto& bound) { return bound.has_value(); }));
+        }
+        return metrics;
+    }
+    const BoundPageDirectory& pages = pageDirectory();
+    metrics.pageReferences = pages.size();
+    metrics.allocatedSlots = pages.size() * BoundsPerPage;
+    for (const BoundPageEntry& entry : pages)
+    {
+        metrics.materializedBounds += static_cast<std::size_t>(std::count_if(
+            entry.page->bounds.begin(), entry.page->bounds.end(),
+            [](const auto& bound) { return bound.has_value(); }));
+    }
+    return metrics;
+}
+
+void BoxState::sampleResidentStorage() const
+{
+    if (config_.storageTelemetry)
+        config_.storageTelemetry->recordResidentShape(config_.storageRole,
+                                                      storageMetrics());
+}
+
 void BoxState::makeBottom()
 {
     bottom_ = true;
-    boundPages_.clear();
+    if (config_.hashDirectoryCOW)
+        writableHashPageDirectory().clear();
+    else
+        writablePageDirectory().clear();
 }
 
 void BoxState::report(OperationKind operation, ApproximationKind approximation,
@@ -1027,6 +1501,22 @@ void BoxState::report(OperationKind operation, ApproximationKind approximation,
     if (config_.diagnostics)
         config_.diagnostics->report(
             {operation, approximation, std::move(reason)});
+}
+
+void BoxState::profileStorage(BoxStorageOperation operation) const
+{
+    if (!config_.storageTelemetry)
+        return;
+    if (config_.storageTelemetry->record(config_.storageRole, operation))
+        config_.storageTelemetry->recordShape(config_.storageRole,
+                                              storageMetrics());
+}
+
+void BoxState::recordStorage(BoxStorageOperation operation) const
+{
+    if (config_.storageTelemetry)
+        config_.storageTelemetry->record(config_.storageRole, operation,
+                                         false);
 }
 
 } // namespace SVF::AbstractDomain

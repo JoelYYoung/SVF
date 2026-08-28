@@ -19,7 +19,6 @@ run_case() {
   local workload=$3
   local variables=$4
   local density=$5
-  local stride=$6
 
   "$benchmark" \
     --scheme "$scheme" \
@@ -27,7 +26,7 @@ run_case() {
     --workload "$workload" \
     --variables "$variables" \
     --density "$density" \
-    --id-stride "$stride" \
+    --id-stride 8 \
     --repetitions 9 >>"$output"
   completed=$((completed + 1))
   if (( completed % 25 == 0 )); then
@@ -48,36 +47,30 @@ schemes=(
   variable-cow-hash
   variable-radix-cow
 )
-workloads=(read copy-only copy-update environment-change extend-restore resident-fork)
+workloads=(forget-reinsert join-scan subset-scan)
 
-# Common scale/density matrix. Every scheme stores the same exact-rational
-# Interval payload so this isolates indexing, sharing, and environment costs.
-for variables in 1024 16384 65536; do
+# The dimensions and densities bracket the observed production carriers:
+# c-ares/full-sparse flow states are extremely sparse, whereas the c-blosc2
+# scalar carrier and dense states are moderately dense.
+for variables in 2048 8192; do
   for density in 0.001 0.1 0.5; do
     for workload in "${workloads[@]}"; do
       for scheme in "${schemes[@]}"; do
-        run_case "$scheme" 64 "$workload" "$variables" "$density" 8
+        run_case "$scheme" 64 "$workload" "$variables" "$density"
       done
     done
   done
 done
 
-# Direct sorted-vector versus hash-directory comparison across page sizes.
+# Page-size sensitivity for the three dimension-keyed directories. Direct
+# VarID layouts are covered at page 64 above because their gap sensitivity was
+# already isolated by RunBoxStorageCOWBenchmark.sh.
 for density in 0.001 0.1; do
-  for page_size in 8 64 256; do
-    for workload in read copy-update resident-fork; do
-      run_case dimension-page "$page_size" "$workload" 65536 "$density" 8
-      run_case dimension-hash-page "$page_size" "$workload" 65536 "$density" 8
-      run_case dimension-radix-page "$page_size" "$workload" 65536 "$density" 8
-    done
-  done
-done
-
-# VarID-gap sensitivity for the three direct-VarID candidates.
-for stride in 1 8 64; do
-  for workload in read copy-update environment-change; do
-    for scheme in variable-page variable-hash-page variable-radix-page variable-hash variable-cow-hash variable-radix-cow; do
-      run_case "$scheme" 64 "$workload" 65536 0.01 "$stride"
+  for page_size in 8 16 64; do
+    for workload in "${workloads[@]}"; do
+      run_case dimension-page "$page_size" "$workload" 8192 "$density"
+      run_case dimension-hash-page "$page_size" "$workload" 8192 "$density"
+      run_case dimension-radix-page "$page_size" "$workload" 8192 "$density"
     done
   done
 done

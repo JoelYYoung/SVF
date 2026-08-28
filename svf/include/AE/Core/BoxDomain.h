@@ -7,17 +7,131 @@
 #include "AE/Core/NumericalDomain.h"
 
 #include <array>
+#include <cstdint>
+#include <iosfwd>
 #include <memory>
 #include <optional>
+#include <unordered_map>
 #include <vector>
 
 namespace SVF::AbstractDomain
 {
 
+enum class BoxStorageRole : std::uint8_t
+{
+    General,
+    Scalar,
+    Flow,
+    Count
+};
+
+enum class BoxStorageOperation : std::uint8_t
+{
+    CreateTop,
+    CreateBottom,
+    ImportBox,
+    ImportConstraints,
+    BoundVariable,
+    BoundExpression,
+    AssignLinear,
+    AssignTree,
+    AssignParallel,
+    Substitute,
+    SubstituteParallel,
+    AssumeLinear,
+    AssumeTree,
+    Forget,
+    EnvironmentChange,
+    EnvironmentNoop,
+    Expand,
+    Fold,
+    Entails,
+    ExportBox,
+    ExportConstraints,
+    Close,
+    Canonicalize,
+    Join,
+    Meet,
+    Widen,
+    Narrow,
+    Leq,
+    Clone,
+    PageLookupHit,
+    PageLookupMiss,
+    SlotLookupHit,
+    SlotLookupMiss,
+    PageCreate,
+    PageDetach,
+    DirectoryDetach,
+    PageErase,
+    Count
+};
+
+struct BoxStorageMetrics
+{
+    std::size_t environmentDimensions = 0;
+    std::size_t materializedBounds = 0;
+    std::size_t pageReferences = 0;
+    std::size_t allocatedSlots = 0;
+};
+
+/// Opt-in, single-threaded production telemetry for representation decisions.
+/// It is observational: compatibility and abstract semantics ignore it.
+class BoxStorageTelemetry
+{
+public:
+    bool record(BoxStorageRole role, BoxStorageOperation operation,
+                bool shapeEligible = true);
+    void recordShape(BoxStorageRole role, const BoxStorageMetrics& metrics);
+    void recordResidentShape(BoxStorageRole role,
+                             const BoxStorageMetrics& metrics);
+    void recordPageDetach(BoxStorageRole role, std::size_t sharingFanout);
+    void recordDirectoryShift(BoxStorageRole role, std::size_t entries);
+    void report(std::ostream& output) const;
+
+private:
+    static constexpr std::size_t RoleCount =
+        static_cast<std::size_t>(BoxStorageRole::Count);
+    static constexpr std::size_t OperationCount =
+        static_cast<std::size_t>(BoxStorageOperation::Count);
+    static constexpr std::size_t HistogramBins = 18;
+
+    struct ShapeAggregate
+    {
+        std::uint64_t samples = 0;
+        std::uint64_t environmentDimensions = 0;
+        std::uint64_t materializedBounds = 0;
+        std::uint64_t pageReferences = 0;
+        std::uint64_t allocatedSlots = 0;
+        std::size_t maxEnvironmentDimensions = 0;
+        std::size_t maxMaterializedBounds = 0;
+        std::size_t maxPageReferences = 0;
+        std::array<std::uint64_t, HistogramBins> environmentHistogram{};
+        std::array<std::uint64_t, HistogramBins> materializedHistogram{};
+        std::array<std::uint64_t, HistogramBins> pageHistogram{};
+    };
+
+    static void accumulateShape(ShapeAggregate& shape,
+                                const BoxStorageMetrics& metrics);
+
+    std::array<std::array<std::uint64_t, OperationCount>, RoleCount>
+        operations_{};
+    std::array<std::uint64_t, RoleCount> events_{};
+    std::array<std::uint64_t, RoleCount> detachedSharingFanout_{};
+    std::array<std::size_t, RoleCount> maxDetachedSharingFanout_{};
+    std::array<std::uint64_t, RoleCount> directoryEntriesShifted_{};
+    std::array<ShapeAggregate, RoleCount> shapes_{};
+    std::array<ShapeAggregate, RoleCount> residentShapes_{};
+};
+
 struct BoxConfig
 {
     bool integerTightening = true;
+    bool directoryCOW = false;
+    bool hashDirectoryCOW = false;
     std::shared_ptr<DiagnosticSink> diagnostics;
+    std::shared_ptr<BoxStorageTelemetry> storageTelemetry;
+    BoxStorageRole storageRole = BoxStorageRole::General;
 
     bool operationCompatible(const BoxConfig& other) const
     {
@@ -45,6 +159,11 @@ public:
     static BoxState fromConstraints(const VariableEnvironment& environment,
         const LinearConstraintSet& constraints,
         const BoxConfig& config = {});
+
+    BoxState(const BoxState& other);
+    BoxState(BoxState&& other) noexcept = default;
+    BoxState& operator=(const BoxState& other) = default;
+    BoxState& operator=(BoxState&& other) noexcept = default;
 
     std::unique_ptr<AbstractState> clone() const override;
     const char* name() const override;
@@ -82,6 +201,9 @@ public:
     void close() override;
     void canonicalize() override;
 
+    BoxStorageMetrics storageMetrics() const;
+    void sampleResidentStorage() const;
+
     BoxState join(const BoxState& other) const;
     BoxState meet(const BoxState& other) const;
     BoxState widen(const BoxState& next,
@@ -102,6 +224,10 @@ private:
         std::shared_ptr<BoundPage> page;
     };
 
+    using BoundPageDirectory = std::vector<BoundPageEntry>;
+    using BoundPageHashDirectory =
+        std::unordered_map<std::size_t, std::shared_ptr<BoundPage>>;
+
     BoxState(VariableEnvironment environment, BoxConfig config, bool bottom);
 
     const void* dynamicTypeToken() const noexcept override
@@ -120,6 +246,9 @@ private:
 
     const BoxState& requireBox(const AbstractState& other) const;
     const Interval& boundAt(Dimension dimension) const;
+    const BoundPageDirectory& pageDirectory() const;
+    BoundPageDirectory& writablePageDirectory();
+    BoundPageHashDirectory& writableHashPageDirectory();
     BoundPage& writablePage(std::size_t pageIndex);
     void eraseBound(Dimension dimension);
     static bool pageIsEmpty(const BoundPage& page);
@@ -129,13 +258,17 @@ private:
     void setBound(Dimension dimension, Interval interval);
     void report(OperationKind operation, ApproximationKind approximation,
                 std::string reason, bool best = true) const;
+    void profileStorage(BoxStorageOperation operation) const;
+    void recordStorage(BoxStorageOperation operation) const;
 
     VariableEnvironment environment_;
     BoxConfig config_;
     /// Missing pages and empty slots denote top. Active pages are kept sorted,
     /// shared by state copies, and detached only when one of their bounds
     /// changes.
-    std::vector<BoundPageEntry> boundPages_;
+    BoundPageDirectory boundPages_;
+    std::shared_ptr<BoundPageDirectory> cowBoundPages_;
+    std::shared_ptr<BoundPageHashDirectory> cowHashBoundPages_;
     bool bottom_ = false;
 };
 

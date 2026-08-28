@@ -5,6 +5,7 @@
 #include "SVFIR/SVFIR.h"
 #include "Util/Options.h"
 
+#include <iostream>
 #include <limits>
 #include <stdexcept>
 #include <type_traits>
@@ -124,6 +125,36 @@ template <typename NumericalStateT>
 DenseAbstractInterpretation<NumericalStateT>::DenseAbstractInterpretation()
     : adapter_(*svfir)
 {
+    if constexpr (std::is_same_v<NumericalStateT, AD::BoxState>)
+    {
+        if (Options::AEBoxStorageProfile())
+            boxStorageTelemetry_ = std::make_shared<AD::BoxStorageTelemetry>();
+    }
+}
+
+template <typename NumericalStateT>
+void DenseAbstractInterpretation<NumericalStateT>::runOnModule()
+{
+    AbstractInterpretation::runOnModule();
+    if (boxStorageTelemetry_)
+    {
+        sampleBoxResidentStates();
+        boxStorageTelemetry_->report(std::cout);
+    }
+}
+
+template <typename NumericalStateT>
+void DenseAbstractInterpretation<NumericalStateT>::sampleBoxResidentStates()
+    const
+{
+    if constexpr (std::is_same_v<NumericalStateT, AD::BoxState>)
+    {
+        for (const auto& [node, state] : denseTrace_)
+        {
+            (void)node;
+            state.numerical().sampleResidentStorage();
+        }
+    }
 }
 
 template <typename NumericalStateT>
@@ -186,7 +217,7 @@ typename DenseAbstractInterpretation<NumericalStateT>::DenseState
 DenseAbstractInterpretation<NumericalStateT>::topState(
     const ICFGNode* node) const
 {
-    return DenseState(NumericalStateT::top(adapter_.environment(
+    return DenseState(makeNumericalTop(adapter_.environment(
                           node ? node->getFun() : nullptr)),
         adapter_.memoryLayout());
 }
@@ -196,9 +227,50 @@ typename DenseAbstractInterpretation<NumericalStateT>::DenseState
 DenseAbstractInterpretation<NumericalStateT>::bottomState(
     const ICFGNode* node) const
 {
-    return DenseState(NumericalStateT::bottom(adapter_.environment(
+    return DenseState(makeNumericalBottom(adapter_.environment(
                           node ? node->getFun() : nullptr)),
         adapter_.memoryLayout());
+}
+
+template <typename NumericalStateT>
+NumericalStateT DenseAbstractInterpretation<NumericalStateT>::makeNumericalTop(
+    const AD::VariableEnvironment& environment, AD::BoxStorageRole role) const
+{
+    if constexpr (std::is_same_v<NumericalStateT, AD::BoxState>)
+    {
+        AD::BoxConfig config;
+        config.directoryCOW = Options::AEBoxDirectoryCOW();
+        config.hashDirectoryCOW = Options::AEBoxHashDirectoryCOW();
+        config.storageTelemetry = boxStorageTelemetry_;
+        config.storageRole = role;
+        return AD::BoxState::top(environment, config);
+    }
+    else
+    {
+        (void)role;
+        return NumericalStateT::top(environment);
+    }
+}
+
+template <typename NumericalStateT>
+NumericalStateT
+DenseAbstractInterpretation<NumericalStateT>::makeNumericalBottom(
+    const AD::VariableEnvironment& environment, AD::BoxStorageRole role) const
+{
+    if constexpr (std::is_same_v<NumericalStateT, AD::BoxState>)
+    {
+        AD::BoxConfig config;
+        config.directoryCOW = Options::AEBoxDirectoryCOW();
+        config.hashDirectoryCOW = Options::AEBoxHashDirectoryCOW();
+        config.storageTelemetry = boxStorageTelemetry_;
+        config.storageRole = role;
+        return AD::BoxState::bottom(environment, config);
+    }
+    else
+    {
+        (void)role;
+        return NumericalStateT::bottom(environment);
+    }
 }
 
 template <typename NumericalStateT>

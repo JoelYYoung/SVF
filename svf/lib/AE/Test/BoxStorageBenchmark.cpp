@@ -81,6 +81,18 @@ std::int64_t finiteValue(const Interval& interval)
     return interval.lower().value().value().get_num().get_si();
 }
 
+Interval intervalHull(const Interval& lhs, const Interval& rhs)
+{
+    const Bound lower = lhs.lower() <= rhs.lower() ? lhs.lower() : rhs.lower();
+    const Bound upper = lhs.upper() <= rhs.upper() ? rhs.upper() : lhs.upper();
+    return Interval(lower, upper);
+}
+
+bool intervalSubset(const Interval& lhs, const Interval& rhs)
+{
+    return rhs.lower() <= lhs.lower() && lhs.upper() <= rhs.upper();
+}
+
 VariableDeclaration declaration(Variable variable)
 {
     return {variable, NumericType::integer(),
@@ -1278,6 +1290,67 @@ private:
     std::shared_ptr<Bounds> bounds_;
 };
 
+/// Whole-directory COW layered over a page-level-COW storage. State copies
+/// share the compact page directory; the first mutation copies only directory
+/// entries, after which the underlying storage detaches the changed page.
+/// Unlike VariableCOWHashStorage, unchanged interval payloads remain shared.
+template <typename Storage> class COWDirectoryStorage
+{
+public:
+    explicit COWDirectoryStorage(VariableEnvironment environment)
+        : storage_(std::make_shared<Storage>(std::move(environment)))
+    {
+    }
+
+    const VariableEnvironment& environment() const
+    {
+        return storage_->environment();
+    }
+
+    const Interval& bound(Variable variable) const
+    {
+        return storage_->bound(variable);
+    }
+
+    void set(Variable variable, Interval interval)
+    {
+        ensureUnique();
+        storage_->set(variable, std::move(interval));
+    }
+
+    void changeEnvironment(const VariableEnvironment& environment,
+                           bool initializeNewVariablesToZero = false)
+    {
+        if (storage_->environment() == environment)
+            return;
+        ensureUnique();
+        storage_->changeEnvironment(environment,
+                                    initializeNewVariablesToZero);
+    }
+
+    std::size_t storageUnits() const
+    {
+        return storage_->storageUnits();
+    }
+    std::size_t materializedValues() const
+    {
+        return storage_->materializedValues();
+    }
+    std::size_t allocatedPageSlots() const
+    {
+        return storage_->allocatedPageSlots();
+    }
+
+private:
+    void ensureUnique()
+    {
+        if (storage_.use_count() != 1)
+            storage_ = std::make_shared<Storage>(*storage_);
+    }
+
+    std::shared_ptr<Storage> storage_;
+};
+
 template <typename Storage> void validateStorage()
 {
     const Variable a(1);
@@ -1323,6 +1396,12 @@ std::size_t automaticOperations(const Options& options, std::size_t activeCount)
         return std::clamp<std::size_t>(50000 / activeCount, 5, 500);
     if (options.workload == "resident-fork")
         return 512;
+    if (options.workload == "forget-reinsert")
+        return std::clamp<std::size_t>(500000 / activeCount, 16, 5000);
+    if (options.workload == "join-scan")
+        return std::clamp<std::size_t>(250000 / activeCount, 8, 1000);
+    if (options.workload == "subset-scan")
+        return std::clamp<std::size_t>(1000000 / activeCount, 16, 5000);
     throw std::invalid_argument("unknown workload: " + options.workload);
 }
 
@@ -1337,6 +1416,9 @@ void run(const Options& options, const char* schemeName)
     Storage base(environments.first);
     for (Variable variable : active)
         base.set(variable, valueFor(variable));
+    Storage alternative = base;
+    for (std::size_t index = 0; index < active.size(); index += 2)
+        alternative.set(active[index], valueFor(active[index], 17));
 
     std::vector<Variable> readableCommon;
     for (Variable variable : environments.common)
@@ -1427,6 +1509,52 @@ void run(const Options& options, const char* schemeName)
                 localChecksum += finiteValue(residents.back().bound(variable));
             }
         }
+        else if (options.workload == "forget-reinsert")
+        {
+            for (std::size_t operation = 0; operation < operations; ++operation)
+            {
+                Storage copy = base;
+                const Variable variable =
+                    active[mix(operation) % active.size()];
+                copy.set(variable, Interval::top());
+                copy.set(variable, valueFor(variable, operation + 1));
+                localChecksum += finiteValue(copy.bound(variable));
+            }
+        }
+        else if (options.workload == "join-scan")
+        {
+            for (std::size_t operation = 0; operation < operations; ++operation)
+            {
+                Storage joined = base;
+                for (Variable variable : active)
+                {
+                    joined.set(variable,
+                               intervalHull(base.bound(variable),
+                                            alternative.bound(variable)));
+                }
+                const Variable variable =
+                    active[mix(operation) % active.size()];
+                const Interval& result = joined.bound(variable);
+                if (result.lower().isFinite())
+                    localChecksum += result.lower().value().value()
+                                         .get_num().get_si();
+            }
+        }
+        else if (options.workload == "subset-scan")
+        {
+            for (std::size_t operation = 0; operation < operations; ++operation)
+            {
+                bool subset = true;
+                for (Variable variable : active)
+                {
+                    const bool itemSubset =
+                        intervalSubset(base.bound(variable),
+                                       alternative.bound(variable));
+                    subset = subset & itemSubset;
+                }
+                localChecksum += subset ? 1 : 0;
+            }
+        }
         else
         {
             throw std::invalid_argument("unknown workload: " +
@@ -1511,6 +1639,41 @@ void dispatchPageSize(const Options& options, const char* schemeName)
 }
 
 template <bool VariableKeyed>
+void dispatchCOWPageSize(const Options& options, const char* schemeName)
+{
+    switch (options.pageSize)
+    {
+    case 8:
+        run<COWDirectoryStorage<PagedStorage<8, VariableKeyed>>>(options,
+                                                                 schemeName);
+        return;
+    case 16:
+        run<COWDirectoryStorage<PagedStorage<16, VariableKeyed>>>(options,
+                                                                  schemeName);
+        return;
+    case 32:
+        run<COWDirectoryStorage<PagedStorage<32, VariableKeyed>>>(options,
+                                                                  schemeName);
+        return;
+    case 64:
+        run<COWDirectoryStorage<PagedStorage<64, VariableKeyed>>>(options,
+                                                                  schemeName);
+        return;
+    case 128:
+        run<COWDirectoryStorage<PagedStorage<128, VariableKeyed>>>(options,
+                                                                   schemeName);
+        return;
+    case 256:
+        run<COWDirectoryStorage<PagedStorage<256, VariableKeyed>>>(options,
+                                                                   schemeName);
+        return;
+    default:
+        throw std::invalid_argument(
+            "page size must be one of 8,16,32,64,128,256");
+    }
+}
+
+template <bool VariableKeyed>
 void dispatchHashPageSize(const Options& options, const char* schemeName)
 {
     switch (options.pageSize)
@@ -1532,6 +1695,41 @@ void dispatchHashPageSize(const Options& options, const char* schemeName)
         return;
     case 256:
         run<HashPagedStorage<256, VariableKeyed>>(options, schemeName);
+        return;
+    default:
+        throw std::invalid_argument(
+            "page size must be one of 8,16,32,64,128,256");
+    }
+}
+
+template <bool VariableKeyed>
+void dispatchCOWHashPageSize(const Options& options, const char* schemeName)
+{
+    switch (options.pageSize)
+    {
+    case 8:
+        run<COWDirectoryStorage<HashPagedStorage<8, VariableKeyed>>>(
+            options, schemeName);
+        return;
+    case 16:
+        run<COWDirectoryStorage<HashPagedStorage<16, VariableKeyed>>>(
+            options, schemeName);
+        return;
+    case 32:
+        run<COWDirectoryStorage<HashPagedStorage<32, VariableKeyed>>>(
+            options, schemeName);
+        return;
+    case 64:
+        run<COWDirectoryStorage<HashPagedStorage<64, VariableKeyed>>>(
+            options, schemeName);
+        return;
+    case 128:
+        run<COWDirectoryStorage<HashPagedStorage<128, VariableKeyed>>>(
+            options, schemeName);
+        return;
+    case 256:
+        run<COWDirectoryStorage<HashPagedStorage<256, VariableKeyed>>>(
+            options, schemeName);
         return;
     default:
         throw std::invalid_argument(
@@ -1634,10 +1832,15 @@ int main(int argc, char** argv)
         const Options options = parseOptions(argc, argv);
         if (options.scheme == "dimension-page")
             dispatchPageSize<false>(options, "dimension-page");
+        else if (options.scheme == "dimension-cow-page")
+            dispatchCOWPageSize<false>(options, "dimension-cow-page");
         else if (options.scheme == "variable-page")
             dispatchPageSize<true>(options, "variable-page");
         else if (options.scheme == "dimension-hash-page")
             dispatchHashPageSize<false>(options, "dimension-hash-page");
+        else if (options.scheme == "dimension-cow-hash-page")
+            dispatchCOWHashPageSize<false>(options,
+                                           "dimension-cow-hash-page");
         else if (options.scheme == "variable-hash-page")
             dispatchHashPageSize<true>(options, "variable-hash-page");
         else if (options.scheme == "dimension-radix-page")

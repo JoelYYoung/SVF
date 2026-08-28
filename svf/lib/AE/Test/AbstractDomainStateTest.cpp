@@ -11,6 +11,7 @@
 #include <iostream>
 #include <memory>
 #include <random>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -120,6 +121,45 @@ void testBoxState()
         {{x, NumericType::integer(), "x"}, {y, NumericType::real(), "y"}});
     requireThrows([&] { state.changeEnvironment(changedType); },
                   "Box environment changes must reject numeric type changes");
+}
+
+void testBoxStorageTelemetry()
+{
+    std::vector<VariableDeclaration> declarations;
+    declarations.reserve(130);
+    for (std::uint32_t id = 1; id <= 130; ++id)
+    {
+        declarations.push_back(
+            {Variable(id), NumericType::integer(), "v" + std::to_string(id)});
+    }
+    const VariableEnvironment environment(std::move(declarations));
+    const auto telemetry = std::make_shared<BoxStorageTelemetry>();
+    BoxConfig config;
+    config.storageTelemetry = telemetry;
+    config.storageRole = BoxStorageRole::Scalar;
+
+    BoxState state = BoxState::top(environment, config);
+    state.assign(Variable(1), LinearExpression(Rational(1)));
+    BoxState fork = state;
+    fork.assign(Variable(2), LinearExpression(Rational(2)));
+    (void)fork.bound(Variable(2));
+    (void)fork.bound(Variable(130));
+    fork.changeEnvironment(environment);
+    state.sampleResidentStorage();
+    fork.sampleResidentStorage();
+
+    std::ostringstream output;
+    telemetry->report(output);
+    const std::string report = output.str();
+    require(report.find("role=scalar operation=assign-linear calls=2") !=
+                std::string::npos,
+            "Box telemetry must count public operations by storage role");
+    require(report.find("role=scalar operation=page-detach calls=1") !=
+                std::string::npos,
+            "Box telemetry must observe page-level COW detaches");
+    require(report.find("role=scalar kind=resident samples=2") !=
+                std::string::npos,
+            "Box telemetry must distinguish resident-state shape samples");
 }
 
 void testBoxLatticeAndFallbacks()
@@ -241,6 +281,44 @@ void testPagedBoxCopyOnWrite()
     require(projected.bound(first) == Interval::singleton(Rational(1)) &&
                 projected.bound(last) == Interval::singleton(Rational(3)),
             "paged Box environment changes must remap active dimensions");
+
+    BoxConfig cowConfig;
+    cowConfig.directoryCOW = true;
+    BoxState cowOriginal = BoxState::top(environment, cowConfig);
+    cowOriginal.assign(first, LinearExpression(Rational(1)));
+    cowOriginal.assign(middle, LinearExpression(Rational(2)));
+    BoxState cowCopy = cowOriginal;
+    cowCopy.assign(first, LinearExpression(Rational(9)));
+    cowCopy.forget(middle);
+    require(cowOriginal.bound(first) == Interval::singleton(Rational(1)) &&
+                cowOriginal.bound(middle) ==
+                    Interval::singleton(Rational(2)) &&
+                cowCopy.bound(first) == Interval::singleton(Rational(9)) &&
+                cowCopy.bound(middle).isTop(),
+            "directory-COW Box copies must isolate both directory and page "
+            "mutations");
+
+    BoxConfig hashConfig;
+    hashConfig.hashDirectoryCOW = true;
+    BoxState hashOriginal = BoxState::top(environment, hashConfig);
+    hashOriginal.assign(first, LinearExpression(Rational(1)));
+    hashOriginal.assign(last, LinearExpression(Rational(3)));
+    BoxState hashCopy = hashOriginal;
+    hashCopy.assign(first, LinearExpression(Rational(7)));
+    hashCopy.forget(last);
+    require(hashOriginal.bound(first) == Interval::singleton(Rational(1)) &&
+                hashOriginal.bound(last) ==
+                    Interval::singleton(Rational(3)) &&
+                hashCopy.bound(first) == Interval::singleton(Rational(7)) &&
+                hashCopy.bound(last).isTop(),
+            "hash-directory-COW Box copies must isolate directory and page "
+            "mutations");
+    const BoxState mixedJoin = hashOriginal.join(original);
+    require(mixedJoin.bound(first) == Interval::singleton(Rational(1)) &&
+                mixedJoin.bound(last) == Interval::singleton(Rational(3)) &&
+                mixedJoin.bound(middle).isTop(),
+            "Box lattice operations must compose across physical directory "
+            "layouts");
 }
 
 template <typename State>
@@ -709,6 +787,16 @@ void testNumericalHashAndRawSerialization()
         lessThan(LinearExpression(y), LinearExpression(Rational("7/3"))));
     checkRawRoundTrip(box, "Box");
     checkRawRoundTrip(BoxState::bottom(environment, boxConfig), "Box bottom");
+    BoxConfig vectorCOWConfig = boxConfig;
+    vectorCOWConfig.directoryCOW = true;
+    BoxState vectorCOWBox = BoxState::top(environment, vectorCOWConfig);
+    vectorCOWBox.assume(atLeast(x, Rational("1/2")));
+    checkRawRoundTrip(vectorCOWBox, "Box vector-directory COW");
+    BoxConfig hashCOWConfig = boxConfig;
+    hashCOWConfig.hashDirectoryCOW = true;
+    BoxState hashCOWBox = BoxState::top(environment, hashCOWConfig);
+    hashCOWBox.assume(atLeast(x, Rational("1/2")));
+    checkRawRoundTrip(hashCOWBox, "Box hash-directory COW");
 
     OctagonConfig octagonConfig;
     octagonConfig.strongClosure = false;
@@ -1614,6 +1702,7 @@ int main()
     try
     {
         testBoxState();
+        testBoxStorageTelemetry();
         testBoxLatticeAndFallbacks();
         testPagedBoxCopyOnWrite();
         testConvexPolyhedraState();

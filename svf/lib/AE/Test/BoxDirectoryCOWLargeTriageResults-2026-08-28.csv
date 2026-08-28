@@ -1,0 +1,7 @@
+input,mode,directory_cow,repetition,status,seconds,peak_rss_bytes,rss_source,sampled_peak_rss_bytes,rss_samples,analyzed_nodes,return_code
+ferret-760k,semi-native,off,1,timeout,10.009284,539738112,process-group-sample,539738112,75,,-9
+ferret-760k,semi-native,vector,1,timeout,10.009399,547307520,process-group-sample,547307520,75,,-9
+ferret-760k,semi-native,hash,1,timeout,10.012538,546947072,process-group-sample,546947072,76,,-9
+ferret-760k,full-native,off,1,timeout,10.009062,548847616,process-group-sample,548847616,75,,-9
+ferret-760k,full-native,vector,1,timeout,10.009106,547094528,process-group-sample,547094528,75,,-9
+ferret-760k,full-native,hash,1,timeout,10.009147,549142528,process-group-sample,549142528,75,,-9

@@ -66,8 +66,10 @@ NativeSemiSparseAbstractInterpretation<NumericalStateT>::flowState(
 {
     const AD::VariableEnvironment& environment =
         this->adapter_.environment(function);
-    return DenseState(bottom ? NumericalStateT::bottom(environment)
-                             : NumericalStateT::top(environment),
+    return DenseState(bottom ? this->makeNumericalBottom(
+                                   environment, AD::BoxStorageRole::Flow)
+                             : this->makeNumericalTop(
+                                   environment, AD::BoxStorageRole::Flow),
                       this->adapter_.memoryLayout());
 }
 
@@ -83,14 +85,15 @@ NativeSemiSparseAbstractInterpretation<NumericalStateT>::scalarState(
     {
         iterator = scalarStates_
                        .emplace(function,
-                                DenseState(NumericalStateT::top(
+                                DenseState(this->makeNumericalTop(
                                                std::is_same_v<NumericalStateT,
                                                               AD::BoxState>
                                                    ? this->adapter_
                                                          .allScalarEnvironment()
                                                    : this->adapter_
                                                          .scalarEnvironment(
-                                                             function)),
+                                                             function),
+                                               AD::BoxStorageRole::Scalar),
                                            this->adapter_.memoryLayout()))
                        .first;
     }
@@ -144,6 +147,26 @@ void NativeSemiSparseAbstractInterpretation<NumericalStateT>::runOnModule()
     }
     if (Options::AESparseProfile())
         reportSparseProfile();
+}
+
+template <typename NumericalStateT>
+void NativeSemiSparseAbstractInterpretation<
+    NumericalStateT>::sampleBoxResidentStates() const
+{
+    Base::sampleBoxResidentStates();
+    if constexpr (std::is_same_v<NumericalStateT, AD::BoxState>)
+    {
+        for (const auto& [function, state] : scalarStates_)
+        {
+            (void)function;
+            state.numerical().sampleResidentStorage();
+        }
+        for (const auto& [value, state] : scalarCheckpoints_)
+        {
+            (void)value;
+            state.numerical().sampleResidentStorage();
+        }
+    }
 }
 
 template <typename NumericalStateT>

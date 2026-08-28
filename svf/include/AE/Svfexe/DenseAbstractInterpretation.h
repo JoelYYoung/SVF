@@ -24,6 +24,7 @@ public:
 
     DenseAbstractInterpretation();
     ~DenseAbstractInterpretation() override = default;
+    void runOnModule() override;
 
     const AbstractDomain::AbstractState& getAbstractState(
         const ICFGNode* node) const override;
@@ -98,6 +99,15 @@ protected:
     const DenseState& state(const ICFGNode* node) const;
     DenseState topState(const ICFGNode* node) const;
     DenseState bottomState(const ICFGNode* node) const;
+    NumericalStateT makeNumericalTop(
+        const AbstractDomain::VariableEnvironment& environment,
+        AbstractDomain::BoxStorageRole role =
+            AbstractDomain::BoxStorageRole::General) const;
+    NumericalStateT makeNumericalBottom(
+        const AbstractDomain::VariableEnvironment& environment,
+        AbstractDomain::BoxStorageRole role =
+            AbstractDomain::BoxStorageRole::General) const;
+    virtual void sampleBoxResidentStates() const;
 
     AbstractValue projectValue(const DenseState& state,
                                AbstractDomain::Variable variable) const;
@@ -118,6 +128,7 @@ protected:
 
     SVFIRAdapter adapter_;
     Map<const ICFGNode*, DenseState> denseTrace_;
+    std::shared_ptr<AbstractDomain::BoxStorageTelemetry> boxStorageTelemetry_;
 };
 
 extern template class DenseAbstractInterpretation<AbstractDomain::BoxState>;

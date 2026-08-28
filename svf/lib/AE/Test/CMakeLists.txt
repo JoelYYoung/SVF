@@ -78,8 +78,10 @@ add_executable(svf-box-storage-benchmark BoxStorageBenchmark.cpp)
 target_link_libraries(svf-box-storage-benchmark PRIVATE AbstractDomainCore)
 foreach(box_storage_scheme IN ITEMS
         dimension-page
+        dimension-cow-page
         variable-page
         dimension-hash-page
+        dimension-cow-hash-page
         variable-hash-page
         dimension-radix-page
         variable-radix-page

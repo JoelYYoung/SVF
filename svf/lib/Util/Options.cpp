@@ -809,6 +809,15 @@ const Option<bool> Options::AESparseLegacyInterval(
 const Option<bool> Options::AESparseProfile(
     "ae-sparse-profile",
     "Print inclusive phase timings for native semi/full-sparse AE", false);
+const Option<bool> Options::AEBoxStorageProfile(
+    "ae-box-storage-profile",
+    "Print Box operation counts and sampled storage shapes", false);
+const Option<bool> Options::AEBoxDirectoryCOW(
+    "ae-box-directory-cow",
+    "Share the Box page directory until the first mutation", false);
+const Option<bool> Options::AEBoxHashDirectoryCOW(
+    "ae-box-hash-directory-cow",
+    "Use a whole-directory-COW hash index for Box pages", false);
 const Option<bool> Options::AEDenseOctagon(
     "ae-dense-octagon",
     "Use the GMP Octagon as dense AE's numerical domain", false);

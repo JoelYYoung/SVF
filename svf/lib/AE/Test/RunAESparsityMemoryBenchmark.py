@@ -34,6 +34,7 @@ MODES = {
 FIELDNAMES = [
     "input",
     "mode",
+    "directory_cow",
     "repetition",
     "status",
     "seconds",
@@ -88,7 +89,7 @@ def sample_process_group_rss(process_group, stop_event, result):
         stop_event.wait(0.1)
 
 
-def run_once(options, mode, input_path):
+def run_once(options, mode, input_path, directory_kind):
     time_flag = "-l" if platform.system() == "Darwin" else "-v"
     with tempfile.NamedTemporaryFile() as time_output:
         command = [
@@ -99,6 +100,8 @@ def run_once(options, mode, input_path):
             options.runner,
             "-ae-dense-octagon=false",
             *MODES[mode],
+            f"-ae-box-directory-cow={'true' if directory_kind == 'vector' else 'false'}",
+            f"-ae-box-hash-directory-cow={'true' if directory_kind == 'hash' else 'false'}",
             "-stat=false",
             f"-extapi={options.extapi}",
             input_path,
@@ -157,6 +160,9 @@ def main():
                         required=True, metavar="LABEL=PATH")
     parser.add_argument("--mode", action="append", choices=MODES,
                         help="default: all six modes")
+    parser.add_argument("--directory-cow", action="append",
+                        choices=("off", "vector", "hash"),
+                        help="default: off; repeat to compare layouts")
     parser.add_argument("--repetitions", type=int, default=5)
     parser.add_argument("--timeout", type=float, default=120.0)
     parser.add_argument("--output", required=True)
@@ -166,59 +172,65 @@ def main():
         parser.error("repetitions and timeout must be positive")
 
     modes = options.mode or list(MODES)
+    directory_cow_modes = options.directory_cow or ["off"]
     rows = []
     for label, input_path in options.input:
         for mode in modes:
-            elapsed_samples = []
-            rss_samples = []
-            statuses = []
-            node_counts = []
-            for repetition in range(1, options.repetitions + 1):
-                (status, elapsed, peak_rss, rss_source, sampled_peak,
-                 rss_sample_count, nodes, return_code, output) = run_once(
-                     options, mode, input_path
-                 )
-                statuses.append(status)
-                node_counts.append(nodes)
-                if status != "timeout":
-                    elapsed_samples.append(elapsed)
-                if peak_rss is not None:
-                    rss_samples.append(peak_rss)
-                rows.append(
-                    {
-                        "input": label,
-                        "mode": mode,
-                        "repetition": repetition,
-                        "status": status,
-                        "seconds": f"{elapsed:.6f}",
-                        "peak_rss_bytes": peak_rss if peak_rss is not None else "",
-                        "rss_source": rss_source,
-                        "sampled_peak_rss_bytes": sampled_peak,
-                        "rss_samples": rss_sample_count,
-                        "analyzed_nodes": nodes if nodes is not None else "",
-                        "return_code": return_code,
-                    }
-                )
-                if status == "fail":
-                    diagnostic = output.rstrip().splitlines()
-                    detail = diagnostic[-1] if diagnostic else "no diagnostic"
-                    print(
-                        f"{label}/{mode} failed rc={return_code}: {detail}",
-                        flush=True,
+            for cow_mode in directory_cow_modes:
+                elapsed_samples = []
+                rss_samples = []
+                statuses = []
+                node_counts = []
+                for repetition in range(1, options.repetitions + 1):
+                    (status, elapsed, peak_rss, rss_source, sampled_peak,
+                     rss_sample_count, nodes, return_code, output) = run_once(
+                         options, mode, input_path, cow_mode
                     )
-            elapsed_summary = (
-                f"time={statistics.median(elapsed_samples):.3f}s"
-                if elapsed_samples else f"time>={options.timeout:.1f}s"
-            )
-            rss_summary = (
-                f"rss={statistics.median(rss_samples) / (1024 * 1024):.1f}MiB"
-                if rss_samples else "rss=n/a"
-            )
-            print(
-                f"{label:20s} {mode:12s} {elapsed_summary} {rss_summary} "
-                f"status={','.join(statuses)} nodes={node_counts[0]}",
-                flush=True,
-            )
+                    statuses.append(status)
+                    node_counts.append(nodes)
+                    if status != "timeout":
+                        elapsed_samples.append(elapsed)
+                    if peak_rss is not None:
+                        rss_samples.append(peak_rss)
+                    rows.append(
+                        {
+                            "input": label,
+                            "mode": mode,
+                            "directory_cow": cow_mode,
+                            "repetition": repetition,
+                            "status": status,
+                            "seconds": f"{elapsed:.6f}",
+                            "peak_rss_bytes": (
+                                peak_rss if peak_rss is not None else ""
+                            ),
+                            "rss_source": rss_source,
+                            "sampled_peak_rss_bytes": sampled_peak,
+                            "rss_samples": rss_sample_count,
+                            "analyzed_nodes": nodes if nodes is not None else "",
+                            "return_code": return_code,
+                        }
+                    )
+                    if status == "fail":
+                        diagnostic = output.rstrip().splitlines()
+                        detail = diagnostic[-1] if diagnostic else "no diagnostic"
+                        print(
+                            f"{label}/{mode}/cow={cow_mode} failed "
+                            f"rc={return_code}: {detail}", flush=True
+                        )
+                elapsed_summary = (
+                    f"time={statistics.median(elapsed_samples):.3f}s"
+                    if elapsed_samples else f"time>={options.timeout:.1f}s"
+                )
+                rss_summary = (
+                    f"rss={statistics.median(rss_samples) / (1024 * 1024):.1f}MiB"
+                    if rss_samples else "rss=n/a"
+                )
+                print(
+                    f"{label:20s} {mode:12s} cow={cow_mode:3s} "
+                    f"{elapsed_summary} {rss_summary} "
+                    f"status={','.join(statuses)} nodes={node_counts[0]}",
+                    flush=True,
+                )
 
     output_path = pathlib.Path(options.output)
     output_path.parent.mkdir(parents=True, exist_ok=True)
