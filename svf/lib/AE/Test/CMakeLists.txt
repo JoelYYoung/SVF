@@ -71,6 +71,9 @@ add_test(
   COMMAND svf-octagon-abstract-interpreter-test
 )
 
+add_executable(svf-octagon-storage-benchmark OctagonStorageBenchmark.cpp)
+target_link_libraries(svf-octagon-storage-benchmark PRIVATE AbstractDomainCore)
+
 add_executable(svf-box-storage-benchmark BoxStorageBenchmark.cpp)
 target_link_libraries(svf-box-storage-benchmark PRIVATE AbstractDomainCore)
 foreach(box_storage_scheme IN ITEMS
@@ -154,6 +157,19 @@ if(APRON_INCLUDE_DIR AND APRON_LIBRARY AND APRON_POLKA_LIBRARY)
     )
     add_test(NAME box-octagon-apron-differential
              COMMAND svf-box-octagon-apron-test)
+
+    add_executable(svf-octagon-apron-benchmark OctagonApronBenchmark.cpp)
+    target_include_directories(
+      svf-octagon-apron-benchmark PRIVATE ${CMAKE_CURRENT_LIST_DIR}
+                                          ${APRON_INCLUDE_DIR}
+    )
+    target_link_libraries(
+      svf-octagon-apron-benchmark PRIVATE AbstractDomainCore
+                                          ${APRON_OCTAGON_LIBRARY}
+                                          ${APRON_POLKA_LIBRARY}
+                                          ${APRON_LIBRARY}
+                                          MPFR::MPFR GMP::GMPXX m
+    )
   endif()
   message(STATUS "APRON/NewPolka differential tests enabled")
 endif()
