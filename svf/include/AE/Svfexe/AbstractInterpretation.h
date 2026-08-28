@@ -181,8 +181,21 @@ public:
     virtual const AbstractDomain::AbstractState&
     getAbstractState(const ICFGNode* node) const;
 
-    /// Replace the state at `node`.  Sparse subclasses replace only the
-    /// ObjVar map (ValVars live at def-sites).
+    /// Return the analysis-wide SSA-value carrier for `function` when the
+    /// selected sparse implementation separates ValVars from ICFG memory
+    /// states. Other implementations return nullptr.
+    virtual const AbstractDomain::AbstractState* getScalarAbstractState(
+        const FunObjVar* function) const;
+
+    /// Return the sparse relational checkpoint associated with a particular
+    /// SSA definition, or nullptr when the implementation has no separated
+    /// definition checkpoint.
+    virtual const AbstractDomain::AbstractState* getScalarAbstractState(
+        const ValVar* value) const;
+
+    /// Replace the state at `node`. Legacy sparse subclasses replace only the
+    /// ObjVar map; native sparse implementations keep a separate scalar
+    /// carrier.
     virtual void updateAbsState(const ICFGNode* node, const IntervalState& state);
 
     /// Join `src` into `dst` with sparsity-aware semantics.  Dense merges
@@ -261,6 +274,11 @@ protected:
     virtual bool isAbstractStateEquivalent(
         const ICFGNode* node,
         const AbstractDomain::AbstractState& snapshot) const;
+
+    /// Normalize a node after its transfers and detectors have consumed any
+    /// temporary operands. Native sparse implementations use this boundary to
+    /// keep ValVar values out of persistent ICFG states.
+    virtual void finalizeAbstractState(const ICFGNode* node);
 
     /// Pull-based state merge: read abstractTrace[pred] for each predecessor,
     /// apply branch refinement for conditional IntraCFGEdges, and join into

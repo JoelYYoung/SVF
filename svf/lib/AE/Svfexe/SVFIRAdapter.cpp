@@ -49,6 +49,8 @@ SVFIRAdapter::SVFIRAdapter(const SVFIR& svfir)
     std::uint64_t nextVariableId = 1;
     std::uint64_t nextLocationId = 1;
     std::vector<VariableDeclaration> commonDeclarations;
+    std::vector<VariableDeclaration> commonScalarDeclarations;
+    std::vector<VariableDeclaration> allScalarDeclarations;
     std::map<const FunObjVar*, std::vector<VariableDeclaration>>
         localDeclarations;
     std::map<Location, Variable> cells;
@@ -72,11 +74,15 @@ SVFIRAdapter::SVFIRAdapter(const SVFIR& svfir)
                                             "svf_value_" +
                                                 std::to_string(value->getId())};
             declarations_.emplace(variable, declaration);
+            allScalarDeclarations.push_back(declaration);
             const FunObjVar* owner = value->getFunction();
             if (owner)
                 localDeclarations[owner].push_back(std::move(declaration));
             else
+            {
+                commonScalarDeclarations.push_back(declaration);
                 commonDeclarations.push_back(std::move(declaration));
+            }
             continue;
         }
 
@@ -90,14 +96,18 @@ SVFIRAdapter::SVFIRAdapter(const SVFIR& svfir)
         contentVariables_.emplace(object, content);
         contentObjectsByVariableId_.resize(content.id() + 1);
         contentObjectsByVariableId_[content.id()] = object;
-        commonDeclarations.push_back(
-            {content, NumericType::integer(),
-             "svf_object_" + std::to_string(object->getId()) + "_content"});
-        declarations_.emplace(content, commonDeclarations.back());
+        VariableDeclaration declaration{
+            content, NumericType::integer(),
+            "svf_object_" + std::to_string(object->getId()) + "_content"};
+        declarations_.emplace(content, declaration);
+        commonDeclarations.push_back(std::move(declaration));
         cells.emplace(location, content);
     }
 
     globalEnvironment_ = VariableEnvironment(commonDeclarations);
+    globalScalarEnvironment_ =
+        VariableEnvironment(commonScalarDeclarations);
+    allScalarEnvironment_ = VariableEnvironment(allScalarDeclarations);
     for (auto& [owner, declarations] : localDeclarations)
     {
         std::vector<VariableDeclaration> functionDeclarations =
@@ -110,6 +120,29 @@ SVFIRAdapter::SVFIRAdapter(const SVFIR& svfir)
             owner, VariableEnvironment(std::move(functionDeclarations)));
     }
     memoryLayout_ = MemoryLayout(std::move(cells));
+}
+
+const VariableEnvironment& SVFIRAdapter::scalarEnvironment(
+    const FunObjVar* function) const
+{
+    if (!function)
+        return globalScalarEnvironment_;
+    auto iterator = functionScalarEnvironments_.find(function);
+    if (iterator == functionScalarEnvironments_.end())
+    {
+        std::vector<VariableDeclaration> declarations;
+        for (const VariableDeclaration& declaration :
+             environment(function).variables())
+        {
+            if (value(declaration.variable))
+                declarations.push_back(declaration);
+        }
+        iterator = functionScalarEnvironments_
+                       .emplace(function,
+                                VariableEnvironment(std::move(declarations)))
+                       .first;
+    }
+    return iterator->second;
 }
 
 bool SVFIRAdapter::contains(const ValVar& value) const

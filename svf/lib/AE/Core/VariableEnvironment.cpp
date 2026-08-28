@@ -19,19 +19,16 @@ struct VariableEnvironment::Data
                   [](const VariableDeclaration& lhs,
                      const VariableDeclaration& rhs)
                   { return lhs.variable < rhs.variable; });
-        for (Dimension dimension = 0; dimension < variables.size(); ++dimension)
+        for (Dimension dimension = 1; dimension < variables.size(); ++dimension)
         {
-            const auto [it, inserted] =
-                dimensions.emplace(variables[dimension].variable, dimension);
-            (void)it;
-            if (!inserted)
+            if (variables[dimension - 1].variable ==
+                variables[dimension].variable)
                 throw std::invalid_argument(
                     "duplicate variable in relational environment");
         }
     }
 
     std::vector<VariableDeclaration> variables;
-    std::map<Variable, Dimension> dimensions;
 };
 
 VariableEnvironment::VariableEnvironment() : data_(std::make_shared<Data>(
@@ -50,15 +47,23 @@ std::size_t VariableEnvironment::size() const
 
 bool VariableEnvironment::contains(Variable variable) const
 {
-    return data_->dimensions.find(variable) != data_->dimensions.end();
+    const auto iterator = std::lower_bound(
+        data_->variables.begin(), data_->variables.end(), variable,
+        [](const VariableDeclaration& declaration, Variable candidate)
+        { return declaration.variable < candidate; });
+    return iterator != data_->variables.end() &&
+           iterator->variable == variable;
 }
 
 Dimension VariableEnvironment::dimensionOf(Variable variable) const
 {
-    const auto it = data_->dimensions.find(variable);
-    if (it == data_->dimensions.end())
+    const auto iterator = std::lower_bound(
+        data_->variables.begin(), data_->variables.end(), variable,
+        [](const VariableDeclaration& declaration, Variable candidate)
+        { return declaration.variable < candidate; });
+    if (iterator == data_->variables.end() || iterator->variable != variable)
         throw std::out_of_range("variable is not in relational environment");
-    return it->second;
+    return static_cast<Dimension>(iterator - data_->variables.begin());
 }
 
 Variable VariableEnvironment::variableOf(Dimension dimension) const

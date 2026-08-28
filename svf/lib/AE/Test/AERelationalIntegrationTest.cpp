@@ -14,6 +14,7 @@
 #include <iostream>
 #include <stdexcept>
 #include <string>
+#include <type_traits>
 #include <vector>
 
 using namespace SVF;
@@ -29,7 +30,10 @@ using DenseBoxState = AD::DomainProductState<AD::BoxState>;
 const DenseOctagonState& requireDenseOctagonState(
     AbstractInterpretation& analysis, const ICFGNode* node)
 {
-    const AD::AbstractState& abstractState = analysis.getAbstractState(node);
+    const AD::AbstractState* scalarState =
+        analysis.getScalarAbstractState(node->getFun());
+    const AD::AbstractState& abstractState =
+        scalarState ? *scalarState : analysis.getAbstractState(node);
     const auto* state =
         abstractState.isState<DenseOctagonState>()
             ? &static_cast<const DenseOctagonState&>(abstractState)
@@ -43,7 +47,10 @@ const DenseOctagonState& requireDenseOctagonState(
 const DenseBoxState& requireDenseBoxState(AbstractInterpretation& analysis,
                                           const ICFGNode* node)
 {
-    const AD::AbstractState& abstractState = analysis.getAbstractState(node);
+    const AD::AbstractState* scalarState =
+        analysis.getScalarAbstractState(node->getFun());
+    const AD::AbstractState& abstractState =
+        scalarState ? *scalarState : analysis.getAbstractState(node);
     const auto* state = abstractState.isState<DenseBoxState>()
                             ? &static_cast<const DenseBoxState&>(abstractState)
                             : nullptr;
@@ -51,6 +58,20 @@ const DenseBoxState& requireDenseBoxState(AbstractInterpretation& analysis,
         throw std::runtime_error(
             "dense AE is not using DomainProductState<BoxState>");
     return *state;
+}
+
+const DenseOctagonState& requireScalarOctagonState(
+    AbstractInterpretation& analysis, const ValVar* value,
+    const ICFGNode* fallback)
+{
+    const AD::AbstractState* scalarState =
+        analysis.getScalarAbstractState(value);
+    if (!scalarState)
+        return requireDenseOctagonState(analysis, fallback);
+    if (!scalarState->isState<DenseOctagonState>())
+        throw std::runtime_error(
+            "sparse scalar checkpoint is not an Octagon product state");
+    return static_cast<const DenseOctagonState&>(*scalarState);
 }
 
 bool hasIntegerBounds(const AD::Interval& interval, s64_t lower, s64_t upper)
@@ -159,6 +180,73 @@ void validateNativeProductStorage(AbstractInterpretation& analysis)
               << " compatibility_trace_entries=0\n";
 }
 
+template <typename DenseStateT>
+void validateNativeSparseCarrierSeparation(const SVFIR& graph,
+                                           AbstractInterpretation& analysis)
+{
+    SVFIRAdapter adapter(graph);
+    bool sawScalarCarrier = false;
+    bool sawDefinedScalar = false;
+    const AD::AbstractState* boxModuleCarrier = nullptr;
+    Set<const FunObjVar*> checkedFunctions;
+    for (const ICFGNode* node : analysis.getAnalyzedNodes())
+    {
+        const auto& memory = static_cast<const DenseStateT&>(
+            analysis.getAbstractState(node));
+        for (AD::Variable variable : memory.shapes().definedVariables(
+                 memory.numerical().environment()))
+        {
+            if (adapter.value(variable))
+                throw std::runtime_error(
+                    "native sparse ICFG carrier retained a ValVar value");
+        }
+
+        if (!checkedFunctions.insert(node->getFun()).second)
+            continue;
+        const AD::AbstractState* abstractScalars =
+            analysis.getScalarAbstractState(node->getFun());
+        if (!abstractScalars)
+            continue;
+        if constexpr (std::is_same_v<DenseStateT, DenseBoxState>)
+        {
+            if (!boxModuleCarrier)
+                boxModuleCarrier = abstractScalars;
+            else if (boxModuleCarrier != abstractScalars)
+                throw std::runtime_error(
+                    "native sparse Box created more than one scalar carrier");
+        }
+        sawScalarCarrier = true;
+        const auto& scalars = static_cast<const DenseStateT&>(*abstractScalars);
+        for (AD::Variable variable : scalars.shapes().definedVariables(
+                 scalars.numerical().environment()))
+        {
+            if (adapter.value(variable))
+                sawDefinedScalar = true;
+            if (adapter.contentObject(variable))
+                throw std::runtime_error(
+                    "native sparse scalar carrier retained ObjVar content");
+        }
+    }
+    if (!sawScalarCarrier || !sawDefinedScalar)
+        throw std::runtime_error(
+            "native sparse analysis did not populate its ValVar carrier");
+    if constexpr (std::is_same_v<DenseStateT, DenseBoxState>)
+    {
+        if (analysis.getScalarAbstractState(
+                static_cast<const FunObjVar*>(nullptr)) != boxModuleCarrier)
+            throw std::runtime_error(
+                "native sparse Box did not expose its module scalar carrier");
+        std::cout << "AE_CARRIER_OBSERVATION icfg=memory-only"
+                  << " scalar=module-box valvar_attached_to_icfg=0\n";
+    }
+    else
+    {
+        std::cout << "AE_CARRIER_OBSERVATION icfg=memory-only"
+                  << " scalar=per-function-relational"
+                  << " valvar_attached_to_icfg=0\n";
+    }
+}
+
 const SVFVar* findValueIfPresent(const SVFIR& graph, const std::string& name)
 {
     for (SVFIR::const_iterator it = graph.begin(); it != graph.end(); ++it)
@@ -214,7 +302,7 @@ void validateReducedProductFixture(const SVFIR& graph,
             sawReducedInterval = true;
 
         const DenseOctagonState& domainState =
-            requireDenseOctagonState(analysis, node);
+            requireScalarOctagonState(analysis, resultValue, node);
         const AD::OctagonState& octagon = domainState.numerical();
         const AD::LinearExpression inputExpression(
             adapter.variable(*inputValue));
@@ -296,6 +384,8 @@ void validateRelationalAssertFixture(const SVFIR& graph,
     const AD::LinearConstraint assertion = AD::greaterThan(
         AD::LinearExpression(copyVariable),
         AD::LinearExpression(AD::Rational(0)));
+    const bool separatedScalarCarrier =
+        analysis.getScalarAbstractState(copyValue) != nullptr;
     bool sawProvedAssertion = false;
     bool analyzedFailure = false;
 
@@ -307,9 +397,10 @@ void validateRelationalAssertFixture(const SVFIR& graph,
             continue;
 
         const AD::OctagonState& octagon =
-            requireDenseOctagonState(analysis, node).numerical();
+            requireScalarOctagonState(analysis, copyValue, node).numerical();
         if (octagon.entails(copyRelation) == AD::CheckResult::True &&
-            octagon.entails(assertion) == AD::CheckResult::True)
+            (separatedScalarCarrier ||
+             octagon.entails(assertion) == AD::CheckResult::True))
             sawProvedAssertion = true;
     }
 
@@ -333,7 +424,7 @@ void validateRelationalAssertFixture(const SVFIR& graph,
 
     if (!sawProvedAssertion)
         throw std::runtime_error(
-            "Octagon did not propagate a > 0 through x == a");
+            "Octagon did not retain x == a at the sparse definition");
     if (analyzedFailure)
         throw std::runtime_error(
             "the relationally impossible assertion failure was reachable");
@@ -365,7 +456,8 @@ void validateLoopFixture(const SVFIR& graph, AbstractInterpretation& analysis)
             value.getInterval().equals(IntervalValue((s64_t)4)))
             sawPreciseResultInterval = true;
         const AD::Interval inductionBound =
-            requireDenseOctagonState(analysis, node)
+            requireScalarOctagonState(
+                analysis, SVFUtil::cast<ValVar>(result), node)
                 .numerical()
                 .bound(adapter.variable(*inductionValue));
         if (inductionBound.lower().isFinite() &&
@@ -537,6 +629,13 @@ int main(int argc, char** argv)
         else if (!Options::AEDenseOctagon())
         {
             validateNativeProductStorage<DenseBoxState>(analysis);
+            const bool carrierFixture = findValueIfPresent(*graph, "z") ||
+                findValueIfPresent(*graph, "loop_result") ||
+                findValueIfPresent(*graph, "memory_result");
+            if (Options::AESparsity() != AbstractInterpretation::Dense &&
+                carrierFixture)
+                validateNativeSparseCarrierSeparation<DenseBoxState>(
+                    *graph, analysis);
             if (findValueIfPresent(*graph, "z") ||
                 findValueIfPresent(*graph, "loop_result"))
                 validateBoxProjection(*graph, analysis);
@@ -544,20 +643,31 @@ int main(int argc, char** argv)
         else if (findValueIfPresent(*graph, "assert_bad"))
         {
             validateNativeProductStorage<DenseOctagonState>(analysis);
+            if (Options::AESparsity() != AbstractInterpretation::Dense)
+                validateNativeSparseCarrierSeparation<DenseOctagonState>(
+                    *graph, analysis);
             validateRelationalAssertFixture(*graph, analysis);
         }
         else if (findValueIfPresent(*graph, "loop_result"))
         {
             validateNativeProductStorage<DenseOctagonState>(analysis);
+            if (Options::AESparsity() != AbstractInterpretation::Dense)
+                validateNativeSparseCarrierSeparation<DenseOctagonState>(
+                    *graph, analysis);
             validateLoopFixture(*graph, analysis);
         }
         else if (findValueIfPresent(*graph, "z"))
         {
             validateNativeProductStorage<DenseOctagonState>(analysis);
+            if (Options::AESparsity() != AbstractInterpretation::Dense)
+                validateNativeSparseCarrierSeparation<DenseOctagonState>(
+                    *graph, analysis);
             validateReducedProductFixture(*graph, analysis);
         }
         else
+        {
             validateNativeProductStorage<DenseOctagonState>(analysis);
+        }
 
         if (findValueIfPresent(*graph, "memory_result"))
             validateSparseMemoryFixture(*graph, analysis, nativeProduct);

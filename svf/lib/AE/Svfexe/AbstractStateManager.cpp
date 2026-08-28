@@ -62,6 +62,18 @@ const AbstractDomain::AbstractState& AbstractInterpretation::getAbstractState(
     return iterator->second;
 }
 
+const AbstractDomain::AbstractState*
+AbstractInterpretation::getScalarAbstractState(const FunObjVar*) const
+{
+    return nullptr;
+}
+
+const AbstractDomain::AbstractState*
+AbstractInterpretation::getScalarAbstractState(const ValVar*) const
+{
+    return nullptr;
+}
+
 void AbstractInterpretation::updateAbsState(const ICFGNode* node, const IntervalState& state)
 {
     abstractTrace[node] = state;
@@ -107,6 +119,10 @@ bool AbstractInterpretation::isAbstractStateEquivalent(
         return false;
     return iterator->second.isEquivalentTo(snapshot) ==
            AbstractDomain::CheckResult::True;
+}
+
+void AbstractInterpretation::finalizeAbstractState(const ICFGNode*)
+{
 }
 
 /// Dense base: direct trace lookup, with a top sentinel for genuinely

@@ -906,6 +906,8 @@ bool AbstractInterpretation::handleICFGNode(const ICFGNode* node)
     // Run detectors
     for (auto& detector: detectors)
         detector->detect(node);
+
+    finalizeAbstractState(node);
     stat->countStateSize();
 
     // Track this node as analyzed (for coverage statistics across all entry points)

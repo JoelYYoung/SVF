@@ -15,9 +15,10 @@ class IndirectSVFGEdge;
 class SVFGBuilder;
 class VFGNode;
 
-/// Semi-sparse AE backed by DomainProductState. Scalar SSA values live at
-/// their definition sites; CFG states carry memory, lifetime, and the
-/// temporary relational slices required for branch and cycle operations.
+/// Semi-sparse AE backed by DomainProductState. Box values use one module-wide
+/// scalar carrier; relational values use a per-function carrier plus sparse
+/// definition checkpoints. Persistent ICFG states carry memory and lifetime
+/// values, while transfers materialize scalar operands only temporarily.
 template <typename NumericalStateT>
 class NativeSemiSparseAbstractInterpretation
     : public DenseAbstractInterpretation<NumericalStateT>
@@ -29,8 +30,13 @@ public:
     NativeSemiSparseAbstractInterpretation();
     ~NativeSemiSparseAbstractInterpretation() override = default;
     void runOnModule() override;
+    const AbstractDomain::AbstractState* getScalarAbstractState(
+        const FunObjVar* function) const override;
+    const AbstractDomain::AbstractState* getScalarAbstractState(
+        const ValVar* value) const override;
 
 protected:
+    void handleGlobalNode() override;
     struct PhaseMetric
     {
         std::uint64_t calls = 0;
@@ -65,6 +71,8 @@ protected:
 
     void copyAbstractState(const ICFGNode* source,
                            const ICFGNode* destination) override;
+    void resetAbstractState(const ICFGNode* node) override;
+    void finalizeAbstractState(const ICFGNode* node) override;
     bool mergeStatesFromPredecessors(const ICFGNode* node) override;
     bool isAbstractStateEquivalent(
         const ICFGNode* node,
@@ -81,8 +89,17 @@ protected:
 
     void assignDomainInterval(const ICFGNode* node, const SVFVar* target,
                               const IntervalValue& interval) override;
+    void updateDomainOnBinary(const BinaryOPStmt* binary,
+                              const IntervalValue& result) override;
+    void updateDomainCopyValue(const ICFGNode* node, const SVFVar* target,
+                               const SVFVar* source,
+                               bool exactMathematicalCopy) override;
     void materializeValue(DenseState& state, const ValVar* value,
                           const ICFGNode* node) override;
+    AbstractValue loadValue(const ValVar* pointer,
+                            const ICFGNode* node) override;
+    void storeValue(const ValVar* pointer, const AbstractValue& value,
+                    const ICFGNode* node) override;
 
     /// Keep only the state facets that should flow along ordinary ICFG
     /// edges. Full-sparse overrides this to remove MemorySSA-managed objects.
@@ -92,8 +109,14 @@ protected:
     /// proven feasible by the native numerical state.
     virtual void collectMemoryBranchRefinement(const IntraCFGEdge* edge);
 
-    const ICFGNode* definitionNode(const ValVar* value,
-                                   const ICFGNode* fallback) const;
+    DenseState& scalarState(const FunObjVar* function);
+    const DenseState* findScalarState(const FunObjVar* function) const;
+    DenseState flowState(const FunObjVar* function, bool bottom = false) const;
+    void commitBinaryResult(const BinaryOPStmt* binary,
+                            const DenseState& transferState,
+                            const IntervalValue& fallback);
+    void commitCopyResult(const SVFVar* target, bool exactMathematicalCopy,
+                          const DenseState& transferState);
     void forgetActiveScalarValues(DenseState& state) const;
     void forgetMemoryValues(DenseState& state) const;
     void applyScalarCheckpoint(DenseState& state, const DenseState& checkpoint);
@@ -102,6 +125,8 @@ protected:
     void reportSparseProfile() const;
 
     Map<const ICFGNode*, DenseState> refinementTrace_;
+    Map<const FunObjVar*, DenseState> scalarStates_;
+    Map<const ValVar*, DenseState> scalarCheckpoints_;
     mutable SparsePhaseProfile sparseProfile_;
 };
 

@@ -37,6 +37,12 @@ public:
 
     const AbstractDomain::VariableEnvironment& environment(
         const FunObjVar* function = nullptr) const;
+    const AbstractDomain::VariableEnvironment& scalarEnvironment(
+        const FunObjVar* function = nullptr) const;
+    const AbstractDomain::VariableEnvironment& allScalarEnvironment() const
+    {
+        return allScalarEnvironment_;
+    }
 
     const AbstractDomain::MemoryLayout& memoryLayout() const
     {
@@ -61,6 +67,10 @@ private:
     AbstractDomain::VariableEnvironment globalEnvironment_;
     std::map<const FunObjVar*, AbstractDomain::VariableEnvironment>
         functionEnvironments_;
+    AbstractDomain::VariableEnvironment globalScalarEnvironment_;
+    AbstractDomain::VariableEnvironment allScalarEnvironment_;
+    mutable std::map<const FunObjVar*, AbstractDomain::VariableEnvironment>
+        functionScalarEnvironments_;
     AbstractDomain::MemoryLayout memoryLayout_;
 };
 

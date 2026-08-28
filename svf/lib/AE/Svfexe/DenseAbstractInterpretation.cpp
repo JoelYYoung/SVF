@@ -450,7 +450,8 @@ void DenseAbstractInterpretation<NumericalStateT>::updateDomainCopyValue(
     const AbstractValue result = getAbsValue(targetValue, node);
     if (!result.isInterval())
     {
-        denseState.numerical().forget(targetVariable);
+        if (denseState.numerical().environment().contains(targetVariable))
+            denseState.numerical().forget(targetVariable);
         return;
     }
 
@@ -459,6 +460,7 @@ void DenseAbstractInterpretation<NumericalStateT>::updateDomainCopyValue(
     {
         materializeValue(denseState, sourceValue, node);
         const AD::Variable sourceVariable = adapter_.variable(*sourceValue);
+        ensureVariable(denseState, targetVariable);
         ensureVariable(denseState, sourceVariable);
         denseState.numerical().assign(targetVariable,
                                       AD::LinearExpression(sourceVariable));
