@@ -1,0 +1,2 @@
+input,mode,fun_entry,directory_cow,repetition,status,seconds,peak_rss_bytes,rss_source,sampled_peak_rss_bytes,rss_samples,analyzed_nodes,return_code,diagnostic
+redis_cli_original,dense-native,main,off,1,timeout,300.023622,3281813504,process-group-sample,3281813504,2248,,-9,

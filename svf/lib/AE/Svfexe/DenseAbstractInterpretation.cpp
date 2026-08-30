@@ -879,6 +879,7 @@ void DenseAbstractInterpretation<NumericalStateT>::assumeBranch(
         if (!value || !adapter_.contains(*value))
             return;
         materializeValue(denseState, value, edge->getSrcNode());
+        ensureVariable(denseState, adapter_.variable(*value));
         denseState.assume(AD::equal(
             AD::LinearExpression(adapter_.variable(*value)),
             AD::LinearExpression(AD::Rational(edge->getSuccessorCondValue()))));
@@ -903,6 +904,7 @@ void DenseAbstractInterpretation<NumericalStateT>::assumeBranch(
         if (!value || !adapter_.contains(*value))
             return false;
         materializeValue(denseState, value, edge->getSrcNode());
+        ensureVariable(denseState, adapter_.variable(*value));
         expression = AD::LinearExpression(adapter_.variable(*value));
         return true;
     };
@@ -960,6 +962,11 @@ bool DenseAbstractInterpretation<NumericalStateT>::mergeStatesFromPredecessors(
         if (source.isBottom())
             continue;
 
+        // Branch refinement can materialize a condition variable that is not
+        // present in the destination function's precomputed environment (for
+        // example, a value returned across a call edge).  Join over the union
+        // environment just as the other fixpoint comparison paths do.
+        alignEnvironments(merged, source);
         merged.joinWith(source);
         hasFeasiblePredecessor = true;
     }

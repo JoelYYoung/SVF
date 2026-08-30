@@ -34,6 +34,7 @@ MODES = {
 FIELDNAMES = [
     "input",
     "mode",
+    "fun_entry",
     "directory_cow",
     "repetition",
     "status",
@@ -44,6 +45,7 @@ FIELDNAMES = [
     "rss_samples",
     "analyzed_nodes",
     "return_code",
+    "diagnostic",
 ]
 
 
@@ -69,7 +71,8 @@ def parse_peak_rss(text):
     return int(match.group(1)) * 1024 if match else None
 
 
-def sample_process_group_rss(process_group, stop_event, result):
+def sample_process_group_rss(process_group, stop_event, result,
+                             memory_limit_bytes):
     while not stop_event.is_set():
         sample = subprocess.run(
             ["ps", "-axo", "pgid=,rss="],
@@ -86,6 +89,13 @@ def sample_process_group_rss(process_group, stop_event, result):
                 rss_kib += int(columns[1])
         result[0] = max(result[0], rss_kib * 1024)
         result[1] += 1
+        if (memory_limit_bytes and result[0] > memory_limit_bytes and
+                not result[2]):
+            result[2] = True
+            try:
+                os.killpg(process_group, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
         stop_event.wait(0.1)
 
 
@@ -99,6 +109,7 @@ def run_once(options, mode, input_path, directory_kind):
             time_output.name,
             options.runner,
             "-ae-dense-octagon=false",
+            f"-ae-fun-entry={options.fun_entry}",
             *MODES[mode],
             f"-ae-box-directory-cow={'true' if directory_kind == 'vector' else 'false'}",
             f"-ae-box-hash-directory-cow={'true' if directory_kind == 'hash' else 'false'}",
@@ -115,15 +126,19 @@ def run_once(options, mode, input_path, directory_kind):
             start_new_session=True,
         )
         stop_event = threading.Event()
-        sampled_peak_rss = [0, 0]
+        sampled_peak_rss = [0, 0, False]
         sampler = threading.Thread(
             target=sample_process_group_rss,
-            args=(process.pid, stop_event, sampled_peak_rss),
+            args=(process.pid, stop_event, sampled_peak_rss,
+                  options.memory_limit_bytes),
         )
         sampler.start()
         try:
             output, _ = process.communicate(timeout=options.timeout)
-            status = "pass" if process.returncode == 0 else "fail"
+            if sampled_peak_rss[2]:
+                status = "memory-limit"
+            else:
+                status = "pass" if process.returncode == 0 else "fail"
         except subprocess.TimeoutExpired:
             os.killpg(process.pid, signal.SIGKILL)
             output, _ = process.communicate()
@@ -147,9 +162,11 @@ def run_once(options, mode, input_path, directory_kind):
 
     match = re.search(r"AE_GENERIC_OBSERVATION analyzed_nodes=(\d+)", output)
     nodes = int(match.group(1)) if match else None
+    diagnostic_lines = output.rstrip().splitlines()
+    diagnostic = diagnostic_lines[-1] if diagnostic_lines else ""
     return (status, elapsed, peak_rss, rss_source, sampled_peak_rss[0],
             sampled_peak_rss[1], nodes,
-            process.returncode, output)
+            process.returncode, diagnostic, output)
 
 
 def main():
@@ -160,42 +177,60 @@ def main():
                         required=True, metavar="LABEL=PATH")
     parser.add_argument("--mode", action="append", choices=MODES,
                         help="default: all six modes")
+    parser.add_argument("--fun-entry", choices=("main", "no-main"),
+                        default="main")
     parser.add_argument("--directory-cow", action="append",
                         choices=("off", "vector", "hash"),
                         help="default: off; repeat to compare layouts")
     parser.add_argument("--repetitions", type=int, default=5)
     parser.add_argument("--timeout", type=float, default=120.0)
+    parser.add_argument(
+        "--memory-limit-gib", type=float, default=0.0,
+        help="kill a run when sampled process-group RSS exceeds this value; "
+             "0 disables the explicit limit",
+    )
     parser.add_argument("--output", required=True)
     parser.add_argument("--append", action="store_true")
     options = parser.parse_args()
-    if options.repetitions <= 0 or options.timeout <= 0:
-        parser.error("repetitions and timeout must be positive")
+    if (options.repetitions <= 0 or options.timeout <= 0 or
+            options.memory_limit_gib < 0):
+        parser.error("repetitions/timeout must be positive and memory limit "
+                     "must be non-negative")
+    options.memory_limit_bytes = int(
+        options.memory_limit_gib * 1024 * 1024 * 1024
+    )
 
     modes = options.mode or list(MODES)
     directory_cow_modes = options.directory_cow or ["off"]
     rows = []
-    for label, input_path in options.input:
-        for mode in modes:
-            for cow_mode in directory_cow_modes:
-                elapsed_samples = []
-                rss_samples = []
-                statuses = []
-                node_counts = []
-                for repetition in range(1, options.repetitions + 1):
+    for input_index, (label, input_path) in enumerate(options.input):
+        for mode_index, mode in enumerate(modes):
+            elapsed_samples = {kind: [] for kind in directory_cow_modes}
+            rss_samples = {kind: [] for kind in directory_cow_modes}
+            statuses = {kind: [] for kind in directory_cow_modes}
+            node_counts = {kind: [] for kind in directory_cow_modes}
+            for repetition in range(1, options.repetitions + 1):
+                offset = ((input_index + mode_index + repetition - 1) %
+                          len(directory_cow_modes))
+                ordered_kinds = (directory_cow_modes[offset:] +
+                                 directory_cow_modes[:offset])
+                for cow_mode in ordered_kinds:
                     (status, elapsed, peak_rss, rss_source, sampled_peak,
-                     rss_sample_count, nodes, return_code, output) = run_once(
+                     rss_sample_count, nodes, return_code, diagnostic,
+                     output) = run_once(
                          options, mode, input_path, cow_mode
                     )
-                    statuses.append(status)
-                    node_counts.append(nodes)
-                    if status != "timeout":
-                        elapsed_samples.append(elapsed)
+                    statuses[cow_mode].append(status)
+                    node_counts[cow_mode].append(nodes)
+                    if status == "pass":
+                        elapsed_samples[cow_mode].append(elapsed)
                     if peak_rss is not None:
-                        rss_samples.append(peak_rss)
+                        rss_samples[cow_mode].append(peak_rss)
                     rows.append(
                         {
                             "input": label,
                             "mode": mode,
+                            "fun_entry": options.fun_entry,
                             "directory_cow": cow_mode,
                             "repetition": repetition,
                             "status": status,
@@ -208,27 +243,31 @@ def main():
                             "rss_samples": rss_sample_count,
                             "analyzed_nodes": nodes if nodes is not None else "",
                             "return_code": return_code,
+                            "diagnostic": diagnostic,
                         }
                     )
                     if status == "fail":
-                        diagnostic = output.rstrip().splitlines()
-                        detail = diagnostic[-1] if diagnostic else "no diagnostic"
+                        diagnostic_lines = output.rstrip().splitlines()
+                        detail = (diagnostic_lines[-1] if diagnostic_lines else
+                                  "no diagnostic")
                         print(
                             f"{label}/{mode}/cow={cow_mode} failed "
                             f"rc={return_code}: {detail}", flush=True
                         )
+            for cow_mode in directory_cow_modes:
                 elapsed_summary = (
-                    f"time={statistics.median(elapsed_samples):.3f}s"
-                    if elapsed_samples else f"time>={options.timeout:.1f}s"
+                    f"time={statistics.median(elapsed_samples[cow_mode]):.3f}s"
+                    if elapsed_samples[cow_mode] else "time=n/a"
                 )
                 rss_summary = (
-                    f"rss={statistics.median(rss_samples) / (1024 * 1024):.1f}MiB"
-                    if rss_samples else "rss=n/a"
+                    f"rss={statistics.median(rss_samples[cow_mode]) / (1024 * 1024):.1f}MiB"
+                    if rss_samples[cow_mode] else "rss=n/a"
                 )
                 print(
                     f"{label:20s} {mode:12s} cow={cow_mode:3s} "
                     f"{elapsed_summary} {rss_summary} "
-                    f"status={','.join(statuses)} nodes={node_counts[0]}",
+                    f"status={','.join(statuses[cow_mode])} "
+                    f"nodes={node_counts[cow_mode][0]}",
                     flush=True,
                 )
 

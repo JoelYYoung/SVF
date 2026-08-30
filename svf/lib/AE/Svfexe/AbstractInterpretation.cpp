@@ -1630,8 +1630,11 @@ void AbstractInterpretation::updateStateOnCopy(const CopyStmt *copy)
         }
         else
         {
-            assert(false && "cannot support dst int type other than u8/16/32");
-            abort();
+            // The interval carrier stores machine numerals in s64_t, so
+            // uncommon truncation targets (for example i64 from i128) cannot
+            // always be converted exactly here.  Falling back to the full
+            // destination-type range is sound and lets analysis continue.
+            return utils->getRangeLimitFromType(dstType);
         }
     };
 

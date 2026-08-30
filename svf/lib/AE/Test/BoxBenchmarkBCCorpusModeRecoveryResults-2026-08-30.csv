@@ -1,0 +1,9 @@
+input,mode,directory_cow,repetition,status,seconds,peak_rss_bytes,rss_source,sampled_peak_rss_bytes,rss_samples,analyzed_nodes,return_code,diagnostic
+json_verify,semi-native,off,1,fail,2.170836,36831232,time,37617664,17,,-11,time: command terminated abnormally
+json_verify,full-native,off,1,fail,0.048607,32243712,time,1228800,1,,-6,time: command terminated abnormally
+json_reformat,semi-native,off,1,fail,3.057817,47759360,time,48381952,24,,-11,time: command terminated abnormally
+json_reformat,full-native,off,1,fail,0.071176,41648128,time,1228800,1,,-6,time: command terminated abnormally
+zlib,semi-native,off,1,fail,0.121859,91734016,time,1228800,1,,-6,time: command terminated abnormally
+zlib,full-native,off,1,fail,0.165810,114016256,time,1228800,2,,-6,time: command terminated abnormally
+libpng,semi-native,off,1,fail,0.491393,495337472,time,238026752,4,,-6,time: command terminated abnormally
+libpng,full-native,off,1,fail,0.701917,604913664,time,600522752,6,,-6,time: command terminated abnormally

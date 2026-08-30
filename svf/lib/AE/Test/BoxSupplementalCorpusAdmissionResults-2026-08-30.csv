@@ -1,0 +1,11 @@
+input,mode,fun_entry,directory_cow,repetition,status,seconds,peak_rss_bytes,rss_source,sampled_peak_rss_bytes,rss_samples,analyzed_nodes,return_code,diagnostic
+file_encoding,dense-native,main,off,1,pass,0.682703,114622464,time,114769920,6,3666,0,AE relational integration test: PASS
+curl_min,dense-native,main,off,1,pass,0.294046,409305088,time,410370048,3,7938,0,AE relational integration test: PASS
+faad2,dense-native,main,off,1,pass,0.296269,404160512,time,181764096,3,7952,0,AE relational integration test: PASS
+hdf5,dense-native,main,off,1,pass,0.290338,410828800,time,411893760,3,7978,0,AE relational integration test: PASS
+espeak,dense-native,main,off,1,pass,0.294577,409501696,time,183435264,3,7955,0,AE relational integration test: PASS
+dav1d,dense-native,main,off,1,pass,0.304162,411664384,time,412729344,3,7991,0,AE relational integration test: PASS
+htslib,dense-native,main,off,1,pass,0.295036,409305088,time,408879104,3,7954,0,AE relational integration test: PASS
+libyaml,dense-native,main,off,1,pass,0.271775,404930560,time,179683328,2,7893,0,AE relational integration test: PASS
+flac,dense-native,main,off,1,pass,0.292958,413188096,time,187809792,3,8014,0,AE relational integration test: PASS
+dnsmasq,dense-native,main,off,1,pass,0.291700,408748032,time,404471808,3,7940,0,AE relational integration test: PASS

@@ -1,0 +1,3 @@
+input,mode,fun_entry,directory_cow,repetition,status,seconds,peak_rss_bytes,rss_source,sampled_peak_rss_bytes,rss_samples,analyzed_nodes,return_code,diagnostic
+redis_cli_compatible,dense-native,main,off,1,timeout,300.036962,6102450176,process-group-sample,6102450176,2247,,-9,
+redis_cli_original,dense-native,main,off,1,fail,16.730450,2388443136,time,2332786688,126,,-6,time: command terminated abnormally

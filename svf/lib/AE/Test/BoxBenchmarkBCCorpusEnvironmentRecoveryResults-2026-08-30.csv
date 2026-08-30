@@ -1,0 +1,2 @@
+input,mode,fun_entry,directory_cow,repetition,status,seconds,peak_rss_bytes,rss_source,sampled_peak_rss_bytes,rss_samples,analyzed_nodes,return_code,diagnostic
+json_reformat,dense-native,main,off,1,pass,44.718437,74219520,time,71548928,336,3144,0,AE relational integration test: PASS

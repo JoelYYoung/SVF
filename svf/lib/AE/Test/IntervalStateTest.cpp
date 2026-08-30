@@ -99,6 +99,18 @@ int main()
                     sparse.getVarToVal().count(1) == 1,
                 "memory replacement overwrote sparse ValVars");
 
+        const IntervalValue shifted31 =
+            IntervalValue((s64_t)1, (s64_t)1) <<
+            IntervalValue((s64_t)31, (s64_t)31);
+        require(shifted31.equals(IntervalValue(
+                    (s64_t)2147483648LL, (s64_t)2147483648LL)),
+                "31-bit shift overflowed the host int representation");
+        const IntervalValue shiftedTooFar =
+            IntervalValue((s64_t)1, (s64_t)1) <<
+            IntervalValue((s64_t)63, (s64_t)63);
+        require(shiftedTooFar.isTop(),
+                "unrepresentable shift did not fall back to top");
+
         std::cout << "SVF IntervalState test: PASS\n";
         return EXIT_SUCCESS;
     }

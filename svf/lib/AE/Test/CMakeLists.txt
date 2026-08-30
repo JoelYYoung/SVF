@@ -324,7 +324,7 @@ if(TARGET SvfLLVM)
   function(add_dense_environment_alignment_test test_name use_octagon)
     add_test(
       NAME ${test_name}
-      COMMAND ae
+      COMMAND svf-ae-relational-integration-test
               -ae-dense-octagon=${use_octagon}
               -ae-sparsity=dense
               -stat=false
@@ -337,6 +337,15 @@ if(TARGET SvfLLVM)
   )
   add_dense_environment_alignment_test(
     dense-ae-environment-alignment-octagon true
+  )
+  add_test(
+    NAME dense-ae-wide-integer-truncation
+    COMMAND svf-ae-relational-integration-test
+            -ae-dense-octagon=false
+            -ae-sparsity=dense
+            -stat=false
+            -extapi=${CMAKE_BINARY_DIR}/lib/extapi.bc
+            ${CMAKE_CURRENT_LIST_DIR}/WideIntegerTruncation.ll
   )
 endif()
 

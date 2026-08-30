@@ -1,0 +1,3 @@
+input,mode,fun_entry,directory_cow,repetition,status,seconds,peak_rss_bytes,rss_source,sampled_peak_rss_bytes,rss_samples,analyzed_nodes,return_code,diagnostic
+default_elf,dense-native,main,off,1,fail,102.510440,5675974656,time,5675335680,773,,-11,time: command terminated abnormally
+darknet,dense-native,main,off,1,timeout,300.042745,4943069184,process-group-sample,4943069184,2259,,-9,

@@ -448,13 +448,22 @@ IntervalValue AbsExtAPI::getStrlen(const ValVar *strValue, const ICFGNode* node)
     for (const auto& addr : ptrVal.getAddrs())
     {
         NodeID objId = AbstractInterpretation::objectIdFromAddress(addr);
-        if (svfir->getBaseObject(objId)->isConstantByteSize())
+        const BaseObjVar* baseObject = svfir->getBaseObject(objId);
+        // Abstract addresses may denote black-hole, integer-derived, or other
+        // non-object nodes.  In that case the backing size is unknown; keep
+        // the conservative unknown-length result instead of dereferencing a
+        // missing BaseObjVar.
+        if (baseObject == nullptr)
+            continue;
+        if (baseObject->isConstantByteSize())
         {
-            dst_size = svfir->getBaseObject(objId)->getByteSizeOfObj();
+            dst_size = baseObject->getByteSizeOfObj();
         }
         else
         {
-            const ICFGNode* icfgNode = svfir->getBaseObject(objId)->getICFGNode();
+            const ICFGNode* icfgNode = baseObject->getICFGNode();
+            if (icfgNode == nullptr)
+                continue;
             for (const SVFStmt* stmt2: icfgNode->getSVFStmts())
             {
                 if (const AddrStmt* addrStmt = SVFUtil::dyn_cast<AddrStmt>(stmt2))
