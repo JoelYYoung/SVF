@@ -10,8 +10,13 @@
 #include "Util/Options.h"
 #include "WPA/Andersen.h"
 
+#include <algorithm>
+#include <cmath>
 #include <cstdlib>
 #include <iostream>
+#include <map>
+#include <optional>
+#include <set>
 #include <stdexcept>
 #include <string>
 #include <type_traits>
@@ -79,6 +84,326 @@ bool hasIntegerBounds(const AD::Interval& interval, s64_t lower, s64_t upper)
     return interval.lower().isFinite() && interval.upper().isFinite() &&
            interval.lower().value() == AD::Rational(lower) &&
            interval.upper().value() == AD::Rational(upper);
+}
+
+std::size_t percentile(std::vector<std::size_t> values, double fraction)
+{
+    if (values.empty())
+        return 0;
+    std::sort(values.begin(), values.end());
+    const std::size_t index =
+        static_cast<std::size_t>(
+            std::ceil(fraction * static_cast<double>(values.size()))) -
+        1;
+    return values[std::min(index, values.size() - 1)];
+}
+
+class VariableComponents
+{
+public:
+    void connect(const std::vector<AD::Variable>& variables)
+    {
+        if (variables.empty())
+            return;
+        const std::size_t first = ensure(variables.front());
+        for (std::size_t index = 1; index < variables.size(); ++index)
+            unite(first, ensure(variables[index]));
+    }
+
+    std::size_t largest() const
+    {
+        std::map<std::size_t, std::size_t> sizes;
+        for (std::size_t index = 0; index < parent_.size(); ++index)
+            ++sizes[root(index)];
+        std::size_t result = 0;
+        for (const auto& [representative, size] : sizes)
+        {
+            (void)representative;
+            result = std::max(result, size);
+        }
+        return result;
+    }
+
+private:
+    std::size_t ensure(AD::Variable variable)
+    {
+        const auto [iterator, inserted] =
+            indices_.emplace(variable, parent_.size());
+        if (inserted)
+        {
+            parent_.push_back(iterator->second);
+            rank_.push_back(0);
+        }
+        return iterator->second;
+    }
+
+    std::size_t root(std::size_t index) const
+    {
+        while (parent_[index] != index)
+            index = parent_[index];
+        return index;
+    }
+
+    std::size_t mutableRoot(std::size_t index)
+    {
+        if (parent_[index] != index)
+            parent_[index] = mutableRoot(parent_[index]);
+        return parent_[index];
+    }
+
+    void unite(std::size_t lhs, std::size_t rhs)
+    {
+        lhs = mutableRoot(lhs);
+        rhs = mutableRoot(rhs);
+        if (lhs == rhs)
+            return;
+        if (rank_[lhs] < rank_[rhs])
+            std::swap(lhs, rhs);
+        parent_[rhs] = lhs;
+        if (rank_[lhs] == rank_[rhs])
+            ++rank_[lhs];
+    }
+
+    std::map<AD::Variable, std::size_t> indices_;
+    std::vector<std::size_t> parent_;
+    std::vector<unsigned> rank_;
+};
+
+void reportRelationalVocabularyAudit(SVFIR& graph, AndersenWaveDiff& ander)
+{
+    SVFIRAdapter adapter(graph);
+    std::size_t objectDimensions = 0;
+    std::size_t integerObjectDimensions = 0;
+    std::size_t pointerObjectDimensions = 0;
+    std::size_t otherObjectDimensions = 0;
+    for (const AD::VariableDeclaration& declaration :
+         adapter.environment().variables())
+    {
+        const ObjVar* object = adapter.contentObject(declaration.variable);
+        if (!object)
+            continue;
+        ++objectDimensions;
+        const BaseObjVar* base = graph.getBaseObject(object->getId());
+        const SVFType* type = base->getType();
+        if (type->getKind() == SVFType::SVFIntegerTy)
+            ++integerObjectDimensions;
+        else if (type->getKind() == SVFType::SVFPointerTy)
+            ++pointerObjectDimensions;
+        else
+            ++otherObjectDimensions;
+    }
+
+    std::size_t numericScalarDimensions = 0;
+    std::size_t pointerScalarDimensions = 0;
+    for (const AD::VariableDeclaration& declaration :
+         adapter.allScalarEnvironment().variables())
+    {
+        const ValVar* value = adapter.value(declaration.variable);
+        if (value && value->isPointer())
+            ++pointerScalarDimensions;
+        else
+            ++numericScalarDimensions;
+    }
+
+    Set<const FunObjVar*> functions;
+    for (const auto& [nodeId, node] : *graph.getICFG())
+    {
+        (void)nodeId;
+        if (node->getFun())
+            functions.insert(node->getFun());
+    }
+
+    std::vector<std::size_t> fullEnvironmentSizes;
+    std::vector<std::size_t> scalarEnvironmentSizes;
+    for (const FunObjVar* function : functions)
+    {
+        if (function->isDeclaration())
+            continue;
+        fullEnvironmentSizes.push_back(adapter.environment(function).size());
+        scalarEnvironmentSizes.push_back(
+            adapter.scalarEnvironment(function).size());
+    }
+
+    std::map<NodeID, std::set<AD::Variable>> immediateObjectCache;
+    auto objectVariable = [&](NodeID id) -> std::optional<AD::Variable> {
+        const SVFVar* variable = graph.getGNode(id);
+        const auto* object = SVFUtil::dyn_cast<ObjVar>(variable);
+        if (!object || !adapter.contains(*object))
+            return std::nullopt;
+        return adapter.contentVariable(*object);
+    };
+    auto immediateObjects =
+        [&](const ValVar* pointer) -> const std::set<AD::Variable>& {
+        auto found = immediateObjectCache.find(pointer->getId());
+        if (found != immediateObjectCache.end())
+            return found->second;
+        std::set<AD::Variable>& result = immediateObjectCache[pointer->getId()];
+        for (NodeID id : ander.getPts(pointer->getId()))
+        {
+            if (const std::optional<AD::Variable> variable = objectVariable(id))
+                result.insert(*variable);
+        }
+        return result;
+    };
+    auto numericVariable = [&](const SVFVar* raw,
+                               std::vector<AD::Variable>& output) {
+        const auto* value = SVFUtil::dyn_cast<ValVar>(raw);
+        if (value && !value->isPointer() && adapter.contains(*value))
+            output.push_back(adapter.variable(*value));
+    };
+    auto unique = [](std::vector<AD::Variable>& variables) {
+        std::sort(variables.begin(), variables.end());
+        variables.erase(std::unique(variables.begin(), variables.end()),
+                        variables.end());
+    };
+
+    std::map<const FunObjVar*, VariableComponents> localComponents;
+    std::vector<std::size_t> eventSupportSizes;
+    std::vector<std::size_t> memoryAliasSizes;
+    for (const auto& [nodeId, node] : *graph.getICFG())
+    {
+        (void)nodeId;
+        const FunObjVar* function = node->getFun();
+        for (const SVFStmt* statement : node->getSVFStmts())
+        {
+            std::vector<AD::Variable> support;
+            if (const auto* load = SVFUtil::dyn_cast<LoadStmt>(statement))
+            {
+                numericVariable(load->getLHSVar(), support);
+                const auto& aliases = immediateObjects(load->getRHSVar());
+                support.insert(support.end(), aliases.begin(), aliases.end());
+                memoryAliasSizes.push_back(aliases.size());
+            }
+            else if (const auto* store =
+                         SVFUtil::dyn_cast<StoreStmt>(statement))
+            {
+                numericVariable(store->getRHSVar(), support);
+                const auto& aliases = immediateObjects(store->getLHSVar());
+                support.insert(support.end(), aliases.begin(), aliases.end());
+                memoryAliasSizes.push_back(aliases.size());
+            }
+            else if (SVFUtil::isa<CallPE>(statement) ||
+                     SVFUtil::isa<RetPE>(statement))
+            {
+                continue;
+            }
+            else if (const auto* multiple =
+                         SVFUtil::dyn_cast<MultiOpndStmt>(statement))
+            {
+                numericVariable(multiple->getRes(), support);
+                for (u32_t index = 0; index < multiple->getOpVarNum(); ++index)
+                    numericVariable(multiple->getOpVar(index), support);
+            }
+            else if (const auto* assignment =
+                         SVFUtil::dyn_cast<AssignStmt>(statement))
+            {
+                numericVariable(assignment->getLHSVar(), support);
+                numericVariable(assignment->getRHSVar(), support);
+            }
+            unique(support);
+            if (!support.empty())
+            {
+                eventSupportSizes.push_back(support.size());
+                if (function)
+                    localComponents[function].connect(support);
+            }
+        }
+    }
+
+    std::vector<std::size_t> callScalarArities;
+    std::vector<std::size_t> callObjectFootprints;
+    std::vector<std::size_t> callBoundarySides;
+    std::size_t declarationOnlyCallSites = 0;
+    CallGraph* callGraph = const_cast<CallGraph*>(graph.getCallGraph());
+    for (const CallICFGNode* call : graph.getCallSiteSet())
+    {
+        std::vector<AD::Variable> actuals;
+        std::set<AD::Variable> objects;
+        for (const ValVar* actual : call->getActualParms())
+        {
+            numericVariable(actual, actuals);
+            if (actual->isPointer())
+            {
+                const auto& direct = immediateObjects(actual);
+                objects.insert(direct.begin(), direct.end());
+            }
+        }
+        unique(actuals);
+        callScalarArities.push_back(actuals.size());
+        callObjectFootprints.push_back(objects.size());
+
+        CallGraph::FunctionSet callees;
+        callGraph->getCallees(call, callees);
+        bool hasBody = false;
+        std::size_t largestFormalSide = objects.size();
+        for (const FunObjVar* callee : callees)
+        {
+            if (!callee->isDeclaration())
+                hasBody = true;
+            std::vector<AD::Variable> formals;
+            if (graph.hasFunArgsList(callee))
+            {
+                for (const ValVar* formal : graph.getFunArgsList(callee))
+                    numericVariable(formal, formals);
+            }
+            unique(formals);
+            largestFormalSide =
+                std::max(largestFormalSide, formals.size() + objects.size());
+            if (!formals.empty())
+                localComponents[callee].connect(formals);
+            std::vector<AD::Variable> calleeBoundary = formals;
+            calleeBoundary.insert(calleeBoundary.end(), objects.begin(),
+                                  objects.end());
+            localComponents[callee].connect(calleeBoundary);
+        }
+        if (!hasBody)
+            ++declarationOnlyCallSites;
+
+        std::vector<AD::Variable> callerBoundary = actuals;
+        callerBoundary.insert(callerBoundary.end(), objects.begin(),
+                              objects.end());
+        if (call->getCaller())
+            localComponents[call->getCaller()].connect(callerBoundary);
+        callBoundarySides.push_back(
+            std::max(actuals.size() + objects.size(), largestFormalSide));
+    }
+
+    std::vector<std::size_t> naivePackSizes;
+    for (const FunObjVar* function : functions)
+    {
+        if (function->isDeclaration())
+            continue;
+        naivePackSizes.push_back(localComponents[function].largest());
+    }
+
+    std::cout << "RELATIONAL_VOCAB_AUDIT"
+              << " functions=" << fullEnvironmentSizes.size()
+              << " objects=" << objectDimensions
+              << " integer_objects=" << integerObjectDimensions
+              << " pointer_objects=" << pointerObjectDimensions
+              << " other_objects=" << otherObjectDimensions
+              << " numeric_scalars=" << numericScalarDimensions
+              << " pointer_scalars=" << pointerScalarDimensions
+              << " env_p50=" << percentile(fullEnvironmentSizes, 0.50)
+              << " env_p95=" << percentile(fullEnvironmentSizes, 0.95)
+              << " env_max=" << percentile(fullEnvironmentSizes, 1.00)
+              << " scalar_env_p95=" << percentile(scalarEnvironmentSizes, 0.95)
+              << " scalar_env_max=" << percentile(scalarEnvironmentSizes, 1.00)
+              << " event_support_p95=" << percentile(eventSupportSizes, 0.95)
+              << " event_support_max=" << percentile(eventSupportSizes, 1.00)
+              << " memory_alias_p95=" << percentile(memoryAliasSizes, 0.95)
+              << " memory_alias_max=" << percentile(memoryAliasSizes, 1.00)
+              << " call_scalar_p95=" << percentile(callScalarArities, 0.95)
+              << " call_scalar_max=" << percentile(callScalarArities, 1.00)
+              << " call_direct_objects_p95="
+              << percentile(callObjectFootprints, 0.95)
+              << " call_direct_objects_max="
+              << percentile(callObjectFootprints, 1.00)
+              << " call_side_p95=" << percentile(callBoundarySides, 0.95)
+              << " call_side_max=" << percentile(callBoundarySides, 1.00)
+              << " naive_pack_p95=" << percentile(naivePackSizes, 0.95)
+              << " naive_pack_max=" << percentile(naivePackSizes, 1.00)
+              << " declaration_only_calls=" << declarationOnlyCallSites << '\n';
 }
 
 const SVFVar* findValueIfPresent(const SVFIR& graph, const std::string& name);
@@ -434,6 +759,53 @@ void validateRelationalAssertFixture(const SVFIR& graph,
               << " failure_reachable=0\n";
 }
 
+void auditInterproceduralRelationalFixture(const SVFIR& graph,
+                                           AbstractInterpretation& analysis)
+{
+    const auto* actualX =
+        SVFUtil::cast<ValVar>(requireValue(graph, "actual_x"));
+    const auto* actualY =
+        SVFUtil::cast<ValVar>(requireValue(graph, "actual_y"));
+    const auto* difference =
+        SVFUtil::cast<ValVar>(requireValue(graph, "formal_difference"));
+    const SVFVar* failure = requireValue(graph, "interproc_bad");
+    SVFIRAdapter adapter(graph);
+    const AD::LinearConstraint callerEquality =
+        AD::equal(AD::LinearExpression(adapter.variable(*actualX)),
+                  AD::LinearExpression(adapter.variable(*actualY)));
+    bool callerRelation = false;
+    bool calleeDifferenceZero = false;
+    bool failureReachable = false;
+    for (const ICFGNode* node : analysis.getAnalyzedNodes())
+    {
+        if (analysis.hasAbsValue(failure, node))
+            failureReachable = true;
+        if (analysis.hasAbsValue(actualY, node))
+        {
+            const AD::OctagonState& state =
+                requireScalarOctagonState(analysis, actualY, node).numerical();
+            if (state.environment().contains(adapter.variable(*actualX)) &&
+                state.environment().contains(adapter.variable(*actualY)) &&
+                state.entails(callerEquality) == AD::CheckResult::True)
+                callerRelation = true;
+        }
+        if (analysis.hasAbsValue(difference, node))
+        {
+            const AD::OctagonState& state =
+                requireScalarOctagonState(analysis, difference, node)
+                    .numerical();
+            if (state.environment().contains(adapter.variable(*difference)) &&
+                hasIntegerBounds(state.bound(adapter.variable(*difference)), 0,
+                                 0))
+                calleeDifferenceZero = true;
+        }
+    }
+    std::cout << "AE_INTERPROCEDURAL_RELATIONAL_AUDIT"
+              << " caller_relation=" << callerRelation
+              << " callee_difference_zero=" << calleeDifferenceZero
+              << " failure_reachable=" << failureReachable << '\n';
+}
+
 void validateLoopFixture(const SVFIR& graph, AbstractInterpretation& analysis)
 {
     const SVFVar* induction = requireValue(graph, "i");
@@ -618,6 +990,11 @@ int main(int argc, char** argv)
             selectionOnly != nullptr && selectionOnly[0] != '\0' &&
             std::string(selectionOnly) != "0")
         {
+            if (const char* vocabularyAudit =
+                    std::getenv("SVF_RELATIONAL_VOCABULARY_AUDIT");
+                vocabularyAudit != nullptr && vocabularyAudit[0] != '\0' &&
+                std::string(vocabularyAudit) != "0")
+                reportRelationalVocabularyAudit(*graph, *ander);
             AndersenWaveDiff::releaseAndersenWaveDiff();
             LLVMModuleSet::releaseLLVMModuleSet();
             std::cout << "AE Octagon selection probe: PASS\n";
@@ -657,6 +1034,11 @@ int main(int argc, char** argv)
                 validateNativeSparseCarrierSeparation<DenseOctagonState>(
                     *graph, analysis);
             validateRelationalAssertFixture(*graph, analysis);
+        }
+        else if (findValueIfPresent(*graph, "interproc_bad"))
+        {
+            validateNativeProductStorage<DenseOctagonState>(analysis);
+            auditInterproceduralRelationalFixture(*graph, analysis);
         }
         else if (findValueIfPresent(*graph, "loop_result"))
         {

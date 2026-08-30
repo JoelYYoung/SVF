@@ -1,0 +1,2 @@
+fixture,sparsity,domain,caller_relation,callee_difference_zero,failure_reachable,analyzed_nodes
+actual-equality-through-difference-call,dense,octagon,1,0,1,16
