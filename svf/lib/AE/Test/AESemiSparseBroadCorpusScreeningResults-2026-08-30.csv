@@ -1,0 +1,39 @@
+input,mode,fun_entry,directory_cow,repetition,status,seconds,peak_rss_bytes,rss_source,sampled_peak_rss_bytes,rss_samples,analyzed_nodes,return_code,diagnostic
+mp4extract,semi-legacy,main,off,1,pass,0.874125,14876672,time,1376256,7,239,0,AE relational integration test: PASS
+mp4extract,semi-native,main,off,1,pass,0.054427,19841024,time,1228800,1,627,0,AE relational integration test: PASS
+mp4subtitle,semi-legacy,main,off,1,pass,0.049180,24739840,time,1228800,1,999,0,AE relational integration test: PASS
+mp4subtitle,semi-native,main,off,1,pass,0.040776,23527424,time,1228800,1,999,0,AE relational integration test: PASS
+mp4file,semi-legacy,main,off,1,pass,0.053256,27377664,time,1228800,1,880,0,AE relational integration test: PASS
+mp4file,semi-native,main,off,1,pass,0.046863,31178752,time,1228800,1,880,0,AE relational integration test: PASS
+mp4art,semi-legacy,main,off,1,pass,0.118425,45744128,time,1228800,1,1328,0,AE relational integration test: PASS
+mp4art,semi-native,main,off,1,pass,0.089332,45170688,time,1228800,1,1328,0,AE relational integration test: PASS
+mp4track,semi-legacy,main,off,1,pass,0.839927,116277248,time,112934912,7,3309,0,AE relational integration test: PASS
+mp4track,semi-native,main,off,1,pass,0.671847,83329024,time,80969728,6,3309,0,AE relational integration test: PASS
+json_verify,semi-legacy,main,off,1,fail,0.041871,26165248,time,1228800,1,,-11,time: command terminated abnormally
+json_verify,semi-native,main,off,1,pass,54.234484,40206336,time,40534016,423,3180,0,AE relational integration test: PASS
+json_reformat,semi-legacy,main,off,1,fail,0.060383,32227328,time,1228800,1,,-11,time: command terminated abnormally
+json_reformat,semi-native,main,off,1,fail,15.322258,50544640,time,51445760,119,,1,AE relational integration test: FAIL: abstract states use different domains or configurations
+file_encoding,semi-legacy,main,off,1,pass,1.897662,134119424,time,127565824,15,3659,0,AE relational integration test: PASS
+file_encoding,semi-native,main,off,1,pass,1.150634,88309760,time,83673088,9,3669,0,AE relational integration test: PASS
+curl_min,semi-legacy,main,off,1,pass,0.164454,188284928,time,164511744,2,7938,0,AE relational integration test: PASS
+curl_min,semi-native,main,off,1,pass,0.155851,91176960,time,92241920,2,7938,0,AE relational integration test: PASS
+faad2,semi-legacy,main,off,1,pass,0.165203,188153856,time,172589056,2,7964,0,AE relational integration test: PASS
+faad2,semi-native,main,off,1,pass,0.161284,87195648,time,1228800,2,7964,0,AE relational integration test: PASS
+hdf5,semi-legacy,main,off,1,pass,0.161071,190136320,time,175751168,2,7978,0,AE relational integration test: PASS
+hdf5,semi-native,main,off,1,pass,0.157319,91553792,time,92618752,2,7978,0,AE relational integration test: PASS
+espeak,semi-legacy,main,off,1,pass,0.163398,189235200,time,176209920,2,7955,0,AE relational integration test: PASS
+espeak,semi-native,main,off,1,pass,0.159242,91357184,time,92422144,2,7955,0,AE relational integration test: PASS
+dav1d,semi-legacy,main,off,1,pass,0.171179,190824448,time,166789120,2,7991,0,AE relational integration test: PASS
+dav1d,semi-native,main,off,1,pass,0.154392,92127232,time,92553216,2,7991,0,AE relational integration test: PASS
+htslib,semi-legacy,main,off,1,pass,0.163223,189087744,time,172654592,2,7954,0,AE relational integration test: PASS
+htslib,semi-native,main,off,1,pass,0.160737,91291648,time,1228800,2,7954,0,AE relational integration test: PASS
+libyaml,semi-legacy,main,off,1,pass,0.163489,186449920,time,168460288,2,7893,0,AE relational integration test: PASS
+libyaml,semi-native,main,off,1,pass,0.157224,89833472,time,1228800,2,7893,0,AE relational integration test: PASS
+flac,semi-legacy,main,off,1,pass,0.157846,187809792,time,172376064,2,7914,0,AE relational integration test: PASS
+flac,semi-native,main,off,1,pass,0.154995,92553216,time,93536256,2,8014,0,AE relational integration test: PASS
+dnsmasq,semi-legacy,main,off,1,pass,0.165209,188366848,time,170491904,2,7940,0,AE relational integration test: PASS
+dnsmasq,semi-native,main,off,1,pass,0.157471,91029504,time,92094464,2,7940,0,AE relational integration test: PASS
+c-ares,semi-legacy,main,off,1,pass,0.161016,184958976,time,173260800,2,7889,0,AE relational integration test: PASS
+c-ares,semi-native,main,off,1,pass,0.161384,85639168,time,1228800,2,7889,0,AE relational integration test: PASS
+c-blosc2,semi-legacy,main,off,1,pass,0.760924,230195200,time,230424576,6,8627,0,AE relational integration test: PASS
+c-blosc2,semi-native,main,off,1,pass,1.673009,145637376,time,146587648,13,8627,0,AE relational integration test: PASS

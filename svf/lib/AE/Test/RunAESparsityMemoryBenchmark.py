@@ -204,12 +204,31 @@ def main():
     directory_cow_modes = options.directory_cow or ["off"]
     rows = []
     for input_index, (label, input_path) in enumerate(options.input):
-        for mode_index, mode in enumerate(modes):
-            elapsed_samples = {kind: [] for kind in directory_cow_modes}
-            rss_samples = {kind: [] for kind in directory_cow_modes}
-            statuses = {kind: [] for kind in directory_cow_modes}
-            node_counts = {kind: [] for kind in directory_cow_modes}
-            for repetition in range(1, options.repetitions + 1):
+        elapsed_samples = {
+            (mode, kind): []
+            for mode in modes
+            for kind in directory_cow_modes
+        }
+        rss_samples = {
+            (mode, kind): []
+            for mode in modes
+            for kind in directory_cow_modes
+        }
+        statuses = {
+            (mode, kind): []
+            for mode in modes
+            for kind in directory_cow_modes
+        }
+        node_counts = {
+            (mode, kind): []
+            for mode in modes
+            for kind in directory_cow_modes
+        }
+        for repetition in range(1, options.repetitions + 1):
+            mode_offset = ((input_index + repetition - 1) % len(modes))
+            ordered_modes = modes[mode_offset:] + modes[:mode_offset]
+            for mode in ordered_modes:
+                mode_index = modes.index(mode)
                 offset = ((input_index + mode_index + repetition - 1) %
                           len(directory_cow_modes))
                 ordered_kinds = (directory_cow_modes[offset:] +
@@ -220,12 +239,13 @@ def main():
                      output) = run_once(
                          options, mode, input_path, cow_mode
                     )
-                    statuses[cow_mode].append(status)
-                    node_counts[cow_mode].append(nodes)
+                    key = (mode, cow_mode)
+                    statuses[key].append(status)
+                    node_counts[key].append(nodes)
                     if status == "pass":
-                        elapsed_samples[cow_mode].append(elapsed)
+                        elapsed_samples[key].append(elapsed)
                     if peak_rss is not None:
-                        rss_samples[cow_mode].append(peak_rss)
+                        rss_samples[key].append(peak_rss)
                     rows.append(
                         {
                             "input": label,
@@ -254,20 +274,22 @@ def main():
                             f"{label}/{mode}/cow={cow_mode} failed "
                             f"rc={return_code}: {detail}", flush=True
                         )
+        for mode in modes:
             for cow_mode in directory_cow_modes:
+                key = (mode, cow_mode)
                 elapsed_summary = (
-                    f"time={statistics.median(elapsed_samples[cow_mode]):.3f}s"
-                    if elapsed_samples[cow_mode] else "time=n/a"
+                    f"time={statistics.median(elapsed_samples[key]):.3f}s"
+                    if elapsed_samples[key] else "time=n/a"
                 )
                 rss_summary = (
-                    f"rss={statistics.median(rss_samples[cow_mode]) / (1024 * 1024):.1f}MiB"
-                    if rss_samples[cow_mode] else "rss=n/a"
+                    f"rss={statistics.median(rss_samples[key]) / (1024 * 1024):.1f}MiB"
+                    if rss_samples[key] else "rss=n/a"
                 )
                 print(
                     f"{label:20s} {mode:12s} cow={cow_mode:3s} "
                     f"{elapsed_summary} {rss_summary} "
-                    f"status={','.join(statuses[cow_mode])} "
-                    f"nodes={node_counts[cow_mode][0]}",
+                    f"status={','.join(statuses[key])} "
+                    f"nodes={node_counts[key][0]}",
                     flush=True,
                 )
 
