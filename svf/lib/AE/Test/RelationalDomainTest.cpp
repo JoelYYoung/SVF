@@ -352,6 +352,104 @@ void testEnvironmentChanges()
             "projected new environment dimensions must be initialized to zero");
 }
 
+OctagonState makeCarrierFixture(const VariableEnvironment& environment,
+                                OctagonStorageKind storage)
+{
+    const Variable x(1);
+    const Variable y(2);
+    const Variable z(3);
+    OctagonConfig config;
+    config.storage = storage;
+    OctagonState state = OctagonState::top(environment, config);
+    state.assume(atLeast(x, Rational(-4)));
+    state.assume(atMost(x, Rational(12)));
+    state.assume(differenceEquals(x, y, Rational(3)));
+    state.assume(signedSumAtMost(y, 1, z, 1, Rational(17)));
+    state.assign(z, LinearExpression(x) + LinearExpression(Rational(2)));
+    return state;
+}
+
+void testSelectableOctagonStorageCarriers()
+{
+    const Variable x(1);
+    const Variable y(2);
+    const Variable z(3);
+    const VariableEnvironment environment(
+        {{x, NumericType::integer(), "x"},
+         {y, NumericType::integer(), "y"},
+         {z, NumericType::integer(), "z"}});
+    const std::vector<OctagonStorageKind> kinds = {
+        OctagonStorageKind::DenseHalf,
+        OctagonStorageKind::SparseFinite,
+        OctagonStorageKind::ComponentDense};
+
+    const OctagonState dense =
+        makeCarrierFixture(environment, OctagonStorageKind::DenseHalf);
+    for (OctagonStorageKind kind : kinds)
+    {
+        OctagonState state = makeCarrierFixture(environment, kind);
+        require(state.isEquivalentTo(dense) == CheckResult::True,
+                std::string("carrier differs after transfer/closure: ") +
+                    octagonStorageKindName(kind));
+        require(state.config().storage == kind,
+                "state must retain its selected physical carrier");
+
+        OctagonState forgotten = state;
+        forgotten.forget(y);
+        OctagonState denseForgotten = dense;
+        denseForgotten.forget(y);
+        require(forgotten.isEquivalentTo(denseForgotten) == CheckResult::True,
+                std::string("carrier differs after forget: ") +
+                    octagonStorageKindName(kind));
+
+        OctagonState rhs = OctagonState::top(environment);
+        rhs.assume(atLeast(x, Rational(0)));
+        rhs.assume(atMost(z, Rational(20)));
+        require(state.join(rhs).isEquivalentTo(dense.join(rhs)) ==
+                    CheckResult::True,
+                std::string("carrier differs after cross-carrier join: ") +
+                    octagonStorageKindName(kind));
+        require(state.meet(rhs).isEquivalentTo(dense.meet(rhs)) ==
+                    CheckResult::True,
+                std::string("carrier differs after cross-carrier meet: ") +
+                    octagonStorageKindName(kind));
+
+        OctagonConfig convertedConfig = state.config();
+        convertedConfig.storage = OctagonStorageKind::DenseHalf;
+        const OctagonState converted = state.reconfigured(convertedConfig);
+        require(converted.isEquivalentTo(state) == CheckResult::True &&
+                    converted.config().storage ==
+                        OctagonStorageKind::DenseHalf,
+                "carrier conversion must be exact and observable in config");
+    }
+
+    // Existential call-boundary projection: a=t and t=b must retain a=b when
+    // the hidden caller-local t is removed, independently of the carrier.
+    const Variable a(10);
+    const Variable temporary(11);
+    const Variable b(12);
+    const VariableEnvironment caller(
+        {{a, NumericType::integer(), "a"},
+         {temporary, NumericType::integer(), "t"},
+         {b, NumericType::integer(), "b"}});
+    const VariableEnvironment parameters(
+        {{a, NumericType::integer(), "a"},
+         {b, NumericType::integer(), "b"}});
+    for (OctagonStorageKind kind : kinds)
+    {
+        OctagonConfig config;
+        config.storage = kind;
+        OctagonState state = OctagonState::top(caller, config);
+        state.assume(differenceEquals(a, temporary, Rational(0)));
+        state.assume(differenceEquals(temporary, b, Rational(0)));
+        const OctagonState projected = state.withEnvironment(parameters);
+        require(projected.entails(differenceEquals(a, b, Rational(0))) ==
+                    CheckResult::True,
+                std::string("call projection lost a=b for carrier: ") +
+                    octagonStorageKindName(kind));
+    }
+}
+
 void testLatticeAndZ3Soundness()
 {
     const Variable x(1);
@@ -886,6 +984,7 @@ int main()
         testAssumeClosureAndAssignment();
         testStrictIntegerAndRealBounds();
         testEnvironmentChanges();
+        testSelectableOctagonStorageCarriers();
         testLatticeAndZ3Soundness();
         testTopBottomIdentitiesAndQueries();
         testFallbacksConstantsAndOptions();

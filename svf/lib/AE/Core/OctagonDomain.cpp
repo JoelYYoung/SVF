@@ -8,6 +8,7 @@
 #include <exception>
 #include <fstream>
 #include <iostream>
+#include <limits>
 #include <map>
 #include <mutex>
 #include <optional>
@@ -15,6 +16,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <tuple>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -46,28 +48,32 @@ public:
     {
     };
 
-    explicit OctagonStorage(const VariableEnvironment& environment, bool bottom = false)
-        : OctagonStorage(extractVariableKinds(environment), bottom)
+    explicit OctagonStorage(const VariableEnvironment& environment,
+                            OctagonStorageKind kind, bool bottom = false)
+        : OctagonStorage(extractVariableKinds(environment), kind, bottom)
     {
     }
 
     explicit OctagonStorage(std::vector<NumericKind> variableKinds,
-                          bool bottom = false)
+                            OctagonStorageKind kind, bool bottom = false)
         : dimensions(variableKinds.size()),
           variableKinds(std::move(variableKinds)),
-          matrix(matrixSize(dimensions)),
+          kind_(kind),
           bottom(bottom)
     {
+        initializeCarrier();
         const std::size_t count = nodes();
         for (std::size_t node = 0; node < count; ++node)
-            at(node, node) = Bound::finite(Rational());
+            set(node, node, zero());
     }
 
-    OctagonStorage(std::vector<NumericKind> variableKinds, ScratchMatrixTag)
+    OctagonStorage(std::vector<NumericKind> variableKinds,
+                   OctagonStorageKind kind, ScratchMatrixTag)
         : dimensions(variableKinds.size()),
           variableKinds(std::move(variableKinds)),
-          matrix(matrixSize(dimensions))
+          kind_(kind)
     {
+        initializeCarrier();
     }
 
     std::unique_ptr<OctagonStorage> clone() const
@@ -80,23 +86,135 @@ public:
         return 2 * dimensions;
     }
 
-    Bound& at(std::size_t row, std::size_t column)
-    {
-        return matrix[matrixIndex(row, column)];
-    }
-
     const Bound& at(std::size_t row, std::size_t column) const
     {
-        return matrix[matrixIndex(row, column)];
+        switch (kind_)
+        {
+        case OctagonStorageKind::DenseHalf:
+            return dense_[matrixIndex(row, column)];
+        case OctagonStorageKind::SparseFinite: {
+            const auto found = sparse_.find(matrixIndex(row, column));
+            return found == sparse_.end() ? implicit(row, column)
+                                          : found->second;
+        }
+        case OctagonStorageKind::ComponentDense:
+            return componentAt(row, column);
+        }
+        throw std::logic_error("unknown Octagon storage kind");
+    }
+
+    void set(std::size_t row, std::size_t column, const Bound& value)
+    {
+        switch (kind_)
+        {
+        case OctagonStorageKind::DenseHalf:
+            dense_[matrixIndex(row, column)] = value;
+            return;
+        case OctagonStorageKind::SparseFinite:
+            setSparse(row, column, value);
+            return;
+        case OctagonStorageKind::ComponentDense:
+            setComponent(row, column, value);
+            return;
+        }
+        throw std::logic_error("unknown Octagon storage kind");
+    }
+
+    OctagonStorage converted(OctagonStorageKind kind) const
+    {
+        if (kind == kind_)
+            return *this;
+        OctagonStorage result(variableKinds, kind, ScratchMatrixTag{});
+        for (std::size_t row = 0; row < nodes(); ++row)
+            for (std::size_t column = 0; column < nodes(); ++column)
+                result.set(row, column, at(row, column));
+        result.bottom = bottom;
+        result.stronglyClosed = stronglyClosed;
+        return result;
+    }
+
+    OctagonStorageKind kind() const { return kind_; }
+
+    std::size_t allocatedSlots() const
+    {
+        switch (kind_)
+        {
+        case OctagonStorageKind::DenseHalf:
+            return dense_.size();
+        case OctagonStorageKind::SparseFinite:
+            return sparse_.size();
+        case OctagonStorageKind::ComponentDense: {
+            std::size_t result = 0;
+            for (const Component& component : components_)
+                result += component.matrix.size();
+            return result;
+        }
+        }
+        return 0;
+    }
+
+    std::size_t finiteStoredSlots() const
+    {
+        std::size_t result = 0;
+        switch (kind_)
+        {
+        case OctagonStorageKind::DenseHalf:
+            for (const Bound& value : dense_)
+                result += static_cast<std::size_t>(value.isFinite());
+            break;
+        case OctagonStorageKind::SparseFinite:
+            for (const auto& entry : sparse_)
+                result += static_cast<std::size_t>(entry.second.isFinite());
+            // Sparse diagonal zeroes are implicit.
+            result += nodes();
+            break;
+        case OctagonStorageKind::ComponentDense:
+            for (const Component& component : components_)
+                for (const Bound& value : component.matrix)
+                    result += static_cast<std::size_t>(value.isFinite());
+            // Diagonal zeroes outside components are implicit.
+            for (std::size_t owner : componentOwner_)
+                if (owner == noComponent())
+                    result += 2;
+            break;
+        }
+        return result;
+    }
+
+    /// Rebuilds component membership from the currently finite relation graph.
+    /// It is semantically a no-op and recovers physical sparsity after forget.
+    void compactComponents()
+    {
+        if (kind_ != OctagonStorageKind::ComponentDense)
+            return;
+        std::vector<std::tuple<std::size_t, std::size_t, Bound>> entries;
+        for (std::size_t row = 0; row < nodes(); ++row)
+            for (std::size_t column = 0; column < nodes(); ++column)
+            {
+                const Bound& value = at(row, column);
+                if (!value.isPlusInfinity() &&
+                    !(row == column && value == zero()))
+                    entries.emplace_back(row, column, value);
+            }
+        components_.clear();
+        componentOwner_.assign(dimensions, noComponent());
+        componentLocal_.assign(dimensions, 0);
+        for (const auto& [row, column, value] : entries)
+            setComponent(row, column, value);
     }
 
     std::size_t dimensions;
     std::vector<NumericKind> variableKinds;
-    std::vector<Bound> matrix;
     bool bottom = false;
     bool stronglyClosed = true;
 
 private:
+    struct Component
+    {
+        std::vector<std::size_t> variables;
+        std::vector<Bound> matrix;
+    };
+
     /// APRON's hmat layout stores triangular 2x2 variable blocks. Coherent
     /// off-diagonal entries share an index. Each diagonal block is fully
     /// stored, so its two main-diagonal entries remain a distinct coherent
@@ -118,6 +236,154 @@ private:
                             : storedIndex(row, column);
     }
 
+    static const Bound& zero()
+    {
+        static const Bound value = Bound::finite(Rational());
+        return value;
+    }
+
+    static const Bound& infinity()
+    {
+        static const Bound value = Bound::plusInfinity();
+        return value;
+    }
+
+    static const Bound& implicit(std::size_t row, std::size_t column)
+    {
+        return row == column ? zero() : infinity();
+    }
+
+    static std::size_t noComponent()
+    {
+        return std::numeric_limits<std::size_t>::max();
+    }
+
+    void initializeCarrier()
+    {
+        if (kind_ == OctagonStorageKind::DenseHalf)
+            dense_.resize(matrixSize(dimensions));
+        else if (kind_ == OctagonStorageKind::ComponentDense)
+        {
+            componentOwner_.assign(dimensions, noComponent());
+            componentLocal_.assign(dimensions, 0);
+        }
+    }
+
+    void setSparse(std::size_t row, std::size_t column, const Bound& value)
+    {
+        const std::size_t index = matrixIndex(row, column);
+        if (value.isPlusInfinity() || (row == column && value == zero()))
+            sparse_.erase(index);
+        else
+            sparse_[index] = value;
+    }
+
+    const Bound& componentAt(std::size_t row, std::size_t column) const
+    {
+        const std::size_t rowVariable = row / 2;
+        const std::size_t columnVariable = column / 2;
+        const std::size_t owner = componentOwner_[rowVariable];
+        if (owner == noComponent() ||
+            owner != componentOwner_[columnVariable])
+            return implicit(row, column);
+        const std::size_t localRow = 2 * componentLocal_[rowVariable] + row % 2;
+        const std::size_t localColumn =
+            2 * componentLocal_[columnVariable] + column % 2;
+        return components_[owner].matrix[matrixIndex(localRow, localColumn)];
+    }
+
+    std::size_t createComponent(std::size_t variable)
+    {
+        const std::size_t owner = components_.size();
+        Component component;
+        component.variables.push_back(variable);
+        component.matrix.resize(matrixSize(1));
+        component.matrix[matrixIndex(0, 0)] = zero();
+        component.matrix[matrixIndex(1, 1)] = zero();
+        components_.push_back(std::move(component));
+        componentOwner_[variable] = owner;
+        componentLocal_[variable] = 0;
+        return owner;
+    }
+
+    std::size_t ensureComponent(std::size_t variable)
+    {
+        if (componentOwner_[variable] == noComponent())
+            return createComponent(variable);
+        return componentOwner_[variable];
+    }
+
+    std::size_t mergeComponents(std::size_t lhsOwner, std::size_t rhsOwner)
+    {
+        if (lhsOwner == rhsOwner)
+            return lhsOwner;
+        if (components_[lhsOwner].variables.size() <
+            components_[rhsOwner].variables.size())
+            std::swap(lhsOwner, rhsOwner);
+
+        Component& lhs = components_[lhsOwner];
+        const Component& rhs = components_[rhsOwner];
+        const std::size_t oldSize = lhs.variables.size();
+        std::vector<Bound> merged(matrixSize(oldSize + rhs.variables.size()));
+        for (std::size_t node = 0; node < 2 * (oldSize + rhs.variables.size());
+             ++node)
+            merged[matrixIndex(node, node)] = zero();
+        for (std::size_t row = 0; row < 2 * oldSize; ++row)
+            for (std::size_t column = 0; column < 2 * oldSize; ++column)
+                merged[matrixIndex(row, column)] =
+                    lhs.matrix[matrixIndex(row, column)];
+        for (std::size_t row = 0; row < 2 * rhs.variables.size(); ++row)
+            for (std::size_t column = 0; column < 2 * rhs.variables.size();
+                    ++column)
+                merged[matrixIndex(2 * oldSize + row, 2 * oldSize + column)] =
+                    rhs.matrix[matrixIndex(row, column)];
+
+        for (std::size_t variable : rhs.variables)
+        {
+            componentOwner_[variable] = lhsOwner;
+            componentLocal_[variable] = lhs.variables.size();
+            lhs.variables.push_back(variable);
+        }
+        lhs.matrix = std::move(merged);
+
+        components_.erase(components_.begin() + rhsOwner);
+        for (std::size_t variable = 0; variable < dimensions; ++variable)
+            if (componentOwner_[variable] != noComponent() &&
+                componentOwner_[variable] > rhsOwner)
+                --componentOwner_[variable];
+        return lhsOwner > rhsOwner ? lhsOwner - 1 : lhsOwner;
+    }
+
+    void setComponent(std::size_t row, std::size_t column, const Bound& value)
+    {
+        const std::size_t rowVariable = row / 2;
+        const std::size_t columnVariable = column / 2;
+        if (value.isPlusInfinity())
+        {
+            const std::size_t owner = componentOwner_[rowVariable];
+            if (owner == noComponent() ||
+                owner != componentOwner_[columnVariable])
+                return;
+            const std::size_t localRow =
+                2 * componentLocal_[rowVariable] + row % 2;
+            const std::size_t localColumn =
+                2 * componentLocal_[columnVariable] + column % 2;
+            components_[owner].matrix[matrixIndex(localRow, localColumn)] = value;
+            return;
+        }
+        if (row == column && value == zero() &&
+            componentOwner_[rowVariable] == noComponent())
+            return;
+        std::size_t rowOwner = ensureComponent(rowVariable);
+        std::size_t columnOwner = ensureComponent(columnVariable);
+        const std::size_t owner = mergeComponents(rowOwner, columnOwner);
+        const std::size_t localRow =
+            2 * componentLocal_[rowVariable] + row % 2;
+        const std::size_t localColumn =
+            2 * componentLocal_[columnVariable] + column % 2;
+        components_[owner].matrix[matrixIndex(localRow, localColumn)] = value;
+    }
+
     static std::vector<NumericKind> extractVariableKinds(
         const VariableEnvironment& environment)
     {
@@ -127,6 +393,13 @@ private:
             result.push_back(declaration.type.kind);
         return result;
     }
+
+    OctagonStorageKind kind_ = OctagonStorageKind::DenseHalf;
+    std::vector<Bound> dense_;
+    std::unordered_map<std::size_t, Bound> sparse_;
+    std::vector<Component> components_;
+    std::vector<std::size_t> componentOwner_;
+    std::vector<std::size_t> componentLocal_;
 };
 
 struct OctagonShape
@@ -144,10 +417,9 @@ OctagonShape measureShape(const OctagonStorage& state)
 {
     OctagonShape result;
     result.dimensions = state.dimensions;
-    result.allocatedSlots = state.matrix.size();
+    result.allocatedSlots = state.allocatedSlots();
     result.bottom = state.bottom;
-    for (const Bound& bound : state.matrix)
-        result.finiteStored += static_cast<std::size_t>(bound.isFinite());
+    result.finiteStored = state.finiteStoredSlots();
 
     std::vector<std::size_t> parent(state.dimensions);
     std::vector<std::size_t> componentSize(state.dimensions, 1);
@@ -298,7 +570,7 @@ void recordTelemetry(const char* layer, const char* operation,
         return;
     OctagonShape shape;
     shape.dimensions = state.dimensions;
-    shape.allocatedSlots = state.matrix.size();
+    shape.allocatedSlots = state.allocatedSlots();
     std::string density = "not-sampled";
     if (sampleShape)
     {
@@ -387,12 +659,12 @@ private:
 };
 
 OctagonStorage constructStorageForTelemetry(
-    const VariableEnvironment& environment, bool bottom)
+    const VariableEnvironment& environment, OctagonStorageKind kind, bool bottom)
 {
     if (!telemetryEnabled())
-        return OctagonStorage(environment, bottom);
+        return OctagonStorage(environment, kind, bottom);
     const auto start = std::chrono::steady_clock::now();
-    OctagonStorage result(environment, bottom);
+    OctagonStorage result(environment, kind, bottom);
     const std::uint64_t nanoseconds = static_cast<std::uint64_t>(
         std::chrono::duration_cast<std::chrono::nanoseconds>(
             std::chrono::steady_clock::now() - start)
@@ -455,12 +727,40 @@ Bound tightenIntegerUnary(const Bound& bound)
 
 } // namespace
 
+const char* octagonStorageKindName(OctagonStorageKind kind)
+{
+    switch (kind)
+    {
+    case OctagonStorageKind::DenseHalf:
+        return "dense-half";
+    case OctagonStorageKind::SparseFinite:
+        return "sparse-finite";
+    case OctagonStorageKind::ComponentDense:
+        return "component-dense";
+    }
+    return "unknown";
+}
+
+OctagonStorageKind octagonStorageKindFromName(const std::string& name)
+{
+    if (name == "dense-half")
+        return OctagonStorageKind::DenseHalf;
+    if (name == "sparse-finite")
+        return OctagonStorageKind::SparseFinite;
+    if (name == "component-dense")
+        return OctagonStorageKind::ComponentDense;
+    throw std::invalid_argument(
+        "unknown Octagon storage carrier '" + name +
+        "' (expected dense-half, sparse-finite, or component-dense)");
+}
+
 class OctagonState::Impl final
 {
 public:
     Impl(const VariableEnvironment& environment, OctagonConfig options, bool bottom)
         : options_(std::move(options)),
-          state_(constructStorageForTelemetry(environment, bottom))
+          state_(constructStorageForTelemetry(environment, options_.storage,
+                                               bottom))
     {
     }
 
@@ -688,18 +988,19 @@ public:
             normalized(asOctagon(genericRhs), rhsStorage);
         requireSameSize(lhs, rhs);
         if (lhs.bottom)
-            return rhs.clone();
+            return std::make_unique<OctagonStorage>(rhs.converted(lhs.kind()));
         if (rhs.bottom)
             return lhs.clone();
 
         auto result = std::make_unique<OctagonStorage>(
-            lhs.variableKinds, OctagonStorage::ScratchMatrixTag{});
-        for (std::size_t index = 0; index < result->matrix.size(); ++index)
-        {
-            const Bound& left = lhs.matrix[index];
-            const Bound& right = rhs.matrix[index];
-            result->matrix[index] = left <= right ? right : left;
-        }
+            lhs.variableKinds, lhs.kind(), OctagonStorage::ScratchMatrixTag{});
+        for (std::size_t row = 0; row < result->nodes(); ++row)
+            for (std::size_t column = 0; column < result->nodes(); ++column)
+            {
+                const Bound& left = lhs.at(row, column);
+                const Bound& right = rhs.at(row, column);
+                result->set(row, column, left <= right ? right : left);
+            }
 
         // Point-wise maximum preserves coherence and every closure inequality.
         // If R[i,j] comes from operand K, then
@@ -728,13 +1029,14 @@ public:
             return rhs.clone();
 
         auto result = std::make_unique<OctagonStorage>(
-            lhs.variableKinds, OctagonStorage::ScratchMatrixTag{});
-        for (std::size_t index = 0; index < result->matrix.size(); ++index)
-        {
-            const Bound& left = lhs.matrix[index];
-            const Bound& right = rhs.matrix[index];
-            result->matrix[index] = left <= right ? left : right;
-        }
+            lhs.variableKinds, lhs.kind(), OctagonStorage::ScratchMatrixTag{});
+        for (std::size_t row = 0; row < result->nodes(); ++row)
+            for (std::size_t column = 0; column < result->nodes(); ++column)
+            {
+                const Bound& left = lhs.at(row, column);
+                const Bound& right = rhs.at(row, column);
+                result->set(row, column, left <= right ? left : right);
+            }
         result->stronglyClosed = false;
         normalize(*result);
         return result;
@@ -750,7 +1052,8 @@ public:
             normalized(asOctagon(genericNext), nextStorage);
         requireSameSize(current, next);
         if (current.bottom)
-            return next.clone();
+            return std::make_unique<OctagonStorage>(
+                next.converted(current.kind()));
         if (next.bottom)
             return current.clone();
 
@@ -758,7 +1061,8 @@ public:
         std::sort(thresholds.begin(), thresholds.end());
 
         auto result = std::make_unique<OctagonStorage>(
-            current.variableKinds, OctagonStorage::ScratchMatrixTag{});
+            current.variableKinds, current.kind(),
+            OctagonStorage::ScratchMatrixTag{});
         for (std::size_t row = 0; row < result->nodes(); ++row)
         {
             for (std::size_t column = 0; column < result->nodes(); ++column)
@@ -767,11 +1071,11 @@ public:
                 const Bound& nextBound = next.at(row, column);
                 if (nextBound <= oldBound)
                 {
-                    result->at(row, column) = oldBound;
+                    result->set(row, column, oldBound);
                     continue;
                 }
 
-                result->at(row, column) = Bound::plusInfinity();
+                result->set(row, column, Bound::plusInfinity());
                 if (nextBound.isFinite())
                 {
                     // Public thresholds use normalized octagonal constants.
@@ -784,7 +1088,7 @@ public:
                             unary ? threshold * Rational(2) : threshold);
                         if (nextBound <= candidate)
                         {
-                            result->at(row, column) = std::move(candidate);
+                            result->set(row, column, candidate);
                             break;
                         }
                     }
@@ -792,7 +1096,7 @@ public:
             }
         }
         for (std::size_t node = 0; node < result->nodes(); ++node)
-            result->at(node, node) = Bound::finite(Rational());
+            result->set(node, node, Bound::finite(Rational()));
         result->stronglyClosed = false;
         return result;
     }
@@ -811,12 +1115,11 @@ public:
             return next.clone();
 
         auto result = std::make_unique<OctagonStorage>(current);
-        for (std::size_t index = 0; index < result->matrix.size(); ++index)
-        {
-            if (current.matrix[index].isPlusInfinity() &&
-                next.matrix[index].isFinite())
-                result->matrix[index] = next.matrix[index];
-        }
+        for (std::size_t row = 0; row < result->nodes(); ++row)
+            for (std::size_t column = 0; column < result->nodes(); ++column)
+                if (current.at(row, column).isPlusInfinity() &&
+                    next.at(row, column).isFinite())
+                    result->set(row, column, next.at(row, column));
         result->stronglyClosed = false;
         return result;
     }
@@ -830,7 +1133,8 @@ public:
         if (source.bottom)
             return source.clone();
 
-        auto result = std::make_unique<OctagonStorage>(source.variableKinds);
+        auto result = std::make_unique<OctagonStorage>(
+            source.variableKinds, source.kind());
         for (Dimension dimension = 0; dimension < source.dimensions;
              ++dimension)
         {
@@ -865,9 +1169,11 @@ public:
             throw std::invalid_argument(
                 "old environment does not match octagon dimensions");
         if (source.bottom)
-            return std::make_unique<OctagonStorage>(newEnvironment, true);
+            return std::make_unique<OctagonStorage>(newEnvironment,
+                                                    source.kind(), true);
 
-        auto result = std::make_unique<OctagonStorage>(newEnvironment);
+        auto result = std::make_unique<OctagonStorage>(newEnvironment,
+                                                       source.kind());
         for (Dimension newRowDimension = 0;
              newRowDimension < newEnvironment.size(); ++newRowDimension)
         {
@@ -902,10 +1208,11 @@ public:
                     for (std::size_t columnSign = 0; columnSign < 2;
                          ++columnSign)
                     {
-                        result->at(2 * newRowDimension + rowSign,
-                                   2 * newColumnDimension + columnSign) =
+                        result->set(
+                            2 * newRowDimension + rowSign,
+                            2 * newColumnDimension + columnSign,
                             source.at(2 * oldRowDimension + rowSign,
-                                      2 * oldColumnDimension + columnSign);
+                                      2 * oldColumnDimension + columnSign));
                     }
                 }
             }
@@ -969,11 +1276,10 @@ public:
             return true;
         if (rhs.bottom)
             return false;
-        for (std::size_t index = 0; index < lhs.matrix.size(); ++index)
-        {
-            if (!(lhs.matrix[index] <= rhs.matrix[index]))
-                return false;
-        }
+        for (std::size_t row = 0; row < lhs.nodes(); ++row)
+            for (std::size_t column = 0; column < lhs.nodes(); ++column)
+                if (!(lhs.at(row, column) <= rhs.at(row, column)))
+                    return false;
         return true;
     }
 
@@ -1069,8 +1375,18 @@ public:
         return options_;
     }
 
+    OctagonStorageStats storageStats() const
+    {
+        const OctagonShape shape = measureShape(state_);
+        return {state_.kind(), shape.dimensions, shape.finiteStored,
+                shape.allocatedSlots, shape.components,
+                shape.maximumComponent};
+    }
+
     void reconfigure(OctagonConfig options)
     {
+        if (state_.kind() != options.storage)
+            state_ = state_.converted(options.storage);
         options_ = std::move(options);
         // A matrix marked closed under a weaker policy must be normalized
         // again when stronger integer/strong closure is enabled.
@@ -1301,11 +1617,11 @@ private:
     void setCoherent(OctagonStorage& state, std::size_t row, std::size_t column,
                      const Bound& bound) const
     {
-        state.at(row, column) = Bound::min(state.at(row, column), bound);
+        state.set(row, column, Bound::min(state.at(row, column), bound));
         const std::size_t coherentRow = opposite(column);
         const std::size_t coherentColumn = opposite(row);
-        state.at(coherentRow, coherentColumn) =
-            Bound::min(state.at(coherentRow, coherentColumn), bound);
+        state.set(coherentRow, coherentColumn,
+                  Bound::min(state.at(coherentRow, coherentColumn), bound));
         state.stronglyClosed = false;
     }
 
@@ -1320,13 +1636,14 @@ private:
         const std::size_t second = negativeNode(dimension);
         for (std::size_t node = 0; node < state.nodes(); ++node)
         {
-            state.at(first, node) = Bound::plusInfinity();
-            state.at(second, node) = Bound::plusInfinity();
-            state.at(node, first) = Bound::plusInfinity();
-            state.at(node, second) = Bound::plusInfinity();
+            state.set(first, node, Bound::plusInfinity());
+            state.set(second, node, Bound::plusInfinity());
+            state.set(node, first, Bound::plusInfinity());
+            state.set(node, second, Bound::plusInfinity());
         }
-        state.at(first, first) = Bound::finite(Rational());
-        state.at(second, second) = Bound::finite(Rational());
+        state.set(first, first, Bound::finite(Rational()));
+        state.set(second, second, Bound::finite(Rational()));
+        state.compactComponents();
         state.stronglyClosed = true;
     }
 
@@ -1672,7 +1989,8 @@ private:
         if (state.bottom)
             return;
         OctagonStorage old = std::move(state);
-        OctagonStorage result(old.variableKinds, OctagonStorage::ScratchMatrixTag{});
+        OctagonStorage result(old.variableKinds, old.kind(),
+                              OctagonStorage::ScratchMatrixTag{});
 
         auto oldNode = [target, sign](std::size_t newNode) {
             if (newNode == positiveNode(target))
@@ -1695,11 +2013,12 @@ private:
             {
                 const Bound& oldBound = old.at(oldNode(row), oldNode(column));
                 if (!oldBound.isFinite())
-                    result.at(row, column) = oldBound;
+                    result.set(row, column, oldBound);
                 else
-                    result.at(row, column) = Bound::finite(
-                        oldBound.value() + delta(row) - delta(column),
-                        oldBound.isStrict());
+                    result.set(row, column,
+                               Bound::finite(oldBound.value() + delta(row) -
+                                                 delta(column),
+                                             oldBound.isStrict()));
             }
         }
         result.stronglyClosed = old.stronglyClosed;
@@ -1716,8 +2035,8 @@ private:
                     state.at(opposite(column), opposite(row));
                 const Bound minimum =
                     Bound::min(state.at(row, column), coherent);
-                state.at(row, column) = minimum;
-                state.at(opposite(column), opposite(row)) = minimum;
+                state.set(row, column, minimum);
+                state.set(opposite(column), opposite(row), minimum);
             }
         }
     }
@@ -1738,8 +2057,8 @@ private:
                         continue;
                     const Bound candidate = Bound::add(
                         state.at(row, middle), state.at(middle, column));
-                    state.at(row, column) =
-                        Bound::min(state.at(row, column), candidate);
+                    state.set(row, column,
+                              Bound::min(state.at(row, column), candidate));
                 }
             }
         }
@@ -1755,10 +2074,10 @@ private:
                 continue;
             const std::size_t positive = positiveNode(dimension);
             const std::size_t negative = negativeNode(dimension);
-            state.at(positive, negative) =
-                tightenIntegerUnary(state.at(positive, negative));
-            state.at(negative, positive) =
-                tightenIntegerUnary(state.at(negative, positive));
+            state.set(positive, negative,
+                      tightenIntegerUnary(state.at(positive, negative)));
+            state.set(negative, positive,
+                      tightenIntegerUnary(state.at(negative, positive)));
         }
     }
 
@@ -1777,8 +2096,8 @@ private:
                     continue;
                 const Bound candidate =
                     Bound::divideByPositive(Bound::add(lhs, rhs), Rational(2));
-                state.at(row, column) =
-                    Bound::min(state.at(row, column), candidate);
+                state.set(row, column,
+                          Bound::min(state.at(row, column), candidate));
             }
         }
     }
@@ -2297,6 +2616,11 @@ void OctagonState::canonicalize()
 const OctagonConfig& OctagonState::config() const
 {
     return impl_->config();
+}
+
+OctagonStorageStats OctagonState::storageStats() const
+{
+    return impl_->storageStats();
 }
 
 OctagonState OctagonState::reconfigured(const OctagonConfig& config) const

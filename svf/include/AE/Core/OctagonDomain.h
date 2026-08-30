@@ -7,14 +7,39 @@
 #include "AE/Core/NumericalDomain.h"
 
 #include <memory>
+#include <string>
 
 namespace SVF::AbstractDomain
 {
+
+/// Selects the physical carrier of an Octagon DBM.  This is deliberately not
+/// part of the abstract semantics: states using different carriers may be
+/// combined, compared, and converted without approximation.
+enum class OctagonStorageKind
+{
+    DenseHalf,
+    SparseFinite,
+    ComponentDense
+};
+
+const char* octagonStorageKindName(OctagonStorageKind kind);
+OctagonStorageKind octagonStorageKindFromName(const std::string& name);
+
+struct OctagonStorageStats
+{
+    OctagonStorageKind kind = OctagonStorageKind::DenseHalf;
+    std::size_t dimensions = 0;
+    std::size_t finiteStoredSlots = 0;
+    std::size_t allocatedBoundSlots = 0;
+    std::size_t components = 0;
+    std::size_t maximumComponent = 0;
+};
 
 struct OctagonConfig
 {
     bool strongClosure = true;
     bool integerTightening = true;
+    OctagonStorageKind storage = OctagonStorageKind::DenseHalf;
     std::shared_ptr<DiagnosticSink> diagnostics;
 
     /// Diagnostics affect observation only, not abstract-state semantics.
@@ -92,6 +117,7 @@ public:
     void canonicalize() override;
 
     const OctagonConfig& config() const;
+    OctagonStorageStats storageStats() const;
 
     /// Explicitly converts the operation policy while retaining the represented
     /// concrete set. Enabling stronger normalization may improve precision;

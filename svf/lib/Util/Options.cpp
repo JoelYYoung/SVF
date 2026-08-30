@@ -821,6 +821,10 @@ const Option<bool> Options::AEBoxHashDirectoryCOW(
 const Option<bool> Options::AEDenseOctagon(
     "ae-dense-octagon",
     "Use the GMP Octagon as dense AE's numerical domain", false);
+const Option<std::string> Options::AEOctagonStorage(
+    "ae-octagon-storage",
+    "Octagon physical carrier: dense-half, sparse-finite, or component-dense",
+    "dense-half");
 const Option<u32_t> Options::AEDenseOctagonMaxDimensions(
     "ae-dense-octagon-max-dimensions",
     "Maximum dimensions allowed in a dense Octagon state",

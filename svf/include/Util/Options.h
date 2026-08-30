@@ -250,6 +250,8 @@ public:
     static const Option<bool> AEBoxHashDirectoryCOW;
     /// Enable the opt-in per-function Octagon reduced product.
     static const Option<bool> AEDenseOctagon;
+    /// Physical carrier used inside every selected Octagon state.
+    static const Option<std::string> AEOctagonStorage;
     /// Cap tracked integer ValVars per function (Octagon is quadratic).
     static const Option<u32_t> AEDenseOctagonMaxDimensions;
     /// recursion handling mode, Default: TOP

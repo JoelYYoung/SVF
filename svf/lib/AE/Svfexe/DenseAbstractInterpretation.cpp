@@ -245,6 +245,14 @@ NumericalStateT DenseAbstractInterpretation<NumericalStateT>::makeNumericalTop(
         config.storageRole = role;
         return AD::BoxState::top(environment, config);
     }
+    else if constexpr (std::is_same_v<NumericalStateT, AD::OctagonState>)
+    {
+        (void)role;
+        AD::OctagonConfig config;
+        config.storage = AD::octagonStorageKindFromName(
+            Options::AEOctagonStorage());
+        return AD::OctagonState::top(environment, config);
+    }
     else
     {
         (void)role;
@@ -265,6 +273,14 @@ DenseAbstractInterpretation<NumericalStateT>::makeNumericalBottom(
         config.storageTelemetry = boxStorageTelemetry_;
         config.storageRole = role;
         return AD::BoxState::bottom(environment, config);
+    }
+    else if constexpr (std::is_same_v<NumericalStateT, AD::OctagonState>)
+    {
+        (void)role;
+        AD::OctagonConfig config;
+        config.storage = AD::octagonStorageKindFromName(
+            Options::AEOctagonStorage());
+        return AD::OctagonState::bottom(environment, config);
     }
     else
     {

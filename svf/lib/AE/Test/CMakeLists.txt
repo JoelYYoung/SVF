@@ -74,6 +74,22 @@ add_test(
 add_executable(svf-octagon-storage-benchmark OctagonStorageBenchmark.cpp)
 target_link_libraries(svf-octagon-storage-benchmark PRIVATE AbstractDomainCore)
 
+add_executable(svf-octagon-carrier-benchmark OctagonCarrierBenchmark.cpp)
+target_link_libraries(svf-octagon-carrier-benchmark PRIVATE AbstractDomainCore)
+foreach(octagon_carrier IN ITEMS dense-half sparse-finite component-dense)
+  add_test(
+    NAME octagon-carrier-${octagon_carrier}-smoke
+    COMMAND svf-octagon-carrier-benchmark
+            --carrier ${octagon_carrier}
+            --workload forget
+            --variables 16
+            --pack-size 4
+            --topology block
+            --operations 4
+            --repetitions 2
+  )
+endforeach()
+
 add_executable(svf-box-storage-benchmark BoxStorageBenchmark.cpp)
 target_link_libraries(svf-box-storage-benchmark PRIVATE AbstractDomainCore)
 foreach(box_storage_scheme IN ITEMS
@@ -193,11 +209,12 @@ if(TARGET SvfLLVM)
   target_link_libraries(
     svf-ae-relational-integration-test PRIVATE SvfLLVM
   )
-  function(add_relational_ae_integration_test test_name sparsity)
+  function(add_relational_ae_integration_test test_name sparsity carrier)
     add_test(
       NAME ${test_name}
       COMMAND svf-ae-relational-integration-test
               -ae-dense-octagon=true
+              -ae-octagon-storage=${carrier}
               -ae-sparsity=${sparsity}
               -stat=false
               -extapi=${CMAKE_BINARY_DIR}/lib/extapi.bc
@@ -205,13 +222,19 @@ if(TARGET SvfLLVM)
     )
   endfunction()
   add_relational_ae_integration_test(
-    relational-domain-ae-integration dense
+    relational-domain-ae-integration dense dense-half
   )
   add_relational_ae_integration_test(
-    relational-domain-ae-integration-semi-sparse semi-sparse
+    relational-domain-ae-integration-semi-sparse semi-sparse dense-half
   )
   add_relational_ae_integration_test(
-    relational-domain-ae-integration-sparse sparse
+    relational-domain-ae-integration-sparse sparse dense-half
+  )
+  add_relational_ae_integration_test(
+    relational-domain-ae-integration-sparse-finite dense sparse-finite
+  )
+  add_relational_ae_integration_test(
+    relational-domain-ae-integration-component-dense dense component-dense
   )
   function(add_relational_assert_test test_name sparsity)
     add_test(
