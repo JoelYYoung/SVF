@@ -39,6 +39,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--audit-output", required=True, type=Path)
     parser.add_argument("--candidate-summary-output", required=True, type=Path)
     parser.add_argument("--pairwise-summary-output", required=True, type=Path)
+    parser.add_argument("--shape-summary-output", type=Path)
+    parser.add_argument("--telemetry-output", type=Path)
     parser.add_argument(
         "--candidate", action="append", choices=DEFAULT_CANDIDATES,
         help="Expected candidate; repeat to override the five-candidate default.",
@@ -229,6 +231,81 @@ def make_pairwise_summary(
     return output
 
 
+def dimension_bucket(dimensions: int | None) -> str:
+    if dimensions is None:
+        return "unknown"
+    upper = 31
+    while upper < dimensions and upper < 4095:
+        upper = 2 * upper + 1
+    return f"0-{upper}" if upper >= dimensions else "4096+"
+
+
+def make_shape_summary(
+    rows: list[dict[str, str]], expected: tuple[str, ...]
+) -> list[dict[str, object]]:
+    dimensions_by_input: dict[str, int] = {}
+    for row in rows:
+        value = number(row, "selected_dimensions")
+        if value is not None:
+            dimensions_by_input[row["input"]] = int(value)
+    groups: dict[tuple[str, str], list[dict[str, str]]] = defaultdict(list)
+    for row in rows:
+        groups[(row["candidate"], dimension_bucket(
+            dimensions_by_input.get(row["input"])))].append(row)
+
+    output: list[dict[str, object]] = []
+    for candidate in expected:
+        for (group_candidate, bucket), selected in sorted(groups.items()):
+            if group_candidate != candidate:
+                continue
+            passed = [row for row in selected if row["status"] == "pass"]
+            times = [value for row in passed if (value := number(row, "seconds")) is not None]
+            rss = [value for row in passed if (value := number(row, "peak_rss_bytes")) is not None]
+            output.append({
+                "candidate": candidate,
+                "dimension_bucket": bucket,
+                "attempts": len(selected),
+                "distinct_inputs": len({row["input"] for row in selected}),
+                "pass": len(passed),
+                "completion_rate": len(passed) / len(selected),
+                "median_seconds_pass": statistics.median(times) if times else "",
+                "p95_seconds_pass": percentile(times, 0.95) or "",
+                "median_peak_rss_bytes_pass": statistics.median(rss) if rss else "",
+                "p95_peak_rss_bytes_pass": percentile(rss, 0.95) or "",
+            })
+    return output
+
+
+def merge_telemetry(rows: list[dict[str, str]]) -> tuple[list[str], list[dict[str, str]]]:
+    telemetry_fields: list[str] | None = None
+    output: list[dict[str, str]] = []
+    metadata = [
+        "run_id", "host", "input", "scale", "program_family", "candidate",
+        "domain", "carrier", "repetition", "runner_sha256", "bitcode_sha256",
+    ]
+    for run in rows:
+        raw_path = run.get("telemetry_path", "")
+        if not raw_path:
+            continue
+        path = Path(raw_path)
+        if not path.is_file():
+            raise SystemExit(f"telemetry file is missing: {path}")
+        with path.open(newline="", encoding="utf-8") as stream:
+            reader = csv.DictReader(stream)
+            if reader.fieldnames is None:
+                raise SystemExit(f"telemetry file has no header: {path}")
+            if telemetry_fields is None:
+                telemetry_fields = reader.fieldnames
+            elif telemetry_fields != reader.fieldnames:
+                raise SystemExit(f"incompatible telemetry header: {path}")
+            for observation in reader:
+                output.append({
+                    **{field: run.get(field, "") for field in metadata},
+                    **observation,
+                })
+    return metadata + (telemetry_fields or []), output
+
+
 def main() -> None:
     options = parse_args()
     expected = tuple(options.candidate or DEFAULT_CANDIDATES)
@@ -244,6 +321,12 @@ def main() -> None:
     write_csv(options.candidate_summary_output, list(candidate_summary[0]), candidate_summary)
     pairwise = make_pairwise_summary(rows, expected)
     write_csv(options.pairwise_summary_output, list(pairwise[0]), pairwise)
+    if options.shape_summary_output:
+        shape_summary = make_shape_summary(rows, expected)
+        write_csv(options.shape_summary_output, list(shape_summary[0]), shape_summary)
+    if options.telemetry_output:
+        telemetry_fields, telemetry = merge_telemetry(rows)
+        write_csv(options.telemetry_output, telemetry_fields, telemetry)
 
 
 if __name__ == "__main__":
