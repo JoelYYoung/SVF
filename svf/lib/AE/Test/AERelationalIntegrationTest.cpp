@@ -13,7 +13,9 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <cstdlib>
+#include <iomanip>
 #include <iostream>
 #include <map>
 #include <optional>
@@ -34,6 +36,47 @@ using DenseOctagonState = AD::DomainProductState<AD::OctagonState>;
 using DenseBoxState = AD::DomainProductState<AD::BoxState>;
 using DensePolyhedraState =
     AD::DomainProductState<AD::ConvexPolyhedraState>;
+
+template <typename DenseState>
+void reportNumericalSemanticChecksum(const char* domain,
+                                     AbstractInterpretation& analysis)
+{
+    std::vector<std::pair<NodeID, std::uint64_t>> states;
+    states.reserve(analysis.getAnalyzedNodes().size());
+    for (const ICFGNode* node : analysis.getAnalyzedNodes())
+    {
+        if (!analysis.hasAbsState(node))
+            continue;
+        const AD::AbstractState& abstractState =
+            analysis.getAbstractState(node);
+        if (!abstractState.isState<DenseState>())
+            throw std::runtime_error(
+                std::string("AE numerical checksum expected dense ") +
+                domain + " product state");
+        const auto& state = static_cast<const DenseState&>(abstractState);
+        states.emplace_back(node->getId(), state.numerical().hash());
+    }
+    std::sort(states.begin(), states.end());
+
+    std::uint64_t checksum = 1469598103934665603ULL;
+    auto append = [&](std::uint64_t value)
+    {
+        for (unsigned byte = 0; byte != sizeof(value); ++byte)
+        {
+            checksum ^= (value >> (byte * 8U)) & 0xffU;
+            checksum *= 1099511628211ULL;
+        }
+    };
+    for (const auto& [node, state] : states)
+    {
+        append(node);
+        append(state);
+    }
+    std::cout << "AE_NUMERICAL_CHECKSUM domain=" << domain
+              << " states=" << states.size() << " checksum="
+              << std::hex << std::setfill('0') << std::setw(16) << checksum
+              << std::dec << '\n';
+}
 
 const DenseOctagonState& requireDenseOctagonState(
     AbstractInterpretation& analysis, const ICFGNode* node)
@@ -1150,6 +1193,23 @@ int main(int argc, char** argv)
 
         if (findValueIfPresent(*graph, "memory_result"))
             validateSparseMemoryFixture(*graph, analysis, nativeProduct);
+        const char* checksumRequested =
+            std::getenv("SVF_RELATIONAL_SEMANTIC_CHECKSUM");
+        if (checksumRequested != nullptr && checksumRequested[0] != '\0' &&
+            std::string(checksumRequested) != "0" &&
+            Options::AESparsity() == AbstractInterpretation::Dense &&
+            !Options::AEDenseLegacyInterval())
+        {
+            if (Options::AEDensePolyhedra())
+                reportNumericalSemanticChecksum<DensePolyhedraState>(
+                    "polyhedra", analysis);
+            else if (Options::AEDenseOctagon())
+                reportNumericalSemanticChecksum<DenseOctagonState>(
+                    "octagon", analysis);
+            else
+                reportNumericalSemanticChecksum<DenseBoxState>("box",
+                                                                analysis);
+        }
         std::cout << "AE_GENERIC_OBSERVATION analyzed_nodes="
                   << analysis.getAnalyzedNodes().size() << '\n';
 
