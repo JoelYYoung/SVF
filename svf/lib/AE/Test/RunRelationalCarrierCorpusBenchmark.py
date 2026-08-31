@@ -40,8 +40,9 @@ CANDIDATES = {
     },
 }
 FIELDNAMES = [
-    "run_id", "timestamp_utc", "host", "runner_commit", "manifest_version",
-    "manifest_sha256", "input", "path", "bitcode_sha256", "lane", "scale",
+    "run_id", "timestamp_utc", "host", "runner_commit", "runner_sha256",
+    "extapi_sha256", "manifest_version", "manifest_sha256", "input", "path",
+    "bitcode_sha256", "lane", "scale",
     "program_family", "candidate", "domain", "carrier", "repetition",
     "order_position", "status", "seconds", "user_seconds", "sys_seconds",
     "peak_rss_bytes", "rss_source", "sampled_peak_rss_bytes", "rss_samples",
@@ -186,6 +187,8 @@ def base_row(options: argparse.Namespace, benchmark: dict[str, str | pathlib.Pat
         "run_id": f"{options.manifest_sha256[:12]}:{label}:{candidate}:r{repetition}",
         "timestamp_utc": dt.datetime.now(dt.timezone.utc).isoformat(),
         "host": platform.node(), "runner_commit": options.runner_commit,
+        "runner_sha256": options.runner_sha256,
+        "extapi_sha256": options.extapi_sha256,
         "manifest_version": options.manifest_version,
         "manifest_sha256": options.manifest_sha256, "input": label,
         "path": str(benchmark["path"]), "bitcode_sha256": benchmark["bitcode_sha256"],
@@ -361,6 +364,12 @@ def main() -> None:
 
     options.runner = str(pathlib.Path(options.runner).resolve())
     options.extapi = str(pathlib.Path(options.extapi).resolve())
+    if not pathlib.Path(options.runner).is_file():
+        parser.error("--runner must name an existing file")
+    if not pathlib.Path(options.extapi).is_file():
+        parser.error("--extapi must name an existing file")
+    options.runner_sha256 = sha256(pathlib.Path(options.runner))
+    options.extapi_sha256 = sha256(pathlib.Path(options.extapi))
     options.memory_limit_bytes = int(options.memory_limit_gib * 1024**3)
     options.telemetry_directory.mkdir(parents=True, exist_ok=True)
     options.log_directory = options.log_directory or options.output.parent / "logs"
@@ -386,9 +395,14 @@ def main() -> None:
     append = options.resume and options.output.is_file()
     if append:
         with options.output.open(newline="") as stream:
+            reader = csv.DictReader(stream)
+            if reader.fieldnames != FIELDNAMES:
+                parser.error(
+                    "--resume output schema does not match this runner version"
+                )
             completed = {
                 (row["input"], row["candidate"], int(row["repetition"]))
-                for row in csv.DictReader(stream)
+                for row in reader
             }
     options.output.parent.mkdir(parents=True, exist_ok=True)
     with options.output.open("a" if append else "w", newline="") as output_file:
