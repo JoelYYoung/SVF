@@ -1,0 +1,15 @@
+input,path,candidate,repetition,status,seconds,peak_rss_bytes,rss_source,sampled_peak_rss_bytes,rss_samples,selected_dimensions,dimension_limit,octagon_selected,polyhedra_selected,analyzed_nodes,return_code,telemetry_path,diagnostic
+curl-simple,/Users/xavier/Projects/benchmark-bc/llvm14-small-real/curl/curl-simple.bc,box,1,pass,0.024965,11354112,time,1228800,1,,,,,57,0,,AE relational integration test: PASS
+curl-simple,/Users/xavier/Projects/benchmark-bc/llvm14-small-real/curl/curl-simple.bc,dense-polyhedra,1,pass,0.181952,30277632,time,26607616,2,51,100000,,1,57,0,,AE relational integration test: PASS
+curl-simple,/Users/xavier/Projects/benchmark-bc/llvm14-small-real/curl/curl-simple.bc,dense-polyhedra,2,pass,0.189622,30179328,time,25591808,2,51,100000,,1,57,0,,AE relational integration test: PASS
+curl-simple,/Users/xavier/Projects/benchmark-bc/llvm14-small-real/curl/curl-simple.bc,box,2,pass,0.024128,11468800,time,1228800,1,,,,,57,0,,AE relational integration test: PASS
+curl-simple,/Users/xavier/Projects/benchmark-bc/llvm14-small-real/curl/curl-simple.bc,box,3,pass,0.023727,11452416,time,1228800,1,,,,,57,0,,AE relational integration test: PASS
+curl-simple,/Users/xavier/Projects/benchmark-bc/llvm14-small-real/curl/curl-simple.bc,dense-polyhedra,3,pass,0.184162,30081024,time,26132480,2,51,100000,,1,57,0,,AE relational integration test: PASS
+zlib-zpipe,/Users/xavier/Projects/benchmark-bc/llvm14-small-real/zlib/zlib-zpipe.bc,dense-polyhedra,1,pass,115.194750,909049856,time,907493376,895,156,100000,,1,356,0,,AE relational integration test: PASS
+zlib-zpipe,/Users/xavier/Projects/benchmark-bc/llvm14-small-real/zlib/zlib-zpipe.bc,box,1,pass,0.033768,15450112,time,1228800,1,,,,,356,0,,AE relational integration test: PASS
+zlib-zpipe,/Users/xavier/Projects/benchmark-bc/llvm14-small-real/zlib/zlib-zpipe.bc,box,2,pass,0.031310,15417344,time,1228800,1,,,,,356,0,,AE relational integration test: PASS
+zlib-zpipe,/Users/xavier/Projects/benchmark-bc/llvm14-small-real/zlib/zlib-zpipe.bc,dense-polyhedra,2,pass,114.401966,909082624,time,902250496,892,156,100000,,1,356,0,,AE relational integration test: PASS
+zlib-zpipe,/Users/xavier/Projects/benchmark-bc/llvm14-small-real/zlib/zlib-zpipe.bc,dense-polyhedra,3,pass,113.702286,909033472,time,900677632,884,156,100000,,1,356,0,,AE relational integration test: PASS
+zlib-zpipe,/Users/xavier/Projects/benchmark-bc/llvm14-small-real/zlib/zlib-zpipe.bc,box,3,pass,0.035616,15384576,time,1228800,1,,,,,356,0,,AE relational integration test: PASS
+cjson-test,/Users/xavier/Projects/benchmark-bc/llvm14-small-real/cjson/cjson-test.bc,box,1,pass,12.945074,98533376,time,99532800,101,,,,,2635,0,,AE relational integration test: PASS
+cjson-test,/Users/xavier/Projects/benchmark-bc/llvm14-small-real/cjson/cjson-test.bc,dense-polyhedra,1,timeout,300.004104,183042048,process-group-sample,183042048,2323,1019,100000,,1,,-9,,
