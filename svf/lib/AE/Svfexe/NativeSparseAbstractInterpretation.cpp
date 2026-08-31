@@ -1064,5 +1064,9 @@ template class NativeSemiSparseAbstractInterpretation<AD::BoxState>;
 template class NativeSemiSparseAbstractInterpretation<AD::OctagonState>;
 template class NativeFullSparseAbstractInterpretation<AD::BoxState>;
 template class NativeFullSparseAbstractInterpretation<AD::OctagonState>;
+template class NativeSemiSparseAbstractInterpretation<
+    AD::ConvexPolyhedraState>;
+template class NativeFullSparseAbstractInterpretation<
+    AD::ConvexPolyhedraState>;
 
 } // namespace SVF

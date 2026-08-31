@@ -42,6 +42,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <memory>
+#include <stdexcept>
 
 using namespace SVF;
 using namespace SVFUtil;
@@ -92,6 +93,21 @@ void reportOctagonSelection(const char* sparsity, std::size_t dimensions,
     SVFUtil::outs() << "OCTAGON_SELECTION sparsity=" << sparsity
                     << " dimensions=" << dimensions
                     << " limit=" << Options::AEDenseOctagonMaxDimensions()
+                    << " selected=" << static_cast<unsigned>(selected)
+                    << '\n';
+}
+
+void reportPolyhedraSelection(const char* sparsity, std::size_t dimensions,
+                              bool selected)
+{
+    const char* telemetry = std::getenv("SVF_POLYHEDRA_TELEMETRY");
+    if (telemetry == nullptr || telemetry[0] == '\0' ||
+        std::string(telemetry) == "0")
+        return;
+    SVFUtil::outs() << "POLYHEDRA_SELECTION sparsity=" << sparsity
+                    << " dimensions=" << dimensions
+                    << " limit="
+                    << Options::AEDensePolyhedraMaxDimensions()
                     << " selected=" << static_cast<unsigned>(selected)
                     << '\n';
 }
@@ -152,6 +168,10 @@ AbstractInterpretation& AbstractInterpretation::getAEInstance()
     // program exit, so leaking is benign and avoids the use-after-destroy.
     static AbstractInterpretation* instance = []() -> AbstractInterpretation*
     {
+        if (Options::AEDenseOctagon() && Options::AEDensePolyhedra())
+            throw std::invalid_argument(
+                "-ae-dense-octagon and -ae-dense-polyhedra are mutually "
+                "exclusive");
         switch (Options::AESparsity())
         {
         case AESparsity::SemiSparse:
@@ -160,6 +180,25 @@ AbstractInterpretation& AbstractInterpretation::getAEInstance()
             {
                 const std::size_t dimensions =
                     largestDenseEnvironment(*PAG::getPAG());
+                if (Options::AEDensePolyhedra())
+                {
+                    const bool selected = dimensions <=
+                        Options::AEDensePolyhedraMaxDimensions();
+                    reportPolyhedraSelection("semi-sparse", dimensions,
+                                              selected);
+                    if (selected)
+                    {
+                        return new NativeSemiSparseAbstractInterpretation<
+                            SVF::AbstractDomain::ConvexPolyhedraState>();
+                    }
+                    SVFUtil::writeWrnMsg(
+                        "semi-sparse Polyhedra requested for " +
+                        std::to_string(dimensions) +
+                        " dimensions; using Box because the configured "
+                        "limit is " +
+                        std::to_string(
+                            Options::AEDensePolyhedraMaxDimensions()));
+                }
                 const bool selected = Options::AEDenseOctagon() &&
                     dimensions <= Options::AEDenseOctagonMaxDimensions();
                 if (Options::AEDenseOctagon())
@@ -181,6 +220,24 @@ AbstractInterpretation& AbstractInterpretation::getAEInstance()
             {
                 const std::size_t dimensions =
                     largestDenseEnvironment(*PAG::getPAG());
+                if (Options::AEDensePolyhedra())
+                {
+                    const bool selected = dimensions <=
+                        Options::AEDensePolyhedraMaxDimensions();
+                    reportPolyhedraSelection("sparse", dimensions, selected);
+                    if (selected)
+                    {
+                        return new NativeFullSparseAbstractInterpretation<
+                            SVF::AbstractDomain::ConvexPolyhedraState>();
+                    }
+                    SVFUtil::writeWrnMsg(
+                        "sparse Polyhedra requested for " +
+                        std::to_string(dimensions) +
+                        " dimensions; using Box because the configured "
+                        "limit is " +
+                        std::to_string(
+                            Options::AEDensePolyhedraMaxDimensions()));
+                }
                 const bool selected = Options::AEDenseOctagon() &&
                     dimensions <= Options::AEDenseOctagonMaxDimensions();
                 if (Options::AEDenseOctagon())
@@ -200,6 +257,23 @@ AbstractInterpretation& AbstractInterpretation::getAEInstance()
 #ifdef SVF_BUILD_ABSTRACT_DOMAINS
             if (Options::AEDenseLegacyInterval())
                 return new AbstractInterpretation();
+            if (Options::AEDensePolyhedra())
+            {
+                const std::size_t dimensions =
+                    largestDenseEnvironment(*PAG::getPAG());
+                const bool selected = dimensions <=
+                    Options::AEDensePolyhedraMaxDimensions();
+                reportPolyhedraSelection("dense", dimensions, selected);
+                if (selected)
+                    return new DenseAbstractInterpretation<
+                        SVF::AbstractDomain::ConvexPolyhedraState>();
+                SVFUtil::writeWrnMsg(
+                    "dense Polyhedra requested for " +
+                    std::to_string(dimensions) +
+                    " dimensions; using Box because the configured limit is " +
+                    std::to_string(
+                        Options::AEDensePolyhedraMaxDimensions()));
+            }
             if (Options::AEDenseOctagon())
             {
                 const std::size_t dimensions =

@@ -178,6 +178,10 @@ extern template class NativeFullSparseAbstractInterpretation<
     AbstractDomain::BoxState>;
 extern template class NativeFullSparseAbstractInterpretation<
     AbstractDomain::OctagonState>;
+extern template class NativeSemiSparseAbstractInterpretation<
+    AbstractDomain::ConvexPolyhedraState>;
+extern template class NativeFullSparseAbstractInterpretation<
+    AbstractDomain::ConvexPolyhedraState>;
 
 } // namespace SVF
 

@@ -253,6 +253,12 @@ NumericalStateT DenseAbstractInterpretation<NumericalStateT>::makeNumericalTop(
             Options::AEOctagonStorage());
         return AD::OctagonState::top(environment, config);
     }
+    else if constexpr (
+        std::is_same_v<NumericalStateT, AD::ConvexPolyhedraState>)
+    {
+        (void)role;
+        return AD::ConvexPolyhedraState::top(environment);
+    }
     else
     {
         (void)role;
@@ -281,6 +287,12 @@ DenseAbstractInterpretation<NumericalStateT>::makeNumericalBottom(
         config.storage = AD::octagonStorageKindFromName(
             Options::AEOctagonStorage());
         return AD::OctagonState::bottom(environment, config);
+    }
+    else if constexpr (
+        std::is_same_v<NumericalStateT, AD::ConvexPolyhedraState>)
+    {
+        (void)role;
+        return AD::ConvexPolyhedraState::bottom(environment);
     }
     else
     {
@@ -1004,5 +1016,6 @@ bool DenseAbstractInterpretation<NumericalStateT>::isBranchEdgeFeasibleAt(
 
 template class DenseAbstractInterpretation<AD::BoxState>;
 template class DenseAbstractInterpretation<AD::OctagonState>;
+template class DenseAbstractInterpretation<AD::ConvexPolyhedraState>;
 
 } // namespace SVF

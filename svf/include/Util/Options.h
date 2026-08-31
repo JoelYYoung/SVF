@@ -254,6 +254,10 @@ public:
     static const Option<std::string> AEOctagonStorage;
     /// Cap tracked integer ValVars per function (Octagon is quadratic).
     static const Option<u32_t> AEDenseOctagonMaxDimensions;
+    /// Enable the exact convex Polyhedra numerical domain in native AE.
+    static const Option<bool> AEDensePolyhedra;
+    /// Admission cap for one Polyhedra environment.
+    static const Option<u32_t> AEDensePolyhedraMaxDimensions;
     /// recursion handling mode, Default: TOP
     static const OptionMap<u32_t> HandleRecur;
     /// the max time consumptions (seconds). Default: 4 hours 14400s

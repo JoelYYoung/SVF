@@ -236,6 +236,28 @@ if(TARGET SvfLLVM)
   add_relational_ae_integration_test(
     relational-domain-ae-integration-component-dense dense component-dense
   )
+  function(add_polyhedra_ae_integration_test test_name sparsity)
+    add_test(
+      NAME ${test_name}
+      COMMAND svf-ae-relational-integration-test
+              -ae-dense-octagon=false
+              -ae-dense-polyhedra=true
+              -ae-dense-polyhedra-max-dimensions=64
+              -ae-sparsity=${sparsity}
+              -stat=false
+              -extapi=${CMAKE_BINARY_DIR}/lib/extapi.bc
+              ${CMAKE_CURRENT_LIST_DIR}/RelationalReducedProduct.ll
+    )
+  endfunction()
+  add_polyhedra_ae_integration_test(
+    polyhedra-domain-ae-integration dense
+  )
+  add_polyhedra_ae_integration_test(
+    polyhedra-domain-ae-integration-semi-sparse semi-sparse
+  )
+  add_polyhedra_ae_integration_test(
+    polyhedra-domain-ae-integration-sparse sparse
+  )
   function(add_relational_assert_test test_name sparsity)
     add_test(
       NAME ${test_name}

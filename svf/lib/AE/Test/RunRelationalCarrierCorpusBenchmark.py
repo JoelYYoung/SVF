@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 
-"""Screen Box and dense Octagon on real LLVM modules.
+"""Screen Box, Octagon, and Polyhedra on real LLVM modules.
 
 This runner is deliberately an end-to-end feasibility screen, not a claim
-that Box and Octagon have equal precision.  Each candidate runs in a fresh
-process.  Candidate order rotates within each repetition, and timeout/OOM
-outcomes remain in the output as right-censored observations.
+that domains have equal precision.  Each candidate runs in a fresh process.
+Candidate order rotates within each repetition, and timeout/OOM outcomes
+remain in the output as right-censored observations.
 """
 
 import argparse
@@ -25,6 +25,7 @@ FIELDNAMES = [
     "input", "path", "candidate", "repetition", "status", "seconds",
     "peak_rss_bytes", "rss_source", "sampled_peak_rss_bytes", "rss_samples",
     "selected_dimensions", "dimension_limit", "octagon_selected",
+    "polyhedra_selected",
     "analyzed_nodes", "return_code", "telemetry_path", "diagnostic",
 ]
 
@@ -76,23 +77,32 @@ def sample_process_group_rss(process_group, stop_event, result,
         stop_event.wait(0.1)
 
 
-def parse_selection(output):
+def parse_selection(output, domain):
+    prefix = "OCTAGON" if domain == "dense-octagon" else "POLYHEDRA"
     match = re.search(
-        r"OCTAGON_SELECTION\s+.*dimensions=(\d+)\s+limit=(\d+)\s+"
-        r"selected=(\d+)", output,
+        rf"{prefix}_SELECTION\s+.*dimensions=(\d+)\s+limit=(\d+)\s+"
+        rf"selected=(\d+)", output,
     )
     if not match:
         return None, None, None
     return int(match.group(1)), int(match.group(2)), int(match.group(3))
 
 
-def probe_dimensions(options, input_path):
+def probe_dimensions(options, input_path, domain):
     environment = os.environ.copy()
-    environment["SVF_OCTAGON_TELEMETRY"] = "stderr"
-    environment["SVF_OCTAGON_SELECTION_ONLY"] = "1"
+    if domain == "dense-octagon":
+        environment["SVF_OCTAGON_TELEMETRY"] = "stderr"
+    else:
+        environment["SVF_POLYHEDRA_TELEMETRY"] = "stderr"
+    environment["SVF_RELATIONAL_SELECTION_ONLY"] = "1"
     command = [
-        options.runner, "-ae-sparsity=dense", "-ae-dense-octagon=true",
+        options.runner, "-ae-sparsity=dense",
+        "-ae-dense-octagon=" +
+        ("true" if domain == "dense-octagon" else "false"),
         f"-ae-dense-octagon-max-dimensions={options.dimension_limit}",
+        "-ae-dense-polyhedra=" +
+        ("true" if domain == "dense-polyhedra" else "false"),
+        f"-ae-dense-polyhedra-max-dimensions={options.dimension_limit}",
         f"-ae-fun-entry={options.fun_entry}", "-stat=false",
         f"-extapi={options.extapi}", str(input_path),
     ]
@@ -102,7 +112,7 @@ def probe_dimensions(options, input_path):
     )
     if result.returncode != 0:
         raise RuntimeError(f"dimension probe failed for {input_path}\n{result.stdout}")
-    dimensions, limit, selected = parse_selection(result.stdout)
+    dimensions, limit, selected = parse_selection(result.stdout, domain)
     if dimensions is None:
         raise RuntimeError(f"dimension observation missing for {input_path}")
     return dimensions, limit, selected
@@ -113,6 +123,7 @@ def run_once(options, label, input_path, candidate, repetition,
     telemetry_path = ""
     environment = os.environ.copy()
     octagon = candidate == "dense-octagon"
+    polyhedra = candidate == "dense-polyhedra"
     if octagon:
         telemetry_path = str(
             options.telemetry_directory /
@@ -121,6 +132,10 @@ def run_once(options, label, input_path, candidate, repetition,
         environment["SVF_OCTAGON_TELEMETRY"] = telemetry_path
     else:
         environment.pop("SVF_OCTAGON_TELEMETRY", None)
+    if polyhedra:
+        environment["SVF_POLYHEDRA_TELEMETRY"] = "stderr"
+    else:
+        environment.pop("SVF_POLYHEDRA_TELEMETRY", None)
 
     time_flag = "-l" if platform.system() == "Darwin" else "-v"
     with tempfile.NamedTemporaryFile() as time_output:
@@ -131,6 +146,8 @@ def run_once(options, label, input_path, candidate, repetition,
             "-ae-dense-legacy-interval=false",
             f"-ae-dense-octagon={'true' if octagon else 'false'}",
             f"-ae-dense-octagon-max-dimensions={options.dimension_limit}",
+            f"-ae-dense-polyhedra={'true' if polyhedra else 'false'}",
+            f"-ae-dense-polyhedra-max-dimensions={options.dimension_limit}",
             "-ae-box-directory-cow=false",
             "-ae-box-hash-directory-cow=false",
             f"-ae-fun-entry={options.fun_entry}",
@@ -173,8 +190,12 @@ def run_once(options, label, input_path, candidate, repetition,
     rss_source = "time" if measured_peak is not None else (
         "process-group-sample" if sampled_peak[0] else ""
     )
-    dimensions, dimension_limit, selected = parse_selection(output)
-    if octagon and dimensions is None:
+    dimensions, dimension_limit, selected = (None, None, None)
+    if octagon or polyhedra:
+        dimensions, dimension_limit, selected = parse_selection(
+            output, candidate
+        )
+    if (octagon or polyhedra) and dimensions is None:
         dimensions, dimension_limit, selected = expected_selection
     nodes_match = re.search(r"AE_GENERIC_OBSERVATION analyzed_nodes=(\d+)",
                             output)
@@ -192,7 +213,12 @@ def run_once(options, label, input_path, candidate, repetition,
         "rss_samples": sampled_peak[1],
         "selected_dimensions": dimensions if dimensions is not None else "",
         "dimension_limit": dimension_limit if dimension_limit is not None else "",
-        "octagon_selected": selected if selected is not None else "",
+        "octagon_selected": (
+            selected if octagon and selected is not None else ""
+        ),
+        "polyhedra_selected": (
+            selected if polyhedra and selected is not None else ""
+        ),
         "analyzed_nodes": int(nodes_match.group(1)) if nodes_match else "",
         "return_code": process.returncode,
         "telemetry_path": telemetry_path,
@@ -207,7 +233,7 @@ def main():
     parser.add_argument("--input", action="append", type=parse_input,
                         required=True, metavar="LABEL=PATH")
     parser.add_argument("--candidate", action="append",
-                        choices=("box", "dense-octagon"))
+                        choices=("box", "dense-octagon", "dense-polyhedra"))
     parser.add_argument("--fun-entry", choices=("main", "no-main"),
                         default="main")
     parser.add_argument("--dimension-limit", type=int, default=4096)
@@ -225,20 +251,27 @@ def main():
         options.memory_limit_gib * 1024 * 1024 * 1024
     )
     options.telemetry_directory.mkdir(parents=True, exist_ok=True)
-    candidates = options.candidate or ["box", "dense-octagon"]
+    candidates = options.candidate or [
+        "box", "dense-octagon", "dense-polyhedra"
+    ]
 
     rows = []
+    relational_candidates = [
+        candidate for candidate in candidates if candidate != "box"
+    ]
     selections = {
-        label: probe_dimensions(options, path)
+        (label, candidate): probe_dimensions(options, path, candidate)
         for label, path in options.input
+        for candidate in relational_candidates
     }
     for input_index, (label, path) in enumerate(options.input):
         for repetition in range(1, options.repetitions + 1):
             offset = (input_index + repetition - 1) % len(candidates)
             order = candidates[offset:] + candidates[:offset]
             for candidate in order:
+                expected = selections.get((label, candidate), (None, None, None))
                 row = run_once(options, label, path, candidate, repetition,
-                               selections[label])
+                               expected)
                 rows.append(row)
                 rss_mib = (float(row["peak_rss_bytes"]) / (1024 * 1024)
                            if row["peak_rss_bytes"] else 0.0)

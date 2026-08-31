@@ -829,6 +829,12 @@ const Option<u32_t> Options::AEDenseOctagonMaxDimensions(
     "ae-dense-octagon-max-dimensions",
     "Maximum dimensions allowed in a dense Octagon state",
     64);
+const Option<bool> Options::AEDensePolyhedra(
+    "ae-dense-polyhedra",
+    "Use exact convex Polyhedra as native AE's numerical domain", false);
+const Option<u32_t> Options::AEDensePolyhedraMaxDimensions(
+    "ae-dense-polyhedra-max-dimensions",
+    "Maximum dimensions allowed in one Polyhedra state", 32);
 const OptionMap<u32_t> Options::HandleRecur(
     "handle-recur",
     "Recursion handling mode in abstract execution (Default -widen-narrow)",

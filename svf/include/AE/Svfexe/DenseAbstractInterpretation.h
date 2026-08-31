@@ -4,6 +4,7 @@
 #define SVF_AE_DENSE_ABSTRACT_INTERPRETATION_H
 
 #include "AE/Core/BoxDomain.h"
+#include "AE/Core/ConvexPolyhedraDomain.h"
 #include "AE/Core/NonRelationalDomain.h"
 #include "AE/Core/OctagonDomain.h"
 #include "AE/Svfexe/AbstractInterpretation.h"
@@ -133,6 +134,8 @@ protected:
 
 extern template class DenseAbstractInterpretation<AbstractDomain::BoxState>;
 extern template class DenseAbstractInterpretation<AbstractDomain::OctagonState>;
+extern template class DenseAbstractInterpretation<
+    AbstractDomain::ConvexPolyhedraState>;
 
 } // namespace SVF
 

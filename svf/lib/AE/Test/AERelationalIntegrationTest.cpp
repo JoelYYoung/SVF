@@ -1,6 +1,7 @@
 //===- AERelationalIntegrationTest.cpp -- End-to-end AE/Octagon test ----===//
 
 #include "AE/Core/BoxDomain.h"
+#include "AE/Core/ConvexPolyhedraDomain.h"
 #include "AE/Core/NonRelationalDomain.h"
 #include "AE/Core/OctagonDomain.h"
 #include "AE/Svfexe/AbstractInterpretation.h"
@@ -31,6 +32,8 @@ namespace AD = SVF::AbstractDomain;
 
 using DenseOctagonState = AD::DomainProductState<AD::OctagonState>;
 using DenseBoxState = AD::DomainProductState<AD::BoxState>;
+using DensePolyhedraState =
+    AD::DomainProductState<AD::ConvexPolyhedraState>;
 
 const DenseOctagonState& requireDenseOctagonState(
     AbstractInterpretation& analysis, const ICFGNode* node)
@@ -63,6 +66,37 @@ const DenseBoxState& requireDenseBoxState(AbstractInterpretation& analysis,
         throw std::runtime_error(
             "dense AE is not using DomainProductState<BoxState>");
     return *state;
+}
+
+const DensePolyhedraState& requireDensePolyhedraState(
+    AbstractInterpretation& analysis, const ICFGNode* node)
+{
+    const AD::AbstractState* scalarState =
+        analysis.getScalarAbstractState(node->getFun());
+    const AD::AbstractState& abstractState =
+        scalarState ? *scalarState : analysis.getAbstractState(node);
+    const auto* state = abstractState.isState<DensePolyhedraState>()
+                            ? &static_cast<const DensePolyhedraState&>(
+                                  abstractState)
+                            : nullptr;
+    if (!state)
+        throw std::runtime_error(
+            "native AE is not using DomainProductState<ConvexPolyhedraState>");
+    return *state;
+}
+
+const DensePolyhedraState& requireScalarPolyhedraState(
+    AbstractInterpretation& analysis, const ValVar* value,
+    const ICFGNode* fallback)
+{
+    const AD::AbstractState* scalarState =
+        analysis.getScalarAbstractState(value);
+    if (!scalarState)
+        return requireDensePolyhedraState(analysis, fallback);
+    if (!scalarState->isState<DensePolyhedraState>())
+        throw std::runtime_error(
+            "sparse scalar checkpoint is not a Polyhedra product state");
+    return static_cast<const DensePolyhedraState&>(*scalarState);
 }
 
 const DenseOctagonState& requireScalarOctagonState(
@@ -599,6 +633,45 @@ const SVFVar* requireValue(const SVFIR& graph, const std::string& name)
     throw std::runtime_error("missing SVF value: " + name);
 }
 
+void validatePolyhedraReducedProductFixture(
+    const SVFIR& graph, AbstractInterpretation& analysis)
+{
+    const auto* input = SVFUtil::cast<ValVar>(requireValue(graph, "x"));
+    const auto* affine = SVFUtil::cast<ValVar>(requireValue(graph, "y"));
+    const auto* result = SVFUtil::cast<ValVar>(requireValue(graph, "z"));
+    const SVFVar* impossible = requireValue(graph, "bad");
+    SVFIRAdapter adapter(graph);
+    bool sawInterval = false;
+    bool sawRelation = false;
+    bool impossibleReachable = false;
+    for (const ICFGNode* node : analysis.getAnalyzedNodes())
+    {
+        impossibleReachable |= analysis.hasAbsValue(impossible, node);
+        if (!analysis.hasAbsValue(result, node))
+            continue;
+        const AbstractValue& value = analysis.getAbsValue(result, node);
+        sawInterval |= value.isInterval() &&
+            value.getInterval().equals(
+                IntervalValue(static_cast<s64_t>(1),
+                              static_cast<s64_t>(6)));
+        const AD::ConvexPolyhedraState& polyhedron =
+            requireScalarPolyhedraState(analysis, result, node).numerical();
+        if (polyhedron.environment().contains(adapter.variable(*input)) &&
+            polyhedron.environment().contains(adapter.variable(*affine)) &&
+            polyhedron.entails(AD::equal(
+                AD::LinearExpression(adapter.variable(*input)),
+                AD::LinearExpression(adapter.variable(*affine)))) ==
+                AD::CheckResult::True)
+            sawRelation = true;
+    }
+    if (!sawInterval || !sawRelation || impossibleReachable)
+        throw std::runtime_error(
+            "Polyhedra AE did not preserve reduced-product fixture semantics");
+    std::cout
+        << "AE_POLYHEDRA_OBSERVATION fixture=reduced-product"
+        << " reduced_interval=1 reduced_relation=1 impossible_reachable=0\n";
+}
+
 void validateReducedProductFixture(const SVFIR& graph,
                                    AbstractInterpretation& analysis)
 {
@@ -985,9 +1058,12 @@ int main(int argc, char** argv)
 
         AbstractInterpretation& analysis =
             AbstractInterpretation::getAEInstance();
-        if (const char* selectionOnly =
-                std::getenv("SVF_OCTAGON_SELECTION_ONLY");
-            selectionOnly != nullptr && selectionOnly[0] != '\0' &&
+        const char* selectionOnly =
+            std::getenv("SVF_RELATIONAL_SELECTION_ONLY");
+        if (selectionOnly == nullptr || selectionOnly[0] == '\0' ||
+            std::string(selectionOnly) == "0")
+            selectionOnly = std::getenv("SVF_OCTAGON_SELECTION_ONLY");
+        if (selectionOnly != nullptr && selectionOnly[0] != '\0' &&
             std::string(selectionOnly) != "0")
         {
             if (const char* vocabularyAudit =
@@ -997,7 +1073,7 @@ int main(int argc, char** argv)
                 reportRelationalVocabularyAudit(*graph, *ander);
             AndersenWaveDiff::releaseAndersenWaveDiff();
             LLVMModuleSet::releaseLLVMModuleSet();
-            std::cout << "AE Octagon selection probe: PASS\n";
+            std::cout << "AE relational selection probe: PASS\n";
             return EXIT_SUCCESS;
         }
         analysis.runOnModule();
@@ -1012,6 +1088,15 @@ int main(int argc, char** argv)
             if (findValueIfPresent(*graph, "z") ||
                 findValueIfPresent(*graph, "loop_result"))
                 validateLegacyDenseSemantics(*graph, analysis);
+        }
+        else if (Options::AEDensePolyhedra())
+        {
+            validateNativeProductStorage<DensePolyhedraState>(analysis);
+            if (Options::AESparsity() != AbstractInterpretation::Dense)
+                validateNativeSparseCarrierSeparation<DensePolyhedraState>(
+                    *graph, analysis);
+            if (findValueIfPresent(*graph, "z"))
+                validatePolyhedraReducedProductFixture(*graph, analysis);
         }
         else if (!Options::AEDenseOctagon())
         {
