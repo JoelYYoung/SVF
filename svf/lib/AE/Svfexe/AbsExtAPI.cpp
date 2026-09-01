@@ -31,6 +31,8 @@
 #include "SVFIR/SVFIR.h"
 #include "Util/Options.h"
 
+#include <algorithm>
+
 using namespace SVF;
 AbsExtAPI::AbsExtAPI(AbstractInterpretation* ae): ae(ae)
 {
@@ -457,7 +459,7 @@ IntervalValue AbsExtAPI::getStrlen(const ValVar *strValue, const ICFGNode* node)
             continue;
         if (baseObject->isConstantByteSize())
         {
-            dst_size = baseObject->getByteSizeOfObj();
+            dst_size = std::max(dst_size, baseObject->getByteSizeOfObj());
         }
         else
         {
@@ -468,15 +470,18 @@ IntervalValue AbsExtAPI::getStrlen(const ValVar *strValue, const ICFGNode* node)
             {
                 if (const AddrStmt* addrStmt = SVFUtil::dyn_cast<AddrStmt>(stmt2))
                 {
-                    dst_size = ae->getAllocaInstByteSize(addrStmt);
+                    dst_size = std::max(
+                        dst_size, ae->getAllocaInstByteSize(addrStmt));
                 }
             }
         }
     }
 
-    // Step 2: scan for '\0' terminator
-    u32_t len = 0;
-    if (ae->getAbsValue(strValue, node).isAddr())
+    // Step 2: scan for a definitely positioned '\0' terminator.  A pointer
+    // may denote several backing objects, so every byte before the terminator
+    // must be definitely non-zero across all pointees.  An unknown byte or a
+    // missing terminator cannot soundly be treated as an exact string length.
+    if (ae->getAbsValue(strValue, node).isAddr() && dst_size != 0)
     {
         for (u32_t index = 0; index < dst_size; index++)
         {
@@ -487,20 +492,21 @@ IntervalValue AbsExtAPI::getStrlen(const ValVar *strValue, const ICFGNode* node)
             {
                 val.join_with(ae->getMemoryValue(addr, node));
             }
-            if (val.getInterval().is_numeral() &&
-                    (char) val.getInterval().getIntNumeral() == '\0')
+            if (!val.getInterval().is_numeral())
+                return IntervalValue((s64_t)0,
+                                     (s64_t)Options::MaxFieldLimit());
+            if (val.getInterval().getIntNumeral() == 0)
             {
-                break;
+                const u32_t elemSize = getElementSize(strValue);
+                return IntervalValue(index * elemSize);
             }
-            ++len;
         }
     }
 
-    // Step 3: scale by element size and return
-    u32_t elemSize = getElementSize(strValue);
-    if (len == 0)
-        return IntervalValue((s64_t)0, (s64_t)Options::MaxFieldLimit());
-    return IntervalValue(len * elemSize);
+    // No definite terminator was established.  This includes unknown backing
+    // size, an empty points-to set, and a fully scanned but unterminated
+    // buffer.  Preserve the documented conservative fallback.
+    return IntervalValue((s64_t)0, (s64_t)Options::MaxFieldLimit());
 }
 
 // ===----------------------------------------------------------------------===//
