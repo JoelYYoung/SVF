@@ -11,6 +11,7 @@
 #include <cstdlib>
 #include <iomanip>
 #include <iostream>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -27,6 +28,19 @@ using DenseApronState = AbstractDomain::DomainProductState<
 void reportSemanticChecksum(
     DenseAbstractInterpretation<AbstractDomain::ApronOctagonState>& analysis)
 {
+    const bool traceStates =
+        std::getenv("SVF_RELATIONAL_SEMANTIC_TRACE") != nullptr;
+    std::optional<NodeID> dumpNode;
+    if (const char* value =
+            std::getenv("SVF_RELATIONAL_SEMANTIC_DUMP_NODE"))
+    {
+        char* end = nullptr;
+        const unsigned long parsed = std::strtoul(value, &end, 10);
+        if (!end || *end != '\0')
+            throw std::runtime_error(
+                "SVF_RELATIONAL_SEMANTIC_DUMP_NODE must be a node ID");
+        dumpNode = static_cast<NodeID>(parsed);
+    }
     std::vector<std::pair<NodeID, std::uint64_t>> states;
     for (const ICFGNode* node : analysis.getAnalyzedNodes())
     {
@@ -39,6 +53,15 @@ void reportSemanticChecksum(
                 "APRON checksum expected a dense product state");
         const auto& state = static_cast<const DenseApronState&>(abstractState);
         states.emplace_back(node->getId(), state.numerical().hash());
+        if (dumpNode == node->getId())
+        {
+            const auto canonical = AbstractDomain::OctagonState::fromConstraints(
+                state.numerical().environment(),
+                state.numerical().toConstraints());
+            std::cout << "AE_NUMERICAL_STATE_DUMP domain=octagon"
+                      << " node=" << node->getId() << " state="
+                      << canonical.toString() << '\n';
+        }
     }
     std::sort(states.begin(), states.end());
     std::uint64_t checksum = 1469598103934665603ULL;
@@ -52,6 +75,11 @@ void reportSemanticChecksum(
     };
     for (const auto& [node, state] : states)
     {
+        if (traceStates)
+            std::cout << "AE_NUMERICAL_STATE domain=octagon"
+                      << " node=" << node << " hash=" << std::hex
+                      << std::setfill('0') << std::setw(16) << state
+                      << std::dec << '\n';
         append(node);
         append(state);
     }

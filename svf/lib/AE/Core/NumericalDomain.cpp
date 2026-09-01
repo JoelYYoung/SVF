@@ -350,6 +350,67 @@ void writeConstraints(Writer& writer, const LinearConstraintSet& constraints)
     }
 }
 
+LinearConstraint canonicalizeIntegerStrictConstraint(
+    const LinearConstraint& constraint,
+    const VariableEnvironment& environment)
+{
+    if (constraint.kind() != ConstraintKind::LessThan &&
+        constraint.kind() != ConstraintKind::GreaterThan)
+        return constraint;
+
+    for (const auto& [variable, coefficient] :
+         constraint.expression().terms())
+    {
+        (void)coefficient;
+        if (environment.typeOf(variable).kind != NumericKind::Integer)
+            return constraint;
+    }
+
+    // Scale the affine expression to the integer lattice.  If D is the LCM
+    // of all coefficient denominators, D*expression is integer-valued, so
+    // e < 0 is exactly e + 1/D <= 0 and e > 0 is exactly e - 1/D >= 0.
+    // APRON performs this conversion for integer dimensions; doing the same
+    // at the canonical serialization boundary gives equivalent native and
+    // APRON states identical hashes without changing transfer semantics.
+    mpz_class denominator =
+        constraint.expression().constant().value().get_den();
+    for (const auto& [variable, coefficient] :
+         constraint.expression().terms())
+    {
+        (void)variable;
+        mpz_lcm(denominator.get_mpz_t(), denominator.get_mpz_t(),
+                coefficient.value().get_den().get_mpz_t());
+    }
+    const Rational latticeStep =
+        Rational::fromRaw(mpq_class(mpz_class(1), denominator));
+    LinearExpression expression = constraint.expression();
+    if (constraint.kind() == ConstraintKind::LessThan)
+    {
+        expression.setConstant(expression.constant() + latticeStep);
+        return LinearConstraint(std::move(expression),
+                                ConstraintKind::LessEqual);
+    }
+    expression.setConstant(expression.constant() - latticeStep);
+    return LinearConstraint(std::move(expression),
+                            ConstraintKind::GreaterEqual);
+}
+
+LinearConstraintSet canonicalConstraints(const NumericalState& state,
+                                         DomainTag tag)
+{
+    LinearConstraintSet constraints =
+        state.isBottom() ? LinearConstraintSet{} : state.toConstraints();
+    if (tag != DomainTag::Octagon ||
+        !static_cast<const OctagonState&>(state)
+             .config()
+             .integerTightening)
+        return constraints;
+    for (LinearConstraint& constraint : constraints)
+        constraint = canonicalizeIntegerStrictConstraint(
+            constraint, state.environment());
+    return constraints;
+}
+
 Rational readRational(Reader& reader)
 {
     const std::string encoded = reader.readString();
@@ -1252,9 +1313,7 @@ NumericalState::RawBuffer NumericalState::serializeRaw() const
     writer.writeByte(configurationFlags(*canonical, tag));
     writeEnvironment(writer, canonical->environment());
     writer.writeByte(canonical->isBottom() ? 1U : 0U);
-    writeConstraints(writer,
-                     canonical->isBottom() ? LinearConstraintSet{}
-                                           : canonical->toConstraints());
+    writeConstraints(writer, canonicalConstraints(*canonical, tag));
     return writer.finish();
 }
 

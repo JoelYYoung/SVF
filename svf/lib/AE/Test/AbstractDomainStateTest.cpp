@@ -868,6 +868,24 @@ void testNumericalHashAndRawSerialization()
                 octagon.hash() == octagonEquivalent.hash(),
             "equivalent Octagon construction histories must have equal hashes");
 
+    const VariableEnvironment integerEnvironment(
+        {{x, NumericType::integer(), "x"},
+         {y, NumericType::integer(), "y"}});
+    LinearExpression integerDifference(x);
+    integerDifference.setCoefficient(y, Rational(-1));
+    OctagonState strictInteger = OctagonState::top(integerEnvironment);
+    strictInteger.assume(LinearConstraint(integerDifference,
+                                          ConstraintKind::LessThan));
+    LinearExpression shiftedInteger = integerDifference;
+    shiftedInteger.setConstant(Rational(1));
+    OctagonState closedInteger = OctagonState::top(integerEnvironment);
+    closedInteger.assume(LinearConstraint(shiftedInteger,
+                                          ConstraintKind::LessEqual));
+    require(strictInteger.isEquivalentTo(closedInteger) == CheckResult::True &&
+                strictInteger.hash() == closedInteger.hash(),
+            "integer-equivalent strict and shifted Octagon constraints must "
+            "have equal canonical hashes");
+
     ConvexPolyhedraState polyhedronEquivalent =
         ConvexPolyhedraState::top(environment);
     LinearExpression scaledGeneral = general * Rational(2);

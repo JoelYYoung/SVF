@@ -2051,13 +2051,20 @@ private:
                 return false;
             const Dimension dimension = environment.dimensionOf(variable);
             const Rational magnitude = absolute(coefficient);
-            const Rational value = -expression.constant() / magnitude;
+            Rational value = -expression.constant() / magnitude;
+            bool storedStrict = strict;
+            if (storedStrict && options_.integerTightening &&
+                environment.typeOf(variable).kind == NumericKind::Integer)
+            {
+                value = value.ceil() - Rational(1);
+                storedStrict = false;
+            }
             const std::size_t row = coefficient.sign() > 0
                                         ? positiveNode(dimension)
                                         : negativeNode(dimension);
             const std::size_t column = opposite(row);
             setCoherent(state, row, column,
-                        Bound::finite(value * Rational(2), strict));
+                        Bound::finite(value * Rational(2), storedStrict));
             return true;
         }
 
@@ -2086,9 +2093,17 @@ private:
             const std::size_t negativeRhsNode =
                 rhsCoefficient.sign() > 0 ? negativeNode(rhsDimension)
                                           : positiveNode(rhsDimension);
-            const Rational value = -expression.constant() / lhsMagnitude;
+            Rational value = -expression.constant() / lhsMagnitude;
+            bool storedStrict = strict;
+            if (storedStrict && options_.integerTightening &&
+                environment.typeOf(lhsVariable).kind == NumericKind::Integer &&
+                environment.typeOf(rhsVariable).kind == NumericKind::Integer)
+            {
+                value = value.ceil() - Rational(1);
+                storedStrict = false;
+            }
             setCoherent(state, lhsNode, negativeRhsNode,
-                        Bound::finite(value, strict));
+                        Bound::finite(value, storedStrict));
             return true;
         }
 
