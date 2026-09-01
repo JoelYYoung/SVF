@@ -102,6 +102,7 @@ public:
     void assume(const TreeConstraint& constraint) override;
     void assumeAll(const LinearConstraintSet& constraints) override;
     void forget(Variable variable) override;
+    void assignInterval(Variable target, const Interval& value) override;
     void projectLowerBounds();
     void changeEnvironment(const VariableEnvironment& environment,
                            bool initializeNewVariablesToZero = false) override;
@@ -150,7 +151,6 @@ private:
     DiagnosticSink* diagnosticSink() const;
     void report(OperationKind operation, ApproximationKind approximation,
                 std::string reason, bool best = true) const;
-    void assignInterval(Variable target, const Interval& value) override;
     bool hasCompatibleDomain(const AbstractState& other) const override;
     ApproximationKind assignState(
         Variable target, const LinearExpression& expression);

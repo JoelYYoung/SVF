@@ -222,6 +222,17 @@ if(APRON_INCLUDE_DIR AND APRON_LIBRARY AND APRON_POLKA_LIBRARY)
       get_filename_component(APRON_LIBRARY_DIR ${APRON_LIBRARY} DIRECTORY)
       set_property(TARGET svf-apron-octagon-ae APPEND PROPERTY
                    BUILD_RPATH ${APRON_LIBRARY_DIR})
+      if(APPLE)
+        # The locally built Z3 dylib may carry the bare install name
+        # `libz3.dylib`; protected launchers such as /usr/bin/time strip
+        # DYLD_LIBRARY_PATH.  Make the benchmark executable self-contained.
+        add_custom_command(
+          TARGET svf-apron-octagon-ae POST_BUILD
+          COMMAND install_name_tool -change libz3.dylib
+                  $<TARGET_FILE:z3::libz3>
+                  $<TARGET_FILE:svf-apron-octagon-ae>
+        )
+      endif()
     endif()
   endif()
   message(STATUS "APRON/NewPolka differential tests enabled")

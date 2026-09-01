@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <iostream>
 #include <limits>
+#include <set>
 #include <stdexcept>
 #include <tuple>
 #include <type_traits>
@@ -179,7 +180,39 @@ template <typename NumericalStateT>
 void DenseAbstractInterpretation<NumericalStateT>::handleGlobalNode()
 {
     const ICFGNode* node = icfg->getGlobalICFGNode();
-    resetAbstractState(node);
+    // The global ICFG node contains address initializers for local pointer
+    // values from every function.  Growing a relational environment once per
+    // initializer repeatedly rebuilds and normalizes the same state.  Batch
+    // those result dimensions into the initial top state instead.
+    std::vector<AD::VariableDeclaration> initialDeclarations;
+    std::set<AD::Variable> initialVariables;
+    auto addInitialValue = [&](const SVFVar* variable)
+    {
+        const auto* value = SVFUtil::dyn_cast<ValVar>(variable);
+        if (!value || !adapter_.contains(*value))
+            return;
+        const AD::Variable symbol = adapter_.variable(*value);
+        if (!adapter_.environment().contains(symbol) &&
+                initialVariables.insert(symbol).second)
+            initialDeclarations.push_back(adapter_.declaration(symbol));
+    };
+    for (const SVFStmt* statement : node->getSVFStmts())
+    {
+        if (const auto* assignment =
+                SVFUtil::dyn_cast<AssignStmt>(statement))
+            addInitialValue(assignment->getLHSVar());
+        else if (const auto* multi =
+                     SVFUtil::dyn_cast<MultiOpndStmt>(statement))
+            addInitialValue(multi->getRes());
+    }
+    if (const auto* blackHole = SVFUtil::dyn_cast<ValVar>(
+            svfir->getGNode(PAG::getPAG()->getBlkPtr())))
+        addInitialValue(blackHole);
+    const AD::VariableEnvironment initialEnvironment =
+        adapter_.environment().add(std::move(initialDeclarations));
+    denseTrace_.insert_or_assign(
+        node, DenseState(makeNumericalTop(initialEnvironment),
+                         adapter_.memoryLayout()));
     for (const SVFStmt* statement : node->getSVFStmts())
         handleSVFStatement(statement);
 
@@ -444,6 +477,20 @@ void DenseAbstractInterpretation<NumericalStateT>::assignInterval(
     const IntervalValue& interval)
 {
     ensureVariable(denseState, variable);
+    if constexpr (std::is_same_v<NumericalStateT, AD::OctagonState>)
+    {
+        const AD::Bound lower = interval.lb().is_minus_infinity()
+                                    ? AD::Bound::minusInfinity()
+                                    : AD::Bound::finite(AD::Rational(
+                                          interval.lb().getIntNumeral()));
+        const AD::Bound upper = interval.ub().is_plus_infinity()
+                                    ? AD::Bound::plusInfinity()
+                                    : AD::Bound::finite(AD::Rational(
+                                          interval.ub().getIntNumeral()));
+        denseState.numerical().assignInterval(
+            variable, AD::Interval(lower, upper));
+        return;
+    }
     denseState.numerical().forget(variable);
     constrainInterval(denseState, variable, interval);
 }
@@ -456,19 +503,21 @@ void DenseAbstractInterpretation<NumericalStateT>::constrainInterval(
     if (interval.isBottom())
         return;
 
+    AD::LinearConstraintSet constraints;
     AD::LinearExpression expression(variable);
     if (!interval.lb().is_minus_infinity())
     {
-        denseState.assume(AD::greaterEqual(
+        constraints.push_back(AD::greaterEqual(
             expression,
             AD::LinearExpression(AD::Rational(interval.lb().getIntNumeral()))));
     }
     if (!interval.ub().is_plus_infinity())
     {
-        denseState.assume(AD::lessEqual(
+        constraints.push_back(AD::lessEqual(
             expression,
             AD::LinearExpression(AD::Rational(interval.ub().getIntNumeral()))));
     }
+    denseState.numerical().assumeAll(constraints);
 }
 
 template <typename NumericalStateT>

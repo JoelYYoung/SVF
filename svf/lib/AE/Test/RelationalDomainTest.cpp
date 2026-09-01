@@ -536,6 +536,94 @@ void testIncrementalClosureMatchesFullClosure()
     }
 }
 
+void testIndependentIntervalAssignmentMatchesFullClosure()
+{
+    const Variable x(201);
+    const Variable y(202);
+    const Variable z(203);
+    const VariableEnvironment environment(
+        {{x, NumericType::integer(), "x"},
+         {y, NumericType::integer(), "y"},
+         {z, NumericType::integer(), "z"}});
+    for (OctagonStorageKind kind : {OctagonStorageKind::DenseHalf,
+                                    OctagonStorageKind::SparseFinite,
+                                    OctagonStorageKind::ComponentDense})
+    {
+        OctagonConfig config;
+        config.storage = kind;
+        OctagonState initial = OctagonState::top(environment, config);
+        initial.assume(atLeast(y, Rational(-5)));
+        initial.assume(atMost(y, Rational(6)));
+        initial.assume(differenceEquals(y, z, Rational(2)));
+        initial.assume(differenceEquals(x, z, Rational(-3)));
+
+        OctagonState incremental = initial;
+        incremental.assignInterval(
+            x, Interval(Bound::finite(Rational(1)),
+                        Bound::finite(Rational(4))));
+
+        OctagonState full = initial;
+        full.forget(x);
+        full.assumeAll({atLeast(x, Rational(1)),
+                        atMost(x, Rational(4))});
+        require(incremental.isEquivalentTo(full) == CheckResult::True,
+                std::string("independent interval closure differs from full ") +
+                    "integer closure: " + octagonStorageKindName(kind));
+        require(incremental.hash() == full.hash(),
+                std::string("equivalent interval closures hash differently: ") +
+                    octagonStorageKindName(kind));
+        Z3SoundnessChecker checker(environment);
+        requireProof(checker.implies(
+            incremental, full,
+            "incremental interval assignment implies full closure"));
+        requireProof(checker.implies(
+            full, incremental,
+            "full closure implies incremental interval assignment"));
+    }
+}
+
+void testIncrementalIntegerClosureMatchesFullClosure()
+{
+    const std::vector<Variable> variables = {
+        Variable(301), Variable(302), Variable(303), Variable(304)};
+    std::vector<VariableDeclaration> declarations;
+    for (std::size_t index = 0; index < variables.size(); ++index)
+        declarations.push_back(
+            {variables[index], NumericType::integer(),
+             std::string("i") + std::to_string(index)});
+    const VariableEnvironment environment(std::move(declarations));
+    const LinearConstraintSet constraints = {
+        signedSumAtMost(variables[0], 1, variables[1], 1, Rational(7)),
+        signedSumAtMost(variables[1], -1, variables[2], 1, Rational(3)),
+        below(variables[2], Rational(5)),
+        signedSumAtMost(variables[2], 1, variables[3], -1, Rational(4)),
+        atLeast(variables[3], Rational(-2)),
+        signedSumAtMost(variables[0], -1, variables[3], -1, Rational(1)),
+        atMost(variables[1], Rational(6)),
+        signedSumAtMost(variables[0], 1, variables[2], -1, Rational(8))};
+
+    for (OctagonStorageKind kind : {OctagonStorageKind::DenseHalf,
+                                    OctagonStorageKind::SparseFinite,
+                                    OctagonStorageKind::ComponentDense})
+    {
+        OctagonConfig config;
+        config.storage = kind;
+        OctagonState incremental = OctagonState::top(environment, config);
+        LinearConstraintSet prefix;
+        for (const LinearConstraint& constraint : constraints)
+        {
+            prefix.push_back(constraint);
+            incremental.assume(constraint);
+            const OctagonState full =
+                OctagonState::fromConstraints(environment, prefix, config);
+            require(incremental.isEquivalentTo(full) == CheckResult::True &&
+                        incremental.hash() == full.hash(),
+                    std::string("incremental integer closure differs from full ") +
+                        "closure: " + octagonStorageKindName(kind));
+        }
+    }
+}
+
 void testLatticeAndZ3Soundness()
 {
     const Variable x(1);
@@ -1072,6 +1160,8 @@ int main()
         testEnvironmentChanges();
         testSelectableOctagonStorageCarriers();
         testIncrementalClosureMatchesFullClosure();
+        testIndependentIntervalAssignmentMatchesFullClosure();
+        testIncrementalIntegerClosureMatchesFullClosure();
         testLatticeAndZ3Soundness();
         testTopBottomIdentitiesAndQueries();
         testFallbacksConstantsAndOptions();
