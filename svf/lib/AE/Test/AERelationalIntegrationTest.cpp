@@ -118,9 +118,24 @@ void reportNumericalSemanticChecksum(const char* domain,
         const auto& state = static_cast<const DenseState&>(abstractState);
         states.emplace_back(node->getId(), state.numerical().hash());
         if (dumpNode == node->getId())
+        {
             std::cout << "AE_NUMERICAL_STATE_DUMP domain=" << domain
                       << " node=" << node->getId() << " state="
                       << state.numerical().toString() << '\n';
+            std::cout << "AE_NUMERICAL_ENVIRONMENT domain=" << domain
+                      << " node=" << node->getId() << " variables=";
+            bool first = true;
+            for (const AD::VariableDeclaration& declaration :
+                 state.numerical().environment().variables())
+            {
+                if (!first)
+                    std::cout << ',';
+                first = false;
+                std::cout << declaration.variable.id() << ':'
+                          << static_cast<unsigned>(declaration.type.kind);
+            }
+            std::cout << '\n';
+        }
     }
     std::sort(states.begin(), states.end());
 

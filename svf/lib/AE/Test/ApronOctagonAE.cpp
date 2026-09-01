@@ -61,6 +61,19 @@ void reportSemanticChecksum(
             std::cout << "AE_NUMERICAL_STATE_DUMP domain=octagon"
                       << " node=" << node->getId() << " state="
                       << canonical.toString() << '\n';
+            std::cout << "AE_NUMERICAL_ENVIRONMENT domain=octagon"
+                      << " node=" << node->getId() << " variables=";
+            bool first = true;
+            for (const AbstractDomain::VariableDeclaration& declaration :
+                 state.numerical().environment().variables())
+            {
+                if (!first)
+                    std::cout << ',';
+                first = false;
+                std::cout << declaration.variable.id() << ':'
+                          << static_cast<unsigned>(declaration.type.kind);
+            }
+            std::cout << '\n';
         }
     }
     std::sort(states.begin(), states.end());
