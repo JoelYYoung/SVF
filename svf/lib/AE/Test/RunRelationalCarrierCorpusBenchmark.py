@@ -150,9 +150,11 @@ def probe_dimensions(options: argparse.Namespace, input_path: pathlib.Path,
     environment = os.environ.copy()
     environment.pop("SVF_OCTAGON_TELEMETRY", None)
     environment.pop("SVF_POLYHEDRA_TELEMETRY", None)
-    if not options.disable_operation_telemetry:
-        environment["SVF_OCTAGON_TELEMETRY" if domain == "octagon"
-                    else "SVF_POLYHEDRA_TELEMETRY"] = "stderr"
+    # Selection observations currently use the domain telemetry reporting
+    # channel.  The probe is outside the measured candidate run, so keep this
+    # reporting enabled even when operation profiling is disabled for timing.
+    environment["SVF_OCTAGON_TELEMETRY" if domain == "octagon"
+                else "SVF_POLYHEDRA_TELEMETRY"] = "stderr"
     environment["SVF_RELATIONAL_SELECTION_ONLY"] = "1"
     command = [
         options.runner, "-ae-sparsity=dense", "-ae-dense-legacy-interval=false",
