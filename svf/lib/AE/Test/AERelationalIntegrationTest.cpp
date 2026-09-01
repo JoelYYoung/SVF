@@ -22,6 +22,7 @@
 #include <set>
 #include <stdexcept>
 #include <string>
+#include <tuple>
 #include <type_traits>
 #include <vector>
 
@@ -53,6 +54,45 @@ void reportNumericalSemanticChecksum(const char* domain,
             throw std::runtime_error(
                 "SVF_RELATIONAL_SEMANTIC_DUMP_NODE must be a node ID");
         dumpNode = static_cast<NodeID>(parsed);
+    }
+    if (const char* value =
+            std::getenv("SVF_RELATIONAL_SEMANTIC_DUMP_VARIABLE"))
+    {
+        char* end = nullptr;
+        const unsigned long parsed = std::strtoul(value, &end, 10);
+        if (!end || *end != '\0')
+            throw std::runtime_error(
+                "SVF_RELATIONAL_SEMANTIC_DUMP_VARIABLE must be a variable ID");
+        const NodeID variableId = static_cast<NodeID>(parsed);
+        const SVFVar* variable = analysis.getSVFVar(variableId);
+        std::vector<const SVFStmt*> definitions(variable->getInEdges().begin(),
+                                                variable->getInEdges().end());
+        std::sort(definitions.begin(), definitions.end(),
+                  [](const SVFStmt* lhs, const SVFStmt* rhs)
+                  {
+                      const NodeID lhsNode = lhs->getICFGNode()
+                                                 ? lhs->getICFGNode()->getId()
+                                                 : 0;
+                      const NodeID rhsNode = rhs->getICFGNode()
+                                                 ? rhs->getICFGNode()->getId()
+                                                 : 0;
+                      return std::make_tuple(lhsNode, lhs->getSrcID(),
+                                             lhs->getDstID(),
+                                             lhs->getEdgeKindWithoutMask()) <
+                             std::make_tuple(rhsNode, rhs->getSrcID(),
+                                             rhs->getDstID(),
+                                             rhs->getEdgeKindWithoutMask());
+                  });
+        std::cout << "AE_NUMERICAL_VARIABLE id=" << variableId
+                  << " value=" << variable->toString()
+                  << " definitions=" << definitions.size() << '\n';
+        for (const SVFStmt* definition : definitions)
+            std::cout << "AE_NUMERICAL_VARIABLE_DEF id=" << variableId
+                      << " icfg="
+                      << (definition->getICFGNode()
+                              ? definition->getICFGNode()->getId()
+                              : 0)
+                      << " value=" << definition->toString() << '\n';
     }
     std::vector<std::pair<NodeID, std::uint64_t>> states;
     states.reserve(analysis.getAnalyzedNodes().size());
