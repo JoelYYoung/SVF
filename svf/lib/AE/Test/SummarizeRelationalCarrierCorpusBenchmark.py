@@ -41,6 +41,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--pairwise-summary-output", required=True, type=Path)
     parser.add_argument("--shape-summary-output", type=Path)
     parser.add_argument("--telemetry-output", type=Path)
+    parser.add_argument("--telemetry-audit-output", type=Path)
     parser.add_argument(
         "--candidate", action="append", choices=DEFAULT_CANDIDATES,
         help="Expected candidate; repeat to override the five-candidate default.",
@@ -276,9 +277,12 @@ def make_shape_summary(
     return output
 
 
-def merge_telemetry(rows: list[dict[str, str]]) -> tuple[list[str], list[dict[str, str]]]:
+def merge_telemetry(
+    rows: list[dict[str, str]],
+) -> tuple[list[str], list[dict[str, str]], list[dict[str, object]]]:
     telemetry_fields: list[str] | None = None
     output: list[dict[str, str]] = []
+    audit: list[dict[str, object]] = []
     metadata = [
         "run_id", "host", "input", "scale", "program_family", "candidate",
         "domain", "carrier", "repetition", "runner_sha256", "bitcode_sha256",
@@ -286,10 +290,27 @@ def merge_telemetry(rows: list[dict[str, str]]) -> tuple[list[str], list[dict[st
     for run in rows:
         raw_path = run.get("telemetry_path", "")
         if not raw_path:
+            audit.append({
+                "run_id": run.get("run_id", ""),
+                "candidate": run.get("candidate", ""),
+                "run_status": run.get("status", ""),
+                "telemetry_path": "",
+                "telemetry_status": "not-requested",
+                "observations": 0,
+            })
             continue
         path = Path(raw_path)
         if not path.is_file():
-            raise SystemExit(f"telemetry file is missing: {path}")
+            audit.append({
+                "run_id": run.get("run_id", ""),
+                "candidate": run.get("candidate", ""),
+                "run_status": run.get("status", ""),
+                "telemetry_path": raw_path,
+                "telemetry_status": "missing",
+                "observations": 0,
+            })
+            continue
+        observations = 0
         with path.open(newline="", encoding="utf-8") as stream:
             reader = csv.DictReader(stream)
             if reader.fieldnames is None:
@@ -299,11 +320,20 @@ def merge_telemetry(rows: list[dict[str, str]]) -> tuple[list[str], list[dict[st
             elif telemetry_fields != reader.fieldnames:
                 raise SystemExit(f"incompatible telemetry header: {path}")
             for observation in reader:
+                observations += 1
                 output.append({
                     **{field: run.get(field, "") for field in metadata},
                     **observation,
                 })
-    return metadata + (telemetry_fields or []), output
+        audit.append({
+            "run_id": run.get("run_id", ""),
+            "candidate": run.get("candidate", ""),
+            "run_status": run.get("status", ""),
+            "telemetry_path": raw_path,
+            "telemetry_status": "present",
+            "observations": observations,
+        })
+    return metadata + (telemetry_fields or []), output, audit
 
 
 def main() -> None:
@@ -325,8 +355,16 @@ def main() -> None:
         shape_summary = make_shape_summary(rows, expected)
         write_csv(options.shape_summary_output, list(shape_summary[0]), shape_summary)
     if options.telemetry_output:
-        telemetry_fields, telemetry = merge_telemetry(rows)
+        telemetry_fields, telemetry, telemetry_audit = merge_telemetry(rows)
         write_csv(options.telemetry_output, telemetry_fields, telemetry)
+        if options.telemetry_audit_output:
+            write_csv(options.telemetry_audit_output, [
+                "run_id", "candidate", "run_status", "telemetry_path",
+                "telemetry_status", "observations",
+            ], telemetry_audit)
+    elif options.telemetry_audit_output:
+        raise SystemExit(
+            "--telemetry-audit-output requires --telemetry-output")
 
 
 if __name__ == "__main__":
