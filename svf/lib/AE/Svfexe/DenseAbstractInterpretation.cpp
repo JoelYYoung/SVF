@@ -451,7 +451,12 @@ bool DenseAbstractInterpretation<NumericalStateT>::narrowCycleState(
     alignEnvironments(previousDense, currentDense);
     // Sparse transfers may materialize a new MemorySSA/cycle facet during the
     // descending phase. Enforce narrowing's generic next <= current contract.
-    currentDense.meetWith(previousDense);
+    // The normal descending path already satisfies that contract. Avoid
+    // rebuilding and closing a relational meet when the lattice check proves
+    // that the meet would be exactly currentDense. False and Unknown retain
+    // the original conservative meet.
+    if (currentDense.isSubsetOf(previousDense) != AD::CheckResult::True)
+        currentDense.meetWith(previousDense);
     DenseState next = previousDense;
     next.narrowWith(currentDense);
     const bool fixpoint =
