@@ -148,8 +148,11 @@ def parse_selection(output: str, domain: str) -> tuple[int | None, int | None, i
 def probe_dimensions(options: argparse.Namespace, input_path: pathlib.Path,
                      domain: str) -> tuple[int | None, int | None, int | None, str]:
     environment = os.environ.copy()
-    environment["SVF_OCTAGON_TELEMETRY" if domain == "octagon"
-                else "SVF_POLYHEDRA_TELEMETRY"] = "stderr"
+    environment.pop("SVF_OCTAGON_TELEMETRY", None)
+    environment.pop("SVF_POLYHEDRA_TELEMETRY", None)
+    if not options.disable_operation_telemetry:
+        environment["SVF_OCTAGON_TELEMETRY" if domain == "octagon"
+                    else "SVF_POLYHEDRA_TELEMETRY"] = "stderr"
     environment["SVF_RELATIONAL_SELECTION_ONLY"] = "1"
     command = [
         options.runner, "-ae-sparsity=dense", "-ae-dense-legacy-interval=false",
@@ -227,13 +230,13 @@ def run_once(options: argparse.Namespace, benchmark: dict[str, str | pathlib.Pat
     label = str(benchmark["label"])
     environment = os.environ.copy()
     telemetry_path = ""
-    if domain == "octagon":
+    if domain == "octagon" and not options.disable_operation_telemetry:
         telemetry_path = str(options.telemetry_directory /
                              f"{label}-{candidate}-r{repetition}.csv")
         environment["SVF_OCTAGON_TELEMETRY"] = telemetry_path
     else:
         environment.pop("SVF_OCTAGON_TELEMETRY", None)
-    if domain == "polyhedra":
+    if domain == "polyhedra" and not options.disable_operation_telemetry:
         environment["SVF_POLYHEDRA_TELEMETRY"] = "stderr"
     else:
         environment.pop("SVF_POLYHEDRA_TELEMETRY", None)
@@ -344,6 +347,10 @@ def main() -> None:
     parser.add_argument("--runner-commit", default="unknown")
     parser.add_argument("--manifest-version")
     parser.add_argument("--semantic-checksum", action="store_true")
+    parser.add_argument(
+        "--disable-operation-telemetry", action="store_true",
+        help="Disable Octagon/Polyhedra operation profiling for clean end-to-end timing.",
+    )
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--telemetry-directory", type=pathlib.Path, required=True)
     parser.add_argument("--log-directory", type=pathlib.Path)
