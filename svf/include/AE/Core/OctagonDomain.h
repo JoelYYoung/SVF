@@ -53,8 +53,9 @@ struct OctagonConfig
 /// One Octagon abstract element for constraints +/-x +/-y <= c.
 ///
 /// Unlike APRON's manager/value split, this object owns its environment,
-/// configuration, DBM representation, and algorithms.  Copies are deep value
-/// copies; clone() supplies polymorphic ownership when a caller needs the
+/// configuration, DBM representation, and algorithms. Copies have value
+/// semantics; component matrices may be shared copy-on-write until mutation.
+/// clone() supplies polymorphic ownership when a caller needs the
 /// AbstractState interface.
 class OctagonState final : public NumericalState
 {
@@ -99,6 +100,7 @@ public:
         const LinearAssignmentList& assignments) override;
     void assume(const LinearConstraint& constraint) override;
     void assume(const TreeConstraint& constraint) override;
+    void assumeAll(const LinearConstraintSet& constraints) override;
     void forget(Variable variable) override;
     void projectLowerBounds();
     void changeEnvironment(const VariableEnvironment& environment,

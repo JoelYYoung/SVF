@@ -200,6 +200,9 @@ Options parseOptions(int argc, char** argv)
         options.repetitions == 0)
         throw std::invalid_argument("invalid zero/range benchmark option");
     if (options.implementation != "native-octagon" &&
+        options.implementation != "native-dense-half" &&
+        options.implementation != "native-sparse-finite" &&
+        options.implementation != "native-component-dense" &&
         options.implementation != "apron-octagon")
         throw std::invalid_argument("unknown implementation");
     if (options.workload != "construct" &&
@@ -222,8 +225,14 @@ void benchmark(const Options& options)
         updateConstraint(environment, options.componentSize);
     OctagonConfig config;
     config.integerTightening = false;
+    if (options.implementation == "native-sparse-finite")
+        config.storage = OctagonStorageKind::SparseFinite;
+    else if (options.implementation == "native-component-dense")
+        config.storage = OctagonStorageKind::ComponentDense;
+    else
+        config.storage = OctagonStorageKind::DenseHalf;
     std::pair<double, double> timing;
-    if (options.implementation == "native-octagon")
+    if (options.implementation != "apron-octagon")
     {
         if (options.workload == "construct")
             timing = timeOperation(

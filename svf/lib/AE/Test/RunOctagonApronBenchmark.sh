@@ -13,14 +13,23 @@ output=$2
 
 for topology in block anchored; do
   for variables in 8 16 32; do
-    for implementation in native-octagon apron-octagon; do
+    for implementation in \
+      native-dense-half \
+      native-sparse-finite \
+      native-component-dense \
+      apron-octagon; do
       for workload in construct copy-update join; do
-        operations=5
-        if (( variables == 16 )); then
-          operations=2
-        elif (( variables == 32 )); then
-          operations=1
-        fi
+        case "$workload:$variables" in
+          construct:8) operations=50 ;;
+          construct:16) operations=20 ;;
+          construct:32) operations=5 ;;
+          copy-update:8) operations=500 ;;
+          copy-update:16) operations=250 ;;
+          copy-update:32) operations=100 ;;
+          join:8) operations=5000 ;;
+          join:16) operations=2000 ;;
+          join:32) operations=1000 ;;
+        esac
         "$benchmark" \
           --implementation "$implementation" \
           --workload "$workload" \

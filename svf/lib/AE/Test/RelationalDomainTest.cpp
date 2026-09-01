@@ -109,6 +109,10 @@ void testExactNumericLayer()
     const Rational oneThird("1/3");
     require(oneThird + oneThird + oneThird == Rational(1),
             "GMP rational arithmetic must be exact");
+    require(oneThird.dividedByPowerOfTwo(1) == Rational("1/6") &&
+                Bound::divideByTwo(Bound::finite(Rational("5/3"))).value() ==
+                    Rational("5/6"),
+            "power-of-two rational division must remain exact");
 
     const Rational halfFloatUlp("1/16777216");
     require(FloatSemantics::add(Rational(1), halfFloatUlp, 24,
@@ -447,6 +451,88 @@ void testSelectableOctagonStorageCarriers()
                     CheckResult::True,
                 std::string("call projection lost a=b for carrier: ") +
                     octagonStorageKindName(kind));
+    }
+}
+
+void testIncrementalClosureMatchesFullClosure()
+{
+    const std::vector<Variable> variables = {
+        Variable(101), Variable(102), Variable(103),
+        Variable(104), Variable(105), Variable(106)};
+    std::vector<VariableDeclaration> declarations;
+    for (std::size_t index = 0; index < variables.size(); ++index)
+        declarations.push_back(
+            {variables[index], NumericType::real(),
+             std::string("r") + std::to_string(index)});
+    const VariableEnvironment environment(std::move(declarations));
+
+    const LinearConstraintSet constraints = {
+        atMost(variables[0], Rational(7)),
+        atLeast(variables[0], Rational(-3)),
+        differenceEquals(variables[0], variables[1], Rational(2)),
+        signedSumAtMost(variables[1], 1, variables[2], 1, Rational(9)),
+        signedSumAtMost(variables[2], -1, variables[3], 1, Rational(4)),
+        differenceEquals(variables[3], variables[4], Rational("1/3")),
+        signedSumAtMost(variables[4], -1, variables[5], -1,
+                        Rational("5/2")),
+        signedSumAtMost(variables[5], 1, variables[0], -1,
+                        Rational("11/3")),
+        atMost(variables[3], Rational("13/4"))};
+
+    const std::vector<OctagonStorageKind> kinds = {
+        OctagonStorageKind::DenseHalf,
+        OctagonStorageKind::SparseFinite,
+        OctagonStorageKind::ComponentDense};
+    for (OctagonStorageKind kind : kinds)
+    {
+        OctagonConfig config;
+        config.integerTightening = false;
+        config.storage = kind;
+        OctagonState incremental = OctagonState::top(environment, config);
+        LinearConstraintSet prefix;
+        for (const LinearConstraint& constraint : constraints)
+        {
+            prefix.push_back(constraint);
+            incremental.assume(constraint);
+            const OctagonState full =
+                OctagonState::fromConstraints(environment, prefix, config);
+            require(incremental.isEquivalentTo(full) == CheckResult::True,
+                    std::string("incremental closure differs from full closure: ") +
+                        octagonStorageKindName(kind));
+        }
+
+        // Exercise many feasible updates and changing component shapes. The
+        // constants are chosen around a fixed witness point, so a premature
+        // bottom cannot hide an incremental/full-closure disagreement.
+        incremental = OctagonState::top(environment, config);
+        prefix.clear();
+        const std::vector<std::int64_t> witness = {-3, 1, 4, -2, 5, 0};
+        for (std::size_t step = 0; step < 48; ++step)
+        {
+            const std::size_t lhs = (5 * step + 1) % variables.size();
+            const std::size_t rhs =
+                (lhs + 1 + step % (variables.size() - 1)) % variables.size();
+            const int lhsSign = step % 2 == 0 ? 1 : -1;
+            const int rhsSign = step % 3 == 0 ? -1 : 1;
+            const std::int64_t slack =
+                static_cast<std::int64_t>(step % 4 + 1);
+            const Rational upper(
+                lhsSign * witness[lhs] + rhsSign * witness[rhs] + slack);
+            LinearExpression expression;
+            expression.setCoefficient(variables[lhs], Rational(lhsSign));
+            expression.setCoefficient(variables[rhs], Rational(rhsSign));
+            expression.setConstant(-upper);
+            prefix.emplace_back(
+                std::move(expression),
+                step % 7 == 0 ? ConstraintKind::LessThan
+                              : ConstraintKind::LessEqual);
+            incremental.assume(prefix.back());
+            const OctagonState full =
+                OctagonState::fromConstraints(environment, prefix, config);
+            require(incremental.isEquivalentTo(full) == CheckResult::True,
+                    std::string("incremental closure randomized prefix differs: ") +
+                        octagonStorageKindName(kind));
+        }
     }
 }
 
@@ -985,6 +1071,7 @@ int main()
         testStrictIntegerAndRealBounds();
         testEnvironmentChanges();
         testSelectableOctagonStorageCarriers();
+        testIncrementalClosureMatchesFullClosure();
         testLatticeAndZ3Soundness();
         testTopBottomIdentitiesAndQueries();
         testFallbacksConstantsAndOptions();

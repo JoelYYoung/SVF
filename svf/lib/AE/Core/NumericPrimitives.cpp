@@ -81,24 +81,41 @@ Rational Rational::ceil() const
     return Rational::fromRaw(mpq_class(result));
 }
 
+Rational Rational::dividedByPowerOfTwo(unsigned exponent) const
+{
+    Rational result;
+    mpq_div_2exp(result.value_.get_mpq_t(), value_.get_mpq_t(), exponent);
+    return result;
+}
+
+Rational& Rational::assignSum(const Rational& lhs, const Rational& rhs)
+{
+    mpq_add(value_.get_mpq_t(), lhs.value_.get_mpq_t(),
+            rhs.value_.get_mpq_t());
+    return *this;
+}
+
+Rational& Rational::divideByPowerOfTwoInPlace(unsigned exponent)
+{
+    mpq_div_2exp(value_.get_mpq_t(), value_.get_mpq_t(), exponent);
+    return *this;
+}
+
 Rational& Rational::operator+=(const Rational& rhs)
 {
     value_ += rhs.value_;
-    value_.canonicalize();
     return *this;
 }
 
 Rational& Rational::operator-=(const Rational& rhs)
 {
     value_ -= rhs.value_;
-    value_.canonicalize();
     return *this;
 }
 
 Rational& Rational::operator*=(const Rational& rhs)
 {
     value_ *= rhs.value_;
-    value_.canonicalize();
     return *this;
 }
 
@@ -107,7 +124,6 @@ Rational& Rational::operator/=(const Rational& rhs)
     if (rhs.isZero())
         throw std::domain_error("division by zero rational");
     value_ /= rhs.value_;
-    value_.canonicalize();
     return *this;
 }
 
@@ -177,6 +193,43 @@ Bound Bound::add(const Bound& lhs, const Bound& rhs)
     if (lhs.isPlusInfinity() || rhs.isPlusInfinity())
         return plusInfinity();
     return finite(lhs.value_ + rhs.value_, lhs.strict_ || rhs.strict_);
+}
+
+Bound& Bound::assignSum(const Bound& lhs, const Bound& rhs)
+{
+    if ((lhs.isMinusInfinity() && rhs.isPlusInfinity()) ||
+            (lhs.isPlusInfinity() && rhs.isMinusInfinity()))
+        throw std::domain_error("indeterminate sum of opposite infinities");
+    if (lhs.isMinusInfinity() || rhs.isMinusInfinity())
+    {
+        kind_ = Kind::MinusInfinity;
+        strict_ = false;
+        return *this;
+    }
+    if (lhs.isPlusInfinity() || rhs.isPlusInfinity())
+    {
+        kind_ = Kind::PlusInfinity;
+        strict_ = false;
+        return *this;
+    }
+    kind_ = Kind::Finite;
+    value_.assignSum(lhs.value_, rhs.value_);
+    strict_ = lhs.strict_ || rhs.strict_;
+    return *this;
+}
+
+Bound& Bound::divideByTwoInPlace()
+{
+    if (isFinite())
+        value_.divideByPowerOfTwoInPlace(1);
+    return *this;
+}
+
+Bound Bound::divideByTwo(const Bound& bound)
+{
+    if (!bound.isFinite())
+        return bound;
+    return finite(bound.value_.dividedByPowerOfTwo(1), bound.strict_);
 }
 
 Bound Bound::divideByPositive(const Bound& bound, const Rational& divisor)

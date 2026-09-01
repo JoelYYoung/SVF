@@ -49,6 +49,9 @@ public:
 
     Rational floor() const;
     Rational ceil() const;
+    Rational dividedByPowerOfTwo(unsigned exponent) const;
+    Rational& assignSum(const Rational& lhs, const Rational& rhs);
+    Rational& divideByPowerOfTwoInPlace(unsigned exponent);
 
     Rational& operator+=(const Rational& rhs);
     Rational& operator-=(const Rational& rhs);
@@ -136,6 +139,9 @@ public:
     static Bound min(const Bound& lhs, const Bound& rhs);
     static Bound max(const Bound& lhs, const Bound& rhs);
     static Bound add(const Bound& lhs, const Bound& rhs);
+    Bound& assignSum(const Bound& lhs, const Bound& rhs);
+    Bound& divideByTwoInPlace();
+    static Bound divideByTwo(const Bound& bound);
     static Bound divideByPositive(const Bound& bound,
                                   const Rational& divisor);
 

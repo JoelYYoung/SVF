@@ -11,6 +11,7 @@
 #include <limits>
 #include <map>
 #include <mutex>
+#include <numeric>
 #include <optional>
 #include <set>
 #include <sstream>
@@ -86,6 +87,27 @@ public:
         return 2 * dimensions;
     }
 
+    std::vector<std::size_t> closureNodes(Dimension variable) const
+    {
+        std::vector<std::size_t> result;
+        if (kind_ != OctagonStorageKind::ComponentDense)
+        {
+            result.resize(nodes());
+            std::iota(result.begin(), result.end(), 0);
+            return result;
+        }
+        const std::size_t owner = componentOwner_[variable];
+        if (owner == noComponent())
+            return {positiveNode(variable), negativeNode(variable)};
+        result.reserve(2 * components_[owner].variables.size());
+        for (const std::size_t member : components_[owner].variables)
+        {
+            result.push_back(positiveNode(member));
+            result.push_back(negativeNode(member));
+        }
+        return result;
+    }
+
     const Bound& at(std::size_t row, std::size_t column) const
     {
         switch (kind_)
@@ -120,6 +142,15 @@ public:
         throw std::logic_error("unknown Octagon storage kind");
     }
 
+    bool tighten(std::size_t row, std::size_t column,
+                 const Bound& candidate)
+    {
+        if (!(candidate < at(row, column)))
+            return false;
+        set(row, column, candidate);
+        return true;
+    }
+
     OctagonStorage converted(OctagonStorageKind kind) const
     {
         if (kind == kind_)
@@ -146,7 +177,7 @@ public:
         case OctagonStorageKind::ComponentDense: {
             std::size_t result = 0;
             for (const Component& component : components_)
-                result += component.matrix.size();
+                result += component.matrix->size();
             return result;
         }
         }
@@ -170,7 +201,7 @@ public:
             break;
         case OctagonStorageKind::ComponentDense:
             for (const Component& component : components_)
-                for (const Bound& value : component.matrix)
+                for (const Bound& value : *component.matrix)
                     result += static_cast<std::size_t>(value.isFinite());
             // Diagonal zeroes outside components are implicit.
             for (std::size_t owner : componentOwner_)
@@ -212,7 +243,7 @@ private:
     struct Component
     {
         std::vector<std::size_t> variables;
-        std::vector<Bound> matrix;
+        std::shared_ptr<std::vector<Bound>> matrix;
     };
 
     /// APRON's hmat layout stores triangular 2x2 variable blocks. Coherent
@@ -289,7 +320,7 @@ private:
         const std::size_t localRow = 2 * componentLocal_[rowVariable] + row % 2;
         const std::size_t localColumn =
             2 * componentLocal_[columnVariable] + column % 2;
-        return components_[owner].matrix[matrixIndex(localRow, localColumn)];
+        return (*components_[owner].matrix)[matrixIndex(localRow, localColumn)];
     }
 
     std::size_t createComponent(std::size_t variable)
@@ -297,9 +328,10 @@ private:
         const std::size_t owner = components_.size();
         Component component;
         component.variables.push_back(variable);
-        component.matrix.resize(matrixSize(1));
-        component.matrix[matrixIndex(0, 0)] = zero();
-        component.matrix[matrixIndex(1, 1)] = zero();
+        component.matrix =
+            std::make_shared<std::vector<Bound>>(matrixSize(1));
+        (*component.matrix)[matrixIndex(0, 0)] = zero();
+        (*component.matrix)[matrixIndex(1, 1)] = zero();
         components_.push_back(std::move(component));
         componentOwner_[variable] = owner;
         componentLocal_[variable] = 0;
@@ -331,12 +363,12 @@ private:
         for (std::size_t row = 0; row < 2 * oldSize; ++row)
             for (std::size_t column = 0; column < 2 * oldSize; ++column)
                 merged[matrixIndex(row, column)] =
-                    lhs.matrix[matrixIndex(row, column)];
+                    (*lhs.matrix)[matrixIndex(row, column)];
         for (std::size_t row = 0; row < 2 * rhs.variables.size(); ++row)
             for (std::size_t column = 0; column < 2 * rhs.variables.size();
                     ++column)
                 merged[matrixIndex(2 * oldSize + row, 2 * oldSize + column)] =
-                    rhs.matrix[matrixIndex(row, column)];
+                    (*rhs.matrix)[matrixIndex(row, column)];
 
         for (std::size_t variable : rhs.variables)
         {
@@ -344,7 +376,8 @@ private:
             componentLocal_[variable] = lhs.variables.size();
             lhs.variables.push_back(variable);
         }
-        lhs.matrix = std::move(merged);
+        lhs.matrix =
+            std::make_shared<std::vector<Bound>>(std::move(merged));
 
         components_.erase(components_.begin() + rhsOwner);
         for (std::size_t variable = 0; variable < dimensions; ++variable)
@@ -368,7 +401,9 @@ private:
                 2 * componentLocal_[rowVariable] + row % 2;
             const std::size_t localColumn =
                 2 * componentLocal_[columnVariable] + column % 2;
-            components_[owner].matrix[matrixIndex(localRow, localColumn)] = value;
+            ensureUniqueMatrix(owner);
+            (*components_[owner].matrix)[matrixIndex(localRow, localColumn)] =
+                value;
             return;
         }
         if (row == column && value == zero() &&
@@ -381,7 +416,16 @@ private:
             2 * componentLocal_[rowVariable] + row % 2;
         const std::size_t localColumn =
             2 * componentLocal_[columnVariable] + column % 2;
-        components_[owner].matrix[matrixIndex(localRow, localColumn)] = value;
+        ensureUniqueMatrix(owner);
+        (*components_[owner].matrix)[matrixIndex(localRow, localColumn)] = value;
+    }
+
+    void ensureUniqueMatrix(std::size_t owner)
+    {
+        Component& component = components_[owner];
+        if (component.matrix.use_count() != 1)
+            component.matrix =
+                std::make_shared<std::vector<Bound>>(*component.matrix);
     }
 
     static std::vector<NumericKind> extractVariableKinds(
@@ -953,6 +997,23 @@ public:
                              const LinearConstraint& constraint) const
     {
         OctagonStorage& state = asOctagon(genericState);
+        const bool wasClosed = state.stronglyClosed;
+        std::optional<Dimension> touchedVariable;
+        const ApproximationKind approximation =
+            addAssumption(state, environment, constraint, &touchedVariable);
+        if (wasClosed && approximation == ApproximationKind::Exact &&
+            touchedVariable && !options_.integerTightening)
+            incrementalClose(state, *touchedVariable);
+        else
+            normalize(state, environment);
+        return approximation;
+    }
+
+    ApproximationKind addAssumption(
+        OctagonStorage& state, const VariableEnvironment& environment,
+        const LinearConstraint& constraint,
+        std::optional<Dimension>* touchedVariable = nullptr) const
+    {
         requireVariables(environment, constraint.expression());
         for (const auto& [variable, coefficient] :
              constraint.expression().terms())
@@ -961,9 +1022,19 @@ public:
             if (environment.typeOf(variable).kind == NumericKind::IEEEFloat)
                 return ApproximationKind::UnsupportedFallback;
         }
-
         const bool exact = addConstraint(state, environment, constraint);
-        normalize(state, environment);
+        if (exact && touchedVariable)
+        {
+            for (const auto& [variable, coefficient] :
+                 constraint.expression().terms())
+            {
+                if (!coefficient.isZero())
+                {
+                    *touchedVariable = environment.dimensionOf(variable);
+                    break;
+                }
+            }
+        }
         return exact ? ApproximationKind::Exact
                      : ApproximationKind::SoundOverApproximation;
     }
@@ -992,15 +1063,27 @@ public:
         if (rhs.bottom)
             return lhs.clone();
 
-        auto result = std::make_unique<OctagonStorage>(
-            lhs.variableKinds, lhs.kind(), OctagonStorage::ScratchMatrixTag{});
+        // Start from lhs so component-dense copies retain their copy-on-write
+        // matrices. Only cells for which rhs is strictly looser need to be
+        // detached and replaced. Iterate the coherent physical half-matrix;
+        // the reflected logical entry shares the same carrier slot.
+        auto result = lhs.clone();
+        bool removedFiniteRelation = false;
         for (std::size_t row = 0; row < result->nodes(); ++row)
-            for (std::size_t column = 0; column < result->nodes(); ++column)
+            for (std::size_t column = 0; column <= (row | 1); ++column)
             {
                 const Bound& left = lhs.at(row, column);
                 const Bound& right = rhs.at(row, column);
-                result->set(row, column, left <= right ? right : left);
+                if (left < right)
+                {
+                    removedFiniteRelation =
+                        removedFiniteRelation ||
+                        (left.isFinite() && right.isPlusInfinity());
+                    result->set(row, column, right);
+                }
             }
+        if (removedFiniteRelation)
+            result->compactComponents();
 
         // Point-wise maximum preserves coherence and every closure inequality.
         // If R[i,j] comes from operand K, then
@@ -1304,10 +1387,11 @@ public:
         Bound lower = Bound::minusInfinity();
         Bound upper = Bound::plusInfinity();
         if (doubledUpper.isFinite())
-            upper = Bound::divideByPositive(doubledUpper, Rational(2));
+            upper = Bound::divideByTwo(doubledUpper);
         if (doubledNegativeLower.isFinite())
         {
-            lower = Bound::finite(-(doubledNegativeLower.value() / Rational(2)),
+            lower = Bound::finite(
+                -doubledNegativeLower.value().dividedByPowerOfTwo(1),
                                   doubledNegativeLower.isStrict());
         }
         return Interval(std::move(lower), std::move(upper));
@@ -1410,6 +1494,26 @@ public:
     {
         StorageTelemetryScope telemetry("abstract", "assume", state_);
         return assume(state_, environment, constraint);
+    }
+
+    ApproximationKind assumeAllCurrent(
+        const VariableEnvironment& environment,
+        const LinearConstraintSet& constraints)
+    {
+        StorageTelemetryScope telemetry("abstract", "assume-all", state_);
+        ApproximationKind result = ApproximationKind::Exact;
+        for (const LinearConstraint& constraint : constraints)
+        {
+            const ApproximationKind current =
+                addAssumption(state_, environment, constraint);
+            if (current == ApproximationKind::UnsupportedFallback)
+                result = current;
+            else if (current != ApproximationKind::Exact &&
+                     result == ApproximationKind::Exact)
+                result = current;
+        }
+        normalize(state_, environment);
+        return result;
     }
 
     void forgetCurrent(const VariableEnvironment& environment, Variable variable)
@@ -1617,11 +1721,10 @@ private:
     void setCoherent(OctagonStorage& state, std::size_t row, std::size_t column,
                      const Bound& bound) const
     {
-        state.set(row, column, Bound::min(state.at(row, column), bound));
+        state.tighten(row, column, bound);
         const std::size_t coherentRow = opposite(column);
         const std::size_t coherentColumn = opposite(row);
-        state.set(coherentRow, coherentColumn,
-                  Bound::min(state.at(coherentRow, coherentColumn), bound));
+        state.tighten(coherentRow, coherentColumn, bound);
         state.stronglyClosed = false;
     }
 
@@ -2045,6 +2148,7 @@ private:
     {
         StorageTelemetryScope telemetry(
             "primitive", "shortest-path-closure", state);
+        Bound candidate;
         for (std::size_t middle = 0; middle < state.nodes(); ++middle)
         {
             for (std::size_t row = 0; row < state.nodes(); ++row)
@@ -2055,10 +2159,9 @@ private:
                 {
                     if (state.at(middle, column).isPlusInfinity())
                         continue;
-                    const Bound candidate = Bound::add(
-                        state.at(row, middle), state.at(middle, column));
-                    state.set(row, column,
-                              Bound::min(state.at(row, column), candidate));
+                    candidate.assignSum(state.at(row, middle),
+                                        state.at(middle, column));
+                    state.tighten(row, column, candidate);
                 }
             }
         }
@@ -2086,6 +2189,7 @@ private:
         StorageTelemetryScope telemetry("primitive", "strong-closure", state);
         if (!options_.strongClosure)
             return;
+        Bound candidate;
         for (std::size_t row = 0; row < state.nodes(); ++row)
         {
             for (std::size_t column = 0; column < state.nodes(); ++column)
@@ -2094,10 +2198,8 @@ private:
                 const Bound& rhs = state.at(opposite(column), column);
                 if (lhs.isPlusInfinity() || rhs.isPlusInfinity())
                     continue;
-                const Bound candidate =
-                    Bound::divideByPositive(Bound::add(lhs, rhs), Rational(2));
-                state.set(row, column,
-                          Bound::min(state.at(row, column), candidate));
+                candidate.assignSum(lhs, rhs).divideByTwoInPlace();
+                state.tighten(row, column, candidate);
             }
         }
     }
@@ -2113,6 +2215,100 @@ private:
             }
         }
         return state.bottom;
+    }
+
+    /// Restore closure after adding exact constraints that all involve one
+    /// variable to an already strongly closed DBM. This is the logical-matrix
+    /// form of APRON octagons' hmat_close_incremental: first repair rows and
+    /// columns incident to the changed variable, then use its two signed nodes
+    /// as the only new pivots. The unaffected submatrix was already closed, so
+    /// the work is quadratic rather than cubic.
+    void incrementalClose(OctagonStorage& state, Dimension variable) const
+    {
+        StorageTelemetryScope telemetry(
+            "primitive", "incremental-closure", state, true);
+        if (state.bottom)
+            return;
+        const std::vector<std::size_t> nodes = state.closureNodes(variable);
+        const std::size_t first = positiveNode(variable);
+        const std::size_t last = negativeNode(variable);
+        Bound candidate;
+        const auto relax = [&](std::size_t row, std::size_t column,
+                               const Bound& lhs, const Bound& rhs)
+        {
+            if (lhs.isPlusInfinity() || rhs.isPlusInfinity())
+                return;
+            candidate.assignSum(lhs, rhs);
+            state.tighten(row, column, candidate);
+        };
+
+        for (const std::size_t pivot : nodes)
+        {
+            const std::size_t pairedPivot = opposite(pivot);
+            for (std::size_t endpoint = first; endpoint <= last; ++endpoint)
+            {
+                const Bound endpointPivot = state.at(endpoint, pivot);
+                const Bound endpointPaired =
+                    state.at(endpoint, pairedPivot);
+                for (const std::size_t column : nodes)
+                {
+                    relax(endpoint, column, endpointPivot,
+                          state.at(pivot, column));
+                    relax(endpoint, column, endpointPaired,
+                          state.at(pairedPivot, column));
+                }
+            }
+        }
+
+        for (std::size_t pivot = first; pivot <= last; ++pivot)
+        {
+            const std::size_t pairedPivot = opposite(pivot);
+            for (std::size_t rowIndex = 0; rowIndex < nodes.size(); ++rowIndex)
+            {
+                const std::size_t row = nodes[rowIndex];
+                const Bound rowPivot = state.at(row, pivot);
+                const Bound rowPaired = state.at(row, pairedPivot);
+                // The carrier stores one coherent half-matrix cell for both
+                // (row,column) and (!column,!row). Visiting only the physical
+                // half avoids computing every relaxation twice.
+                for (std::size_t columnIndex = 0;
+                     columnIndex <= (rowIndex | 1); ++columnIndex)
+                {
+                    const std::size_t column = nodes[columnIndex];
+                    relax(row, column, rowPivot,
+                          state.at(pivot, column));
+                    relax(row, column, rowPaired,
+                          state.at(pairedPivot, column));
+                }
+            }
+        }
+
+        if (detectBottom(state))
+            return;
+        {
+            StorageTelemetryScope strongTelemetry(
+                "primitive", "strong-closure", state);
+            if (options_.strongClosure)
+                for (std::size_t rowIndex = 0;
+                     rowIndex < nodes.size(); ++rowIndex)
+                    for (std::size_t columnIndex = 0;
+                         columnIndex <= (rowIndex | 1); ++columnIndex)
+                    {
+                        const std::size_t row = nodes[rowIndex];
+                        const std::size_t column = nodes[columnIndex];
+                        const Bound& lhs = state.at(row, opposite(row));
+                        const Bound& rhs =
+                            state.at(opposite(column), column);
+                        if (lhs.isPlusInfinity() || rhs.isPlusInfinity())
+                            continue;
+                        candidate.assignSum(lhs, rhs).divideByTwoInPlace();
+                        state.tighten(row, column, candidate);
+                    }
+        }
+        // Off-diagonal coherent pairs are one physical half-matrix slot. Main
+        // diagonals remain zero unless detectBottom above found a negative
+        // cycle, so no separate full-matrix coherence pass is needed here.
+        state.stronglyClosed = true;
     }
 
     void normalize(OctagonStorage& state) const
@@ -2363,6 +2559,42 @@ void OctagonState::assume(const LinearConstraint& constraint)
            std::string(name()) +
                " ignored or approximated an unsupported constraint",
            approximation == ApproximationKind::Exact);
+}
+
+void OctagonState::assumeAll(const LinearConstraintSet& constraints)
+{
+    if (constraints.empty())
+    {
+        recordOperation(OperationKind::Assumption, ApproximationKind::Exact,
+                        true);
+        return;
+    }
+    if (constraints.size() == 1)
+    {
+        assume(constraints.front());
+        return;
+    }
+
+    // Exact octagonal rows can be inserted into one dirty DBM and closed once.
+    // Closing after every row is semantically redundant and turns bulk
+    // construction into constraints-times-cubic work. Constraints requiring
+    // interval linearization still iterate to the same fixed point as the
+    // generic implementation, while exact rows within a pass share closure.
+    const std::size_t limit =
+        constraints.size() * (environment_.size() + 1) + 1;
+    for (std::size_t pass = 0; pass < limit; ++pass)
+    {
+        const std::unique_ptr<AbstractState> before = clone();
+        const ApproximationKind approximation =
+            impl_->assumeAllCurrent(environment_, constraints);
+        report(OperationKind::Assumption, approximation,
+               std::string(name()) +
+                   " ignored or approximated an unsupported constraint",
+               approximation == ApproximationKind::Exact);
+        if (approximation == ApproximationKind::Exact || isBottom() ||
+            isEquivalentTo(*before) == CheckResult::True)
+            return;
+    }
 }
 
 void OctagonState::assume(const TreeConstraint& constraint)
