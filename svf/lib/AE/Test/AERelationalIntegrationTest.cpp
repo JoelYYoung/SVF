@@ -38,6 +38,30 @@ using DenseBoxState = AD::DomainProductState<AD::BoxState>;
 using DensePolyhedraState =
     AD::DomainProductState<AD::ConvexPolyhedraState>;
 
+template <typename NumericalStateT>
+std::uint64_t supportNormalizedHash(const NumericalStateT& numerical)
+{
+    const AD::LinearConstraintSet constraints = numerical.toConstraints();
+    std::set<AD::Variable> support;
+    for (const AD::LinearConstraint& constraint : constraints)
+        for (const auto& [variable, coefficient] :
+             constraint.expression().terms())
+        {
+            (void)coefficient;
+            support.insert(variable);
+        }
+    std::vector<AD::VariableDeclaration> declarations;
+    declarations.reserve(support.size());
+    for (const AD::VariableDeclaration& declaration :
+         numerical.environment().variables())
+        if (support.count(declaration.variable) != 0)
+            declarations.push_back(declaration);
+    NumericalStateT projected = numerical;
+    projected.changeEnvironment(AD::VariableEnvironment(
+        std::move(declarations)));
+    return projected.hash();
+}
+
 template <typename DenseState>
 void reportNumericalSemanticChecksum(const char* domain,
                                      AbstractInterpretation& analysis)
@@ -116,7 +140,8 @@ void reportNumericalSemanticChecksum(const char* domain,
                 std::string("AE numerical checksum expected dense ") +
                 domain + " product state");
         const auto& state = static_cast<const DenseState&>(abstractState);
-        states.emplace_back(node->getId(), state.numerical().hash());
+        states.emplace_back(node->getId(),
+                            supportNormalizedHash(state.numerical()));
         if (dumpNode == node->getId())
         {
             std::cout << "AE_NUMERICAL_STATE_DUMP domain=" << domain

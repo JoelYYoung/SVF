@@ -12,6 +12,7 @@
 #include <iomanip>
 #include <iostream>
 #include <optional>
+#include <set>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -24,6 +25,31 @@ namespace
 
 using DenseApronState = AbstractDomain::DomainProductState<
     AbstractDomain::ApronOctagonState>;
+
+std::uint64_t supportNormalizedHash(
+    const AbstractDomain::ApronOctagonState& numerical)
+{
+    const AbstractDomain::LinearConstraintSet constraints =
+        numerical.toConstraints();
+    std::set<AbstractDomain::Variable> support;
+    for (const AbstractDomain::LinearConstraint& constraint : constraints)
+        for (const auto& [variable, coefficient] :
+             constraint.expression().terms())
+        {
+            (void)coefficient;
+            support.insert(variable);
+        }
+    std::vector<AbstractDomain::VariableDeclaration> declarations;
+    declarations.reserve(support.size());
+    for (const AbstractDomain::VariableDeclaration& declaration :
+         numerical.environment().variables())
+        if (support.count(declaration.variable) != 0)
+            declarations.push_back(declaration);
+    AbstractDomain::ApronOctagonState projected = numerical;
+    projected.changeEnvironment(AbstractDomain::VariableEnvironment(
+        std::move(declarations)));
+    return projected.hash();
+}
 
 void reportSemanticChecksum(
     DenseAbstractInterpretation<AbstractDomain::ApronOctagonState>& analysis)
@@ -52,7 +78,8 @@ void reportSemanticChecksum(
             throw std::runtime_error(
                 "APRON checksum expected a dense product state");
         const auto& state = static_cast<const DenseApronState&>(abstractState);
-        states.emplace_back(node->getId(), state.numerical().hash());
+        states.emplace_back(node->getId(),
+                            supportNormalizedHash(state.numerical()));
         if (dumpNode == node->getId())
         {
             const auto canonical = AbstractDomain::OctagonState::fromConstraints(
