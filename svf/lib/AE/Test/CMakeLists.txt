@@ -219,6 +219,9 @@ if(APRON_INCLUDE_DIR AND APRON_LIBRARY AND APRON_POLKA_LIBRARY)
                                      ${APRON_LIBRARY}
                                      MPFR::MPFR GMP::GMPXX m
       )
+      get_filename_component(APRON_LIBRARY_DIR ${APRON_LIBRARY} DIRECTORY)
+      set_property(TARGET svf-apron-octagon-ae APPEND PROPERTY
+                   BUILD_RPATH ${APRON_LIBRARY_DIR})
     endif()
   endif()
   message(STATUS "APRON/NewPolka differential tests enabled")
