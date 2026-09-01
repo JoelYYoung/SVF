@@ -5,11 +5,14 @@
 #include "SVFIR/SVFIR.h"
 #include "Util/Options.h"
 
+#include <algorithm>
 #include <iostream>
 #include <limits>
 #include <stdexcept>
+#include <tuple>
 #include <type_traits>
 #include <utility>
+#include <vector>
 
 namespace SVF
 {
@@ -18,6 +21,21 @@ namespace AD = AbstractDomain;
 
 namespace
 {
+
+std::vector<const ICFGEdge*> orderedIncomingEdges(const ICFGNode* node)
+{
+    std::vector<const ICFGEdge*> edges(node->getInEdges().begin(),
+                                       node->getInEdges().end());
+    std::sort(edges.begin(), edges.end(),
+              [](const ICFGEdge* lhs, const ICFGEdge* rhs)
+              {
+                  return std::make_tuple(lhs->getSrcID(),
+                                         lhs->getEdgeKindWithoutMask()) <
+                         std::make_tuple(rhs->getSrcID(),
+                                         rhs->getEdgeKindWithoutMask());
+              });
+    return edges;
+}
 
 s64_t toSigned64(const mpz_class& value, bool upper)
 {
@@ -952,7 +970,7 @@ bool DenseAbstractInterpretation<NumericalStateT>::mergeStatesFromPredecessors(
     DenseState merged = bottomState(node);
     bool hasFeasiblePredecessor = false;
 
-    for (const ICFGEdge* edge : node->getInEdges())
+    for (const ICFGEdge* edge : orderedIncomingEdges(node))
     {
         const ICFGNode* predecessor = edge->getSrcNode();
         if (denseTrace_.count(predecessor) == 0)

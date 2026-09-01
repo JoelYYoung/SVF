@@ -43,12 +43,29 @@
 #include <cstdlib>
 #include <memory>
 #include <stdexcept>
+#include <tuple>
+#include <vector>
 
 using namespace SVF;
 using namespace SVFUtil;
 
 namespace
 {
+
+std::vector<const ICFGEdge*> orderedIncomingEdges(const ICFGNode* node)
+{
+    std::vector<const ICFGEdge*> edges(node->getInEdges().begin(),
+                                       node->getInEdges().end());
+    std::sort(edges.begin(), edges.end(),
+              [](const ICFGEdge* lhs, const ICFGEdge* rhs)
+              {
+                  return std::make_tuple(lhs->getSrcID(),
+                                         lhs->getEdgeKindWithoutMask()) <
+                         std::make_tuple(rhs->getSrcID(),
+                                         rhs->getEdgeKindWithoutMask());
+              });
+    return edges;
+}
 
 #ifdef SVF_BUILD_ABSTRACT_DOMAINS
 std::size_t largestDenseEnvironment(const SVFIR& graph)
@@ -504,7 +521,7 @@ bool AbstractInterpretation::mergeStatesFromPredecessors(const ICFGNode* node)
         hasFeasiblePred = true;
     };
 
-    for (auto& edge : node->getInEdges())
+    for (const ICFGEdge* edge : orderedIncomingEdges(node))
     {
         const ICFGNode* pred = edge->getSrcNode();
         if (!hasAbsState(pred))
@@ -1139,7 +1156,14 @@ void AbstractInterpretation::handleFunCall(const CallICFGNode *callNode)
     if (callGraph->hasIndCSCallees(callNode))
     {
         const auto& callees = callGraph->getIndCSCallees(callNode);
-        for (const FunObjVar* callee : callees)
+        std::vector<const FunObjVar*> orderedCallees(callees.begin(),
+                                                     callees.end());
+        std::sort(orderedCallees.begin(), orderedCallees.end(),
+                  [](const FunObjVar* lhs, const FunObjVar* rhs)
+                  {
+                      return lhs->getId() < rhs->getId();
+                  });
+        for (const FunObjVar* callee : orderedCallees)
         {
             if (callee->isDeclaration())
                 continue;
