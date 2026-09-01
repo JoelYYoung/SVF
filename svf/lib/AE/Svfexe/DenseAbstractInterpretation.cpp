@@ -1032,8 +1032,10 @@ bool DenseAbstractInterpretation<NumericalStateT>::isBranchEdgeFeasibleAt(
     return !candidate.isBottom();
 }
 
+#ifndef SVF_DENSE_AE_SUPPRESS_EXPLICIT_INSTANTIATIONS
 template class DenseAbstractInterpretation<AD::BoxState>;
 template class DenseAbstractInterpretation<AD::OctagonState>;
 template class DenseAbstractInterpretation<AD::ConvexPolyhedraState>;
+#endif
 
 } // namespace SVF

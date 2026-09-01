@@ -188,6 +188,38 @@ if(APRON_INCLUDE_DIR AND APRON_LIBRARY AND APRON_POLKA_LIBRARY)
                                           ${APRON_LIBRARY}
                                           MPFR::MPFR GMP::GMPXX m
     )
+    add_executable(svf-apron-octagon-adapter-test
+                   ApronOctagonAdapterTest.cpp ApronOctagonState.cpp)
+    target_include_directories(
+      svf-apron-octagon-adapter-test PRIVATE ${CMAKE_CURRENT_LIST_DIR}
+                                             ${APRON_INCLUDE_DIR}
+    )
+    target_link_libraries(
+      svf-apron-octagon-adapter-test PRIVATE AbstractDomainCore
+                                             ${APRON_OCTAGON_LIBRARY}
+                                             ${APRON_LIBRARY}
+                                             MPFR::MPFR GMP::GMPXX m
+    )
+    add_test(NAME apron-octagon-adapter-differential
+             COMMAND svf-apron-octagon-adapter-test)
+    if(TARGET SvfLLVM)
+      add_executable(
+        svf-apron-octagon-ae
+        ApronOctagonAE.cpp
+        ApronOctagonState.cpp
+        ApronDenseAbstractInterpretation.cpp
+      )
+      target_include_directories(
+        svf-apron-octagon-ae PRIVATE ${CMAKE_CURRENT_LIST_DIR}
+                                     ${APRON_INCLUDE_DIR}
+      )
+      target_link_libraries(
+        svf-apron-octagon-ae PRIVATE SvfLLVM
+                                     ${APRON_OCTAGON_LIBRARY}
+                                     ${APRON_LIBRARY}
+                                     MPFR::MPFR GMP::GMPXX m
+      )
+    endif()
   endif()
   message(STATUS "APRON/NewPolka differential tests enabled")
 endif()

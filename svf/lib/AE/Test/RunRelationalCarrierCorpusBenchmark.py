@@ -35,6 +35,10 @@ CANDIDATES = {
     "octagon-component-dense": {
         "domain": "octagon", "carrier": "component-dense", "storage": "component-dense",
     },
+    "apron-octagon": {
+        "domain": "octagon", "carrier": "apron-octMPQ", "storage": "dense-half",
+        "runner": "apron",
+    },
     "polyhedra-native-hv": {
         "domain": "polyhedra", "carrier": "native-hv-dense", "storage": "",
     },
@@ -157,7 +161,7 @@ def probe_dimensions(options: argparse.Namespace, input_path: pathlib.Path,
                 else "SVF_POLYHEDRA_TELEMETRY"] = "stderr"
     environment["SVF_RELATIONAL_SELECTION_ONLY"] = "1"
     command = [
-        options.runner, "-ae-sparsity=dense", "-ae-dense-legacy-interval=false",
+        options.probe_runner, "-ae-sparsity=dense", "-ae-dense-legacy-interval=false",
         f"-ae-dense-octagon={'true' if domain == 'octagon' else 'false'}",
         f"-ae-dense-octagon-max-dimensions={options.dimension_limit}",
         "-ae-octagon-storage=dense-half",
@@ -192,7 +196,8 @@ def base_row(options: argparse.Namespace, benchmark: dict[str, str | pathlib.Pat
         "run_id": f"{options.manifest_sha256[:12]}:{label}:{candidate}:r{repetition}",
         "timestamp_utc": dt.datetime.now(dt.timezone.utc).isoformat(),
         "host": platform.node(), "runner_commit": options.runner_commit,
-        "runner_sha256": options.runner_sha256,
+        "runner_sha256": options.runner_sha256_by_kind[
+            CANDIDATES[candidate].get("runner", "native")],
         "extapi_sha256": options.extapi_sha256,
         "manifest_version": options.manifest_version,
         "manifest_sha256": options.manifest_sha256, "input": label,
@@ -253,7 +258,8 @@ def run_once(options: argparse.Namespace, benchmark: dict[str, str | pathlib.Pat
     log_path = options.log_directory / f"{label}-{candidate}-r{repetition}.log"
     with tempfile.NamedTemporaryFile() as time_output:
         command = [
-            "/usr/bin/time", time_flag, "-o", time_output.name, options.runner,
+            "/usr/bin/time", time_flag, "-o", time_output.name,
+            options.runners[config.get("runner", "native")],
             "-ae-sparsity=dense", "-ae-dense-legacy-interval=false",
             f"-ae-dense-octagon={'true' if octagon else 'false'}",
             f"-ae-dense-octagon-max-dimensions={options.dimension_limit}",
@@ -332,6 +338,8 @@ def run_once(options: argparse.Namespace, benchmark: dict[str, str | pathlib.Pat
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--runner", required=True)
+    parser.add_argument("--apron-runner")
+    parser.add_argument("--probe-runner")
     parser.add_argument("--extapi", required=True)
     parser.add_argument("--input", action="append", type=parse_input, metavar="LABEL=PATH")
     parser.add_argument("--manifest", type=pathlib.Path)
@@ -372,18 +380,38 @@ def main() -> None:
         parser.error("limits and repetitions must be positive")
 
     options.runner = str(pathlib.Path(options.runner).resolve())
+    options.apron_runner = (str(pathlib.Path(options.apron_runner).resolve())
+                            if options.apron_runner else None)
+    options.probe_runner = str(pathlib.Path(
+        options.probe_runner or options.runner).resolve())
     options.extapi = str(pathlib.Path(options.extapi).resolve())
     if not pathlib.Path(options.runner).is_file():
         parser.error("--runner must name an existing file")
+    if options.apron_runner and not pathlib.Path(options.apron_runner).is_file():
+        parser.error("--apron-runner must name an existing file")
+    if not pathlib.Path(options.probe_runner).is_file():
+        parser.error("--probe-runner must name an existing file")
     if not pathlib.Path(options.extapi).is_file():
         parser.error("--extapi must name an existing file")
-    options.runner_sha256 = sha256(pathlib.Path(options.runner))
+    options.runners = {"native": options.runner}
+    options.runner_sha256_by_kind = {
+        "native": sha256(pathlib.Path(options.runner)),
+    }
+    if options.apron_runner:
+        options.runners["apron"] = options.apron_runner
+        options.runner_sha256_by_kind["apron"] = sha256(
+            pathlib.Path(options.apron_runner))
     options.extapi_sha256 = sha256(pathlib.Path(options.extapi))
     options.memory_limit_bytes = int(options.memory_limit_gib * 1024**3)
     options.telemetry_directory.mkdir(parents=True, exist_ok=True)
     options.log_directory = options.log_directory or options.output.parent / "logs"
     options.log_directory.mkdir(parents=True, exist_ok=True)
-    candidates = options.candidate or list(CANDIDATES)
+    candidates = options.candidate or [
+        name for name, config in CANDIDATES.items()
+        if config.get("runner", "native") != "apron" or options.apron_runner
+    ]
+    if ("apron-octagon" in candidates and not options.apron_runner):
+        parser.error("apron-octagon requires --apron-runner")
 
     if options.manifest:
         corpus_root = (options.corpus_root or options.manifest.parent.parent).resolve()
