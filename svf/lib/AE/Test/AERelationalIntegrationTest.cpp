@@ -83,8 +83,17 @@ void reportNumericalSemanticChecksum(const char* domain,
                                              rhs->getDstID(),
                                              rhs->getEdgeKindWithoutMask());
                   });
+        const auto* valueVariable = SVFUtil::dyn_cast<ValVar>(variable);
+        const ICFGNode* variableNode =
+            valueVariable ? valueVariable->getICFGNode() : nullptr;
         std::cout << "AE_NUMERICAL_VARIABLE id=" << variableId
                   << " value=" << variable->toString()
+                  << " name=" << variable->getValueName()
+                  << " function="
+                  << (variable->getFunction()
+                          ? variable->getFunction()->getName()
+                          : "<global>")
+                  << " icfg=" << (variableNode ? variableNode->getId() : 0)
                   << " definitions=" << definitions.size() << '\n';
         for (const SVFStmt* definition : definitions)
             std::cout << "AE_NUMERICAL_VARIABLE_DEF id=" << variableId
