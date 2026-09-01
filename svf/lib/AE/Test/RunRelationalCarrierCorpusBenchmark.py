@@ -291,6 +291,12 @@ def run_once(options: argparse.Namespace, benchmark: dict[str, str | pathlib.Pat
             os.killpg(process.pid, signal.SIGKILL)
             output, _ = process.communicate()
             status = "timeout"
+        except KeyboardInterrupt:
+            os.killpg(process.pid, signal.SIGKILL)
+            process.communicate()
+            stop_event.set()
+            sampler.join()
+            raise
         stop_event.set()
         sampler.join()
         elapsed = time.perf_counter() - start

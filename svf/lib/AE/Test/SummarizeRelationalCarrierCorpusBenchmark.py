@@ -29,7 +29,9 @@ OCTAGON_CANDIDATES = (
     "octagon-dense-half",
     "octagon-sparse-finite",
     "octagon-component-dense",
+    "apron-octagon",
 )
+ALL_CANDIDATES = DEFAULT_CANDIDATES + ("apron-octagon",)
 
 
 def parse_args() -> argparse.Namespace:
@@ -43,7 +45,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--telemetry-output", type=Path)
     parser.add_argument("--telemetry-audit-output", type=Path)
     parser.add_argument(
-        "--candidate", action="append", choices=DEFAULT_CANDIDATES,
+        "--candidate", action="append", choices=ALL_CANDIDATES,
         help="Expected candidate; repeat to override the five-candidate default.",
     )
     return parser.parse_args()
@@ -119,14 +121,16 @@ def make_audit(
     output: list[dict[str, object]] = []
     for (input_name, repetition), candidates in sorted(groups.items()):
         missing = [name for name in expected if name not in candidates]
-        oct_rows = [candidates.get(name) for name in OCTAGON_CANDIDATES]
+        expected_octagons = tuple(
+            name for name in expected if name in OCTAGON_CANDIDATES)
+        oct_rows = [candidates.get(name) for name in expected_octagons]
         if any(row is None for row in oct_rows):
             octagon_gate = "incomplete"
             octagon_detail = "missing Octagon candidate"
         elif any(row["status"] != "pass" for row in oct_rows if row is not None):
             octagon_gate = "unavailable"
             octagon_detail = ";".join(
-                f"{name}={candidates[name]['status']}" for name in OCTAGON_CANDIDATES
+                f"{name}={candidates[name]['status']}" for name in expected_octagons
             )
         elif any(
             row.get("semantic_checksum_enabled") != "1"
@@ -145,7 +149,7 @@ def make_audit(
                 f"{name}={candidates[name]['analyzed_nodes']}/"
                 f"{candidates[name]['semantic_states']}/"
                 f"{candidates[name]['semantic_checksum']}"
-                for name in OCTAGON_CANDIDATES
+                for name in expected_octagons
             )
         output.append({
             "input": input_name,
