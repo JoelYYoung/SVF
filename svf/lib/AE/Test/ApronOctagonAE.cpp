@@ -71,7 +71,8 @@ void reportSemanticChecksum(
                     std::cout << ',';
                 first = false;
                 std::cout << declaration.variable.id() << ':'
-                          << static_cast<unsigned>(declaration.type.kind);
+                          << static_cast<unsigned>(declaration.type.kind) << ':'
+                          << declaration.name;
             }
             std::cout << '\n';
         }
