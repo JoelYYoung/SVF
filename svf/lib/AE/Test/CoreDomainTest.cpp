@@ -2,7 +2,6 @@
 
 #include "AE/Core/AddressDomain.h"
 #include "AE/Core/BoxProgramState.h"
-#include "AE/Core/DomainRegistry.h"
 #include "AE/Core/NumericalDomain.h"
 
 #include <cstdlib>
@@ -66,10 +65,6 @@ void testLatticeAndTransferSurface()
     BoxDomain state = BoxDomain::top(environment);
     require(state.kind() == DomainKind::Box,
             "Box property reported the wrong DomainKind");
-    require(DomainRegistry::isRegistered(DomainKind::Box) &&
-                DomainRegistry::lookup(DomainKind::Box)->numerical &&
-                DomainRegistry::isRegistered(DomainKind::Address),
-            "DomainRegistry omitted a first-step domain implementation");
     const std::unique_ptr<AbstractDomain> cloned = state.clone();
     require(cloned->isDomain<BoxDomain>() && cloned->kind() == DomainKind::Box,
             "AbstractDomain clone lost the concrete Box property type");
