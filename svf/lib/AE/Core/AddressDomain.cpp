@@ -62,6 +62,33 @@ bool AddressSet::contains(Location location) const
     return top_ || locations_.count(location) != 0;
 }
 
+bool AddressSet::hasIntersection(const AddressSet& other) const
+{
+    if (isBottom() || other.isBottom())
+        return false;
+    if (isTop() || other.isTop())
+        return true;
+    const auto* smaller = &locations_;
+    const auto* larger = &other.locations_;
+    if (larger->size() < smaller->size())
+        std::swap(smaller, larger);
+    return std::any_of(
+        smaller->begin(), smaller->end(),
+        [&](Location location) { return larger->count(location) != 0; });
+}
+
+std::size_t AddressSet::size() const
+{
+    if (top_)
+        throw std::logic_error("top address set has no finite size");
+    return locations_.size();
+}
+
+bool AddressSet::empty() const
+{
+    return isBottom();
+}
+
 const std::set<Location>& AddressSet::locations() const
 {
     if (top_)

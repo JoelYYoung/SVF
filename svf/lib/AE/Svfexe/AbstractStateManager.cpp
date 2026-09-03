@@ -1,277 +1,309 @@
-//===- AbstractStateManager.cpp -- AE state-access implementations ---//
-//
-//                     SVF: Static Value-Flow Analysis
-//
-// Copyright (C) <2013->  <Yulei Sui>
-//
-
-// This program is free software: you can redistribute it and/or modify
-// it under the terms of the GNU Affero General Public License as published by
-// the Free Software Foundation, either version 3 of the License, or
-// (at your option) any later version.
-
-// This program is distributed in the hope that it will be useful,
-// but WITHOUT ANY WARRANTY; without even the implied warranty of
-// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-// GNU Affero General Public License for more details.
-
-// You should have received a copy of the GNU Affero General Public License
-// along with this program.  If not, see <http://www.gnu.org/licenses/>.
-//
-//===----------------------------------------------------------------------===//
-//
-// Representation-independent GEP and type helpers shared by Box-backed
-// dense, semi-sparse, and full-sparse abstract execution.
-//
+//===- AbstractStateManager.cpp -- AE domain projection helpers --------===//
 
 #include "AE/Svfexe/AbstractInterpretation.h"
+
 #include "SVFIR/SVFIR.h"
 
-using namespace SVF;
+#include <algorithm>
 
-const AbstractDomain::AbstractDomain* AbstractInterpretation::
-    getScalarAbstractState(const FunObjVar*) const
+namespace SVF
+{
+
+namespace AD = AbstractDomain;
+
+namespace
+{
+
+s64_t finiteEndpoint(const AD::Bound& bound, s64_t fallback)
+{
+    if (!bound.isFinite())
+        return fallback;
+    try
+    {
+        return bound.value().toInt64();
+    }
+    catch (const std::exception&)
+    {
+        return fallback;
+    }
+}
+
+AD::Interval finiteInterval(s64_t lower, s64_t upper)
+{
+    return AD::Interval::closed(AD::Rational(lower), AD::Rational(upper));
+}
+
+} // namespace
+
+const AD::AbstractDomain* AbstractInterpretation::getScalarAbstractState(
+    const FunObjVar*) const
 {
     return nullptr;
 }
 
-const AbstractDomain::AbstractDomain* AbstractInterpretation::
-    getScalarAbstractState(const ValVar*) const
+const AD::AbstractDomain* AbstractInterpretation::getScalarAbstractState(
+    const ValVar*) const
 {
     return nullptr;
 }
 
 void AbstractInterpretation::finalizeAbstractState(const ICFGNode*) {}
 
-IntegerIntervalProjection AbstractInterpretation::getGepElementIndex(const GepStmt* gep)
+void AbstractInterpretation::updateInterval(const SVFVar* variable,
+                                            const AD::Interval& interval,
+                                            const ICFGNode* node)
+{
+    updateValue(variable, interval, AD::AddressSet::bottom(), node);
+}
+
+void AbstractInterpretation::updateAddressSet(const SVFVar* variable,
+                                              const AD::AddressSet& addresses,
+                                              const ICFGNode* node)
+{
+    updateValue(variable, AD::Interval::bottom(), addresses, node);
+}
+
+AD::Interval AbstractInterpretation::getGepElementIndex(const GepStmt* gep)
 {
     const ICFGNode* node = gep->getICFGNode();
     if (gep->isConstantOffset())
-        return IntegerIntervalProjection((s64_t)gep->accumulateConstantOffset());
+        return AD::Interval::singleton(
+            AD::Rational(static_cast<s64_t>(gep->accumulateConstantOffset())));
 
-    IntegerIntervalProjection res(0);
-    for (int i = gep->getOffsetVarAndGepTypePairVec().size() - 1; i >= 0; i--)
+    AD::Interval result = AD::Interval::singleton(AD::Rational());
+    for (int index =
+             static_cast<int>(gep->getOffsetVarAndGepTypePairVec().size()) - 1;
+         index >= 0; --index)
     {
-        const ValVar* var = gep->getOffsetVarAndGepTypePairVec()[i].first;
-        const SVFType* type = gep->getOffsetVarAndGepTypePairVec()[i].second;
+        const ValVar* variable =
+            gep->getOffsetVarAndGepTypePairVec()[index].first;
+        const SVFType* type =
+            gep->getOffsetVarAndGepTypePairVec()[index].second;
 
-        s64_t idxLb, idxUb;
-        if (const ConstIntValVar* constInt =
-                SVFUtil::dyn_cast<ConstIntValVar>(var))
-            idxLb = idxUb = constInt->getSExtValue();
+        s64_t lower = 0;
+        s64_t upper = 0;
+        if (const auto* integer = SVFUtil::dyn_cast<ConstIntValVar>(variable))
+        {
+            lower = upper = integer->getSExtValue();
+        }
         else
         {
-            IntegerIntervalProjection idxItv = getAbsValue(var, node).getInterval();
-            if (idxItv.isBottom())
-                idxLb = idxUb = 0;
-            else
-            {
-                idxLb = idxItv.lb().getIntNumeral();
-                idxUb = idxItv.ub().getIntNumeral();
-            }
+            const AD::Interval value = getInterval(variable, node);
+            lower = finiteEndpoint(value.lower(), 0);
+            upper = finiteEndpoint(value.upper(), Options::MaxFieldLimit());
         }
 
         if (SVFUtil::isa<SVFPointerType>(type))
         {
-            u32_t elemNum = gep->getAccessPath().getElementNum(
+            const u32_t elements = gep->getAccessPath().getElementNum(
                 gep->getAccessPath().gepSrcPointeeType());
-            idxLb = (double)Options::MaxFieldLimit() / elemNum < idxLb
+            lower = (double)Options::MaxFieldLimit() / elements < lower
                         ? Options::MaxFieldLimit()
-                        : idxLb * elemNum;
-            idxUb = (double)Options::MaxFieldLimit() / elemNum < idxUb
+                        : lower * elements;
+            upper = (double)Options::MaxFieldLimit() / elements < upper
                         ? Options::MaxFieldLimit()
-                        : idxUb * elemNum;
+                        : upper * elements;
+        }
+        else if (Options::ModelArrays())
+        {
+            const std::vector<u32_t>& flattened =
+                PAG::getPAG()->getTypeInfo(type)->getFlattenedElemIdxVec();
+            if (flattened.empty() ||
+                upper >= static_cast<APOffset>(flattened.size()) || lower < 0)
+            {
+                lower = upper = 0;
+            }
+            else
+            {
+                lower = PAG::getPAG()->getFlattenedElemIdx(type, lower);
+                upper = PAG::getPAG()->getFlattenedElemIdx(type, upper);
+            }
         }
         else
         {
-            if (Options::ModelArrays())
-            {
-                const std::vector<u32_t>& so =
-                    PAG::getPAG()->getTypeInfo(type)->getFlattenedElemIdxVec();
-                if (so.empty() || idxUb >= (APOffset)so.size() || idxLb < 0)
-                    idxLb = idxUb = 0;
-                else
-                {
-                    idxLb = PAG::getPAG()->getFlattenedElemIdx(type, idxLb);
-                    idxUb = PAG::getPAG()->getFlattenedElemIdx(type, idxUb);
-                }
-            }
-            else
-                idxLb = idxUb = 0;
+            lower = upper = 0;
         }
-        res = res + IntegerIntervalProjection(idxLb, idxUb);
+        result = AD::add(result, finiteInterval(lower, upper));
     }
-    res.meet_with(IntegerIntervalProjection((s64_t)0, (s64_t)Options::MaxFieldLimit()));
-    if (res.isBottom())
-        res = IntegerIntervalProjection(0);
-    return res;
+    result.meetWith(
+        finiteInterval(0, static_cast<s64_t>(Options::MaxFieldLimit())));
+    return result.isBottom() ? AD::Interval::singleton(AD::Rational()) : result;
 }
 
-IntegerIntervalProjection AbstractInterpretation::getGepByteOffset(const GepStmt* gep)
+AD::Interval AbstractInterpretation::getGepByteOffset(const GepStmt* gep)
 {
     const ICFGNode* node = gep->getICFGNode();
     if (gep->isConstantOffset())
-        return IntegerIntervalProjection((s64_t)gep->accumulateConstantByteOffset());
+        return AD::Interval::singleton(AD::Rational(
+            static_cast<s64_t>(gep->accumulateConstantByteOffset())));
 
-    IntegerIntervalProjection res(0);
-    for (int i = gep->getOffsetVarAndGepTypePairVec().size() - 1; i >= 0; i--)
+    AD::Interval result = AD::Interval::singleton(AD::Rational());
+    for (int index =
+             static_cast<int>(gep->getOffsetVarAndGepTypePairVec().size()) - 1;
+         index >= 0; --index)
     {
-        const ValVar* idxOperandVar =
-            gep->getOffsetVarAndGepTypePairVec()[i].first;
-        const SVFType* idxOperandType =
-            gep->getOffsetVarAndGepTypePairVec()[i].second;
+        const ValVar* variable =
+            gep->getOffsetVarAndGepTypePairVec()[index].first;
+        const SVFType* type =
+            gep->getOffsetVarAndGepTypePairVec()[index].second;
 
-        if (SVFUtil::isa<SVFArrayType>(idxOperandType) ||
-            SVFUtil::isa<SVFPointerType>(idxOperandType))
+        if (SVFUtil::isa<SVFArrayType>(type) ||
+            SVFUtil::isa<SVFPointerType>(type))
         {
-            u32_t elemByteSize = 1;
-            if (const SVFArrayType* arrOperandType =
-                    SVFUtil::dyn_cast<SVFArrayType>(idxOperandType))
-                elemByteSize =
-                    arrOperandType->getTypeOfElement()->getByteSize();
-            else if (SVFUtil::isa<SVFPointerType>(idxOperandType))
-                elemByteSize =
+            u32_t elementSize = 1;
+            if (const auto* array = SVFUtil::dyn_cast<SVFArrayType>(type))
+                elementSize = array->getTypeOfElement()->getByteSize();
+            else
+                elementSize =
                     gep->getAccessPath().gepSrcPointeeType()->getByteSize();
-            else
-                assert(false && "idxOperandType must be ArrType or PtrType");
 
-            if (const ConstIntValVar* op =
-                    SVFUtil::dyn_cast<ConstIntValVar>(idxOperandVar))
+            s64_t lower = 0;
+            s64_t upper = 0;
+            if (const auto* integer =
+                    SVFUtil::dyn_cast<ConstIntValVar>(variable))
             {
-                s64_t lb = (double)Options::MaxFieldLimit() / elemByteSize >=
-                                   op->getSExtValue()
-                               ? op->getSExtValue() * elemByteSize
-                               : Options::MaxFieldLimit();
-                res = res + IntegerIntervalProjection(lb, lb);
+                lower = upper = integer->getSExtValue();
             }
             else
             {
-                IntegerIntervalProjection idxVal =
-                    getAbsValue(idxOperandVar, node).getInterval();
-                if (idxVal.isBottom())
-                    res = res + IntegerIntervalProjection(0, 0);
-                else
-                {
-                    s64_t ub =
-                        (idxVal.ub().getIntNumeral() < 0) ? 0
-                        : (double)Options::MaxFieldLimit() / elemByteSize >=
-                                idxVal.ub().getIntNumeral()
-                            ? elemByteSize * idxVal.ub().getIntNumeral()
-                            : Options::MaxFieldLimit();
-                    s64_t lb =
-                        (idxVal.lb().getIntNumeral() < 0) ? 0
-                        : (double)Options::MaxFieldLimit() / elemByteSize >=
-                                idxVal.lb().getIntNumeral()
-                            ? elemByteSize * idxVal.lb().getIntNumeral()
-                            : Options::MaxFieldLimit();
-                    res = res + IntegerIntervalProjection(lb, ub);
-                }
+                const AD::Interval value = getInterval(variable, node);
+                lower = finiteEndpoint(value.lower(), 0);
+                upper = finiteEndpoint(value.upper(), Options::MaxFieldLimit());
             }
+            lower = std::max<s64_t>(0, lower);
+            upper = std::max<s64_t>(0, upper);
+            lower = (double)Options::MaxFieldLimit() / elementSize >= lower
+                        ? lower * elementSize
+                        : Options::MaxFieldLimit();
+            upper = (double)Options::MaxFieldLimit() / elementSize >= upper
+                        ? upper * elementSize
+                        : Options::MaxFieldLimit();
+            result = AD::add(result, finiteInterval(lower, upper));
         }
-        else if (const SVFStructType* structOperandType =
-                     SVFUtil::dyn_cast<SVFStructType>(idxOperandType))
+        else if (const auto* structure = SVFUtil::dyn_cast<SVFStructType>(type))
         {
-            res = res + IntegerIntervalProjection(gep->getAccessPath().getStructFieldOffset(
-                            idxOperandVar, structOperandType));
+            const s64_t offset =
+                gep->getAccessPath().getStructFieldOffset(variable, structure);
+            result =
+                AD::add(result, AD::Interval::singleton(AD::Rational(offset)));
         }
         else
         {
-            assert(false && "gep type pair only support arr/ptr/struct");
+            throw std::invalid_argument(
+                "GEP type pair must be array, pointer, or structure");
         }
     }
-    return res;
+    return result;
 }
 
-EncodedAddressSet AbstractInterpretation::getGepObjAddrs(const ValVar* pointer,
-                                                    IntegerIntervalProjection offset)
+AD::AddressSet AbstractInterpretation::getGepObjAddrs(
+    const ValVar* pointer, const AD::Interval& offset, const ICFGNode* node)
 {
-    const ICFGNode* node = pointer->getICFGNode();
-    EncodedAddressSet gepAddrs;
-    APOffset lb = offset.lb().getIntNumeral() < Options::MaxFieldLimit()
-                      ? offset.lb().getIntNumeral()
-                      : Options::MaxFieldLimit();
-    APOffset ub = offset.ub().getIntNumeral() < Options::MaxFieldLimit()
-                      ? offset.ub().getIntNumeral()
-                      : Options::MaxFieldLimit();
-    for (APOffset i = lb; i <= ub; i++)
+    const AD::AddressSet bases = getAddressSet(pointer, node);
+    if (bases.isTop())
+        return AD::AddressSet::top();
+
+    const APOffset lower = static_cast<APOffset>(std::clamp<s64_t>(
+        finiteEndpoint(offset.lower(), 0), 0, Options::MaxFieldLimit()));
+    const APOffset upper = static_cast<APOffset>(std::clamp<s64_t>(
+        finiteEndpoint(offset.upper(), Options::MaxFieldLimit()), 0,
+        Options::MaxFieldLimit()));
+    AD::AddressSet result = AD::AddressSet::bottom();
+    for (APOffset index = lower; index <= upper; ++index)
     {
-        const ScalarProjection& addrs = getAbsValue(pointer, node);
-        for (const auto& addr : addrs.getAddrs())
+        for (AD::Location base : bases)
         {
-            s64_t baseObj = objectIdFromAddress(addr);
-            assert(SVFUtil::isa<ObjVar>(svfir->getSVFVar(baseObj)) &&
-                   "Fail to get the base object address!");
-            NodeID gepObj = svfir->getGepObjVar(baseObj, i);
-            gepAddrs.insert(EncodedAddressSet::getVirtualMemAddress(gepObj));
+            if (base.isNull())
+                continue;
+            const ObjVar* object = objectAt(base);
+            if (!object)
+                continue;
+            const NodeID gepObject =
+                svfir->getGepObjVar(object->getId(), index);
+            const auto* gepVariable =
+                SVFUtil::dyn_cast<ObjVar>(svfir->getSVFVar(gepObject));
+            if (gepVariable)
+                result.insert(locationOf(gepVariable));
         }
     }
-    return gepAddrs;
+    return result;
 }
 
-ScalarProjection AbstractInterpretation::loadValue(const ValVar* pointer,
-                                                const ICFGNode* node)
+void AbstractInterpretation::loadValue(const ValVar* pointer,
+                                       AD::Interval& interval,
+                                       AD::AddressSet& addresses,
+                                       const ICFGNode* node)
 {
-    const ScalarProjection& ptrVal = getAbsValue(pointer, node);
-    ScalarProjection res;
-    for (auto addr : ptrVal.getAddrs())
+    interval = AD::Interval::bottom();
+    addresses = AD::AddressSet::bottom();
+    const AD::AddressSet pointees = getAddressSet(pointer, node);
+    if (pointees.isTop())
     {
-        res.join_with(getMemoryValue(addr, node));
+        interval = AD::Interval::top();
+        addresses = AD::AddressSet::top();
+        return;
     }
-    return res;
+    for (AD::Location location : pointees)
+    {
+        interval.joinWith(getMemoryInterval(location, node));
+        addresses.joinWith(getMemoryAddressSet(location, node));
+    }
 }
 
 void AbstractInterpretation::storeValue(const ValVar* pointer,
-                                        const ScalarProjection& val,
+                                        const AD::Interval& interval,
+                                        const AD::AddressSet& addresses,
                                         const ICFGNode* node)
 {
-    const ScalarProjection& ptrVal = getAbsValue(pointer, node);
-    for (auto addr : ptrVal.getAddrs())
-        updateMemoryValue(addr, val, node);
+    const AD::AddressSet pointees = getAddressSet(pointer, node);
+    if (pointees.isTop())
+        return;
+    for (AD::Location location : pointees)
+        updateMemoryValue(location, interval, addresses, node);
 }
 
-const SVFType* AbstractInterpretation::getPointeeElement(const ObjVar* var,
+const SVFType* AbstractInterpretation::getPointeeElement(const ObjVar* variable,
                                                          const ICFGNode* node)
 {
-    const ScalarProjection& ptrVal = getAbsValue(var, node);
-    if (!ptrVal.isAddr())
+    const AD::AddressSet pointees = getAddressSet(variable, node);
+    if (pointees.isTop())
         return nullptr;
-    for (auto addr : ptrVal.getAddrs())
+    for (AD::Location location : pointees)
     {
-        NodeID objId = objectIdFromAddress(addr);
-        if (objId == 0)
-            continue;
-        return svfir->getBaseObject(objId)->getType();
+        const ObjVar* object = objectAt(location);
+        if (object)
+        {
+            if (const BaseObjVar* base = svfir->getBaseObject(object->getId()))
+                return base->getType();
+        }
     }
     return nullptr;
 }
 
-u32_t AbstractInterpretation::getAllocaInstByteSize(const AddrStmt* addr)
+u32_t AbstractInterpretation::getAllocaInstByteSize(const AddrStmt* address)
 {
-    const ICFGNode* node = addr->getICFGNode();
-    if (const ObjVar* objvar = SVFUtil::dyn_cast<ObjVar>(addr->getRHSVar()))
+    const ICFGNode* node = address->getICFGNode();
+    const auto* object = SVFUtil::dyn_cast<ObjVar>(address->getRHSVar());
+    if (!object)
+        throw std::invalid_argument("Addr rhs value is not ObjVar");
+    const BaseObjVar* base = svfir->getBaseObject(object->getId());
+    if (!base)
+        return Options::MaxFieldLimit();
+    if (base->isConstantByteSize())
+        return base->getByteSizeOfObj();
+
+    u64_t result = 1;
+    for (const SVFVar* value : address->getArrSize())
     {
-        if (svfir->getBaseObject(objvar->getId())->isConstantByteSize())
-        {
-            return svfir->getBaseObject(objvar->getId())->getByteSizeOfObj();
-        }
-        else
-        {
-            const std::vector<SVFVar*>& sizes = addr->getArrSize();
-            u32_t elementSize = 1;
-            u64_t res = elementSize;
-            for (const SVFVar* value : sizes)
-            {
-                const ScalarProjection& sizeVal = getAbsValue(value, node);
-                IntegerIntervalProjection itv = sizeVal.getInterval();
-                if (itv.isBottom())
-                    itv = IntegerIntervalProjection(Options::MaxFieldLimit());
-                res = res * itv.ub().getIntNumeral() > Options::MaxFieldLimit()
-                          ? Options::MaxFieldLimit()
-                          : res * itv.ub().getIntNumeral();
-            }
-            return (u32_t)res;
-        }
+        const AD::Interval size = getInterval(value, node);
+        const u64_t upper = static_cast<u64_t>(std::clamp<s64_t>(
+            finiteEndpoint(size.upper(), Options::MaxFieldLimit()), 0,
+            Options::MaxFieldLimit()));
+        result = upper != 0 && result > Options::MaxFieldLimit() / upper
+                     ? Options::MaxFieldLimit()
+                     : result * upper;
     }
-    assert(false && "Addr rhs value is not ObjVar");
-    abort();
+    return static_cast<u32_t>(result);
 }
+
+} // namespace SVF

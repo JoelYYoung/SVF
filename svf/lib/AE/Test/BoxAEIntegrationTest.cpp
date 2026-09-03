@@ -1,7 +1,7 @@
 //===- BoxAEIntegrationTest.cpp -- Box-backed AE integration test -------===//
 
-#include "AE/Core/NumericalDomain.h"
 #include "AE/Core/BoxProgramState.h"
+#include "AE/Core/NumericalDomain.h"
 #include "AE/Svfexe/AbstractInterpretation.h"
 #include "AE/Svfexe/SVFIRAdapter.h"
 #include "SVF-LLVM/SVFIRBuilder.h"
@@ -83,15 +83,18 @@ void validateProjection(const SVFIR& graph, AbstractInterpretation& analysis)
     SVFIRAdapter adapter(graph);
     const AD::Variable variable = adapter.variable(*scalar);
     bool observed = false;
+    std::string lastProjection = "<absent>";
+    std::string lastStored = "<absent>";
     for (const ICFGNode* node : analysis.getAnalyzedNodes())
     {
         if (!analysis.hasAbsValue(scalar, node))
             continue;
-        const ScalarProjection projected = analysis.getAbsValue(scalar, node);
+        const AD::Interval projected = analysis.getInterval(scalar, node);
         const BoxProgramState& state = stateForValue(analysis, scalar, node);
-        if (projected.isInterval() &&
-            projected.getInterval().equals(
-                IntegerIntervalProjection(expectedLower, expectedUpper)) &&
+        lastProjection = projected.toString();
+        if (state.numerical().environment().contains(variable))
+            lastStored = state.numerical().bound(variable).toString();
+        if (hasFiniteBounds(projected, expectedLower, expectedUpper) &&
             state.numerical().environment().contains(variable) &&
             hasFiniteBounds(state.numerical().bound(variable), expectedLower,
                             expectedUpper))
@@ -99,7 +102,8 @@ void validateProjection(const SVFIR& graph, AbstractInterpretation& analysis)
     }
     if (!observed)
         throw std::runtime_error(
-            "Box numerical state and AE value projection diverged");
+            "Box numerical state and AE value projection diverged: projected=" +
+            lastProjection + ", stored=" + lastStored);
 }
 
 void validateSparseMemoryRefinement(const SVFIR& graph,
@@ -113,10 +117,9 @@ void validateSparseMemoryRefinement(const SVFIR& graph,
     {
         if (!analysis.hasAbsValue(result, node))
             continue;
-        const ScalarProjection value = analysis.getAbsValue(result, node);
-        observedPositive |= value.isInterval() &&
-                            !value.getInterval().lb().is_infinity() &&
-                            value.getInterval().lb().getNumeral() == 1;
+        const AD::Interval value = analysis.getInterval(result, node);
+        observedPositive |= value.lower().isFinite() &&
+                            value.lower().value() == AD::Rational(1);
     }
     if (!observedPositive)
         throw std::runtime_error(

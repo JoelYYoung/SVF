@@ -20,9 +20,18 @@ class Location
 public:
     explicit Location(std::uint32_t id = 0) : id_(id) {}
 
+    static Location null()
+    {
+        return Location();
+    }
+
     std::uint32_t id() const
     {
         return id_;
+    }
+    bool isNull() const
+    {
+        return id_ == 0;
     }
 
     friend bool operator==(Location lhs, Location rhs)
@@ -46,6 +55,8 @@ private:
 class AddressSet
 {
 public:
+    using const_iterator = std::set<Location>::const_iterator;
+
     AddressSet() = default;
 
     static AddressSet bottom();
@@ -56,7 +67,18 @@ public:
     bool isTop() const;
     bool isSingleton() const;
     bool contains(Location location) const;
+    bool hasIntersection(const AddressSet& other) const;
+    std::size_t size() const;
+    bool empty() const;
     const std::set<Location>& locations() const;
+    const_iterator begin() const
+    {
+        return locations().begin();
+    }
+    const_iterator end() const
+    {
+        return locations().end();
+    }
 
     void insert(Location location);
     void joinWith(const AddressSet& other);

@@ -81,8 +81,8 @@ private:
     std::shared_ptr<Values> values_;
 };
 
-/// Tracks which facets of an ScalarProjection are present for every domain
-/// variable.  The numerical and address domains deliberately use top/bottom
+/// Tracks which value facets are present for every domain variable.  The
+/// numerical and address domains deliberately use top/bottom
 /// defaults, so they cannot by themselves distinguish an absent value from
 /// an explicitly stored numeric top or address bottom.  AE needs that
 /// distinction for uninitialised-value checks and for sparse materialisation.

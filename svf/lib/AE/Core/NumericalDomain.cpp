@@ -78,6 +78,36 @@ std::string Rational::toString() const
     return value_.get_str();
 }
 
+bool Rational::isInteger() const
+{
+    return mpz_cmp_ui(mpq_denref(value_.get_mpq_t()), 1U) == 0;
+}
+
+std::int64_t Rational::toInt64() const
+{
+    if (!isInteger())
+        throw std::domain_error("rational is not an integer");
+    const std::string encoded =
+        mpz_class(mpq_numref(value_.get_mpq_t())).get_str();
+    std::size_t consumed = 0;
+    try
+    {
+        const long long result = std::stoll(encoded, &consumed, 10);
+        if (consumed != encoded.size())
+            throw std::out_of_range("invalid integer encoding");
+        return static_cast<std::int64_t>(result);
+    }
+    catch (const std::exception&)
+    {
+        throw std::overflow_error("rational integer does not fit int64");
+    }
+}
+
+double Rational::toDouble() const
+{
+    return mpq_get_d(value_.get_mpq_t());
+}
+
 Rational Rational::floor() const
 {
     mpz_class result;
@@ -262,6 +292,35 @@ std::string Bound::toString() const
     return std::string(strict_ ? "<" : "<=") + value_.toString();
 }
 
+namespace
+{
+int compareIntervalLower(const Bound& lhs, const Bound& rhs)
+{
+    if (lhs.kind() != rhs.kind())
+        return static_cast<int>(lhs.kind()) < static_cast<int>(rhs.kind()) ? -1
+                                                                           : 1;
+    if (!lhs.isFinite())
+        return 0;
+    if (lhs.value() < rhs.value())
+        return -1;
+    if (rhs.value() < lhs.value())
+        return 1;
+    if (lhs.isStrict() == rhs.isStrict())
+        return 0;
+    return lhs.isStrict() ? 1 : -1;
+}
+
+Bound minimumLower(const Bound& lhs, const Bound& rhs)
+{
+    return compareIntervalLower(lhs, rhs) <= 0 ? lhs : rhs;
+}
+
+Bound maximumLower(const Bound& lhs, const Bound& rhs)
+{
+    return compareIntervalLower(lhs, rhs) >= 0 ? lhs : rhs;
+}
+} // namespace
+
 Interval::Interval()
     : lower_(Bound::minusInfinity()), upper_(Bound::plusInfinity())
 {
@@ -277,9 +336,20 @@ Interval Interval::top()
     return Interval();
 }
 
+Interval Interval::bottom()
+{
+    return Interval(Bound::plusInfinity(), Bound::minusInfinity());
+}
+
 Interval Interval::singleton(const Rational& value)
 {
     return Interval(Bound::finite(value), Bound::finite(value));
+}
+
+Interval Interval::closed(const Rational& lower, const Rational& upper)
+{
+    return upper < lower ? bottom()
+                         : Interval(Bound::finite(lower), Bound::finite(upper));
 }
 
 bool Interval::isTop() const
@@ -297,6 +367,105 @@ bool Interval::isBottom() const
         return true;
     return upper_.value() == lower_.value() &&
            (lower_.isStrict() || upper_.isStrict());
+}
+
+bool Interval::isSingleton() const
+{
+    return !isBottom() && lower_.isFinite() && upper_.isFinite() &&
+           !lower_.isStrict() && !upper_.isStrict() &&
+           lower_.value() == upper_.value();
+}
+
+bool Interval::isZero() const
+{
+    return isSingleton() && lower_.value().isZero();
+}
+
+bool Interval::contains(const Rational& value) const
+{
+    if (isBottom())
+        return false;
+    const bool aboveLower = lower_.isMinusInfinity() ||
+                            (lower_.isFinite() &&
+                             (lower_.value() < value ||
+                              (lower_.value() == value && !lower_.isStrict())));
+    const bool belowUpper = upper_.isPlusInfinity() ||
+                            (upper_.isFinite() &&
+                             (value < upper_.value() ||
+                              (value == upper_.value() && !upper_.isStrict())));
+    return aboveLower && belowUpper;
+}
+
+bool Interval::isSubsetOf(const Interval& other) const
+{
+    if (isBottom())
+        return true;
+    if (other.isBottom())
+        return false;
+    return compareIntervalLower(lower_, other.lower_) >= 0 &&
+           Bound::compare(upper_, other.upper_) <= 0;
+}
+
+const Rational& Interval::singletonValue() const
+{
+    if (!isSingleton())
+        throw std::domain_error("interval is not a singleton");
+    return lower_.value();
+}
+
+void Interval::joinWith(const Interval& other)
+{
+    if (other.isBottom())
+        return;
+    if (isBottom())
+    {
+        *this = other;
+        return;
+    }
+    lower_ = minimumLower(lower_, other.lower_);
+    upper_ = Bound::max(upper_, other.upper_);
+}
+
+void Interval::meetWith(const Interval& other)
+{
+    if (isBottom() || other.isBottom())
+    {
+        *this = bottom();
+        return;
+    }
+    lower_ = maximumLower(lower_, other.lower_);
+    upper_ = Bound::min(upper_, other.upper_);
+    if (isBottom())
+        *this = bottom();
+}
+
+void Interval::widenWith(const Interval& next)
+{
+    if (isBottom())
+    {
+        *this = next;
+        return;
+    }
+    if (next.isBottom())
+        return;
+    if (compareIntervalLower(next.lower_, lower_) < 0)
+        lower_ = Bound::minusInfinity();
+    if (upper_ < next.upper_)
+        upper_ = Bound::plusInfinity();
+}
+
+void Interval::narrowWith(const Interval& next)
+{
+    if (isBottom() || next.isBottom())
+    {
+        *this = bottom();
+        return;
+    }
+    if (lower_.isMinusInfinity())
+        lower_ = next.lower_;
+    if (upper_.isPlusInfinity())
+        upper_ = next.upper_;
+    meetWith(next);
 }
 
 std::string Interval::toString() const
@@ -1435,6 +1604,269 @@ bool decomposeSingleProduct(const TreeExpression& expression,
 
 } // namespace
 
+Interval add(const Interval& lhs, const Interval& rhs)
+{
+    return addIntervals(lhs, rhs);
+}
+
+Interval subtract(const Interval& lhs, const Interval& rhs)
+{
+    return addIntervals(lhs, negateInterval(rhs));
+}
+
+Interval multiply(const Interval& lhs, const Interval& rhs)
+{
+    return multiplyIntervals(lhs, rhs);
+}
+
+Interval divide(const Interval& lhs, const Interval& rhs, bool integerDivision)
+{
+    return divideIntervals(lhs, rhs, integerDivision);
+}
+
+Interval remainder(const Interval& lhs, const Interval& rhs)
+{
+    return remainderIntervals(lhs, rhs);
+}
+
+namespace
+{
+
+std::optional<mpz_class> singletonInteger(const Interval& interval)
+{
+    if (!interval.isSingleton() || !interval.singletonValue().isInteger())
+        return std::nullopt;
+    return mpz_class(mpq_numref(interval.singletonValue().value().get_mpq_t()));
+}
+
+std::optional<mpz_class> finiteInteger(const Bound& bound)
+{
+    if (!bound.isFinite() || bound.isStrict() || !bound.value().isInteger())
+        return std::nullopt;
+    return mpz_class(mpq_numref(bound.value().value().get_mpq_t()));
+}
+
+Interval integerSingleton(const mpz_class& value)
+{
+    return Interval::singleton(Rational(value.get_str()));
+}
+
+Interval closedIntegers(const mpz_class& lower, const mpz_class& upper)
+{
+    return Interval::closed(Rational(lower.get_str()),
+                            Rational(upper.get_str()));
+}
+
+Interval booleanInterval(bool value)
+{
+    return Interval::singleton(Rational(value ? 1 : 0));
+}
+
+Interval unknownBoolean()
+{
+    return Interval::closed(Rational(0), Rational(1));
+}
+
+template <typename Operation>
+Interval singletonBitwise(const Interval& lhs, const Interval& rhs,
+                          Operation operation)
+{
+    const std::optional<mpz_class> left = singletonInteger(lhs);
+    const std::optional<mpz_class> right = singletonInteger(rhs);
+    return left && right ? integerSingleton(operation(*left, *right))
+                         : Interval::top();
+}
+
+bool intervalsDisjoint(const Interval& lhs, const Interval& rhs)
+{
+    if (lhs.isBottom() || rhs.isBottom())
+        return true;
+    auto separated = [](const Bound& upper, const Bound& lower) {
+        if (!upper.isFinite() || !lower.isFinite())
+            return false;
+        return upper.value() < lower.value() ||
+               (upper.value() == lower.value() &&
+                (upper.isStrict() || lower.isStrict()));
+    };
+    if (separated(lhs.upper(), rhs.lower()) ||
+        separated(rhs.upper(), lhs.lower()))
+        return true;
+    return false;
+}
+
+std::optional<std::pair<mpz_class, mpz_class>> boundedIntegerRange(
+    const Interval& interval)
+{
+    const std::optional<mpz_class> lower = finiteInteger(interval.lower());
+    const std::optional<mpz_class> upper = finiteInteger(interval.upper());
+    if (!lower || !upper)
+        return std::nullopt;
+    return std::make_pair(*lower, *upper);
+}
+
+Interval nonnegativeBitwiseRange(const Interval& lhs, const Interval& rhs)
+{
+    const auto left = boundedIntegerRange(lhs);
+    const auto right = boundedIntegerRange(rhs);
+    if (!left || !right || left->first < 0 || right->first < 0)
+        return Interval::top();
+    const mpz_class maximum = std::max(left->second, right->second);
+    if (maximum == 0)
+        return integerSingleton(0);
+    const mp_bitcnt_t bits = mpz_sizeinbase(maximum.get_mpz_t(), 2);
+    mpz_class upper = 1;
+    mpz_mul_2exp(upper.get_mpz_t(), upper.get_mpz_t(), bits);
+    --upper;
+    return closedIntegers(0, upper);
+}
+
+template <typename Operation>
+Interval shiftedRange(const Interval& lhs, const Interval& rhs,
+                      Operation operation)
+{
+    const auto values = boundedIntegerRange(lhs);
+    const auto shifts = boundedIntegerRange(rhs);
+    if (!values || !shifts)
+        return Interval::top();
+    if (shifts->second < 0)
+        return Interval::bottom();
+    const mpz_class firstShift = std::max(mpz_class(0), shifts->first);
+    if (!mpz_fits_ulong_p(firstShift.get_mpz_t()) ||
+        !mpz_fits_ulong_p(shifts->second.get_mpz_t()))
+        return Interval::top();
+    const unsigned long lowShift = firstShift.get_ui();
+    const unsigned long highShift = shifts->second.get_ui();
+    std::array<mpz_class, 4> candidates = {
+        operation(values->first, lowShift), operation(values->first, highShift),
+        operation(values->second, lowShift),
+        operation(values->second, highShift)};
+    const auto [minimum, maximum] =
+        std::minmax_element(candidates.begin(), candidates.end());
+    return closedIntegers(*minimum, *maximum);
+}
+
+} // namespace
+
+Interval bitwiseAnd(const Interval& lhs, const Interval& rhs)
+{
+    if (lhs.isBottom() || rhs.isBottom())
+        return Interval::bottom();
+    const Interval exact = singletonBitwise(
+        lhs, rhs, [](const mpz_class& left, const mpz_class& right) {
+            return left & right;
+        });
+    if (!exact.isTop())
+        return exact;
+    const std::optional<mpz_class> lhsLower = finiteInteger(lhs.lower());
+    const std::optional<mpz_class> lhsUpper = finiteInteger(lhs.upper());
+    const std::optional<mpz_class> rhsLower = finiteInteger(rhs.lower());
+    const std::optional<mpz_class> rhsUpper = finiteInteger(rhs.upper());
+    if (lhsLower && lhsUpper && rhsLower && rhsUpper && *lhsLower >= 0 &&
+        *rhsLower >= 0)
+        return closedIntegers(0, std::min(*lhsUpper, *rhsUpper));
+    return Interval::top();
+}
+
+Interval bitwiseOr(const Interval& lhs, const Interval& rhs)
+{
+    if (lhs.isBottom() || rhs.isBottom())
+        return Interval::bottom();
+    const Interval exact = singletonBitwise(
+        lhs, rhs, [](const mpz_class& left, const mpz_class& right) {
+            return left | right;
+        });
+    return exact.isTop() ? nonnegativeBitwiseRange(lhs, rhs) : exact;
+}
+
+Interval bitwiseXor(const Interval& lhs, const Interval& rhs)
+{
+    if (lhs.isBottom() || rhs.isBottom())
+        return Interval::bottom();
+    const Interval exact = singletonBitwise(
+        lhs, rhs, [](const mpz_class& left, const mpz_class& right) {
+            return left ^ right;
+        });
+    return exact.isTop() ? nonnegativeBitwiseRange(lhs, rhs) : exact;
+}
+
+Interval shiftLeft(const Interval& lhs, const Interval& rhs)
+{
+    if (lhs.isBottom() || rhs.isBottom())
+        return Interval::bottom();
+    return shiftedRange(lhs, rhs,
+                        [](const mpz_class& value, unsigned long shift) {
+                            return value << shift;
+                        });
+}
+
+Interval shiftRight(const Interval& lhs, const Interval& rhs)
+{
+    if (lhs.isBottom() || rhs.isBottom())
+        return Interval::bottom();
+    return shiftedRange(
+        lhs, rhs, [](const mpz_class& value, unsigned long shift) {
+            mpz_class result;
+            mpz_fdiv_q_2exp(result.get_mpz_t(), value.get_mpz_t(), shift);
+            return result;
+        });
+}
+
+Interval equalTo(const Interval& lhs, const Interval& rhs)
+{
+    if (lhs.isBottom() || rhs.isBottom())
+        return Interval::bottom();
+    if (lhs.isSingleton() && rhs.isSingleton())
+        return booleanInterval(lhs.singletonValue() == rhs.singletonValue());
+    return intervalsDisjoint(lhs, rhs) ? booleanInterval(false)
+                                       : unknownBoolean();
+}
+
+Interval notEqualTo(const Interval& lhs, const Interval& rhs)
+{
+    const Interval equal = equalTo(lhs, rhs);
+    if (equal.isBottom() || !equal.isSingleton())
+        return equal;
+    return booleanInterval(equal.isZero());
+}
+
+Interval lessThan(const Interval& lhs, const Interval& rhs)
+{
+    if (lhs.isBottom() || rhs.isBottom())
+        return Interval::bottom();
+    if (lhs.upper().isFinite() && rhs.lower().isFinite() &&
+        (lhs.upper().value() < rhs.lower().value() ||
+         (lhs.upper().value() == rhs.lower().value() &&
+          (lhs.upper().isStrict() || rhs.lower().isStrict()))))
+        return booleanInterval(true);
+    if (lhs.lower().isFinite() && rhs.upper().isFinite() &&
+        rhs.upper().value() <= lhs.lower().value())
+        return booleanInterval(false);
+    return unknownBoolean();
+}
+
+Interval lessEqual(const Interval& lhs, const Interval& rhs)
+{
+    if (lhs.isBottom() || rhs.isBottom())
+        return Interval::bottom();
+    if (lhs.upper().isFinite() && rhs.lower().isFinite() &&
+        lhs.upper().value() <= rhs.lower().value())
+        return booleanInterval(true);
+    if (lhs.lower().isFinite() && rhs.upper().isFinite() &&
+        rhs.upper().value() < lhs.lower().value())
+        return booleanInterval(false);
+    return unknownBoolean();
+}
+
+Interval greaterThan(const Interval& lhs, const Interval& rhs)
+{
+    return lessThan(rhs, lhs);
+}
+
+Interval greaterEqual(const Interval& lhs, const Interval& rhs)
+{
+    return lessEqual(rhs, lhs);
+}
+
 void NumericalDomain::assignParallel(const LinearAssignmentList& assignments)
 {
     if (assignments.empty())
@@ -1845,18 +2277,7 @@ namespace
 
 int compareLower(const Bound& lhs, const Bound& rhs)
 {
-    if (lhs.kind() != rhs.kind())
-        return static_cast<int>(lhs.kind()) < static_cast<int>(rhs.kind()) ? -1
-                                                                           : 1;
-    if (!lhs.isFinite())
-        return 0;
-    if (lhs.value() < rhs.value())
-        return -1;
-    if (rhs.value() < lhs.value())
-        return 1;
-    if (lhs.isStrict() == rhs.isStrict())
-        return 0;
-    return lhs.isStrict() ? 1 : -1;
+    return compareIntervalLower(lhs, rhs);
 }
 
 Bound minLower(const Bound& lhs, const Bound& rhs)

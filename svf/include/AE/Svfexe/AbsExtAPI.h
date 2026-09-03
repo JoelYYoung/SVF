@@ -20,7 +20,6 @@
 //
 //===----------------------------------------------------------------------===//
 
-
 //  Created on: Sep 9, 2024
 //      Author: Xiao Cheng, Jiawei Wang
 //
@@ -28,7 +27,7 @@
 
 #include <functional>
 
-#include "AE/Core/ScalarProjection.h"
+#include "AE/Core/NumericalDomain.h"
 #include "SVFIR/SVFIR.h"
 #include "Util/GeneralType.h"
 
@@ -50,13 +49,21 @@ public:
      * @enum ExtAPIType
      * @brief Enumeration of external API types.
      */
-    enum ExtAPIType { UNCLASSIFIED, MEMCPY, MEMSET, STRCPY, STRCAT };
+    enum ExtAPIType
+    {
+        UNCLASSIFIED,
+        MEMCPY,
+        MEMSET,
+        STRCPY,
+        STRCAT
+    };
 
     // Only AbstractInterpretation may construct the single owned AbsExtAPI
     // instance (reachable through its private getUtils()). Keeping the
     // constructor private prevents external callers from creating their own
     // AbsExtAPI and invoking handleExtAPI()/handleMemcpy()/... directly.
     friend class AbstractInterpretation;
+
 private:
     /**
      * @brief Constructor for AbsExtAPI.
@@ -82,7 +89,7 @@ public:
      * @brief Handles an external API call.
      * @param call Pointer to the call ICFG node.
      */
-    void handleExtAPI(const CallICFGNode *call);
+    void handleExtAPI(const CallICFGNode* call);
 
     // --- Shared primitives used by string/memory handlers ---
 
@@ -90,25 +97,31 @@ public:
     u32_t getElementSize(const ValVar* var);
 
     /// Check if an interval length is usable (not bottom, not unbounded).
-    static bool isValidLength(const IntegerIntervalProjection& len);
+    static bool isValidLength(const AbstractDomain::Interval& len);
 
     /// Calculate the length of a null-terminated string in abstract state.
-    IntegerIntervalProjection getStrlen(const ValVar *strValue, const ICFGNode* node);
+    AbstractDomain::Interval getStrlen(const ValVar* strValue,
+                                       const ICFGNode* node);
 
     // --- String/memory operation handlers ---
 
-    void handleStrcpy(const CallICFGNode *call);
-    void handleStrcat(const CallICFGNode *call);
-    void handleStrncat(const CallICFGNode *call);
-    void handleMemcpy(const ValVar *dst, const ValVar *src, const IntegerIntervalProjection& len, u32_t start_idx, const ICFGNode* node);
-    void handleMemset(const ValVar* dst, const IntegerIntervalProjection& elem, const IntegerIntervalProjection& len, const ICFGNode* node);
+    void handleStrcpy(const CallICFGNode* call);
+    void handleStrcat(const CallICFGNode* call);
+    void handleStrncat(const CallICFGNode* call);
+    void handleMemcpy(const ValVar* dst, const ValVar* src,
+                      const AbstractDomain::Interval& len, u32_t start_idx,
+                      const ICFGNode* node);
+    void handleMemset(const ValVar* dst,
+                      const AbstractDomain::Interval& element,
+                      const AbstractDomain::Interval& len,
+                      const ICFGNode* node);
 
     /**
      * @brief Gets the range limit from a type.
      * @param type Pointer to the SVF type.
      * @return The interval value representing the range limit.
      */
-    IntegerIntervalProjection getRangeLimitFromType(const SVFType* type);
+    AbstractDomain::Interval getRangeLimitFromType(const SVFType* type);
 
     void collectCheckPoint();
     void checkPointAllSet();
@@ -116,10 +129,12 @@ public:
     Set<const CallICFGNode*> checkpoints; // for CI check
 
 protected:
-    AbstractInterpretation* ae; ///< Owning AbstractInterpretation; provides state access.
+    AbstractInterpretation*
+        ae;       ///< Owning AbstractInterpretation; provides state access.
     SVFIR* svfir; ///< Pointer to the SVF intermediate representation.
-    ICFG* icfg; ///< Pointer to the interprocedural control flow graph.
-    Map<std::string, std::function<void(const CallICFGNode*)>> func_map; ///< Map of function names to handlers.
+    ICFG* icfg;   ///< Pointer to the interprocedural control flow graph.
+    Map<std::string, std::function<void(const CallICFGNode*)>>
+        func_map; ///< Map of function names to handlers.
 };
 
 } // namespace SVF

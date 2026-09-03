@@ -1,5 +1,5 @@
 //===- AbstractExecution.cpp -- Abstract
-//Execution---------------------------------//
+// Execution---------------------------------//
 //
 //                     SVF: Static Value-Flow Analysis
 //
@@ -42,6 +42,7 @@
 
 using namespace SVF;
 using namespace SVFUtil;
+namespace AD = SVF::AbstractDomain;
 
 void AbstractInterpretation::runOnModule()
 {
@@ -120,25 +121,6 @@ AbstractInterpretation::~AbstractInterpretation()
 }
 
 void AbstractInterpretation::initializeDomainState(const ICFGNode*) {}
-
-void AbstractInterpretation::assignDomainInterval(const ICFGNode*,
-                                                  const SVFVar*,
-                                                  const IntegerIntervalProjection&)
-{
-}
-
-void AbstractInterpretation::updateDomainOnBinary(const BinaryOPStmt*,
-                                                  const IntegerIntervalProjection&)
-{
-}
-
-void AbstractInterpretation::updateDomainOnCopy(const CopyStmt*) {}
-
-void AbstractInterpretation::updateDomainCopyValue(const ICFGNode*,
-                                                   const SVFVar*, const SVFVar*,
-                                                   bool)
-{
-}
 
 /// Collect entry point functions for analysis.
 /// In main mode, entry is main/svf.main. In no-main mode,
@@ -292,9 +274,9 @@ static const LoadStmt* findBackingLoad(const SVFVar* var)
 /// On the true branch (succ=1), operand %a (isLHS=true) is constrained to
 /// [6, +inf). On the false branch (succ=0), %a is constrained to (-inf, 5].
 /// The result is used to narrow the ObjVar behind %a's load.
-static IntegerIntervalProjection computeCmpConstraint(s32_t predicate, s64_t succ,
-                                          bool isLHS, const IntegerIntervalProjection& self,
-                                          const IntegerIntervalProjection& other)
+static AD::Interval computeCmpConstraint(s32_t predicate, s64_t succ,
+                                         bool isLHS, const AD::Interval& self,
+                                         const AD::Interval& other)
 {
     // Normalize: always reason from the LHS perspective.
     // If we are the RHS operand, swap the predicate direction.
@@ -327,7 +309,7 @@ static IntegerIntervalProjection computeCmpConstraint(s32_t predicate, s64_t suc
         };
         auto it = swapPred.find(predicate);
         if (it == swapPred.end())
-            return IntegerIntervalProjection::top();
+            return AD::Interval::top();
         predicate = it->second;
     }
 
@@ -360,55 +342,59 @@ static IntegerIntervalProjection computeCmpConstraint(s32_t predicate, s64_t suc
         };
         auto it = negPred.find(predicate);
         if (it == negPred.end())
-            return IntegerIntervalProjection::top();
+            return AD::Interval::top();
         predicate = it->second;
     }
 
     // Now compute the constraint on LHS given: LHS <predicate> other
-    IntegerIntervalProjection result = self;
+    AD::Interval result = self;
+    if (!other.isSingleton())
+        return AD::Interval::top();
+    const AD::Rational bound = other.singletonValue();
     switch (predicate)
     {
     case CmpStmt::ICMP_EQ:
     case CmpStmt::FCMP_OEQ:
     case CmpStmt::FCMP_UEQ:
-        result.meet_with(other);
+        result.meetWith(other);
         break;
     case CmpStmt::ICMP_NE:
     case CmpStmt::FCMP_ONE:
     case CmpStmt::FCMP_UNE:
     case CmpStmt::FCMP_FALSE:
     case CmpStmt::FCMP_TRUE:
-        return IntegerIntervalProjection::top(); // no useful narrowing
+        return AD::Interval::top(); // no useful narrowing
     case CmpStmt::ICMP_UGT:
     case CmpStmt::ICMP_SGT:
     case CmpStmt::FCMP_OGT:
     case CmpStmt::FCMP_UGT:
-        result.meet_with(
-            IntegerIntervalProjection(other.lb() + 1, IntegerIntervalProjection::plus_infinity()));
+        result.meetWith(AD::Interval(AD::Bound::finite(bound + AD::Rational(1)),
+                                     AD::Bound::plusInfinity()));
         break;
     case CmpStmt::ICMP_UGE:
     case CmpStmt::ICMP_SGE:
     case CmpStmt::FCMP_OGE:
     case CmpStmt::FCMP_UGE:
-        result.meet_with(
-            IntegerIntervalProjection(other.lb(), IntegerIntervalProjection::plus_infinity()));
+        result.meetWith(
+            AD::Interval(AD::Bound::finite(bound), AD::Bound::plusInfinity()));
         break;
     case CmpStmt::ICMP_ULT:
     case CmpStmt::ICMP_SLT:
     case CmpStmt::FCMP_OLT:
     case CmpStmt::FCMP_ULT:
-        result.meet_with(
-            IntegerIntervalProjection(IntegerIntervalProjection::minus_infinity(), other.ub() - 1));
+        result.meetWith(
+            AD::Interval(AD::Bound::minusInfinity(),
+                         AD::Bound::finite(bound - AD::Rational(1))));
         break;
     case CmpStmt::ICMP_ULE:
     case CmpStmt::ICMP_SLE:
     case CmpStmt::FCMP_OLE:
     case CmpStmt::FCMP_ULE:
-        result.meet_with(
-            IntegerIntervalProjection(IntegerIntervalProjection::minus_infinity(), other.ub()));
+        result.meetWith(
+            AD::Interval(AD::Bound::minusInfinity(), AD::Bound::finite(bound)));
         break;
     default:
-        return IntegerIntervalProjection::top();
+        return AD::Interval::top();
     }
     return result;
 }
@@ -436,12 +422,14 @@ void AbstractInterpretation::collectBranchRefinement(
         }
         else
         {
-            ScalarProjection opVal[2] = {getAbsValue(cmpStmt->getOpVar(0), pred),
-                                      getAbsValue(cmpStmt->getOpVar(1), pred)};
+            AD::Interval opVal[2] = {getInterval(cmpStmt->getOpVar(0), pred),
+                                     getInterval(cmpStmt->getOpVar(1), pred)};
+            AD::AddressSet opAddr[2] = {
+                getAddressSet(cmpStmt->getOpVar(0), pred),
+                getAddressSet(cmpStmt->getOpVar(1), pred)};
 
-            const bool hasIntervalCmp =
-                opVal[0].isInterval() && opVal[1].isInterval();
-            if (!hasIntervalCmp && (opVal[0].isAddr() || opVal[1].isAddr()))
+            if ((opVal[0].isBottom() || opVal[1].isBottom()) &&
+                (!opAddr[0].isBottom() || !opAddr[1].isBottom()))
             {
                 // Pointer-valued cmp: branch feasibility only.
             }
@@ -453,11 +441,11 @@ void AbstractInterpretation::collectBranchRefinement(
                     const LoadStmt* load =
                         findBackingLoad(cmpStmt->getOpVar(i));
 
-                    if (opVal[i].getInterval().is_numeral())
+                    if (opVal[i].isSingleton())
                     {
                         // Example: in x < 5, operand 5 is not refined.
                     }
-                    else if (!opVal[other].getInterval().is_numeral())
+                    else if (!opVal[other].isSingleton())
                     {
                         // Example: x < y, neither side has a fixed bound.
                     }
@@ -467,9 +455,8 @@ void AbstractInterpretation::collectBranchRefinement(
                     }
                     else
                     {
-                        IntegerIntervalProjection narrowed = computeCmpConstraint(
-                            predicate, succ, i == 0, opVal[i].getInterval(),
-                            opVal[other].getInterval());
+                        AD::Interval narrowed = computeCmpConstraint(
+                            predicate, succ, i == 0, opVal[i], opVal[other]);
 
                         if (narrowed.isTop())
                         {
@@ -478,21 +465,21 @@ void AbstractInterpretation::collectBranchRefinement(
                         else
                         {
                             const ICFGNode* loadIcfg = load->getICFGNode();
-                            const ScalarProjection& ptrVal =
-                                getAbsValue(load->getRHSVar(), loadIcfg);
-                            if (!ptrVal.isAddr())
+                            const AD::AddressSet ptrVal =
+                                getAddressSet(load->getRHSVar(), loadIcfg);
+                            if (ptrVal.isBottom() || ptrVal.isTop())
                             {
                                 // Cannot map load p back to concrete ObjVars.
                             }
                             else
                             {
-                                for (const auto& addr : ptrVal.getAddrs())
+                                for (const AD::Location location : ptrVal)
                                 {
-                                    const NodeID objId =
-                                        objectIdFromAddress(addr);
-                                    recordBranchRefinement(
-                                        objId, narrowed, state, loadIcfg,
-                                        succNode);
+                                    if (const ObjVar* object =
+                                            objectAt(location))
+                                        recordBranchRefinement(
+                                            object->getId(), narrowed, state,
+                                            loadIcfg, succNode);
                                 }
                             }
                         }
@@ -505,9 +492,8 @@ void AbstractInterpretation::collectBranchRefinement(
     {
         const SVFVar* var = cond;
 
-        ScalarProjection condVal = getAbsValue(var, pred);
-        IntegerIntervalProjection switch_cond = condVal.getInterval();
-        switch_cond.meet_with(IntegerIntervalProjection(succ, succ));
+        AD::Interval switch_cond = getInterval(var, pred);
+        switch_cond.meetWith(AD::Interval::singleton(AD::Rational(succ)));
         if (switch_cond.isBottom())
         {
             // This case label is not reachable from cond's interval.
@@ -528,19 +514,20 @@ void AbstractInterpretation::collectBranchRefinement(
                 else
                 {
                     const ICFGNode* loadIcfg = load->getICFGNode();
-                    const ScalarProjection& ptrVal =
-                        getAbsValue(load->getRHSVar(), loadIcfg);
-                    if (!ptrVal.isAddr())
+                    const AD::AddressSet ptrVal =
+                        getAddressSet(load->getRHSVar(), loadIcfg);
+                    if (ptrVal.isBottom() || ptrVal.isTop())
                     {
                         // Cannot map load p back to concrete ObjVars.
                     }
                     else
                     {
-                        for (const auto& addr : ptrVal.getAddrs())
+                        for (const AD::Location location : ptrVal)
                         {
-                            const NodeID objId = objectIdFromAddress(addr);
-                            recordBranchRefinement(objId, switch_cond, state,
-                                                   loadIcfg, succNode);
+                            if (const ObjVar* object = objectAt(location))
+                                recordBranchRefinement(object->getId(),
+                                                       switch_cond, state,
+                                                       loadIcfg, succNode);
                         }
                     }
                 }
@@ -549,11 +536,9 @@ void AbstractInterpretation::collectBranchRefinement(
     }
 }
 
-void AbstractInterpretation::recordBranchRefinement(NodeID,
-                                                    const IntegerIntervalProjection&,
-                                                    AbstractDomain::AbstractDomain&,
-                                                    const ICFGNode*,
-                                                    const ICFGNode*)
+void AbstractInterpretation::recordBranchRefinement(
+    NodeID, const AD::Interval&, AbstractDomain::AbstractDomain&,
+    const ICFGNode*, const ICFGNode*)
 {
 }
 
@@ -713,14 +698,13 @@ const FunObjVar* AbstractInterpretation::getCallee(const CallICFGNode* callNode)
     if (!hasAbsState(callNode))
         return nullptr;
 
-    const ScalarProjection& Addrs =
-        getAbsValue(svfir->getSVFVar(call_id), callNode);
-    if (!Addrs.isAddr() || Addrs.getAddrs().empty())
+    const AD::AddressSet addresses =
+        getAddressSet(svfir->getSVFVar(call_id), callNode);
+    if (addresses.isBottom() || addresses.isTop() || addresses.empty())
         return nullptr;
 
-    NodeID addr = *Addrs.getAddrs().begin();
-    const SVFVar* func_var = getSVFVar(objectIdFromAddress(addr));
-    return SVFUtil::dyn_cast<FunObjVar>(func_var);
+    const ObjVar* object = objectAt(*addresses.begin());
+    return object ? SVFUtil::dyn_cast<FunObjVar>(object) : nullptr;
 }
 
 /// Handle direct or indirect call: get callee(s), process function body, set
@@ -839,43 +823,47 @@ void AbstractInterpretation::handleSVFStatement(const SVFStmt* stmt)
 void AbstractInterpretation::updateStateOnGep(const GepStmt* gep)
 {
     const ICFGNode* node = gep->getICFGNode();
-    IntegerIntervalProjection offsetPair = getGepElementIndex(gep);
-    EncodedAddressSet gepAddrs =
-        getGepObjAddrs(SVFUtil::cast<ValVar>(gep->getRHSVar()), offsetPair);
-    updateAbsValue(gep->getLHSVar(), gepAddrs, node);
+    const AD::Interval offset = getGepElementIndex(gep);
+    updateAddressSet(
+        gep->getLHSVar(),
+        getGepObjAddrs(SVFUtil::cast<ValVar>(gep->getRHSVar()), offset, node),
+        node);
 }
 
 void AbstractInterpretation::updateStateOnSelect(const SelectStmt* select)
 {
     const ICFGNode* node = select->getICFGNode();
-    const ScalarProjection& condVal = getAbsValue(select->getCondition(), node);
-    const ScalarProjection& tVal = getAbsValue(select->getTrueValue(), node);
-    const ScalarProjection& fVal = getAbsValue(select->getFalseValue(), node);
-    ScalarProjection resVal;
-    if (condVal.getInterval().is_numeral())
+    const AD::Interval condition = getInterval(select->getCondition(), node);
+    AD::Interval interval;
+    AD::AddressSet addresses;
+    if (condition.isSingleton())
     {
-        resVal = condVal.getInterval().is_zero() ? fVal : tVal;
+        const SVFVar* selected = condition.isZero() ? select->getFalseValue()
+                                                    : select->getTrueValue();
+        interval = getInterval(selected, node);
+        addresses = getAddressSet(selected, node);
     }
     else
     {
-        resVal = tVal;
-        resVal.join_with(fVal);
+        interval = getInterval(select->getTrueValue(), node);
+        interval.joinWith(getInterval(select->getFalseValue(), node));
+        addresses = getAddressSet(select->getTrueValue(), node);
+        addresses.joinWith(getAddressSet(select->getFalseValue(), node));
     }
-    updateAbsValue(select->getRes(), resVal, node);
-    assignDomainInterval(node, select->getRes(), resVal.getInterval());
+    updateValue(select->getRes(), interval, addresses, node);
 }
 
 void AbstractInterpretation::updateStateOnPhi(const PhiStmt* phi)
 {
     const ICFGNode* icfgNode = phi->getICFGNode();
-    ScalarProjection rhs;
+    AD::Interval interval = AD::Interval::bottom();
+    AD::AddressSet addresses = AD::AddressSet::bottom();
     for (u32_t i = 0; i < phi->getOpVarNum(); i++)
     {
         const ICFGNode* opICFGNode = phi->getOpICFGNode(i);
         if (hasAbsState(opICFGNode))
         {
-            const ScalarProjection& opVal =
-                getAbsValue(phi->getOpVar(i), opICFGNode);
+            bool feasible = true;
             const ICFGEdge* edge =
                 icfg->getICFGEdge(opICFGNode, icfgNode, ICFGEdge::IntraCF);
             if (edge)
@@ -884,20 +872,17 @@ void AbstractInterpretation::updateStateOnPhi(const PhiStmt* phi)
                     SVFUtil::cast<IntraCFGEdge>(edge);
                 if (intraEdge->getCondition())
                 {
-                    if (isBranchEdgeFeasibleAt(intraEdge, opICFGNode))
-                        rhs.join_with(opVal);
+                    feasible = isBranchEdgeFeasibleAt(intraEdge, opICFGNode);
                 }
-                else
-                    rhs.join_with(opVal);
             }
-            else
+            if (feasible)
             {
-                rhs.join_with(opVal);
+                interval.joinWith(getInterval(phi->getOpVar(i), opICFGNode));
+                addresses.joinWith(getAddressSet(phi->getOpVar(i), opICFGNode));
             }
         }
     }
-    updateAbsValue(phi->getRes(), rhs, icfgNode);
-    assignDomainInterval(icfgNode, phi->getRes(), rhs.getInterval());
+    updateValue(phi->getRes(), interval, addresses, icfgNode);
 }
 
 /// Handle CallPE: phi-like merging of actual parameters from all call sites
@@ -907,344 +892,253 @@ void AbstractInterpretation::updateStateOnCall(const CallPE* callPE)
 {
     const ICFGNode* node = callPE->getICFGNode();
     const SVFVar* res = callPE->getRes();
-    ScalarProjection rhs;
+    AD::Interval interval = AD::Interval::bottom();
+    AD::AddressSet addresses = AD::AddressSet::bottom();
     for (u32_t i = 0; i < callPE->getOpVarNum(); i++)
     {
         const ICFGNode* opICFGNode = callPE->getOpCallICFGNode(i);
         if (hasAbsState(opICFGNode))
         {
-            const ScalarProjection& opVal =
-                getAbsValue(callPE->getOpVar(i), opICFGNode);
-            rhs.join_with(opVal);
+            interval.joinWith(getInterval(callPE->getOpVar(i), opICFGNode));
+            addresses.joinWith(getAddressSet(callPE->getOpVar(i), opICFGNode));
         }
     }
-    updateAbsValue(res, rhs, node);
-    assignDomainInterval(node, res, rhs.getInterval());
+    updateValue(res, interval, addresses, node);
 }
 
 void AbstractInterpretation::updateStateOnRet(const RetPE* retPE)
 {
     const ICFGNode* node = retPE->getICFGNode();
-    const ScalarProjection& rhsVal = getAbsValue(retPE->getRHSVar(), node);
-    updateAbsValue(retPE->getLHSVar(), rhsVal, node);
-    updateDomainCopyValue(node, retPE->getLHSVar(), retPE->getRHSVar(), true);
+    updateValue(retPE->getLHSVar(), getInterval(retPE->getRHSVar(), node),
+                getAddressSet(retPE->getRHSVar(), node), node);
 }
 
 void AbstractInterpretation::updateStateOnAddr(const AddrStmt* addr)
 {
     const ICFGNode* node = addr->getICFGNode();
-    ScalarProjection value =
-        initializeObjectAddress(SVFUtil::cast<ObjVar>(addr->getRHSVar()), node);
+    AD::Interval interval = AD::Interval::bottom();
+    AD::AddressSet addresses = AD::AddressSet::bottom();
+    initializeObjectValue(SVFUtil::cast<ObjVar>(addr->getRHSVar()), interval,
+                          addresses, node);
     if (addr->getRHSVar()->getType()->getKind() == SVFType::SVFIntegerTy)
-        value.getInterval().meet_with(
+        interval.meetWith(
             utils->getRangeLimitFromType(addr->getRHSVar()->getType()));
-    updateAbsValue(addr->getLHSVar(), value, node);
+    updateValue(addr->getLHSVar(), interval, addresses, node);
 }
 
 void AbstractInterpretation::updateStateOnBinary(const BinaryOPStmt* binary)
 {
     const ICFGNode* node = binary->getICFGNode();
     // Treat bottom (uninitialized) operands as top for soundness
-    const ScalarProjection& op0Val = getAbsValue(binary->getOpVar(0), node);
-    const ScalarProjection& op1Val = getAbsValue(binary->getOpVar(1), node);
-    IntegerIntervalProjection lhs = op0Val.getInterval().isBottom() ? IntegerIntervalProjection::top()
-                                                        : op0Val.getInterval();
-    IntegerIntervalProjection rhs = op1Val.getInterval().isBottom() ? IntegerIntervalProjection::top()
-                                                        : op1Val.getInterval();
-    IntegerIntervalProjection resVal;
+    AD::Interval lhs = getInterval(binary->getOpVar(0), node);
+    AD::Interval rhs = getInterval(binary->getOpVar(1), node);
+    if (lhs.isBottom())
+        lhs = AD::Interval::top();
+    if (rhs.isBottom())
+        rhs = AD::Interval::top();
+    AD::Interval result;
     switch (binary->getOpcode())
     {
     case BinaryOPStmt::Add:
     case BinaryOPStmt::FAdd:
-        resVal = (lhs + rhs);
+        result = AD::add(lhs, rhs);
         break;
     case BinaryOPStmt::Sub:
     case BinaryOPStmt::FSub:
-        resVal = (lhs - rhs);
+        result = AD::subtract(lhs, rhs);
         break;
     case BinaryOPStmt::Mul:
     case BinaryOPStmt::FMul:
-        resVal = (lhs * rhs);
+        result = AD::multiply(lhs, rhs);
         break;
     case BinaryOPStmt::SDiv:
     case BinaryOPStmt::FDiv:
     case BinaryOPStmt::UDiv:
-        resVal = (lhs / rhs);
+        result = AD::divide(lhs, rhs);
         break;
     case BinaryOPStmt::SRem:
     case BinaryOPStmt::FRem:
     case BinaryOPStmt::URem:
-        resVal = (lhs % rhs);
+        result = AD::remainder(lhs, rhs);
         break;
     case BinaryOPStmt::Xor:
-        resVal = (lhs ^ rhs);
+        result = AD::bitwiseXor(lhs, rhs);
         break;
     case BinaryOPStmt::And:
-        resVal = (lhs & rhs);
+        result = AD::bitwiseAnd(lhs, rhs);
         break;
     case BinaryOPStmt::Or:
-        resVal = (lhs | rhs);
+        result = AD::bitwiseOr(lhs, rhs);
         break;
     case BinaryOPStmt::AShr:
-        resVal = (lhs >> rhs);
+        result = AD::shiftRight(lhs, rhs);
         break;
     case BinaryOPStmt::Shl:
-        resVal = (lhs << rhs);
+        result = AD::shiftLeft(lhs, rhs);
         break;
     case BinaryOPStmt::LShr:
-        resVal = (lhs >> rhs);
+        result = AD::shiftRight(lhs, rhs);
         break;
     default:
         assert(false && "undefined binary: ");
     }
-    updateAbsValue(binary->getRes(), resVal, node);
-    updateDomainOnBinary(binary, resVal);
+    updateInterval(binary->getRes(), result, node);
 }
 
 void AbstractInterpretation::updateStateOnCmp(const CmpStmt* cmp)
 {
     const ICFGNode* node = cmp->getICFGNode();
-    u32_t op0 = cmp->getOpVarID(0);
-    u32_t op1 = cmp->getOpVarID(1);
-    const ScalarProjection& op0Val = getAbsValue(cmp->getOpVar(0), node);
-    const ScalarProjection& op1Val = getAbsValue(cmp->getOpVar(1), node);
+    AD::Interval lhsInterval = getInterval(cmp->getOpVar(0), node);
+    AD::Interval rhsInterval = getInterval(cmp->getOpVar(1), node);
+    const AD::AddressSet lhsAddresses = getAddressSet(cmp->getOpVar(0), node);
+    const AD::AddressSet rhsAddresses = getAddressSet(cmp->getOpVar(1), node);
+    const bool addressComparison =
+        !lhsAddresses.isBottom() || !rhsAddresses.isBottom();
+    AD::Interval result =
+        AD::Interval::closed(AD::Rational(0), AD::Rational(1));
+    const auto boolean = [](bool value) {
+        return AD::Interval::singleton(AD::Rational(value ? 1 : 0));
+    };
 
-    // if it is address
-    if (op0Val.isAddr() && op1Val.isAddr())
+    const auto predicate = cmp->getPredicate();
+    if (predicate == CmpStmt::FCMP_FALSE)
+        result = boolean(false);
+    else if (predicate == CmpStmt::FCMP_TRUE)
+        result = boolean(true);
+    else if (predicate == CmpStmt::FCMP_ORD || predicate == CmpStmt::FCMP_UNO)
     {
-        IntegerIntervalProjection resVal;
-        const EncodedAddressSet& addrOp0 = op0Val.getAddrs();
-        const EncodedAddressSet& addrOp1 = op1Val.getAddrs();
-        if (addrOp0.equals(addrOp1))
-        {
-            resVal = IntegerIntervalProjection(1, 1);
-        }
-        else if (addrOp0.hasIntersect(addrOp1))
-        {
-            resVal = IntegerIntervalProjection(0, 1);
-        }
-        else
-        {
-            resVal = IntegerIntervalProjection(0, 0);
-        }
-        updateAbsValue(cmp->getRes(), resVal, node);
+        // NaN is not tracked, so either outcome is possible.
     }
-    // if op0 or op1 is nullptr, compare abstractValue instead of touching addr
-    // or interval
-    else if (op0 == IRGraph::NullPtr || op1 == IRGraph::NullPtr)
+    else if (addressComparison)
     {
-        IntegerIntervalProjection resVal =
-            (op0Val.equals(op1Val)) ? IntegerIntervalProjection(1, 1) : IntegerIntervalProjection(0, 0);
-        updateAbsValue(cmp->getRes(), resVal, node);
+        const bool exact = !lhsAddresses.isTop() && !rhsAddresses.isTop() &&
+                           lhsAddresses.isSingleton() &&
+                           rhsAddresses.isSingleton();
+        const bool disjoint = !lhsAddresses.isTop() && !rhsAddresses.isTop() &&
+                              !lhsAddresses.isBottom() &&
+                              !rhsAddresses.isBottom() &&
+                              !lhsAddresses.hasIntersection(rhsAddresses);
+        switch (predicate)
+        {
+        case CmpStmt::ICMP_EQ:
+        case CmpStmt::FCMP_OEQ:
+        case CmpStmt::FCMP_UEQ:
+            if (exact)
+                result =
+                    boolean(*lhsAddresses.begin() == *rhsAddresses.begin());
+            else if (disjoint)
+                result = boolean(false);
+            break;
+        case CmpStmt::ICMP_NE:
+        case CmpStmt::FCMP_ONE:
+        case CmpStmt::FCMP_UNE:
+            if (exact)
+                result =
+                    boolean(*lhsAddresses.begin() != *rhsAddresses.begin());
+            else if (disjoint)
+                result = boolean(true);
+            break;
+        case CmpStmt::ICMP_UGT:
+        case CmpStmt::ICMP_SGT:
+        case CmpStmt::FCMP_OGT:
+        case CmpStmt::FCMP_UGT:
+            if (exact)
+                result = boolean(lhsAddresses.begin()->id() >
+                                 rhsAddresses.begin()->id());
+            break;
+        case CmpStmt::ICMP_UGE:
+        case CmpStmt::ICMP_SGE:
+        case CmpStmt::FCMP_OGE:
+        case CmpStmt::FCMP_UGE:
+            if (exact)
+                result = boolean(lhsAddresses.begin()->id() >=
+                                 rhsAddresses.begin()->id());
+            break;
+        case CmpStmt::ICMP_ULT:
+        case CmpStmt::ICMP_SLT:
+        case CmpStmt::FCMP_OLT:
+        case CmpStmt::FCMP_ULT:
+            if (exact)
+                result = boolean(lhsAddresses.begin()->id() <
+                                 rhsAddresses.begin()->id());
+            break;
+        case CmpStmt::ICMP_ULE:
+        case CmpStmt::ICMP_SLE:
+        case CmpStmt::FCMP_OLE:
+        case CmpStmt::FCMP_ULE:
+            if (exact)
+                result = boolean(lhsAddresses.begin()->id() <=
+                                 rhsAddresses.begin()->id());
+            break;
+        default:
+            assert(false && "undefined pointer compare");
+        }
     }
     else
     {
+        if (lhsInterval.isBottom())
+            lhsInterval = AD::Interval::top();
+        if (rhsInterval.isBottom())
+            rhsInterval = AD::Interval::top();
+        switch (predicate)
         {
-            IntegerIntervalProjection resVal;
-            if (op0Val.isInterval() && op1Val.isInterval())
-            {
-                // Treat bottom (uninitialized) operands as top for soundness
-                IntegerIntervalProjection lhs = op0Val.getInterval().isBottom()
-                                        ? IntegerIntervalProjection::top()
-                                        : op0Val.getInterval(),
-                              rhs = op1Val.getInterval().isBottom()
-                                        ? IntegerIntervalProjection::top()
-                                        : op1Val.getInterval();
-                // ScalarProjection
-                auto predicate = cmp->getPredicate();
-                switch (predicate)
-                {
-                case CmpStmt::ICMP_EQ:
-                case CmpStmt::FCMP_OEQ:
-                case CmpStmt::FCMP_UEQ:
-                    resVal = (lhs == rhs);
-                    // resVal = (lhs.getInterval() == rhs.getInterval());
-                    break;
-                case CmpStmt::ICMP_NE:
-                case CmpStmt::FCMP_ONE:
-                case CmpStmt::FCMP_UNE:
-                    resVal = (lhs != rhs);
-                    break;
-                case CmpStmt::ICMP_UGT:
-                case CmpStmt::ICMP_SGT:
-                case CmpStmt::FCMP_OGT:
-                case CmpStmt::FCMP_UGT:
-                    resVal = (lhs > rhs);
-                    break;
-                case CmpStmt::ICMP_UGE:
-                case CmpStmt::ICMP_SGE:
-                case CmpStmt::FCMP_OGE:
-                case CmpStmt::FCMP_UGE:
-                    resVal = (lhs >= rhs);
-                    break;
-                case CmpStmt::ICMP_ULT:
-                case CmpStmt::ICMP_SLT:
-                case CmpStmt::FCMP_OLT:
-                case CmpStmt::FCMP_ULT:
-                    resVal = (lhs < rhs);
-                    break;
-                case CmpStmt::ICMP_ULE:
-                case CmpStmt::ICMP_SLE:
-                case CmpStmt::FCMP_OLE:
-                case CmpStmt::FCMP_ULE:
-                    resVal = (lhs <= rhs);
-                    break;
-                case CmpStmt::FCMP_FALSE:
-                    resVal = IntegerIntervalProjection(0, 0);
-                    break;
-                case CmpStmt::FCMP_TRUE:
-                    resVal = IntegerIntervalProjection(1, 1);
-                    break;
-                case CmpStmt::FCMP_ORD:
-                case CmpStmt::FCMP_UNO:
-                    // FCMP_ORD: true if both operands are not NaN
-                    // FCMP_UNO: true if either operand is NaN
-                    // Conservatively return [0, 1] since we don't track NaN
-                    resVal = IntegerIntervalProjection(0, 1);
-                    break;
-                default:
-                    assert(false && "undefined compare: ");
-                }
-                updateAbsValue(cmp->getRes(), resVal, node);
-            }
-            else if (op0Val.isAddr() && op1Val.isAddr())
-            {
-                const EncodedAddressSet& lhs = op0Val.getAddrs();
-                const EncodedAddressSet& rhs = op1Val.getAddrs();
-                auto predicate = cmp->getPredicate();
-                switch (predicate)
-                {
-                case CmpStmt::ICMP_EQ:
-                case CmpStmt::FCMP_OEQ:
-                case CmpStmt::FCMP_UEQ: {
-                    if (lhs.hasIntersect(rhs))
-                    {
-                        resVal = IntegerIntervalProjection(0, 1);
-                    }
-                    else if (lhs.empty() && rhs.empty())
-                    {
-                        resVal = IntegerIntervalProjection(1, 1);
-                    }
-                    else
-                    {
-                        resVal = IntegerIntervalProjection(0, 0);
-                    }
-                    break;
-                }
-                case CmpStmt::ICMP_NE:
-                case CmpStmt::FCMP_ONE:
-                case CmpStmt::FCMP_UNE: {
-                    if (lhs.hasIntersect(rhs))
-                    {
-                        resVal = IntegerIntervalProjection(0, 1);
-                    }
-                    else if (lhs.empty() && rhs.empty())
-                    {
-                        resVal = IntegerIntervalProjection(0, 0);
-                    }
-                    else
-                    {
-                        resVal = IntegerIntervalProjection(1, 1);
-                    }
-                    break;
-                }
-                case CmpStmt::ICMP_UGT:
-                case CmpStmt::ICMP_SGT:
-                case CmpStmt::FCMP_OGT:
-                case CmpStmt::FCMP_UGT: {
-                    if (lhs.size() == 1 && rhs.size() == 1)
-                    {
-                        resVal = IntegerIntervalProjection(*lhs.begin() > *rhs.begin());
-                    }
-                    else
-                    {
-                        resVal = IntegerIntervalProjection(0, 1);
-                    }
-                    break;
-                }
-                case CmpStmt::ICMP_UGE:
-                case CmpStmt::ICMP_SGE:
-                case CmpStmt::FCMP_OGE:
-                case CmpStmt::FCMP_UGE: {
-                    if (lhs.size() == 1 && rhs.size() == 1)
-                    {
-                        resVal = IntegerIntervalProjection(*lhs.begin() >= *rhs.begin());
-                    }
-                    else
-                    {
-                        resVal = IntegerIntervalProjection(0, 1);
-                    }
-                    break;
-                }
-                case CmpStmt::ICMP_ULT:
-                case CmpStmt::ICMP_SLT:
-                case CmpStmt::FCMP_OLT:
-                case CmpStmt::FCMP_ULT: {
-                    if (lhs.size() == 1 && rhs.size() == 1)
-                    {
-                        resVal = IntegerIntervalProjection(*lhs.begin() < *rhs.begin());
-                    }
-                    else
-                    {
-                        resVal = IntegerIntervalProjection(0, 1);
-                    }
-                    break;
-                }
-                case CmpStmt::ICMP_ULE:
-                case CmpStmt::ICMP_SLE:
-                case CmpStmt::FCMP_OLE:
-                case CmpStmt::FCMP_ULE: {
-                    if (lhs.size() == 1 && rhs.size() == 1)
-                    {
-                        resVal = IntegerIntervalProjection(*lhs.begin() <= *rhs.begin());
-                    }
-                    else
-                    {
-                        resVal = IntegerIntervalProjection(0, 1);
-                    }
-                    break;
-                }
-                case CmpStmt::FCMP_FALSE:
-                    resVal = IntegerIntervalProjection(0, 0);
-                    break;
-                case CmpStmt::FCMP_TRUE:
-                    resVal = IntegerIntervalProjection(1, 1);
-                    break;
-                case CmpStmt::FCMP_ORD:
-                case CmpStmt::FCMP_UNO:
-                    // FCMP_ORD: true if both operands are not NaN
-                    // FCMP_UNO: true if either operand is NaN
-                    // Conservatively return [0, 1] since we don't track NaN
-                    resVal = IntegerIntervalProjection(0, 1);
-                    break;
-                default:
-                    assert(false && "undefined compare: ");
-                }
-                updateAbsValue(cmp->getRes(), resVal, node);
-            }
+        case CmpStmt::ICMP_EQ:
+        case CmpStmt::FCMP_OEQ:
+        case CmpStmt::FCMP_UEQ:
+            result = AD::equalTo(lhsInterval, rhsInterval);
+            break;
+        case CmpStmt::ICMP_NE:
+        case CmpStmt::FCMP_ONE:
+        case CmpStmt::FCMP_UNE:
+            result = AD::notEqualTo(lhsInterval, rhsInterval);
+            break;
+        case CmpStmt::ICMP_UGT:
+        case CmpStmt::ICMP_SGT:
+        case CmpStmt::FCMP_OGT:
+        case CmpStmt::FCMP_UGT:
+            result = AD::greaterThan(lhsInterval, rhsInterval);
+            break;
+        case CmpStmt::ICMP_UGE:
+        case CmpStmt::ICMP_SGE:
+        case CmpStmt::FCMP_OGE:
+        case CmpStmt::FCMP_UGE:
+            result = AD::greaterEqual(lhsInterval, rhsInterval);
+            break;
+        case CmpStmt::ICMP_ULT:
+        case CmpStmt::ICMP_SLT:
+        case CmpStmt::FCMP_OLT:
+        case CmpStmt::FCMP_ULT:
+            result = AD::lessThan(lhsInterval, rhsInterval);
+            break;
+        case CmpStmt::ICMP_ULE:
+        case CmpStmt::ICMP_SLE:
+        case CmpStmt::FCMP_OLE:
+        case CmpStmt::FCMP_ULE:
+            result = AD::lessEqual(lhsInterval, rhsInterval);
+            break;
+        default:
+            assert(false && "undefined numerical compare");
         }
     }
-    if (hasAbsValue(cmp->getRes(), node))
-    {
-        const ScalarProjection& result = getAbsValue(cmp->getRes(), node);
-        assignDomainInterval(node, cmp->getRes(), result.getInterval());
-    }
+    updateInterval(cmp->getRes(), result, node);
 }
 
 void AbstractInterpretation::updateStateOnLoad(const LoadStmt* load)
 {
     const ICFGNode* node = load->getICFGNode();
-    ScalarProjection loaded =
-        loadValue(SVFUtil::cast<ValVar>(load->getRHSVar()), node);
-    updateAbsValue(load->getLHSVar(), loaded, node);
-    assignDomainInterval(node, load->getLHSVar(), loaded.getInterval());
+    AD::Interval interval;
+    AD::AddressSet addresses;
+    loadValue(SVFUtil::cast<ValVar>(load->getRHSVar()), interval, addresses,
+              node);
+    updateValue(load->getLHSVar(), interval, addresses, node);
 }
 
 void AbstractInterpretation::updateStateOnStore(const StoreStmt* store)
 {
     const ICFGNode* node = store->getICFGNode();
-    ScalarProjection val = getAbsValue(store->getRHSVar(), node);
-    storeValue(SVFUtil::cast<ValVar>(store->getLHSVar()), val, node);
+    storeValue(SVFUtil::cast<ValVar>(store->getLHSVar()),
+               getInterval(store->getRHSVar(), node),
+               getAddressSet(store->getRHSVar(), node), node);
 }
 
 void AbstractInterpretation::updateStateOnCopy(const CopyStmt* copy)
@@ -1258,33 +1152,35 @@ void AbstractInterpretation::updateStateOnCopy(const CopyStmt* copy)
         if (SVFUtil::isa<SVFIntegerType>(type))
         {
             u32_t bits = type->getByteSize() * 8;
-            const ScalarProjection& val = getAbsValue(var, node);
-            if (val.getInterval().is_numeral())
+            const AD::Interval value = getInterval(var, node);
+            if (value.isSingleton())
             {
+                const s64_t numeral = value.singletonValue().toInt64();
                 if (bits == 8)
                 {
-                    int8_t signed_i8_value = val.getInterval().getIntNumeral();
+                    int8_t signed_i8_value = numeral;
                     u32_t unsigned_value =
                         static_cast<uint8_t>(signed_i8_value);
-                    return IntegerIntervalProjection(unsigned_value, unsigned_value);
+                    return AD::Interval::singleton(
+                        AD::Rational(unsigned_value));
                 }
                 else if (bits == 16)
                 {
-                    s16_t signed_i16_value = val.getInterval().getIntNumeral();
+                    s16_t signed_i16_value = numeral;
                     u32_t unsigned_value = static_cast<u16_t>(signed_i16_value);
-                    return IntegerIntervalProjection(unsigned_value, unsigned_value);
+                    return AD::Interval::singleton(
+                        AD::Rational(unsigned_value));
                 }
                 else if (bits == 32)
                 {
-                    s32_t signed_i32_value = val.getInterval().getIntNumeral();
+                    s32_t signed_i32_value = numeral;
                     u32_t unsigned_value = static_cast<u32_t>(signed_i32_value);
-                    return IntegerIntervalProjection(unsigned_value, unsigned_value);
+                    return AD::Interval::singleton(
+                        AD::Rational(unsigned_value));
                 }
                 else if (bits == 64)
                 {
-                    s64_t signed_i64_value = val.getInterval().getIntNumeral();
-                    return IntegerIntervalProjection((s64_t)signed_i64_value,
-                                         (s64_t)signed_i64_value);
+                    return AD::Interval::singleton(AD::Rational(numeral));
                 }
                 else
                     assert(false &&
@@ -1292,18 +1188,20 @@ void AbstractInterpretation::updateStateOnCopy(const CopyStmt* copy)
             }
             else
             {
-                return IntegerIntervalProjection::top();
+                return AD::Interval::top();
             }
         }
-        return IntegerIntervalProjection::top();
+        return AD::Interval::top();
     };
 
     auto getTruncValue = [&](const SVFVar* var, const SVFType* dstType) {
-        const IntegerIntervalProjection itv = getAbsValue(var, node).getInterval();
-        if (itv.isBottom())
-            return itv;
-        s64_t int_lb = itv.lb().getIntNumeral();
-        s64_t int_ub = itv.ub().getIntNumeral();
+        const AD::Interval interval = getInterval(var, node);
+        if (interval.isBottom() || !interval.lower().isFinite() ||
+            !interval.upper().isFinite())
+            return interval.isBottom() ? interval
+                                       : utils->getRangeLimitFromType(dstType);
+        s64_t int_lb = interval.lower().value().toInt64();
+        s64_t int_ub = interval.upper().value().toInt64();
         u32_t dst_bits = dstType->getByteSize() * 8;
         if (dst_bits == 8)
         {
@@ -1311,7 +1209,8 @@ void AbstractInterpretation::updateStateOnCopy(const CopyStmt* copy)
             int8_t s8_ub = static_cast<int8_t>(int_ub);
             if (s8_lb > s8_ub)
                 return utils->getRangeLimitFromType(dstType);
-            return IntegerIntervalProjection(s8_lb, s8_ub);
+            return AD::Interval::closed(AD::Rational(s8_lb),
+                                        AD::Rational(s8_ub));
         }
         else if (dst_bits == 16)
         {
@@ -1319,7 +1218,8 @@ void AbstractInterpretation::updateStateOnCopy(const CopyStmt* copy)
             s16_t s16_ub = static_cast<s16_t>(int_ub);
             if (s16_lb > s16_ub)
                 return utils->getRangeLimitFromType(dstType);
-            return IntegerIntervalProjection(s16_lb, s16_ub);
+            return AD::Interval::closed(AD::Rational(s16_lb),
+                                        AD::Rational(s16_ub));
         }
         else if (dst_bits == 32)
         {
@@ -1327,7 +1227,8 @@ void AbstractInterpretation::updateStateOnCopy(const CopyStmt* copy)
             s32_t s32_ub = static_cast<s32_t>(int_ub);
             if (s32_lb > s32_ub)
                 return utils->getRangeLimitFromType(dstType);
-            return IntegerIntervalProjection(s32_lb, s32_ub);
+            return AD::Interval::closed(AD::Rational(s32_lb),
+                                        AD::Rational(s32_ub));
         }
         else
         {
@@ -1339,43 +1240,44 @@ void AbstractInterpretation::updateStateOnCopy(const CopyStmt* copy)
         }
     };
 
-    const ScalarProjection& rhsVal = getAbsValue(rhsVar, node);
+    const AD::Interval rhsInterval = getInterval(rhsVar, node);
+    const AD::AddressSet rhsAddresses = getAddressSet(rhsVar, node);
 
     if (copy->getCopyKind() == CopyStmt::COPYVAL)
     {
-        updateAbsValue(lhsVar, rhsVal, node);
+        updateValue(lhsVar, rhsInterval, rhsAddresses, node);
     }
     else if (copy->getCopyKind() == CopyStmt::ZEXT)
     {
-        updateAbsValue(lhsVar, getZExtValue(rhsVar), node);
+        updateInterval(lhsVar, getZExtValue(rhsVar), node);
     }
     else if (copy->getCopyKind() == CopyStmt::SEXT)
     {
-        updateAbsValue(lhsVar, rhsVal.getInterval(), node);
+        updateInterval(lhsVar, rhsInterval, node);
     }
     else if (copy->getCopyKind() == CopyStmt::FPTOSI)
     {
-        updateAbsValue(lhsVar, rhsVal.getInterval(), node);
+        updateInterval(lhsVar, rhsInterval, node);
     }
     else if (copy->getCopyKind() == CopyStmt::FPTOUI)
     {
-        updateAbsValue(lhsVar, rhsVal.getInterval(), node);
+        updateInterval(lhsVar, rhsInterval, node);
     }
     else if (copy->getCopyKind() == CopyStmt::SITOFP)
     {
-        updateAbsValue(lhsVar, rhsVal.getInterval(), node);
+        updateInterval(lhsVar, rhsInterval, node);
     }
     else if (copy->getCopyKind() == CopyStmt::UITOFP)
     {
-        updateAbsValue(lhsVar, rhsVal.getInterval(), node);
+        updateInterval(lhsVar, rhsInterval, node);
     }
     else if (copy->getCopyKind() == CopyStmt::TRUNC)
     {
-        updateAbsValue(lhsVar, getTruncValue(rhsVar, lhsVar->getType()), node);
+        updateInterval(lhsVar, getTruncValue(rhsVar, lhsVar->getType()), node);
     }
     else if (copy->getCopyKind() == CopyStmt::FPTRUNC)
     {
-        updateAbsValue(lhsVar, rhsVal.getInterval(), node);
+        updateInterval(lhsVar, rhsInterval, node);
     }
     else if (copy->getCopyKind() == CopyStmt::INTTOPTR)
     {
@@ -1383,14 +1285,13 @@ void AbstractInterpretation::updateStateOnCopy(const CopyStmt* copy)
     }
     else if (copy->getCopyKind() == CopyStmt::PTRTOINT)
     {
-        updateAbsValue(lhsVar, IntegerIntervalProjection::top(), node);
+        updateInterval(lhsVar, AD::Interval::top(), node);
     }
     else if (copy->getCopyKind() == CopyStmt::BITCAST)
     {
-        if (rhsVal.isAddr())
-            updateAbsValue(lhsVar, rhsVal, node);
+        if (!rhsAddresses.isBottom())
+            updateValue(lhsVar, rhsInterval, rhsAddresses, node);
     }
     else
         assert(false && "undefined copy kind");
-    updateDomainOnCopy(copy);
 }

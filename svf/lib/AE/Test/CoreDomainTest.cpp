@@ -53,6 +53,70 @@ bool hasBounds(const Interval& interval, const Rational& lower,
            interval.upper().value() == upper;
 }
 
+Interval integerInterval(std::int64_t value)
+{
+    return Interval::singleton(Rational(value));
+}
+
+void testScalarTransferOperations()
+{
+    const Interval two = integerInterval(2);
+    const Interval four = integerInterval(4);
+    require(add(two, four) == integerInterval(6) &&
+                subtract(four, two) == two &&
+                multiply(two, four) == integerInterval(8) &&
+                divide(four, two) == two &&
+                remainder(integerInterval(5), two) == integerInterval(1),
+            "native scalar arithmetic produced an incorrect singleton");
+
+    require(bitwiseAnd(integerInterval(6), integerInterval(3)) ==
+                    integerInterval(2) &&
+                bitwiseOr(integerInterval(4), integerInterval(1)) ==
+                    integerInterval(5) &&
+                bitwiseXor(integerInterval(7), integerInterval(3)) ==
+                    integerInterval(4) &&
+                shiftLeft(two, integerInterval(3)) == integerInterval(16) &&
+                shiftRight(integerInterval(15), two) == integerInterval(3),
+            "native bitwise or shift transfer produced an incorrect result");
+    require(
+        hasBounds(shiftLeft(Interval::closed(Rational(1), Rational(3)),
+                            Interval::closed(Rational(1), Rational(2))),
+                  Rational(2), Rational(12)) &&
+            hasBounds(shiftRight(Interval::closed(Rational(-17), Rational(15)),
+                                 Interval::closed(Rational(1), Rational(2))),
+                      Rational(-9), Rational(7)) &&
+            hasBounds(bitwiseOr(Interval::closed(Rational(1), Rational(3)),
+                                Interval::closed(Rational(4), Rational(4))),
+                      Rational(0), Rational(7)),
+        "native range bitwise or shift transfer was not sound");
+
+    const Interval low = Interval::closed(Rational(0), Rational(3));
+    const Interval high = Interval::closed(Rational(5), Rational(8));
+    require(equalTo(two, two) == integerInterval(1) &&
+                notEqualTo(low, high) == integerInterval(1) &&
+                lessThan(low, high) == integerInterval(1) &&
+                greaterEqual(high, low) == integerInterval(1) &&
+                equalTo(low, Interval::closed(Rational(2), Rational(6))) ==
+                    Interval::closed(Rational(0), Rational(1)),
+            "native comparison transfer lost definite or unknown outcomes");
+
+    const Interval closedZeroOne = Interval::closed(Rational(0), Rational(1));
+    const Interval openZeroOne(Bound::finite(Rational(0), true),
+                               Bound::finite(Rational(1)));
+    Interval joined = openZeroOne;
+    joined.joinWith(closedZeroOne);
+    Interval met = closedZeroOne;
+    met.meetWith(openZeroOne);
+    require(openZeroOne.isSubsetOf(closedZeroOne) && joined == closedZeroOne &&
+                met == openZeroOne,
+            "native interval lattice mishandled a strict lower bound");
+    require(lessThan(Interval(Bound::finite(Rational(0)),
+                              Bound::finite(Rational(1), true)),
+                     Interval::closed(Rational(1), Rational(2))) ==
+                integerInterval(1),
+            "native interval comparison ignored a strict endpoint");
+}
+
 void testLatticeAndTransferSurface()
 {
     const Variable x(1);
@@ -244,6 +308,10 @@ void testAddressDomain()
     require(addresses.kind() == DomainKind::Address && addresses.isBottom() &&
                 addresses.addressSet(p).isBottom(),
             "Address bottom did not define the vocabulary-wide default");
+    require(
+        Location::null().isNull() &&
+            AddressSet::singleton(Location::null()).contains(Location::null()),
+        "Address domain did not preserve the explicit null location");
 
     addresses.assign(p, AddressSet::singleton(first));
     AddressDomain copy = addresses;
@@ -257,6 +325,7 @@ void testAddressDomain()
     joined.joinWith(copy);
     require(joined.addressSet(p).contains(first) &&
                 joined.addressSet(p).contains(second) &&
+                joined.addressSet(p).hasIntersection(addresses.addressSet(p)) &&
                 addresses.isSubsetOf(joined) == CheckResult::True &&
                 copy.isSubsetOf(joined) == CheckResult::True,
             "Address join or ordering lost a possible location");
@@ -287,6 +356,7 @@ int main()
     try
     {
         testLatticeAndTransferSurface();
+        testScalarTransferOperations();
         testEnvironmentExpandFoldAndTrees();
         testPagedCopyOnWriteAndSerialization();
         testProgramStateMemoryFacet();

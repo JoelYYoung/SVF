@@ -127,7 +127,8 @@ const AD::AbstractDomain* NativeSemiSparseAbstractInterpretation<
 }
 
 template <typename NumericalDomainT>
-void NativeSemiSparseAbstractInterpretation<NumericalDomainT>::handleGlobalNode()
+void NativeSemiSparseAbstractInterpretation<
+    NumericalDomainT>::handleGlobalNode()
 {
     Base::handleGlobalNode();
     finalizeAbstractState(this->icfg->getGlobalICFGNode());
@@ -189,23 +190,59 @@ void NativeSemiSparseAbstractInterpretation<
 }
 
 template <typename NumericalDomainT>
-ScalarProjection NativeSemiSparseAbstractInterpretation<
-    NumericalDomainT>::getAbsValue(const ValVar* value, const ICFGNode* node)
+AD::Interval NativeSemiSparseAbstractInterpretation<
+    NumericalDomainT>::getInterval(const ValVar* value, const ICFGNode* node)
 {
-    (void)node;
     if (const auto* integer = SVFUtil::dyn_cast<ConstIntValVar>(value))
-        return IntegerIntervalProjection(integer->getSExtValue());
+        return AD::Interval::singleton(AD::Rational(integer->getSExtValue()));
     if (!value || !this->adapter_.contains(*value))
-        return IntegerIntervalProjection::top();
+        return AD::Interval::top();
 
     DenseState& scalars = scalarState(value->getFunction());
     const AD::Variable variable = this->adapter_.variable(*value);
     if (!scalars.shapes().isDefined(variable))
-        this->assignValue(scalars, variable, IntegerIntervalProjection::top());
-    ScalarProjection result = this->projectValue(scalars, variable);
+        this->assignValue(scalars, variable, AD::Interval::top(),
+                          AD::AddressSet::bottom());
     if (value->isPointer())
-        result.interval = IntegerIntervalProjection::bottom();
+        return AD::Interval::bottom();
+    AD::Interval result = scalars.shapes().hasNumeric(variable)
+                              ? scalars.numerical().bound(variable)
+                              : AD::Interval::bottom();
+    // Conditional-edge refinement is intentionally local to the ICFG state.
+    // Read it in addition to the definition-site scalar carrier so transfer
+    // functions observe path constraints without copying all SSA values into
+    // every program point.
+    if (node && this->hasAbsState(node))
+    {
+        const DenseState& local = this->state(node);
+        if (local.numerical().environment().contains(variable))
+        {
+            const AD::Interval refined = local.numerical().bound(variable);
+            if (!refined.isTop())
+            {
+                if (result.isBottom())
+                    result = refined;
+                else
+                    result.meetWith(refined);
+            }
+        }
+    }
     return result;
+}
+
+template <typename NumericalDomainT>
+AD::AddressSet NativeSemiSparseAbstractInterpretation<
+    NumericalDomainT>::getAddressSet(const ValVar* value, const ICFGNode* node)
+{
+    (void)node;
+    if (!value || !this->adapter_.contains(*value))
+        return AD::AddressSet::top();
+    DenseState& scalars = scalarState(value->getFunction());
+    const AD::Variable variable = this->adapter_.variable(*value);
+    if (!scalars.shapes().isDefined(variable))
+        this->assignValue(scalars, variable, AD::Interval::top(),
+                          AD::AddressSet::bottom());
+    return scalars.addresses().addressSet(variable);
 }
 
 template <typename NumericalDomainT>
@@ -223,19 +260,20 @@ bool NativeSemiSparseAbstractInterpretation<NumericalDomainT>::hasAbsValue(
 }
 
 template <typename NumericalDomainT>
-void NativeSemiSparseAbstractInterpretation<NumericalDomainT>::updateAbsValue(
-    const ValVar* value, const ScalarProjection& abstractValue,
-    const ICFGNode* node)
+void NativeSemiSparseAbstractInterpretation<NumericalDomainT>::updateValue(
+    const ValVar* value, const AD::Interval& interval,
+    const AD::AddressSet& addresses, const ICFGNode* node)
 {
     (void)node;
     if (value && this->adapter_.contains(*value))
         this->assignValue(scalarState(value->getFunction()),
-                          this->adapter_.variable(*value), abstractValue);
+                          this->adapter_.variable(*value), interval, addresses);
 }
 
 template <typename NumericalDomainT>
-void NativeSemiSparseAbstractInterpretation<NumericalDomainT>::copyAbstractState(
-    const ICFGNode* source, const ICFGNode* destination)
+void NativeSemiSparseAbstractInterpretation<
+    NumericalDomainT>::copyAbstractState(const ICFGNode* source,
+                                         const ICFGNode* destination)
 {
     PhaseTimer timer(sparseProfile_.stateCopy, Options::AESparseProfile());
     DenseState copy = this->state(source);
@@ -313,7 +351,7 @@ void NativeSemiSparseAbstractInterpretation<
 template <typename NumericalDomainT>
 void NativeSemiSparseAbstractInterpretation<
     NumericalDomainT>::applyScalarCheckpoint(DenseState& denseState,
-                                            const DenseState& checkpoint)
+                                             const DenseState& checkpoint)
 {
     PhaseTimer timer(sparseProfile_.scalarCheckpoint,
                      Options::AESparseProfile());
@@ -329,11 +367,8 @@ void NativeSemiSparseAbstractInterpretation<
                 continue;
             if (!denseState.numerical().environment().contains(variable))
                 this->ensureVariable(denseState, variable);
-            const ScalarProjection value =
-                this->projectValue(checkpoint, variable);
-            if (!value.isInterval())
-                continue;
-            this->constrainInterval(denseState, variable, value.getInterval());
+            this->constrainInterval(denseState, variable,
+                                    checkpoint.numerical().bound(variable));
             denseState.addresses().assign(variable, AD::AddressSet::bottom());
             denseState.shapes().assign(variable, true);
         }
@@ -368,17 +403,9 @@ void NativeSemiSparseAbstractInterpretation<NumericalDomainT>::materializeValue(
     if (denseState.shapes().isDefined(variable))
         return;
     auto materializeFacets = [&]() {
-        const ScalarProjection projected = getAbsValue(value, node);
-        AD::AddressSet addresses = AD::AddressSet::bottom();
-        for (u32_t address : projected.getAddrs())
-        {
-            const auto* object = SVFUtil::dyn_cast<ObjVar>(
-                this->svfir->getGNode(Base::objectIdFromAddress(address)));
-            if (object && this->adapter_.contains(*object))
-                addresses.insert(this->adapter_.location(*object));
-        }
-        denseState.addresses().assign(variable, std::move(addresses));
-        denseState.shapes().assign(variable, projected.isInterval());
+        denseState.addresses().assign(variable, getAddressSet(value, node));
+        denseState.shapes().assign(variable,
+                                   !getInterval(value, node).isBottom());
     };
     if constexpr (!std::is_same_v<NumericalDomainT, AD::BoxDomain>)
     {
@@ -398,25 +425,27 @@ void NativeSemiSparseAbstractInterpretation<NumericalDomainT>::materializeValue(
         materializeFacets();
         return;
     }
-    this->assignValue(denseState, variable, getAbsValue(value, node));
+    this->assignValue(denseState, variable, getInterval(value, node),
+                      getAddressSet(value, node));
 }
 
 template <typename NumericalDomainT>
-ScalarProjection NativeSemiSparseAbstractInterpretation<
-    NumericalDomainT>::loadValue(const ValVar* pointer, const ICFGNode* node)
+void NativeSemiSparseAbstractInterpretation<NumericalDomainT>::loadValue(
+    const ValVar* pointer, AD::Interval& interval, AD::AddressSet& addresses,
+    const ICFGNode* node)
 {
-    ScalarProjection result = Base::loadValue(pointer, node);
+    Base::loadValue(pointer, interval, addresses, node);
     if (pointer && this->adapter_.contains(*pointer))
         this->forgetValue(this->ensureState(node),
                           this->adapter_.variable(*pointer));
-    return result;
 }
 
 template <typename NumericalDomainT>
 void NativeSemiSparseAbstractInterpretation<NumericalDomainT>::storeValue(
-    const ValVar* pointer, const ScalarProjection& value, const ICFGNode* node)
+    const ValVar* pointer, const AD::Interval& interval,
+    const AD::AddressSet& addresses, const ICFGNode* node)
 {
-    Base::storeValue(pointer, value, node);
+    Base::storeValue(pointer, interval, addresses, node);
     if (pointer && this->adapter_.contains(*pointer))
         this->forgetValue(this->ensureState(node),
                           this->adapter_.variable(*pointer));
@@ -558,7 +587,7 @@ std::unique_ptr<AD::AbstractDomain> NativeSemiSparseAbstractInterpretation<
             !hasAbsValue(value, head))
             continue;
         this->assignValue(snapshot, this->adapter_.variable(*value),
-                          getAbsValue(value, head));
+                          getInterval(value, head), getAddressSet(value, head));
     }
     return std::make_unique<DenseState>(std::move(snapshot));
 }
@@ -566,7 +595,7 @@ std::unique_ptr<AD::AbstractDomain> NativeSemiSparseAbstractInterpretation<
 template <typename NumericalDomainT>
 void NativeSemiSparseAbstractInterpretation<
     NumericalDomainT>::scatterCycleValues(const ICFGCycleWTO* cycle,
-                                         const DenseState& cycleState)
+                                          const DenseState& cycleState)
 {
     for (const ValVar* value : this->preAnalysis->getCycleValVars(cycle))
     {
@@ -575,8 +604,12 @@ void NativeSemiSparseAbstractInterpretation<
         const AD::Variable variable = this->adapter_.variable(*value);
         if (!cycleState.shapes().isDefined(variable))
             continue;
-        updateAbsValue(value, this->projectValue(cycleState, variable),
-                       cycle->head()->getICFGNode());
+        updateValue(value,
+                    cycleState.shapes().hasNumeric(variable)
+                        ? cycleState.numerical().bound(variable)
+                        : AD::Interval::bottom(),
+                    cycleState.addresses().addressSet(variable),
+                    cycle->head()->getICFGNode());
     }
 }
 
@@ -605,114 +638,6 @@ bool NativeSemiSparseAbstractInterpretation<NumericalDomainT>::narrowCycleState(
     }
     finalizeAbstractState(cycle->head()->getICFGNode());
     return fixpoint;
-}
-
-template <typename NumericalDomainT>
-void NativeSemiSparseAbstractInterpretation<
-    NumericalDomainT>::assignDomainInterval(const ICFGNode* node,
-                                           const SVFVar* target,
-                                           const IntegerIntervalProjection& interval)
-{
-    if (const auto* value = SVFUtil::dyn_cast<ValVar>(target))
-    {
-        if (!this->adapter_.contains(*value) || interval.isBottom())
-            return;
-        this->assignInterval(scalarState(value->getFunction()),
-                             this->adapter_.variable(*value), interval);
-        return;
-    }
-    Base::assignDomainInterval(node, target, interval);
-}
-
-template <typename NumericalDomainT>
-void NativeSemiSparseAbstractInterpretation<
-    NumericalDomainT>::commitBinaryResult(const BinaryOPStmt* binary,
-                                         const DenseState& transferState,
-                                         const IntegerIntervalProjection& fallback)
-{
-    const auto* target = SVFUtil::dyn_cast<ValVar>(binary->getRes());
-    if (!target || !this->adapter_.contains(*target))
-        return;
-
-    const AD::Variable targetVariable = this->adapter_.variable(*target);
-    ScalarProjection projected = this->projectValue(transferState, targetVariable);
-    const IntegerIntervalProjection interval =
-        projected.isInterval() ? projected.getInterval() : fallback;
-    DenseState& scalars = scalarState(target->getFunction());
-    this->assignInterval(scalars, targetVariable, interval);
-    if constexpr (!std::is_same_v<NumericalDomainT, AD::BoxDomain>)
-    {
-        DenseState checkpoint = transferState;
-        checkpoint.changeEnvironment(
-            this->adapter_.scalarEnvironment(target->getFunction()));
-        scalarCheckpoints_.insert_or_assign(target, std::move(checkpoint));
-    }
-}
-
-template <typename NumericalDomainT>
-void NativeSemiSparseAbstractInterpretation<
-    NumericalDomainT>::updateDomainOnBinary(const BinaryOPStmt* binary,
-                                           const IntegerIntervalProjection& result)
-{
-    Base::updateDomainOnBinary(binary, result);
-    DenseState& transferState = this->ensureState(binary->getICFGNode());
-    if (const auto* target = SVFUtil::dyn_cast<ValVar>(binary->getRes());
-        target && this->adapter_.contains(*target))
-    {
-        const AD::Variable variable = this->adapter_.variable(*target);
-        transferState.addresses().assign(variable, AD::AddressSet::bottom());
-        transferState.shapes().assign(variable, true);
-    }
-    commitBinaryResult(binary, transferState, result);
-}
-
-template <typename NumericalDomainT>
-void NativeSemiSparseAbstractInterpretation<NumericalDomainT>::commitCopyResult(
-    const SVFVar* target, bool exactMathematicalCopy,
-    const DenseState& transferState)
-{
-    const auto* targetValue = SVFUtil::dyn_cast<ValVar>(target);
-    if (!targetValue || !this->adapter_.contains(*targetValue))
-        return;
-    const AD::Variable targetVariable = this->adapter_.variable(*targetValue);
-    const ScalarProjection projected =
-        this->projectValue(transferState, targetVariable);
-    if (!projected.isInterval())
-        return;
-
-    DenseState& scalars = scalarState(targetValue->getFunction());
-    this->assignInterval(scalars, targetVariable, projected.getInterval());
-    if constexpr (!std::is_same_v<NumericalDomainT, AD::BoxDomain>)
-    {
-        if (exactMathematicalCopy)
-        {
-            DenseState checkpoint = transferState;
-            checkpoint.changeEnvironment(
-                this->adapter_.scalarEnvironment(targetValue->getFunction()));
-            scalarCheckpoints_.insert_or_assign(targetValue,
-                                                std::move(checkpoint));
-        }
-    }
-}
-
-template <typename NumericalDomainT>
-void NativeSemiSparseAbstractInterpretation<
-    NumericalDomainT>::updateDomainCopyValue(const ICFGNode* node,
-                                            const SVFVar* target,
-                                            const SVFVar* source,
-                                            bool exactMathematicalCopy)
-{
-    Base::updateDomainCopyValue(node, target, source, exactMathematicalCopy);
-    DenseState& transferState = this->ensureState(node);
-    const auto* targetValue = SVFUtil::dyn_cast<ValVar>(target);
-    if (targetValue && this->adapter_.contains(*targetValue) &&
-        getAbsValue(targetValue, node).isInterval())
-    {
-        const AD::Variable variable = this->adapter_.variable(*targetValue);
-        transferState.addresses().assign(variable, AD::AddressSet::bottom());
-        transferState.shapes().assign(variable, true);
-    }
-    commitCopyResult(target, exactMathematicalCopy, transferState);
 }
 
 namespace
@@ -781,10 +706,10 @@ void NativeFullSparseAbstractInterpretation<
 template <typename NumericalDomainT>
 void NativeFullSparseAbstractInterpretation<
     NumericalDomainT>::recordBranchRefinement(NodeID objectId,
-                                             const IntegerIntervalProjection& narrowed,
-                                             AD::AbstractDomain&,
-                                             const ICFGNode*,
-                                             const ICFGNode* successor)
+                                              const AD::Interval& narrowed,
+                                              AD::AbstractDomain&,
+                                              const ICFGNode*,
+                                              const ICFGNode* successor)
 {
     if (narrowed.isBottom())
         return;
@@ -793,21 +718,23 @@ void NativeFullSparseAbstractInterpretation<
     if (iterator == refinements.end())
         refinements.emplace(objectId, narrowed);
     else
-        iterator->second.join_with(narrowed);
+        iterator->second.joinWith(narrowed);
 }
 
 template <typename NumericalDomainT>
 void NativeFullSparseAbstractInterpretation<NumericalDomainT>::storeValue(
-    const ValVar* pointer, const ScalarProjection& value, const ICFGNode* node)
+    const ValVar* pointer, const AD::Interval& interval,
+    const AD::AddressSet& valueAddresses, const ICFGNode* node)
 {
-    const ScalarProjection addresses = Base::getAbsValue(pointer, node);
+    const AD::AddressSet addresses = Base::getAddressSet(pointer, node);
     auto refinement = memoryRefinementTrace_.find(node);
-    if (refinement != memoryRefinementTrace_.end())
+    if (refinement != memoryRefinementTrace_.end() && !addresses.isTop())
     {
-        for (u32_t address : addresses.getAddrs())
-            refinement->second.erase(this->objectIdFromAddress(address));
+        for (AD::Location location : addresses)
+            if (const ObjVar* object = this->objectAt(location))
+                refinement->second.erase(object->getId());
     }
-    Base::storeValue(pointer, value, node);
+    Base::storeValue(pointer, interval, valueAddresses, node);
 }
 
 template <typename NumericalDomainT>
@@ -886,11 +813,16 @@ void NativeFullSparseAbstractInterpretation<
                     if (!object || !Base::hasAbsValue(object, source))
                         continue;
 
-                    ScalarProjection joined;
+                    AD::Interval interval = AD::Interval::bottom();
+                    AD::AddressSet addresses = AD::AddressSet::bottom();
                     if (Base::hasAbsValue(object, node))
-                        joined = Base::getAbsValue(object, node);
-                    joined.join_with(Base::getAbsValue(object, source));
-                    Base::updateAbsValue(object, joined, node);
+                    {
+                        interval = Base::getInterval(object, node);
+                        addresses = Base::getAddressSet(object, node);
+                    }
+                    interval.joinWith(Base::getInterval(object, source));
+                    addresses.joinWith(Base::getAddressSet(object, source));
+                    Base::updateValue(object, interval, addresses, node);
                 }
             }
         }
@@ -900,7 +832,7 @@ void NativeFullSparseAbstractInterpretation<
 template <typename NumericalDomainT>
 bool NativeFullSparseAbstractInterpretation<
     NumericalDomainT>::isIntraEdgeBranchFeasible(const IntraCFGEdge* edge,
-                                                const ICFGNode* source)
+                                                 const ICFGNode* source)
 {
     return !edge->getCondition() || !this->hasAbsState(source) ||
            this->isBranchEdgeFeasibleAt(edge, source);
@@ -909,7 +841,7 @@ bool NativeFullSparseAbstractInterpretation<
 template <typename NumericalDomainT>
 bool NativeFullSparseAbstractInterpretation<
     NumericalDomainT>::isIndirectSVFGEdgeFeasible(const IndirectSVFGEdge* edge,
-                                                 const VFGNode* destination)
+                                                  const VFGNode* destination)
 {
     PhaseTimer timer(this->sparseProfile_.pathFeasibility,
                      Options::AESparseProfile());
@@ -969,7 +901,7 @@ void NativeFullSparseAbstractInterpretation<
 {
     PhaseTimer timer(this->sparseProfile_.memoryRefinement,
                      Options::AESparseProfile());
-    Map<NodeID, IntegerIntervalProjection> inherited;
+    Map<NodeID, AD::Interval> inherited;
     bool canInherit = true;
     bool first = true;
     for (const ICFGEdge* edge : node->getInEdges())
@@ -998,7 +930,7 @@ void NativeFullSparseAbstractInterpretation<
                 iterator = inherited.erase(iterator);
             else
             {
-                iterator->second.join_with(incoming->second);
+                iterator->second.joinWith(incoming->second);
                 ++iterator;
             }
         }
@@ -1013,7 +945,7 @@ void NativeFullSparseAbstractInterpretation<
             if (current == refinements.end())
                 refinements.emplace(objectId, constraint);
             else
-                current->second.meet_with(constraint);
+                current->second.meetWith(constraint);
         }
     }
 

@@ -62,6 +62,9 @@ public:
     {
         return value_ == 0;
     }
+    bool isInteger() const;
+    std::int64_t toInt64() const;
+    double toDouble() const;
     int sign() const
     {
         return mpq_sgn(value_.get_mpq_t());
@@ -214,7 +217,9 @@ public:
     Interval(Bound lower, Bound upper);
 
     static Interval top();
+    static Interval bottom();
     static Interval singleton(const Rational& value);
+    static Interval closed(const Rational& lower, const Rational& upper);
 
     const Bound& lower() const
     {
@@ -226,6 +231,15 @@ public:
     }
     bool isTop() const;
     bool isBottom() const;
+    bool isSingleton() const;
+    bool isZero() const;
+    bool contains(const Rational& value) const;
+    bool isSubsetOf(const Interval& other) const;
+    const Rational& singletonValue() const;
+    void joinWith(const Interval& other);
+    void meetWith(const Interval& other);
+    void widenWith(const Interval& next);
+    void narrowWith(const Interval& next);
     std::string toString() const;
 
     friend bool operator==(const Interval& lhs, const Interval& rhs)
@@ -241,6 +255,24 @@ private:
     Bound lower_;
     Bound upper_;
 };
+
+Interval add(const Interval& lhs, const Interval& rhs);
+Interval subtract(const Interval& lhs, const Interval& rhs);
+Interval multiply(const Interval& lhs, const Interval& rhs);
+Interval divide(const Interval& lhs, const Interval& rhs,
+                bool integerDivision = true);
+Interval remainder(const Interval& lhs, const Interval& rhs);
+Interval bitwiseAnd(const Interval& lhs, const Interval& rhs);
+Interval bitwiseOr(const Interval& lhs, const Interval& rhs);
+Interval bitwiseXor(const Interval& lhs, const Interval& rhs);
+Interval shiftLeft(const Interval& lhs, const Interval& rhs);
+Interval shiftRight(const Interval& lhs, const Interval& rhs);
+Interval equalTo(const Interval& lhs, const Interval& rhs);
+Interval notEqualTo(const Interval& lhs, const Interval& rhs);
+Interval lessThan(const Interval& lhs, const Interval& rhs);
+Interval lessEqual(const Interval& lhs, const Interval& rhs);
+Interval greaterThan(const Interval& lhs, const Interval& rhs);
+Interval greaterEqual(const Interval& lhs, const Interval& rhs);
 
 enum class RoundingMode
 {

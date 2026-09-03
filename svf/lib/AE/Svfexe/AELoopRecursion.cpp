@@ -60,8 +60,8 @@ void AbstractInterpretation::skipRecursionWithTop(const CallICFGNode* callNode)
         {
             if (!retPE->getLHSVar()->isPointer() &&
                 !retPE->getLHSVar()->isConstDataOrAggDataButNotNullPtr())
-                updateAbsValue(retPE->getLHSVar(), IntegerIntervalProjection::top(),
-                               callNode);
+                updateInterval(retPE->getLHSVar(),
+                               AbstractDomain::Interval::top(), callNode);
         }
     }
 
@@ -84,14 +84,16 @@ void AbstractInterpretation::skipRecursionWithTop(const CallICFGNode* callNode)
                     if (!rhsVar->isPointer() &&
                         !rhsVar->isConstDataOrAggDataButNotNullPtr())
                     {
-                        const ScalarProjection& addrs =
-                            getAbsValue(store->getLHSVar(), callNode);
-                        if (addrs.isAddr())
+                        const AbstractDomain::AddressSet addresses =
+                            getAddressSet(store->getLHSVar(), callNode);
+                        if (!addresses.isBottom() && !addresses.isTop())
                         {
-                            for (const auto& addr : addrs.getAddrs())
+                            for (AbstractDomain::Location location : addresses)
                             {
-                                updateMemoryValue(addr, IntegerIntervalProjection::top(),
-                                                  callNode);
+                                updateMemoryValue(
+                                    location, AbstractDomain::Interval::top(),
+                                    AbstractDomain::AddressSet::bottom(),
+                                    callNode);
                             }
                         }
                     }

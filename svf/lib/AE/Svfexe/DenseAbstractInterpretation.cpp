@@ -7,7 +7,6 @@
 
 #include <algorithm>
 #include <iostream>
-#include <limits>
 #include <set>
 #include <stdexcept>
 #include <tuple>
@@ -35,46 +34,6 @@ std::vector<const ICFGEdge*> orderedIncomingEdges(const ICFGNode* node)
                                          rhs->getEdgeKindWithoutMask());
               });
     return edges;
-}
-
-s64_t toSigned64(const mpz_class& value, bool upper)
-{
-    if (!mpz_fits_slong_p(value.get_mpz_t()))
-        return upper ? std::numeric_limits<s64_t>::max()
-                     : std::numeric_limits<s64_t>::min();
-    return static_cast<s64_t>(value.get_si());
-}
-
-BoundedInt lowerBound(const AD::Bound& bound)
-{
-    if (bound.isMinusInfinity())
-        return IntegerIntervalProjection::minus_infinity();
-    if (bound.isPlusInfinity())
-        return IntegerIntervalProjection::plus_infinity();
-    AD::Rational integer = bound.isStrict()
-                               ? bound.value().floor() + AD::Rational(1)
-                               : bound.value().ceil();
-    return BoundedInt(toSigned64(integer.value().get_num(), false));
-}
-
-BoundedInt upperBound(const AD::Bound& bound)
-{
-    if (bound.isPlusInfinity())
-        return IntegerIntervalProjection::plus_infinity();
-    if (bound.isMinusInfinity())
-        return IntegerIntervalProjection::minus_infinity();
-    AD::Rational integer = bound.isStrict()
-                               ? bound.value().ceil() - AD::Rational(1)
-                               : bound.value().floor();
-    return BoundedInt(toSigned64(integer.value().get_num(), true));
-}
-
-IntegerIntervalProjection projectInterval(const AD::Interval& interval)
-{
-    if (interval.isBottom())
-        return IntegerIntervalProjection::bottom();
-    return IntegerIntervalProjection(lowerBound(interval.lower()),
-                         upperBound(interval.upper()));
 }
 
 AD::ConstraintKind negatePredicate(AD::ConstraintKind kind)
@@ -189,18 +148,18 @@ void DenseAbstractInterpretation<NumericalDomainT>::handleGlobalNode()
     for (const SVFStmt* statement : node->getSVFStmts())
         handleSVFStatement(statement);
 
-    ScalarProjection blackHole(IntegerIntervalProjection::top());
-    blackHole.getAddrs().insert(BlackHoleObjAddr);
     if (const auto* variable = SVFUtil::dyn_cast<ValVar>(
             svfir->getGNode(PAG::getPAG()->getBlkPtr())))
-        updateAbsValue(variable, blackHole, node);
+        updateValue(variable, AD::Interval::top(), AD::AddressSet::top(), node);
 }
 
 template <typename NumericalDomainT>
-ScalarProjection DenseAbstractInterpretation<
-    NumericalDomainT>::initializeObjectAddress(const ObjVar* object,
-                                              const ICFGNode* node)
+void DenseAbstractInterpretation<NumericalDomainT>::initializeObjectValue(
+    const ObjVar* object, AD::Interval& interval, AD::AddressSet& addresses,
+    const ICFGNode* node)
 {
+    interval = AD::Interval::bottom();
+    addresses = AD::AddressSet::bottom();
     DenseState& denseState = ensureState(node);
     if (adapter_.contains(*object))
         denseState.allocate(adapter_.location(*object));
@@ -210,16 +169,23 @@ ScalarProjection DenseAbstractInterpretation<
         base->isConstantStruct())
     {
         if (const auto* integer = SVFUtil::dyn_cast<ConstIntObjVar>(object))
-            return IntegerIntervalProjection(integer->getSExtValue());
-        if (const auto* floating = SVFUtil::dyn_cast<ConstFPObjVar>(object))
-            return IntegerIntervalProjection(floating->getFPValue(),
-                                 floating->getFPValue());
-        if (SVFUtil::isa<ConstNullPtrObjVar>(object))
-            return IntegerIntervalProjection(0, 0);
-        if (!SVFUtil::isa<GlobalObjVar>(object))
-            return IntegerIntervalProjection::top();
+            interval =
+                AD::Interval::singleton(AD::Rational(integer->getSExtValue()));
+        else if (const auto* floating =
+                     SVFUtil::dyn_cast<ConstFPObjVar>(object))
+            interval = AD::Interval::singleton(
+                AD::Rational(std::to_string(floating->getFPValue())));
+        else if (SVFUtil::isa<ConstNullPtrObjVar>(object))
+            addresses = AD::AddressSet::singleton(AD::Location::null());
+        else if (!SVFUtil::isa<GlobalObjVar>(object))
+            interval = AD::Interval::top();
+        if (!interval.isBottom() || !addresses.isBottom())
+            return;
     }
-    return EncodedAddressSet(EncodedAddressSet::getVirtualMemAddress(object->getId()));
+    if (adapter_.contains(*object))
+        addresses = AD::AddressSet::singleton(adapter_.location(*object));
+    else
+        addresses = AD::AddressSet::top();
 }
 
 template <typename NumericalDomainT>
@@ -234,6 +200,21 @@ bool DenseAbstractInterpretation<NumericalDomainT>::hasAbsState(
     const ICFGNode* node) const
 {
     return denseTrace_.count(node) != 0;
+}
+
+template <typename NumericalDomainT>
+AD::Location DenseAbstractInterpretation<NumericalDomainT>::locationOf(
+    const ObjVar* object) const
+{
+    return object && adapter_.contains(*object) ? adapter_.location(*object)
+                                                : AD::Location::null();
+}
+
+template <typename NumericalDomainT>
+const ObjVar* DenseAbstractInterpretation<NumericalDomainT>::objectAt(
+    AD::Location location) const
+{
+    return location.isNull() ? nullptr : &adapter_.object(location);
 }
 
 template <typename NumericalDomainT>
@@ -257,8 +238,8 @@ DenseAbstractInterpretation<NumericalDomainT>::bottomState(
 }
 
 template <typename NumericalDomainT>
-NumericalDomainT DenseAbstractInterpretation<NumericalDomainT>::makeNumericalTop(
-    const AD::VariableEnvironment& environment) const
+NumericalDomainT DenseAbstractInterpretation<NumericalDomainT>::
+    makeNumericalTop(const AD::VariableEnvironment& environment) const
 {
     if constexpr (std::is_same_v<NumericalDomainT, AD::BoxDomain>)
         return AD::BoxDomain::top(environment);
@@ -402,8 +383,7 @@ void DenseAbstractInterpretation<NumericalDomainT>::ensureVariable(
 
 template <typename NumericalDomainT>
 void DenseAbstractInterpretation<NumericalDomainT>::assignInterval(
-    DenseState& denseState, AD::Variable variable,
-    const IntegerIntervalProjection& interval)
+    DenseState& denseState, AD::Variable variable, const AD::Interval& interval)
 {
     ensureVariable(denseState, variable);
     denseState.numerical().forget(variable);
@@ -412,25 +392,26 @@ void DenseAbstractInterpretation<NumericalDomainT>::assignInterval(
 
 template <typename NumericalDomainT>
 void DenseAbstractInterpretation<NumericalDomainT>::constrainInterval(
-    DenseState& denseState, AD::Variable variable,
-    const IntegerIntervalProjection& interval)
+    DenseState& denseState, AD::Variable variable, const AD::Interval& interval)
 {
     if (interval.isBottom())
         return;
 
     AD::LinearConstraintSet constraints;
     AD::LinearExpression expression(variable);
-    if (!interval.lb().is_minus_infinity())
+    if (interval.lower().isFinite())
     {
-        constraints.push_back(AD::greaterEqual(
-            expression,
-            AD::LinearExpression(AD::Rational(interval.lb().getIntNumeral()))));
+        constraints.emplace_back(
+            expression - AD::LinearExpression(interval.lower().value()),
+            interval.lower().isStrict() ? AD::ConstraintKind::GreaterThan
+                                        : AD::ConstraintKind::GreaterEqual);
     }
-    if (!interval.ub().is_plus_infinity())
+    if (interval.upper().isFinite())
     {
-        constraints.push_back(AD::lessEqual(
-            expression,
-            AD::LinearExpression(AD::Rational(interval.ub().getIntNumeral()))));
+        constraints.emplace_back(
+            expression - AD::LinearExpression(interval.upper().value()),
+            interval.upper().isStrict() ? AD::ConstraintKind::LessThan
+                                        : AD::ConstraintKind::LessEqual);
     }
     denseState.numerical().assumeAll(constraints);
 }
@@ -443,148 +424,17 @@ void DenseAbstractInterpretation<NumericalDomainT>::initializeDomainState(
 }
 
 template <typename NumericalDomainT>
-void DenseAbstractInterpretation<NumericalDomainT>::assignDomainInterval(
-    const ICFGNode* node, const SVFVar* target, const IntegerIntervalProjection& interval)
-{
-    DenseState& denseState = ensureState(node);
-    if (const auto* value = SVFUtil::dyn_cast<ValVar>(target))
-    {
-        if (adapter_.contains(*value))
-        {
-            const AD::Variable variable = adapter_.variable(*value);
-            if (interval.isBottom() ||
-                projectInterval(denseState.numerical().bound(variable))
-                    .equals(interval))
-                return;
-            assignInterval(denseState, variable, interval);
-        }
-    }
-    else if (const auto* object = SVFUtil::dyn_cast<ObjVar>(target))
-    {
-        if (adapter_.contains(*object))
-        {
-            const AD::Variable variable = adapter_.contentVariable(*object);
-            if (interval.isBottom() ||
-                projectInterval(denseState.numerical().bound(variable))
-                    .equals(interval))
-                return;
-            assignInterval(denseState, variable, interval);
-        }
-    }
-}
-
-template <typename NumericalDomainT>
-void DenseAbstractInterpretation<NumericalDomainT>::updateDomainOnBinary(
-    const BinaryOPStmt* binary, const IntegerIntervalProjection& result)
-{
-    DenseState& denseState = ensureState(binary->getICFGNode());
-    const auto* target = SVFUtil::dyn_cast<ValVar>(binary->getRes());
-    if (!target || !adapter_.contains(*target))
-        return;
-    const AD::Variable targetVariable = adapter_.variable(*target);
-
-    auto operand = [&](const SVFVar* value,
-                       AD::LinearExpression& expression) -> bool {
-        if (const auto* integer = SVFUtil::dyn_cast<ConstIntValVar>(value))
-        {
-            expression =
-                AD::LinearExpression(AD::Rational(integer->getSExtValue()));
-            return true;
-        }
-        const auto* scalar = SVFUtil::dyn_cast<ValVar>(value);
-        if (!scalar || !adapter_.contains(*scalar))
-            return false;
-        materializeValue(denseState, scalar, binary->getICFGNode());
-        ensureVariable(denseState, adapter_.variable(*scalar));
-        expression = AD::LinearExpression(adapter_.variable(*scalar));
-        return true;
-    };
-
-    AD::LinearExpression lhs;
-    AD::LinearExpression rhs;
-    const bool affine = (binary->getOpcode() == BinaryOPStmt::Add ||
-                         binary->getOpcode() == BinaryOPStmt::Sub) &&
-                        operand(binary->getOpVar(0), lhs) &&
-                        operand(binary->getOpVar(1), rhs);
-    if (!affine)
-    {
-        assignInterval(denseState, targetVariable, result);
-        return;
-    }
-
-    ensureVariable(denseState, targetVariable);
-    denseState.numerical().assign(
-        targetVariable,
-        binary->getOpcode() == BinaryOPStmt::Add ? lhs + rhs : lhs - rhs);
-    constrainInterval(denseState, targetVariable, result);
-}
-
-template <typename NumericalDomainT>
-void DenseAbstractInterpretation<NumericalDomainT>::updateDomainCopyValue(
-    const ICFGNode* node, const SVFVar* target, const SVFVar* source,
-    bool exactMathematicalCopy)
-{
-    const auto* targetValue = SVFUtil::dyn_cast<ValVar>(target);
-    if (!targetValue || !adapter_.contains(*targetValue))
-        return;
-    DenseState& denseState = ensureState(node);
-    const AD::Variable targetVariable = adapter_.variable(*targetValue);
-    const ScalarProjection result = getAbsValue(targetValue, node);
-    if (!result.isInterval())
-    {
-        if (denseState.numerical().environment().contains(targetVariable))
-            denseState.numerical().forget(targetVariable);
-        return;
-    }
-
-    const auto* sourceValue = SVFUtil::dyn_cast<ValVar>(source);
-    if (exactMathematicalCopy && sourceValue && adapter_.contains(*sourceValue))
-    {
-        materializeValue(denseState, sourceValue, node);
-        const AD::Variable sourceVariable = adapter_.variable(*sourceValue);
-        ensureVariable(denseState, targetVariable);
-        ensureVariable(denseState, sourceVariable);
-        denseState.numerical().assign(targetVariable,
-                                      AD::LinearExpression(sourceVariable));
-        constrainInterval(denseState, targetVariable, result.getInterval());
-    }
-    else
-    {
-        assignInterval(denseState, targetVariable, result.getInterval());
-    }
-}
-
-template <typename NumericalDomainT>
-void DenseAbstractInterpretation<NumericalDomainT>::updateDomainOnCopy(
-    const CopyStmt* copy)
-{
-    const bool exact = copy->getCopyKind() == CopyStmt::COPYVAL ||
-                       copy->getCopyKind() == CopyStmt::SEXT;
-    updateDomainCopyValue(copy->getICFGNode(), copy->getLHSVar(),
-                          copy->getRHSVar(), exact);
-}
-
-template <typename NumericalDomainT>
 void DenseAbstractInterpretation<NumericalDomainT>::assignValue(
-    DenseState& denseState, AD::Variable variable, const ScalarProjection& value)
+    DenseState& denseState, AD::Variable variable, const AD::Interval& interval,
+    const AD::AddressSet& addresses)
 {
     ensureVariable(denseState, variable);
-    if (value.isInterval())
-        assignInterval(denseState, variable, value.getInterval());
+    if (!interval.isBottom())
+        assignInterval(denseState, variable, interval);
     else
         denseState.numerical().forget(variable);
-
-    AD::AddressSet addresses = AD::AddressSet::bottom();
-    for (u32_t address : value.getAddrs())
-    {
-        const NodeID objectId = address & FlippedAddressMask;
-        const auto* object =
-            SVFUtil::dyn_cast<ObjVar>(svfir->getGNode(objectId));
-        if (object && adapter_.contains(*object))
-            addresses.insert(adapter_.location(*object));
-    }
-    denseState.addresses().assign(variable, std::move(addresses));
-    denseState.shapes().assign(variable, value.isInterval());
+    denseState.addresses().assign(variable, addresses);
+    denseState.shapes().assign(variable, !interval.isBottom());
 }
 
 template <typename NumericalDomainT>
@@ -620,72 +470,89 @@ void DenseAbstractInterpretation<NumericalDomainT>::forgetScalarValues(
 }
 
 template <typename NumericalDomainT>
-ScalarProjection DenseAbstractInterpretation<NumericalDomainT>::projectValue(
-    const DenseState& denseState, AD::Variable variable) const
-{
-    if (!denseState.numerical().environment().contains(variable))
-        return ScalarProjection(IntegerIntervalProjection::top());
-    if (!denseState.shapes().isDefined(variable))
-        return ScalarProjection();
-    ScalarProjection result;
-    if (denseState.shapes().hasNumeric(variable))
-        result.interval =
-            projectInterval(denseState.numerical().bound(variable));
-    const AD::AddressSet addresses = denseState.addresses().addressSet(variable);
-    if (addresses.isTop())
-    {
-        result.getAddrs().insert(BlackHoleObjAddr);
-        return result;
-    }
-    for (AD::Location location : addresses.locations())
-    {
-        const ObjVar& object = adapter_.object(location);
-        result.getAddrs().insert(
-            EncodedAddressSet::getVirtualMemAddress(object.getId()));
-    }
-    return result;
-}
-
-template <typename NumericalDomainT>
-ScalarProjection DenseAbstractInterpretation<NumericalDomainT>::getAbsValue(
+AD::Interval DenseAbstractInterpretation<NumericalDomainT>::getInterval(
     const ValVar* var, const ICFGNode* node)
 {
     if (const auto* integer = SVFUtil::dyn_cast<ConstIntValVar>(var))
-        return IntegerIntervalProjection(integer->getSExtValue());
+        return AD::Interval::singleton(AD::Rational(integer->getSExtValue()));
     if (!adapter_.contains(*var))
-        return IntegerIntervalProjection::top();
+        return AD::Interval::top();
 
     DenseState& denseState = ensureState(node);
     const AD::Variable variable = adapter_.variable(*var);
     if (!denseState.shapes().isDefined(variable))
-        assignValue(denseState, variable, IntegerIntervalProjection::top());
-    ScalarProjection value = projectValue(denseState, variable);
+        assignValue(denseState, variable, AD::Interval::top(),
+                    AD::AddressSet::bottom());
     if (var->isPointer())
-        value.interval = IntegerIntervalProjection::bottom();
-    return value;
+        return AD::Interval::bottom();
+    return denseState.shapes().hasNumeric(variable)
+               ? denseState.numerical().bound(variable)
+               : AD::Interval::bottom();
 }
 
 template <typename NumericalDomainT>
-ScalarProjection DenseAbstractInterpretation<NumericalDomainT>::getAbsValue(
+AD::Interval DenseAbstractInterpretation<NumericalDomainT>::getInterval(
     const ObjVar* var, const ICFGNode* node)
 {
     if (!adapter_.contains(*var))
-        return ScalarProjection();
+        return AD::Interval::bottom();
     DenseState& denseState = ensureState(node);
     const AD::Variable content = adapter_.contentVariable(*var);
     if (!denseState.shapes().isDefined(content))
-        assignValue(denseState, content, ScalarProjection());
-    return projectValue(denseState, content);
+        assignValue(denseState, content, AD::Interval::bottom(),
+                    AD::AddressSet::bottom());
+    return denseState.shapes().hasNumeric(content)
+               ? denseState.numerical().bound(content)
+               : AD::Interval::bottom();
 }
 
 template <typename NumericalDomainT>
-ScalarProjection DenseAbstractInterpretation<NumericalDomainT>::getAbsValue(
+AD::Interval DenseAbstractInterpretation<NumericalDomainT>::getInterval(
     const SVFVar* var, const ICFGNode* node)
 {
     if (const auto* object = SVFUtil::dyn_cast<ObjVar>(var))
-        return getAbsValue(object, node);
+        return getInterval(object, node);
     if (const auto* value = SVFUtil::dyn_cast<ValVar>(var))
-        return getAbsValue(value, node);
+        return getInterval(value, node);
+    throw std::invalid_argument("unsupported SVF variable kind");
+}
+
+template <typename NumericalDomainT>
+AD::AddressSet DenseAbstractInterpretation<NumericalDomainT>::getAddressSet(
+    const ValVar* var, const ICFGNode* node)
+{
+    if (!adapter_.contains(*var))
+        return AD::AddressSet::top();
+    DenseState& denseState = ensureState(node);
+    const AD::Variable variable = adapter_.variable(*var);
+    if (!denseState.shapes().isDefined(variable))
+        assignValue(denseState, variable, AD::Interval::top(),
+                    AD::AddressSet::bottom());
+    return denseState.addresses().addressSet(variable);
+}
+
+template <typename NumericalDomainT>
+AD::AddressSet DenseAbstractInterpretation<NumericalDomainT>::getAddressSet(
+    const ObjVar* var, const ICFGNode* node)
+{
+    if (!adapter_.contains(*var))
+        return AD::AddressSet::bottom();
+    DenseState& denseState = ensureState(node);
+    const AD::Variable content = adapter_.contentVariable(*var);
+    if (!denseState.shapes().isDefined(content))
+        assignValue(denseState, content, AD::Interval::bottom(),
+                    AD::AddressSet::bottom());
+    return denseState.addresses().addressSet(content);
+}
+
+template <typename NumericalDomainT>
+AD::AddressSet DenseAbstractInterpretation<NumericalDomainT>::getAddressSet(
+    const SVFVar* var, const ICFGNode* node)
+{
+    if (const auto* object = SVFUtil::dyn_cast<ObjVar>(var))
+        return getAddressSet(object, node);
+    if (const auto* value = SVFUtil::dyn_cast<ValVar>(var))
+        return getAddressSet(value, node);
     throw std::invalid_argument("unsupported SVF variable kind");
 }
 
@@ -721,120 +588,140 @@ bool DenseAbstractInterpretation<NumericalDomainT>::hasAbsValue(
 }
 
 template <typename NumericalDomainT>
-void DenseAbstractInterpretation<NumericalDomainT>::updateAbsValue(
-    const ValVar* var, const ScalarProjection& value, const ICFGNode* node)
+void DenseAbstractInterpretation<NumericalDomainT>::updateValue(
+    const ValVar* var, const AD::Interval& interval,
+    const AD::AddressSet& addresses, const ICFGNode* node)
 {
     if (adapter_.contains(*var))
-        assignValue(ensureState(node), adapter_.variable(*var), value);
+        assignValue(ensureState(node), adapter_.variable(*var), interval,
+                    addresses);
 }
 
 template <typename NumericalDomainT>
-void DenseAbstractInterpretation<NumericalDomainT>::updateAbsValue(
-    const ObjVar* var, const ScalarProjection& value, const ICFGNode* node)
+void DenseAbstractInterpretation<NumericalDomainT>::updateValue(
+    const ObjVar* var, const AD::Interval& interval,
+    const AD::AddressSet& addresses, const ICFGNode* node)
 {
     if (adapter_.contains(*var))
-        assignValue(ensureState(node), adapter_.contentVariable(*var), value);
+        assignValue(ensureState(node), adapter_.contentVariable(*var), interval,
+                    addresses);
 }
 
 template <typename NumericalDomainT>
-ScalarProjection DenseAbstractInterpretation<NumericalDomainT>::getMemoryValue(
-    u32_t address, const ICFGNode* node)
+AD::Interval DenseAbstractInterpretation<NumericalDomainT>::getMemoryInterval(
+    AD::Location location, const ICFGNode* node)
 {
-    const auto* object = SVFUtil::dyn_cast<ObjVar>(
-        svfir->getGNode(objectIdFromAddress(address)));
-    return object ? getAbsValue(object, node) : ScalarProjection();
+    if (location.isNull())
+        return AD::Interval::bottom();
+    return getInterval(&adapter_.object(location), node);
+}
+
+template <typename NumericalDomainT>
+AD::AddressSet DenseAbstractInterpretation<
+    NumericalDomainT>::getMemoryAddressSet(AD::Location location,
+                                           const ICFGNode* node)
+{
+    if (location.isNull())
+        return AD::AddressSet::bottom();
+    return getAddressSet(&adapter_.object(location), node);
 }
 
 template <typename NumericalDomainT>
 bool DenseAbstractInterpretation<NumericalDomainT>::hasMemoryValue(
-    u32_t address, const ICFGNode* node) const
+    AD::Location location, const ICFGNode* node) const
 {
-    const auto* object = SVFUtil::dyn_cast<ObjVar>(
-        svfir->getGNode(objectIdFromAddress(address)));
-    return object && hasAbsValue(object, node);
+    return !location.isNull() && hasAbsValue(&adapter_.object(location), node);
 }
 
 template <typename NumericalDomainT>
 void DenseAbstractInterpretation<NumericalDomainT>::updateMemoryValue(
-    u32_t address, const ScalarProjection& value, const ICFGNode* node)
+    AD::Location location, const AD::Interval& interval,
+    const AD::AddressSet& addresses, const ICFGNode* node)
 {
-    const auto* object = SVFUtil::dyn_cast<ObjVar>(
-        svfir->getGNode(objectIdFromAddress(address)));
-    if (object)
-        updateAbsValue(object, value, node);
+    if (!location.isNull())
+        updateValue(&adapter_.object(location), interval, addresses, node);
 }
 
 template <typename NumericalDomainT>
 void DenseAbstractInterpretation<NumericalDomainT>::markFreedMemory(
-    u32_t address, const ICFGNode* node)
+    AD::Location location, const ICFGNode* node)
 {
-    const auto* object = SVFUtil::dyn_cast<ObjVar>(
-        svfir->getGNode(objectIdFromAddress(address)));
-    if (object && adapter_.contains(*object))
-        ensureState(node).lifetimes().release(adapter_.location(*object));
+    if (!location.isNull())
+        ensureState(node).lifetimes().release(location);
 }
 
 template <typename NumericalDomainT>
 bool DenseAbstractInterpretation<NumericalDomainT>::isFreedMemory(
-    u32_t address, const ICFGNode* node) const
+    AD::Location location, const ICFGNode* node) const
 {
-    if (denseTrace_.count(node) == 0)
+    if (denseTrace_.count(node) == 0 || location.isNull())
         return false;
-    const auto* object = SVFUtil::dyn_cast<ObjVar>(
-        svfir->getGNode(objectIdFromAddress(address)));
-    return object && adapter_.contains(*object) &&
-           state(node).lifetimes().mayBeFreed(adapter_.location(*object));
+    return state(node).lifetimes().mayBeFreed(location);
 }
 
 template <typename NumericalDomainT>
-void DenseAbstractInterpretation<NumericalDomainT>::updateAbsValue(
-    const SVFVar* var, const ScalarProjection& value, const ICFGNode* node)
+void DenseAbstractInterpretation<NumericalDomainT>::updateValue(
+    const SVFVar* var, const AD::Interval& interval,
+    const AD::AddressSet& addresses, const ICFGNode* node)
 {
     if (const auto* object = SVFUtil::dyn_cast<ObjVar>(var))
-        updateAbsValue(object, value, node);
+        updateValue(object, interval, addresses, node);
     else if (const auto* scalar = SVFUtil::dyn_cast<ValVar>(var))
-        updateAbsValue(scalar, value, node);
+        updateValue(scalar, interval, addresses, node);
     else
         throw std::invalid_argument("unsupported SVF variable kind");
 }
 
 template <typename NumericalDomainT>
-ScalarProjection DenseAbstractInterpretation<NumericalDomainT>::loadValue(
-    const ValVar* pointer, const ICFGNode* node)
+void DenseAbstractInterpretation<NumericalDomainT>::loadValue(
+    const ValVar* pointer, AD::Interval& interval, AD::AddressSet& addresses,
+    const ICFGNode* node)
 {
     if (!adapter_.contains(*pointer))
-        return AbstractInterpretation::loadValue(pointer, node);
+    {
+        AbstractInterpretation::loadValue(pointer, interval, addresses, node);
+        return;
+    }
     DenseState& denseState = ensureState(node);
     materializeValue(denseState, pointer, node);
     const AD::AddressSet pointees =
         denseState.addresses().addressSet(adapter_.variable(*pointer));
     if (pointees.isTop())
-        return ScalarProjection(IntegerIntervalProjection::top());
+    {
+        interval = AD::Interval::top();
+        addresses = AD::AddressSet::top();
+        return;
+    }
 
-    ScalarProjection result;
+    interval = AD::Interval::bottom();
+    addresses = AD::AddressSet::bottom();
     for (AD::Location location : pointees.locations())
     {
         if (denseState.lifetimes().mayBeFreed(location))
         {
-            result.join_with(ScalarProjection(IntegerIntervalProjection::top()));
+            interval.joinWith(AD::Interval::top());
+            addresses.joinWith(AD::AddressSet::top());
             continue;
         }
         if (denseState.memoryLayout().contains(location))
         {
-            result.join_with(projectValue(
-                denseState, denseState.memoryLayout().contentOf(location)));
+            const AD::Variable content =
+                denseState.memoryLayout().contentOf(location);
+            if (denseState.shapes().hasNumeric(content))
+                interval.joinWith(denseState.numerical().bound(content));
+            addresses.joinWith(denseState.addresses().addressSet(content));
         }
     }
-    return result;
 }
 
 template <typename NumericalDomainT>
 void DenseAbstractInterpretation<NumericalDomainT>::storeValue(
-    const ValVar* pointer, const ScalarProjection& value, const ICFGNode* node)
+    const ValVar* pointer, const AD::Interval& interval,
+    const AD::AddressSet& addresses, const ICFGNode* node)
 {
     if (!adapter_.contains(*pointer))
     {
-        AbstractInterpretation::storeValue(pointer, value, node);
+        AbstractInterpretation::storeValue(pointer, interval, addresses, node);
         return;
     }
     DenseState& denseState = ensureState(node);
@@ -849,12 +736,18 @@ void DenseAbstractInterpretation<NumericalDomainT>::storeValue(
             denseState.memoryLayout().contentOf(location);
         if (strong)
         {
-            assignValue(denseState, content, value);
+            assignValue(denseState, content, interval, addresses);
             return;
         }
-        ScalarProjection joined = projectValue(denseState, content);
-        joined.join_with(value);
-        assignValue(denseState, content, joined);
+        AD::Interval joinedInterval =
+            denseState.shapes().hasNumeric(content)
+                ? denseState.numerical().bound(content)
+                : AD::Interval::bottom();
+        AD::AddressSet joinedAddresses =
+            denseState.addresses().addressSet(content);
+        joinedInterval.joinWith(interval);
+        joinedAddresses.joinWith(addresses);
+        assignValue(denseState, content, joinedInterval, joinedAddresses);
     };
 
     if (pointees.isTop())
@@ -991,22 +884,20 @@ bool DenseAbstractInterpretation<NumericalDomainT>::mergeStatesFromPredecessors(
 
 template <typename NumericalDomainT>
 void DenseAbstractInterpretation<NumericalDomainT>::recordBranchRefinement(
-    NodeID objectId, const IntegerIntervalProjection& narrowed,
+    NodeID objectId, const AD::Interval& narrowed,
     AD::AbstractDomain& abstractState, const ICFGNode*, const ICFGNode*)
 {
-    const auto* object =
-        SVFUtil::dyn_cast<ObjVar>(svfir->getGNode(objectId));
+    const auto* object = SVFUtil::dyn_cast<ObjVar>(svfir->getGNode(objectId));
     if (!object || !adapter_.contains(*object))
         return;
 
     DenseState& denseState = static_cast<DenseState&>(abstractState);
     const AD::Variable content = adapter_.contentVariable(*object);
-    ScalarProjection current = projectValue(denseState, content);
-    if (!current.isInterval())
+    if (!denseState.shapes().hasNumeric(content))
         return;
-    IntegerIntervalProjection refined = current.getInterval();
-    refined.meet_with(narrowed);
-    assignValue(denseState, content, ScalarProjection(refined));
+    AD::Interval refined = denseState.numerical().bound(content);
+    refined.meetWith(narrowed);
+    assignValue(denseState, content, refined, AD::AddressSet::bottom());
 }
 
 template <typename NumericalDomainT>

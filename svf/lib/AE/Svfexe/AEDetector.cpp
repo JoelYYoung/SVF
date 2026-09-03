@@ -1,4 +1,5 @@
-//===- AEDetector.cpp -- Vulnerability Detectors---------------------------------//
+//===- AEDetector.cpp -- Vulnerability
+// Detectors---------------------------------//
 //
 //                     SVF: Static Value-Flow Analysis
 //
@@ -20,7 +21,6 @@
 //
 //===----------------------------------------------------------------------===//
 
-
 //
 //  Created on: May 1, 2025
 //      Author: Xiao Cheng, Jiawei Wang, Mingxiu Wang
@@ -29,15 +29,29 @@
 #include <AE/Svfexe/AEDetector.h>
 #include <AE/Svfexe/AbsExtAPI.h>
 #include <AE/Svfexe/AbstractInterpretation.h>
-#include "AE/Core/ScalarProjection.h"
 
 using namespace SVF;
+namespace AD = SVF::AbstractDomain;
+
+namespace
+{
+AD::Interval integerInterval(s64_t value)
+{
+    return AD::Interval::singleton(AD::Rational(value));
+}
+
+bool upperAtLeast(const AD::Interval& interval, u32_t size)
+{
+    return !interval.upper().isFinite() ||
+           interval.upper().value() >= AD::Rational(size);
+}
+} // namespace
 /**
  * @brief Detects buffer overflow issues within a given ICFG node.
  *
- * This function handles both non-call nodes, where it analyzes GEP (GetElementPtr)
- * instructions for potential buffer overflows, and call nodes, where it checks
- * for external API calls that may cause overflows.
+ * This function handles both non-call nodes, where it analyzes GEP
+ * (GetElementPtr) instructions for potential buffer overflows, and call nodes,
+ * where it checks for external API calls that may cause overflows.
  *
  * @param as Reference to the abstract state.
  * @param node Pointer to the ICFG node.
@@ -55,28 +69,41 @@ void BufOverflowDetector::detect(const ICFGNode* node)
                 SVFIR* svfir = PAG::getPAG();
 
                 // Update the GEP object offset from its base
-                const ScalarProjection& lhsVal = ae.getAbsValue(gep->getLHSVar(), node);
-                const ScalarProjection& rhsVal = ae.getAbsValue(gep->getRHSVar(), node);
-                updateGepObjOffsetFromBase(node, lhsVal.getAddrs(), rhsVal.getAddrs(),
+                const AD::AddressSet lhsVal =
+                    ae.getAddressSet(gep->getLHSVar(), node);
+                const AD::AddressSet rhsVal =
+                    ae.getAddressSet(gep->getRHSVar(), node);
+                updateGepObjOffsetFromBase(node, lhsVal, rhsVal,
                                            ae.getGepByteOffset(gep));
 
-                const EncodedAddressSet& objAddrs = rhsVal.getAddrs();
-                for (const auto& addr : objAddrs)
+                if (rhsVal.isTop())
+                    continue;
+                for (AD::Location location : rhsVal)
                 {
-                    NodeID objId = AbstractInterpretation::objectIdFromAddress(addr);
+                    const ObjVar* object = ae.objectAt(location);
+                    if (!object)
+                        continue;
+                    NodeID objId = object->getId();
+                    const BaseObjVar* baseObject = svfir->getBaseObject(objId);
+                    if (!baseObject)
+                        continue;
                     u32_t size = 0;
                     // like `int arr[10]` which has constant size before runtime
-                    if (svfir->getBaseObject(objId)->isConstantByteSize())
+                    if (baseObject->isConstantByteSize())
                     {
-                        size = svfir->getBaseObject(objId)->getByteSizeOfObj();
+                        size = baseObject->getByteSizeOfObj();
                     }
                     else
                     {
-                        // like `int len = ***; int arr[len]`, whose size can only be known in runtime
-                        const ICFGNode* addrNode = svfir->getBaseObject(objId)->getICFGNode();
+                        // like `int len = ***; int arr[len]`, whose size can
+                        // only be known in runtime
+                        const ICFGNode* addrNode = baseObject->getICFGNode();
+                        if (!addrNode)
+                            continue;
                         for (const SVFStmt* stmt2 : addrNode->getSVFStmts())
                         {
-                            if (const AddrStmt* addrStmt = SVFUtil::dyn_cast<AddrStmt>(stmt2))
+                            if (const AddrStmt* addrStmt =
+                                    SVFUtil::dyn_cast<AddrStmt>(stmt2))
                             {
                                 size = ae.getAllocaInstByteSize(addrStmt);
                             }
@@ -84,8 +111,8 @@ void BufOverflowDetector::detect(const ICFGNode* node)
                     }
 
                     // Calculate access offset and check for potential overflow
-                    IntegerIntervalProjection accessOffset = getAccessOffset(objId, gep);
-                    if (accessOffset.ub().getIntNumeral() >= size)
+                    AD::Interval accessOffset = getAccessOffset(objId, gep);
+                    if (upperAtLeast(accessOffset, size))
                     {
                         AEException bug(stmt->toString());
                         addBugToReporter(bug, stmt->getICFGNode());
@@ -105,11 +132,11 @@ void BufOverflowDetector::detect(const ICFGNode* node)
     }
 }
 
-
 /**
  * @brief Handles stub functions within the ICFG node.
  *
- * This function is a placeholder for handling stub functions within the ICFG node.
+ * This function is a placeholder for handling stub functions within the ICFG
+ * node.
  *
  * @param node Pointer to the ICFG node.
  */
@@ -123,32 +150,37 @@ void BufOverflowDetector::handleStubFunctions(const SVF::CallICFGNode* callNode)
         ae.getUtils()->checkpoints.erase(callNode);
         if (callNode->arg_size() < 2)
             return;
-        IntegerIntervalProjection val = ae.getAbsValue(callNode->getArgument(1), callNode).getInterval();
+        AD::Interval val = ae.getInterval(callNode->getArgument(1), callNode);
         if (val.isBottom())
         {
-            val = IntegerIntervalProjection(0);
+            val = integerInterval(0);
             assert(false && "SAFE_BUFACCESS size is bottom");
         }
         const ValVar* arg0Val = callNode->getArgument(0);
         bool isSafe = canSafelyAccessMemory(arg0Val, val, callNode);
         if (isSafe)
         {
-            SVFUtil::outs() << SVFUtil::sucMsg("success: expected safe buffer access at SAFE_BUFACCESS")
-                            << " — " << callNode->toString() << "\n";
+            SVFUtil::outs()
+                << SVFUtil::sucMsg(
+                       "success: expected safe buffer access at SAFE_BUFACCESS")
+                << " — " << callNode->toString() << "\n";
             return;
         }
         else
         {
-            SVFUtil::outs() << SVFUtil::errMsg("failure: unexpected buffer overflow at SAFE_BUFACCESS")
-                            << " — Position: " << callNode->getSourceLoc() << "\n";
+            SVFUtil::outs()
+                << SVFUtil::errMsg(
+                       "failure: unexpected buffer overflow at SAFE_BUFACCESS")
+                << " — Position: " << callNode->getSourceLoc() << "\n";
             assert(false);
         }
     }
     else if (funcName == "UNSAFE_BUFACCESS")
     {
         ae.getUtils()->checkpoints.erase(callNode);
-        if (callNode->arg_size() < 2) return;
-        IntegerIntervalProjection val = ae.getAbsValue(callNode->getArgument(1), callNode).getInterval();
+        if (callNode->arg_size() < 2)
+            return;
+        AD::Interval val = ae.getInterval(callNode->getArgument(1), callNode);
         if (val.isBottom())
         {
             assert(false && "UNSAFE_BUFACCESS size is bottom");
@@ -157,14 +189,18 @@ void BufOverflowDetector::handleStubFunctions(const SVF::CallICFGNode* callNode)
         bool isSafe = canSafelyAccessMemory(arg0Val, val, callNode);
         if (!isSafe)
         {
-            SVFUtil::outs() << SVFUtil::sucMsg("success: expected buffer overflow at UNSAFE_BUFACCESS")
-                            << " — " << callNode->toString() << "\n";
+            SVFUtil::outs()
+                << SVFUtil::sucMsg(
+                       "success: expected buffer overflow at UNSAFE_BUFACCESS")
+                << " — " << callNode->toString() << "\n";
             return;
         }
         else
         {
-            SVFUtil::outs() << SVFUtil::errMsg("failure: buffer overflow expected at UNSAFE_BUFACCESS, but none detected")
-                            << " — Position: " << callNode->getSourceLoc() << "\n";
+            SVFUtil::outs()
+                << SVFUtil::errMsg("failure: buffer overflow expected at "
+                                   "UNSAFE_BUFACCESS, but none detected")
+                << " — Position: " << callNode->getSourceLoc() << "\n";
             assert(false);
         }
     }
@@ -174,7 +210,8 @@ void BufOverflowDetector::handleStubFunctions(const SVF::CallICFGNode* callNode)
  * @brief Initializes external API buffer overflow check rules.
  *
  * This function sets up rules for various memory-related functions like memcpy,
- * memset, etc., defining which arguments should be checked for buffer overflows.
+ * memset, etc., defining which arguments should be checked for buffer
+ * overflows.
  */
 void BufOverflowDetector::initExtAPIBufOverflowCheckRules()
 {
@@ -183,9 +220,11 @@ void BufOverflowDetector::initExtAPIBufOverflowCheckRules()
     extAPIBufOverflowCheckRules["llvm_memcpy_p0i8_p0i8_i32"] = {{0, 2}, {1, 2}};
     extAPIBufOverflowCheckRules["llvm_memcpy"] = {{0, 2}, {1, 2}};
     extAPIBufOverflowCheckRules["llvm_memmove"] = {{0, 2}, {1, 2}};
-    extAPIBufOverflowCheckRules["llvm_memmove_p0i8_p0i8_i64"] = {{0, 2}, {1, 2}};
+    extAPIBufOverflowCheckRules["llvm_memmove_p0i8_p0i8_i64"] = {{0, 2},
+                                                                 {1, 2}};
     extAPIBufOverflowCheckRules["llvm_memmove_p0_p0_i64"] = {{0, 2}, {1, 2}};
-    extAPIBufOverflowCheckRules["llvm_memmove_p0i8_p0i8_i32"] = {{0, 2}, {1, 2}};
+    extAPIBufOverflowCheckRules["llvm_memmove_p0i8_p0i8_i32"] = {{0, 2},
+                                                                 {1, 2}};
     extAPIBufOverflowCheckRules["__memcpy_chk"] = {{0, 2}, {1, 2}};
     extAPIBufOverflowCheckRules["memmove"] = {{0, 2}, {1, 2}};
     extAPIBufOverflowCheckRules["bcopy"] = {{0, 2}, {1, 2}};
@@ -204,8 +243,9 @@ void BufOverflowDetector::initExtAPIBufOverflowCheckRules()
 /**
  * @brief Handles external API calls related to buffer overflow detection.
  *
- * This function checks the type of external memory API (e.g., memcpy, memset, strcpy, strcat)
- * and applies the corresponding buffer overflow checks based on predefined rules.
+ * This function checks the type of external memory API (e.g., memcpy, memset,
+ * strcpy, strcat) and applies the corresponding buffer overflow checks based on
+ * predefined rules.
  *
  * @param call Pointer to the call ICFG node.
  */
@@ -217,7 +257,8 @@ void BufOverflowDetector::detectExtAPI(const CallICFGNode* call)
     AbsExtAPI::ExtAPIType extType = AbsExtAPI::UNCLASSIFIED;
 
     // Determine the type of external memory API
-    for (const std::string &annotation : ExtAPI::getExtAPI()->getExtFuncAnnotations(call->getCalledFunction()))
+    for (const std::string& annotation :
+         ExtAPI::getExtAPI()->getExtFuncAnnotations(call->getCalledFunction()))
     {
         if (annotation.find("MEMCPY") != std::string::npos)
             extType = AbsExtAPI::MEMCPY;
@@ -232,16 +273,22 @@ void BufOverflowDetector::detectExtAPI(const CallICFGNode* call)
     // Apply buffer overflow checks based on the determined API type
     if (extType == AbsExtAPI::MEMCPY)
     {
-        if (extAPIBufOverflowCheckRules.count(call->getCalledFunction()->getName()) == 0)
+        if (extAPIBufOverflowCheckRules.count(
+                call->getCalledFunction()->getName()) == 0)
         {
-            SVFUtil::errs() << "Warning: " << call->getCalledFunction()->getName() << " is not in the rules, please implement it\n";
+            SVFUtil::errs()
+                << "Warning: " << call->getCalledFunction()->getName()
+                << " is not in the rules, please implement it\n";
             return;
         }
         std::vector<std::pair<u32_t, u32_t>> args =
-                                              extAPIBufOverflowCheckRules.at(call->getCalledFunction()->getName());
+            extAPIBufOverflowCheckRules.at(
+                call->getCalledFunction()->getName());
         for (auto arg : args)
         {
-            IntegerIntervalProjection offset = ae.getAbsValue(call->getArgument(arg.second), call).getInterval() - IntegerIntervalProjection(1);
+            AD::Interval offset = AD::subtract(
+                ae.getInterval(call->getArgument(arg.second), call),
+                integerInterval(1));
             const ValVar* argVar = call->getArgument(arg.first);
             if (!canSafelyAccessMemory(argVar, offset, call))
             {
@@ -252,16 +299,22 @@ void BufOverflowDetector::detectExtAPI(const CallICFGNode* call)
     }
     else if (extType == AbsExtAPI::MEMSET)
     {
-        if (extAPIBufOverflowCheckRules.count(call->getCalledFunction()->getName()) == 0)
+        if (extAPIBufOverflowCheckRules.count(
+                call->getCalledFunction()->getName()) == 0)
         {
-            SVFUtil::errs() << "Warning: " << call->getCalledFunction()->getName() << " is not in the rules, please implement it\n";
+            SVFUtil::errs()
+                << "Warning: " << call->getCalledFunction()->getName()
+                << " is not in the rules, please implement it\n";
             return;
         }
         std::vector<std::pair<u32_t, u32_t>> args =
-                                              extAPIBufOverflowCheckRules.at(call->getCalledFunction()->getName());
+            extAPIBufOverflowCheckRules.at(
+                call->getCalledFunction()->getName());
         for (auto arg : args)
         {
-            IntegerIntervalProjection offset = ae.getAbsValue(call->getArgument(arg.second), call).getInterval() - IntegerIntervalProjection(1);
+            AD::Interval offset = AD::subtract(
+                ae.getInterval(call->getArgument(arg.second), call),
+                integerInterval(1));
             const ValVar* argVar = call->getArgument(arg.first);
             if (!canSafelyAccessMemory(argVar, offset, call))
             {
@@ -295,14 +348,16 @@ void BufOverflowDetector::detectExtAPI(const CallICFGNode* call)
 /**
  * @brief Retrieves the access offset for a given object and GEP statement.
  *
- * This function calculates the access offset for a base object or a sub-object of an
- * aggregate object (using GEP). If the object is a dummy object, it returns a top interval value.
+ * This function calculates the access offset for a base object or a sub-object
+ * of an aggregate object (using GEP). If the object is a dummy object, it
+ * returns a top interval value.
  *
  * @param objId The ID of the object.
  * @param gep Pointer to the GEP statement.
  * @return The interval value of the access offset.
  */
-IntegerIntervalProjection BufOverflowDetector::getAccessOffset(SVF::NodeID objId, const SVF::GepStmt* gep)
+AD::Interval BufOverflowDetector::getAccessOffset(SVF::NodeID objId,
+                                                  const SVF::GepStmt* gep)
 {
     SVFIR* svfir = PAG::getPAG();
     auto& ae = AbstractInterpretation::getAEInstance();
@@ -314,33 +369,44 @@ IntegerIntervalProjection BufOverflowDetector::getAccessOffset(SVF::NodeID objId
     }
     else if (SVFUtil::isa<GepObjVar>(obj))
     {
-        return getGepObjOffsetFromBase(SVFUtil::cast<GepObjVar>(obj)) + ae.getGepByteOffset(gep);
+        return AD::add(getGepObjOffsetFromBase(SVFUtil::cast<GepObjVar>(obj)),
+                       ae.getGepByteOffset(gep));
     }
     else
     {
         assert(SVFUtil::isa<DummyObjVar>(obj) && "Unknown object type");
-        return IntegerIntervalProjection::top();
+        return AD::Interval::top();
     }
 }
 
 /**
  * @brief Updates the offset of a GEP object from its base.
  *
- * This function calculates and stores the offset of a GEP object from its base object
- * using the addresses and offsets provided.
+ * This function calculates and stores the offset of a GEP object from its base
+ * object using the addresses and offsets provided.
  *
  * @param gepAddrs The addresses of the GEP objects.
  * @param objAddrs The addresses of the base objects.
  * @param offset The interval value of the offset.
  */
-void BufOverflowDetector::updateGepObjOffsetFromBase(const SVF::ICFGNode* node, SVF::EncodedAddressSet gepAddrs, SVF::EncodedAddressSet objAddrs, SVF::IntegerIntervalProjection offset)
+void BufOverflowDetector::updateGepObjOffsetFromBase(const ICFGNode* node,
+                                                     AD::AddressSet gepAddrs,
+                                                     AD::AddressSet objAddrs,
+                                                     AD::Interval offset)
 {
     SVFIR* svfir = PAG::getPAG();
+    auto& ae = AbstractInterpretation::getAEInstance();
     (void)node;
 
-    for (const auto& objAddr : objAddrs)
+    if (gepAddrs.isTop() || objAddrs.isTop())
+        return;
+
+    for (AD::Location objLocation : objAddrs)
     {
-        NodeID objId = AbstractInterpretation::objectIdFromAddress(objAddr);
+        const ObjVar* mappedObject = ae.objectAt(objLocation);
+        if (!mappedObject)
+            continue;
+        NodeID objId = mappedObject->getId();
         auto obj = svfir->getSVFVar(objId);
 
         if (SVFUtil::isa<BaseObjVar>(obj))
@@ -348,16 +414,16 @@ void BufOverflowDetector::updateGepObjOffsetFromBase(const SVF::ICFGNode* node, 
             // if the object is a BaseObjVar, add the offset directly
             // like llvm bc `arr = alloc i8 12; p = gep arr, 4`
             // we write key value pair {gep, 4}
-            for (const auto& gepAddr : gepAddrs)
+            for (AD::Location gepLocation : gepAddrs)
             {
-                NodeID gepObj = AbstractInterpretation::objectIdFromAddress(gepAddr);
-                if (const GepObjVar* gepObjVar = SVFUtil::dyn_cast<GepObjVar>(svfir->getSVFVar(gepObj)))
+                const ObjVar* mappedGep = ae.objectAt(gepLocation);
+                if (!mappedGep)
+                    continue;
+                NodeID gepObj = mappedGep->getId();
+                if (const GepObjVar* gepObjVar =
+                        SVFUtil::dyn_cast<GepObjVar>(svfir->getSVFVar(gepObj)))
                 {
                     addToGepObjOffsetFromBase(gepObjVar, offset);
-                }
-                else
-                {
-                    assert(gepAddr == BlackHoleObjAddr && "GEP object is neither a GepObjVar nor an invalid memory address");
                 }
             }
         }
@@ -367,28 +433,28 @@ void BufOverflowDetector::updateGepObjOffsetFromBase(const SVF::ICFGNode* node, 
             // like llvm bc `arr = alloc i8 12; p = gep arr, 4; q = gep p, 6`
             // we retreive {p, 4} and write {q, 4+6}
             const GepObjVar* objVar = SVFUtil::cast<GepObjVar>(obj);
-            for (const auto& gepAddr : gepAddrs)
+            for (AD::Location gepLocation : gepAddrs)
             {
-                NodeID gepObj = AbstractInterpretation::objectIdFromAddress(gepAddr);
-                if (const GepObjVar* gepObjVar = SVFUtil::dyn_cast<GepObjVar>(svfir->getSVFVar(gepObj)))
+                const ObjVar* mappedGep = ae.objectAt(gepLocation);
+                if (!mappedGep)
+                    continue;
+                NodeID gepObj = mappedGep->getId();
+                if (const GepObjVar* gepObjVar =
+                        SVFUtil::dyn_cast<GepObjVar>(svfir->getSVFVar(gepObj)))
                 {
                     if (hasGepObjOffsetFromBase(objVar))
                     {
-                        IntegerIntervalProjection objOffsetFromBase =
+                        AD::Interval objOffsetFromBase =
                             getGepObjOffsetFromBase(objVar);
                         if (!hasGepObjOffsetFromBase(gepObjVar))
                             addToGepObjOffsetFromBase(
-                                gepObjVar, objOffsetFromBase + offset);
+                                gepObjVar, AD::add(objOffsetFromBase, offset));
                     }
                     else
                     {
                         assert(false &&
                                "GEP RHS object has no offset from base");
                     }
-                }
-                else
-                {
-                    assert(gepAddr == BlackHoleObjAddr && "GEP object is neither a GepObjVar nor an invalid memory address");
                 }
             }
         }
@@ -405,42 +471,48 @@ void BufOverflowDetector::updateGepObjOffsetFromBase(const SVF::ICFGNode* node, 
  * @param call Pointer to the call ICFG node.
  * @return True if the memory access is safe, false otherwise.
  */
-bool BufOverflowDetector::detectStrcpy(const CallICFGNode *call)
+bool BufOverflowDetector::detectStrcpy(const CallICFGNode* call)
 {
     const ValVar* arg0Val = call->getArgument(0);
     const ValVar* arg1Val = call->getArgument(1);
     auto& ae = AbstractInterpretation::getAEInstance();
-    IntegerIntervalProjection strLen = ae.getUtils()->getStrlen(arg1Val, call);
+    AD::Interval strLen = ae.getUtils()->getStrlen(arg1Val, call);
     return canSafelyAccessMemory(arg0Val, strLen, call);
 }
 
-bool BufOverflowDetector::detectStrcat(const CallICFGNode *call)
+bool BufOverflowDetector::detectStrcat(const CallICFGNode* call)
 {
     auto& ae = AbstractInterpretation::getAEInstance();
-    const std::vector<std::string> strcatGroup = {"__strcat_chk", "strcat", "__wcscat_chk", "wcscat"};
-    const std::vector<std::string> strncatGroup = {"__strncat_chk", "strncat", "__wcsncat_chk", "wcsncat"};
+    const std::vector<std::string> strcatGroup = {"__strcat_chk", "strcat",
+                                                  "__wcscat_chk", "wcscat"};
+    const std::vector<std::string> strncatGroup = {"__strncat_chk", "strncat",
+                                                   "__wcsncat_chk", "wcsncat"};
 
-    if (std::find(strcatGroup.begin(), strcatGroup.end(), call->getCalledFunction()->getName()) != strcatGroup.end())
+    if (std::find(strcatGroup.begin(), strcatGroup.end(),
+                  call->getCalledFunction()->getName()) != strcatGroup.end())
     {
         const ValVar* arg0Val = call->getArgument(0);
         const ValVar* arg1Val = call->getArgument(1);
-        IntegerIntervalProjection strLen0 = ae.getUtils()->getStrlen(arg0Val, call);
-        IntegerIntervalProjection strLen1 = ae.getUtils()->getStrlen(arg1Val, call);
-        IntegerIntervalProjection totalLen = strLen0 + strLen1;
+        AD::Interval strLen0 = ae.getUtils()->getStrlen(arg0Val, call);
+        AD::Interval strLen1 = ae.getUtils()->getStrlen(arg1Val, call);
+        AD::Interval totalLen = AD::add(strLen0, strLen1);
         return canSafelyAccessMemory(arg0Val, totalLen, call);
     }
-    else if (std::find(strncatGroup.begin(), strncatGroup.end(), call->getCalledFunction()->getName()) != strncatGroup.end())
+    else if (std::find(strncatGroup.begin(), strncatGroup.end(),
+                       call->getCalledFunction()->getName()) !=
+             strncatGroup.end())
     {
         const ValVar* arg0Val = call->getArgument(0);
         const ValVar* arg2Val = call->getArgument(2);
-        IntegerIntervalProjection arg2Num = ae.getAbsValue(arg2Val, call).getInterval();
-        IntegerIntervalProjection strLen0 = ae.getUtils()->getStrlen(arg0Val, call);
-        IntegerIntervalProjection totalLen = strLen0 + arg2Num;
+        AD::Interval arg2Num = ae.getInterval(arg2Val, call);
+        AD::Interval strLen0 = ae.getUtils()->getStrlen(arg0Val, call);
+        AD::Interval totalLen = AD::add(strLen0, arg2Num);
         return canSafelyAccessMemory(arg0Val, totalLen, call);
     }
     else
     {
-        assert(false && "Unknown strcat function, please add it to strcatGroup or strncatGroup");
+        assert(false && "Unknown strcat function, please add it to strcatGroup "
+                        "or strncatGroup");
         abort();
     }
 }
@@ -448,52 +520,63 @@ bool BufOverflowDetector::detectStrcat(const CallICFGNode *call)
 /**
  * @brief Checks if a memory access is safe given a specific buffer length.
  *
- * This function ensures that a given memory access, starting at a specific value,
- * does not exceed the allocated size of the buffer.
+ * This function ensures that a given memory access, starting at a specific
+ * value, does not exceed the allocated size of the buffer.
  *
  * @param as Reference to the abstract state.
  * @param value Pointer to the SVF var.
  * @param len The interval value representing the length of the memory access.
  * @return True if the memory access is safe, false otherwise.
  */
-bool BufOverflowDetector::canSafelyAccessMemory(const SVF::ValVar* value, const SVF::IntegerIntervalProjection& len, const ICFGNode* node)
+bool BufOverflowDetector::canSafelyAccessMemory(const ValVar* value,
+                                                const AD::Interval& len,
+                                                const ICFGNode* node)
 {
     SVFIR* svfir = PAG::getPAG();
     auto& ae = AbstractInterpretation::getAEInstance();
 
-    ScalarProjection ptrVal = ae.getAbsValue(value, node);
-    if (!ptrVal.isAddr())
+    const AD::AddressSet ptrVal = ae.getAddressSet(value, node);
+    if (ptrVal.isBottom() || ptrVal.isTop())
+        return false;
+    for (AD::Location location : ptrVal)
     {
-        ptrVal = EncodedAddressSet(BlackHoleObjAddr);
-        ae.updateAbsValue(value, ptrVal, node);
-    }
-    for (const auto& addr : ptrVal.getAddrs())
-    {
-        NodeID objId = AbstractInterpretation::objectIdFromAddress(addr);
+        const ObjVar* mappedObject = ae.objectAt(location);
+        if (!mappedObject)
+            return false;
+        NodeID objId = mappedObject->getId();
+        const BaseObjVar* baseObject = svfir->getBaseObject(objId);
+        if (!baseObject)
+            return false;
         u32_t size = 0;
         // if the object is a constant size object, get the size directly
-        if (svfir->getBaseObject(objId)->isConstantByteSize())
+        if (baseObject->isConstantByteSize())
         {
-            size = svfir->getBaseObject(objId)->getByteSizeOfObj();
+            size = baseObject->getByteSizeOfObj();
         }
         else
         {
-            // if the object is not a constant size object, get the size from the addrStmt
-            const ICFGNode* addrNode = svfir->getBaseObject(objId)->getICFGNode();
+            // if the object is not a constant size object, get the size from
+            // the addrStmt
+            const ICFGNode* addrNode = baseObject->getICFGNode();
+            if (!addrNode)
+                return false;
             for (const SVFStmt* stmt2 : addrNode->getSVFStmts())
             {
-                if (const AddrStmt* addrStmt = SVFUtil::dyn_cast<AddrStmt>(stmt2))
+                if (const AddrStmt* addrStmt =
+                        SVFUtil::dyn_cast<AddrStmt>(stmt2))
                 {
                     size = ae.getAllocaInstByteSize(addrStmt);
                 }
             }
         }
 
-        IntegerIntervalProjection offset(0);
+        AD::Interval offset = integerInterval(0);
         // if the object is a GepObjVar, get the offset from the base object
         if (SVFUtil::isa<GepObjVar>(svfir->getSVFVar(objId)))
         {
-            offset = getGepObjOffsetFromBase(SVFUtil::cast<GepObjVar>(svfir->getSVFVar(objId))) + len;
+            offset = AD::add(getGepObjOffsetFromBase(SVFUtil::cast<GepObjVar>(
+                                 svfir->getSVFVar(objId))),
+                             len);
         }
         else if (SVFUtil::isa<BaseObjVar>(svfir->getSVFVar(objId)))
         {
@@ -502,7 +585,7 @@ bool BufOverflowDetector::canSafelyAccessMemory(const SVF::ValVar* value, const 
         }
 
         // if the offset is greater than the size, return false
-        if (offset.ub().getIntNumeral() >= size)
+        if (upperAtLeast(offset, size))
         {
             return false;
         }
@@ -524,7 +607,7 @@ void NullptrDerefDetector::detect(const ICFGNode* node)
     }
     else
     {
-        for (const auto& stmt: node->getSVFStmts())
+        for (const auto& stmt : node->getSVFStmts())
         {
             if (const GepStmt* gep = SVFUtil::dyn_cast<GepStmt>(stmt))
             {
@@ -552,7 +635,6 @@ void NullptrDerefDetector::detect(const ICFGNode* node)
     }
 }
 
-
 void NullptrDerefDetector::handleStubFunctions(const CallICFGNode* callNode)
 {
     std::string funcName = callNode->getCalledFunction()->getName();
@@ -565,21 +647,27 @@ void NullptrDerefDetector::handleStubFunctions(const CallICFGNode* callNode)
             return;
 
         const ValVar* arg0Val = callNode->getArgument(0);
-        // opt may directly dereference a null pointer and call UNSAFE_LOAD(null)
-        bool isSafe = canSafelyDerefPtr(arg0Val, callNode) && arg0Val->getId() != 0;
+        // opt may directly dereference a null pointer and call
+        // UNSAFE_LOAD(null)
+        bool isSafe =
+            canSafelyDerefPtr(arg0Val, callNode) && arg0Val->getId() != 0;
         SVFUtil::outs() << "[UNSAFE_LOAD] node=" << callNode->getId()
                         << " arg0=" << arg0Val->getId() << " isSafe=" << isSafe
                         << "\n";
         if (!isSafe)
         {
-            SVFUtil::outs() << SVFUtil::sucMsg("success: expected null dereference at UNSAFE_LOAD")
-                            << " — " << callNode->toString() << "\n";
+            SVFUtil::outs()
+                << SVFUtil::sucMsg(
+                       "success: expected null dereference at UNSAFE_LOAD")
+                << " — " << callNode->toString() << "\n";
             return;
         }
         else
         {
-            SVFUtil::outs() << SVFUtil::errMsg("failure: null dereference expected at UNSAFE_LOAD, but none detected")
-                            << " — Position: " << callNode->getSourceLoc() << "\n";
+            SVFUtil::outs()
+                << SVFUtil::errMsg("failure: null dereference expected at "
+                                   "UNSAFE_LOAD, but none detected")
+                << " — Position: " << callNode->getSourceLoc() << "\n";
             assert(false);
         }
     }
@@ -587,20 +675,27 @@ void NullptrDerefDetector::handleStubFunctions(const CallICFGNode* callNode)
     {
         // void SAFE_LOAD(void* ptr);
         ae.getUtils()->checkpoints.erase(callNode);
-        if (callNode->arg_size() < 1) return;
+        if (callNode->arg_size() < 1)
+            return;
         const ValVar* arg0Val = callNode->getArgument(0);
-        // opt may directly dereference a null pointer and call UNSAFE_LOAD(null)ols
-        bool isSafe = canSafelyDerefPtr(arg0Val, callNode) && arg0Val->getId() != 0;
+        // opt may directly dereference a null pointer and call
+        // UNSAFE_LOAD(null)ols
+        bool isSafe =
+            canSafelyDerefPtr(arg0Val, callNode) && arg0Val->getId() != 0;
         if (isSafe)
         {
-            SVFUtil::outs() << SVFUtil::sucMsg("success: expected safe dereference at SAFE_LOAD")
-                            << " — " << callNode->toString() << "\n";
+            SVFUtil::outs()
+                << SVFUtil::sucMsg(
+                       "success: expected safe dereference at SAFE_LOAD")
+                << " — " << callNode->toString() << "\n";
             return;
         }
         else
         {
-            SVFUtil::outs() << SVFUtil::errMsg("failure: unexpected null dereference at SAFE_LOAD")
-                            << " — Position: " << callNode->getSourceLoc() << "\n";
+            SVFUtil::outs()
+                << SVFUtil::errMsg(
+                       "failure: unexpected null dereference at SAFE_LOAD")
+                << " — Position: " << callNode->getSourceLoc() << "\n";
             assert(false);
         }
     }
@@ -612,7 +707,8 @@ void NullptrDerefDetector::detectExtAPI(const CallICFGNode* call)
     // get ext type
     // get argument index which are nullptr deref checkpoints for extapi
     std::vector<u32_t> tmp_args;
-    for (const std::string &annotation: ExtAPI::getExtAPI()->getExtFuncAnnotations(call->getCalledFunction()))
+    for (const std::string& annotation :
+         ExtAPI::getExtAPI()->getExtFuncAnnotations(call->getCalledFunction()))
     {
         if (annotation.find("MEMCPY") != std::string::npos)
         {
@@ -624,7 +720,9 @@ void NullptrDerefDetector::detectExtAPI(const CallICFGNode* call)
             }
             else
             {
-                // for unsigned long iconv(void* cd, char **restrict inbuf, unsigned long *restrict inbytesleft, char **restrict outbuf, unsigned long *restrict outbytesleft)
+                // for unsigned long iconv(void* cd, char **restrict inbuf,
+                // unsigned long *restrict inbytesleft, char **restrict outbuf,
+                // unsigned long *restrict outbytesleft)
                 tmp_args.push_back(1);
                 tmp_args.push_back(2);
                 tmp_args.push_back(3);
@@ -651,7 +749,7 @@ void NullptrDerefDetector::detectExtAPI(const CallICFGNode* call)
         }
     }
 
-    for (const auto &arg: tmp_args)
+    for (const auto& arg : tmp_args)
     {
         if (call->arg_size() <= arg)
             continue;
@@ -664,23 +762,18 @@ void NullptrDerefDetector::detectExtAPI(const CallICFGNode* call)
     }
 }
 
-
-bool NullptrDerefDetector::canSafelyDerefPtr(const ValVar* value, const ICFGNode* node)
+bool NullptrDerefDetector::canSafelyDerefPtr(const ValVar* value,
+                                             const ICFGNode* node)
 {
     auto& ae = AbstractInterpretation::getAEInstance();
-    const ScalarProjection& AbsVal = ae.getAbsValue(value, node);
-    if (isUninit(AbsVal)) return false;
-    if (!AbsVal.isAddr()) return true;
-    for (const auto &addr: AbsVal.getAddrs())
+    const AD::AddressSet addresses = ae.getAddressSet(value, node);
+    if (addresses.isBottom() || addresses.isTop())
+        return false;
+    for (AD::Location location : addresses)
     {
-        // if the addr itself is invalid mem, report unsafe
-        if (addr == BlackHoleObjAddr)
+        if (location.isNull())
             return false;
-        // if nullptr is detected, return unsafe
-        else if (addr == NullMemAddr)
-            return false;
-        // if addr is labeled freed mem, report unsafe
-        else if (ae.isFreedMemory(addr, node))
+        if (!ae.objectAt(location) || ae.isFreedMemory(location, node))
             return false;
     }
     return true;
