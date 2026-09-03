@@ -65,7 +65,19 @@ def command(options, mode, input_path):
         runner = options.box_runner
         extapi = options.box_extapi
         mode_options = ("-ae-sparsity=semi-sparse",)
-    return [runner, *mode_options, "-stat=false", f"-extapi={extapi}", input_path]
+    production_defaults = (
+        ("-model-consts=true", "-model-arrays=true", "-pre-field-sensitive=false")
+        if options.model_production_inputs
+        else ()
+    )
+    return [
+        runner,
+        *mode_options,
+        *production_defaults,
+        "-stat=false",
+        f"-extapi={extapi}",
+        input_path,
+    ]
 
 
 def run_once(options, mode, input_path):
@@ -123,12 +135,18 @@ def main():
     parser.add_argument("--timeout", type=float, default=180.0)
     parser.add_argument("--require-node-match", action="store_true")
     parser.add_argument("--require-all-pass", action="store_true")
+    parser.add_argument(
+        "--model-production-inputs",
+        action="store_true",
+        help="pass the constant/array options that the production ae driver appends",
+    )
     parser.add_argument("--output", required=True)
     options = parser.parse_args()
     if options.repetitions <= 0 or options.timeout <= 0:
         parser.error("repetitions and timeout must be positive")
 
     rows = []
+    validation_errors = []
     for input_index, (label, input_path) in enumerate(options.input):
         observations = {mode: [] for mode in MODES}
         for repetition in range(1, options.repetitions + 1):
@@ -150,14 +168,14 @@ def main():
                 if row["status"] != "pass"
             ]
             if failures:
-                raise RuntimeError(f"{label}: " + ", ".join(failures))
+                validation_errors.append(f"{label}: " + ", ".join(failures))
         if options.require_node_match and (
             "" in legacy_nodes
             or "" in box_nodes
             or len(legacy_nodes) != 1
             or legacy_nodes != box_nodes
         ):
-            raise RuntimeError(
+            validation_errors.append(
                 f"{label}: analyzed-node mismatch "
                 f"legacy={sorted(legacy_nodes)} box={sorted(box_nodes)}"
             )
@@ -181,6 +199,8 @@ def main():
         writer = csv.DictWriter(output_file, fieldnames=FIELDS)
         writer.writeheader()
         writer.writerows(rows)
+    if validation_errors:
+        raise RuntimeError("; ".join(validation_errors))
 
 
 if __name__ == "__main__":
