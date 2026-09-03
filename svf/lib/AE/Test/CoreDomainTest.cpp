@@ -275,6 +275,15 @@ void testProgramStateMemoryFacet()
     const Location object(10);
     BoxProgramState state(BoxDomain::top(environment),
                           MemoryLayout({{object, cell}}));
+    require(state.isTop(),
+            "empty typed Box program state was not unconstrained");
+    BoxProgramState unreachable(BoxDomain::bottom(environment),
+                                MemoryLayout({{object, cell}}));
+    BoxProgramState firstMerge = unreachable;
+    firstMerge.joinWith(state);
+    require(firstMerge.isEquivalentTo(state) == CheckResult::True &&
+                unreachable.isSubsetOf(state) == CheckResult::True,
+            "Box program-state Bottom did not act as the join identity");
     state.allocate(object);
     state.assignPointer(pointer, AddressSet::singleton(object));
     state.assignNumeric(source, LinearExpression(Rational(7)));
@@ -295,7 +304,7 @@ void testProgramStateMemoryFacet()
             "Box program-state join omitted a component");
 }
 
-void testLifetimeAndValueKindDomains()
+void testLifetimeDomain()
 {
     const Location object(10);
     LifetimeDomain alive = LifetimeDomain::bottom();
@@ -315,27 +324,6 @@ void testLifetimeAndValueKindDomains()
     require(maybeFreed.statusOf(object) == Lifetime::Alive,
             "lifetime meet did not recover the live alternative");
 
-    const Variable x(1);
-    const Variable y(130);
-    const VariableEnvironment environment(
-        {{x, NumericType::integer(), "x"},
-         {y, NumericType::integer(), "y"}});
-    ValueKindDomain addressOnly = ValueKindDomain::bottom();
-    addressOnly.assign(x, false);
-    ValueKindDomain numeric = addressOnly;
-    numeric.assign(x, true);
-    require(addressOnly.isDefined(x) && !addressOnly.hasNumeric(x) &&
-                numeric.hasNumeric(x),
-            "value-kind copy-on-write changed the source property");
-
-    ValueKindDomain joined = addressOnly;
-    joined.joinWith(numeric);
-    require(joined.isDefined(x) && joined.hasNumeric(x),
-            "value-kind join lost a present numerical facet");
-    joined.changeEnvironment(VariableEnvironment(
-        {{y, NumericType::integer(), "y"}}));
-    require(joined.isBottom(),
-            "value-kind environment projection retained a removed value");
 }
 
 void testAddressDomain()
@@ -351,6 +339,10 @@ void testAddressDomain()
     require(addresses.kind() == DomainKind::Address && addresses.isBottom() &&
                 addresses.addressSet(p).isBottom(),
             "Address bottom did not define the vocabulary-wide default");
+    AddressDomain unknown = AddressDomain::top(environment);
+    require(unknown.isTop() && unknown.addressSet(p).isTop() &&
+                unknown.nonDefaultVariables().empty(),
+            "Address top did not represent an unknown pointer sparsely");
     require(
         Location::null().isNull() &&
             AddressSet::singleton(Location::null()).contains(Location::null()),
@@ -372,6 +364,11 @@ void testAddressDomain()
                 addresses.isSubsetOf(joined) == CheckResult::True &&
                 copy.isSubsetOf(joined) == CheckResult::True,
             "Address join or ordering lost a possible location");
+
+    AddressDomain unknownJoin = addresses;
+    unknownJoin.joinWith(unknown);
+    require(unknownJoin.isTop() && unknownJoin.addressSet(p).isTop(),
+            "joining a known address with an unknown pointer was not Top");
 
     AddressDomain met = joined;
     met.meetWith(addresses);
@@ -403,7 +400,7 @@ int main()
         testEnvironmentExpandFoldAndTrees();
         testPagedCopyOnWriteAndSerialization();
         testProgramStateMemoryFacet();
-        testLifetimeAndValueKindDomains();
+        testLifetimeDomain();
         testAddressDomain();
         std::cout << "SVF AE core domain test: PASS\n";
         return EXIT_SUCCESS;

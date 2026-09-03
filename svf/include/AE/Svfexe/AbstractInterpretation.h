@@ -151,7 +151,9 @@ public:
     virtual AbstractDomain::AddressSet getAddressSet(const SVFVar* var,
                                                      const ICFGNode* node) = 0;
 
-    /// Side-effect-free existence check.
+    /// Side-effect-free check that the node state is reachable and the value
+    /// belongs to the typed analysis vocabulary. A supported but unconstrained
+    /// value is represented by its facet's Top, not by absence.
     virtual bool hasAbsValue(const ValVar* var, const ICFGNode* node) const = 0;
     virtual bool hasAbsValue(const ObjVar* var, const ICFGNode* node) const = 0;
     virtual bool hasAbsValue(const SVFVar* var, const ICFGNode* node) const = 0;

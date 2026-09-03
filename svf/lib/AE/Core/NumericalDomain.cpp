@@ -2653,6 +2653,18 @@ void BoxDomain::forget(Variable variable)
     recordOperation(OperationKind::Forget, ApproximationKind::Exact, true);
 }
 
+std::vector<Variable> BoxDomain::constrainedVariables() const
+{
+    std::vector<Variable> variables;
+    if (bottom_)
+        return variables;
+    const std::vector<Dimension> dimensions = boundedDimensions();
+    variables.reserve(dimensions.size());
+    for (Dimension dimension : dimensions)
+        variables.push_back(environment_.variableOf(dimension));
+    return variables;
+}
+
 void BoxDomain::changeEnvironment(const VariableEnvironment& environment,
                                   bool initializeNewVariablesToZero)
 {

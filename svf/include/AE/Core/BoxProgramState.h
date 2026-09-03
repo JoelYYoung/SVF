@@ -9,7 +9,6 @@
 #include "AE/Core/NumericalDomain.h"
 #include "AE/Core/TreeExpression.h"
 
-#include <array>
 #include <cstdint>
 #include <map>
 #include <memory>
@@ -76,84 +75,6 @@ private:
     std::shared_ptr<Values> values_;
 };
 
-/// Tracks which value facets are present for every domain variable.  The
-/// numerical and address domains deliberately use top/bottom
-/// defaults, so they cannot by themselves distinguish an absent value from
-/// an explicitly stored numeric top or address bottom.  AE needs that
-/// distinction for uninitialised-value checks and for sparse materialisation.
-class ValueKindDomain final : public AbstractDomain
-{
-private:
-    struct Shape
-    {
-        bool defined = false;
-        bool numeric = false;
-    };
-
-public:
-    static ValueKindDomain top();
-    static ValueKindDomain bottom();
-
-    DomainKind kind() const noexcept override
-    {
-        return DomainKind::ValueKind;
-    }
-    std::unique_ptr<AbstractDomain> clone() const override;
-
-    bool isDefined(Variable variable) const;
-    bool hasNumeric(Variable variable) const;
-    std::vector<Variable> definedVariables(
-        const VariableEnvironment& environment) const;
-    void assign(Variable variable, bool numeric);
-    void forget(Variable variable);
-    void changeEnvironment(const VariableEnvironment& environment);
-
-private:
-    static constexpr std::size_t ShapesPerPage = 64;
-
-    struct ShapePage
-    {
-        std::array<std::uint8_t, ShapesPerPage> shapes;
-    };
-
-    struct ShapePageEntry
-    {
-        std::size_t index;
-        std::shared_ptr<ShapePage> page;
-    };
-
-    ValueKindDomain(bool defaultDefined, bool defaultNumeric)
-        : default_(encode({defaultDefined, defaultNumeric}))
-    {
-    }
-
-    const void* dynamicTypeToken() const noexcept override
-    {
-        return staticTypeToken<ValueKindDomain>();
-    }
-    bool hasCompatibleDomain(const AbstractDomain& other) const override;
-    void joinDomain(const AbstractDomain& other) override;
-    void meetDomain(const AbstractDomain& other) override;
-    void widenDomain(const AbstractDomain& next) override;
-    void narrowDomain(const AbstractDomain& next) override;
-    bool isBottomDomain() const override;
-    bool isTopDomain() const override;
-    bool leqDomain(const AbstractDomain& other) const override;
-    std::string domainToString() const override;
-
-    static std::uint8_t encode(Shape shape);
-    static Shape decode(std::uint8_t shape);
-    Shape shapeOf(Variable variable) const;
-    std::uint8_t encodedShapeOf(Variable variable) const;
-    void setEncodedShape(Variable variable, std::uint8_t shape);
-    static bool pageIsDefault(const ShapePage& page, std::uint8_t defaultShape);
-
-    std::uint8_t default_ = 0;
-    /// As with BoxDomain, the page directory is sorted and cheap to copy while
-    /// the payload pages are detached only when a shape in that page changes.
-    std::vector<ShapePageEntry> pages_;
-};
-
 /// Immutable mapping from abstract locations to the scalar symbol denoting the
 /// location's stored content. It is layout metadata, not mutable memory state.
 class MemoryLayout
@@ -194,19 +115,16 @@ public:
     BoxProgramState(BoxDomain numerical, MemoryLayout memoryLayout)
         : numerical_(std::move(numerical)),
           memoryLayout_(std::move(memoryLayout)),
-          addresses_(AddressDomain::bottom(numerical_.environment())),
-          lifetimes_(LifetimeDomain::bottom()),
-          valueKinds_(ValueKindDomain::bottom())
+          addresses_(AddressDomain::top(numerical_.environment())),
+          lifetimes_(LifetimeDomain::bottom())
     {
     }
 
     BoxProgramState(BoxDomain numerical, MemoryLayout memoryLayout,
-                    AddressDomain addresses, LifetimeDomain lifetimes,
-                    ValueKindDomain valueKinds)
+                    AddressDomain addresses, LifetimeDomain lifetimes)
         : numerical_(std::move(numerical)),
           memoryLayout_(std::move(memoryLayout)),
-          addresses_(std::move(addresses)), lifetimes_(std::move(lifetimes)),
-          valueKinds_(std::move(valueKinds))
+          addresses_(std::move(addresses)), lifetimes_(std::move(lifetimes))
     {
         if (addresses_.environment() != numerical_.environment())
             throw std::invalid_argument(
@@ -246,14 +164,6 @@ public:
     {
         return lifetimes_;
     }
-    ValueKindDomain& valueKinds()
-    {
-        return valueKinds_;
-    }
-    const ValueKindDomain& valueKinds() const
-    {
-        return valueKinds_;
-    }
     const MemoryLayout& memoryLayout() const
     {
         return memoryLayout_;
@@ -263,14 +173,12 @@ public:
     {
         addresses_.assign(target, value);
         numerical_.forget(target);
-        valueKinds_.assign(target, false);
     }
 
     void assignNumeric(Variable target, const LinearExpression& expression)
     {
         numerical_.assign(target, expression);
-        addresses_.assign(target, AddressSet::bottom());
-        valueKinds_.assign(target, true);
+        addresses_.forget(target);
     }
 
     void assignNumericParallel(const LinearAssignmentList& assignments)
@@ -278,8 +186,7 @@ public:
         numerical_.assignParallel(assignments);
         for (const LinearAssignment& assignment : assignments)
         {
-            addresses_.assign(assignment.target, AddressSet::bottom());
-            valueKinds_.assign(assignment.target, true);
+            addresses_.forget(assignment.target);
         }
     }
 
@@ -288,8 +195,7 @@ public:
         numerical_.assignParallel(assignments);
         for (const TreeAssignment& assignment : assignments)
         {
-            addresses_.assign(assignment.target, AddressSet::bottom());
-            valueKinds_.assign(assignment.target, true);
+            addresses_.forget(assignment.target);
         }
     }
 
@@ -303,7 +209,6 @@ public:
     {
         numerical_.changeEnvironment(environment, initializeNewVariablesToZero);
         addresses_.changeEnvironment(environment);
-        valueKinds_.changeEnvironment(environment);
     }
 
     void load(Variable target, Variable pointer)
@@ -313,15 +218,9 @@ public:
         {
             numerical_.forget(target);
             if (pointees.isTop())
-            {
                 addresses_.forget(target);
-                valueKinds_.assign(target, true);
-            }
             else
-            {
                 addresses_.assign(target, AddressSet::bottom());
-                valueKinds_.assign(target, false);
-            }
             return;
         }
 
@@ -336,8 +235,6 @@ public:
             alternative.numerical_.assign(target, LinearExpression(content));
             alternative.addresses_.assign(
                 target, alternative.addresses_.addressSet(content));
-            alternative.valueKinds_.assign(target,
-                                       alternative.valueKinds_.hasNumeric(content));
             if (first)
             {
                 result = std::move(alternative);
@@ -352,7 +249,6 @@ public:
         {
             numerical_.forget(target);
             addresses_.forget(target);
-            valueKinds_.assign(target, false);
         }
         else
         {
@@ -428,37 +324,57 @@ private:
     void joinDomain(const AbstractDomain& other) override
     {
         const BoxProgramState& product = requireProduct(other);
+        if (product.isBottomDomain())
+            return;
+        if (isBottomDomain())
+        {
+            *this = product;
+            return;
+        }
         numerical_.joinWith(product.numerical_);
         addresses_.joinWith(product.addresses_);
         lifetimes_.joinWith(product.lifetimes_);
-        valueKinds_.joinWith(product.valueKinds_);
     }
 
     void meetDomain(const AbstractDomain& other) override
     {
         const BoxProgramState& product = requireProduct(other);
+        if (product.isTopDomain())
+            return;
+        if (isTopDomain())
+        {
+            *this = product;
+            return;
+        }
         numerical_.meetWith(product.numerical_);
         addresses_.meetWith(product.addresses_);
         lifetimes_.meetWith(product.lifetimes_);
-        valueKinds_.meetWith(product.valueKinds_);
     }
 
     void widenDomain(const AbstractDomain& next) override
     {
         const BoxProgramState& product = requireProduct(next);
+        if (isBottomDomain())
+        {
+            *this = product;
+            return;
+        }
         numerical_.widenWith(product.numerical_);
         addresses_.widenWith(product.addresses_);
         lifetimes_.widenWith(product.lifetimes_);
-        valueKinds_.widenWith(product.valueKinds_);
     }
 
     void narrowDomain(const AbstractDomain& next) override
     {
         const BoxProgramState& product = requireProduct(next);
+        if (isTopDomain())
+        {
+            *this = product;
+            return;
+        }
         numerical_.narrowWith(product.numerical_);
         addresses_.narrowWith(product.addresses_);
         lifetimes_.narrowWith(product.lifetimes_);
-        valueKinds_.narrowWith(product.valueKinds_);
     }
 
     bool isBottomDomain() const override
@@ -468,25 +384,32 @@ private:
 
     bool isTopDomain() const override
     {
-        return numerical_.isTop() && addresses_.isTop() && lifetimes_.isTop() &&
-               valueKinds_.isTop();
+        // At the typed program-state layer an absent address facet means that
+        // no pointer-specific constraint has been materialized; pointer reads
+        // conservatively project it as Address Top. Likewise, absent lifetime
+        // facts impose no release constraint. This is the canonical
+        // unconstrained flow state used by dense and sparse AE.
+        return numerical_.isTop() && addresses_.isTop() &&
+               lifetimes_.isBottom();
     }
 
     bool leqDomain(const AbstractDomain& other) const override
     {
         const BoxProgramState& product = requireProduct(other);
+        if (isBottomDomain() || product.isTopDomain())
+            return true;
+        if (product.isBottomDomain())
+            return false;
         return numerical_.isSubsetOf(product.numerical_) == CheckResult::True &&
                addresses_.isSubsetOf(product.addresses_) == CheckResult::True &&
-               lifetimes_.isSubsetOf(product.lifetimes_) == CheckResult::True &&
-               valueKinds_.isSubsetOf(product.valueKinds_) == CheckResult::True;
+               lifetimes_.isSubsetOf(product.lifetimes_) == CheckResult::True;
     }
 
     std::string domainToString() const override
     {
         return "numeric=" + numerical_.toString() +
                ", addresses=" + addresses_.toString() +
-               ", lifetimes=" + lifetimes_.toString() +
-               ", value-kinds=" + valueKinds_.toString();
+               ", lifetimes=" + lifetimes_.toString();
     }
 
     const BoxProgramState& requireProduct(const AbstractDomain& other) const
@@ -499,7 +422,6 @@ private:
     {
         numerical_.assign(content, LinearExpression(source));
         addresses_.assign(content, addresses_.addressSet(source));
-        valueKinds_.assign(content, valueKinds_.hasNumeric(source));
     }
 
     void weakStore(Variable content, Variable source)
@@ -513,7 +435,6 @@ private:
     MemoryLayout memoryLayout_;
     AddressDomain addresses_;
     LifetimeDomain lifetimes_;
-    ValueKindDomain valueKinds_;
 };
 
 } // namespace SVF::AbstractDomain

@@ -11,6 +11,7 @@
 #include <iomanip>
 #include <iostream>
 #include <optional>
+#include <set>
 
 namespace SVF
 {
@@ -47,6 +48,17 @@ private:
     bool enabled_;
     Clock::time_point start_{};
 };
+
+std::set<AD::Variable> nonDefaultVariables(
+    const NativeSemiSparseAbstractInterpretation::DenseState& state)
+{
+    std::set<AD::Variable> variables;
+    for (AD::Variable variable : state.numerical().constrainedVariables())
+        variables.insert(variable);
+    for (AD::Variable variable : state.addresses().nonDefaultVariables())
+        variables.insert(variable);
+    return variables;
+}
 
 } // namespace
 
@@ -149,16 +161,11 @@ AD::Interval NativeSemiSparseAbstractInterpretation::getInterval(
     if (!value || !this->adapter_.contains(*value))
         return AD::Interval::top();
 
-    DenseState& scalars = scalarState();
+    const DenseState& scalars = scalarState();
     const AD::Variable variable = this->adapter_.variable(*value);
-    if (!scalars.valueKinds().isDefined(variable))
-        this->assignValue(scalars, variable, AD::Interval::top(),
-                          AD::AddressSet::bottom());
     if (value->isPointer())
         return AD::Interval::bottom();
-    AD::Interval result = scalars.valueKinds().hasNumeric(variable)
-                              ? scalars.numerical().bound(variable)
-                              : AD::Interval::bottom();
+    AD::Interval result = scalars.numerical().bound(variable);
     // Conditional-edge refinement is intentionally local to the ICFG state.
     // Read it in addition to the definition-site scalar carrier so transfer
     // functions observe path constraints without copying all SSA values into
@@ -187,11 +194,10 @@ AD::AddressSet NativeSemiSparseAbstractInterpretation::getAddressSet(
     (void)node;
     if (!value || !this->adapter_.contains(*value))
         return AD::AddressSet::top();
-    DenseState& scalars = scalarState();
+    if (!value->isPointer())
+        return AD::AddressSet::bottom();
+    const DenseState& scalars = scalarState();
     const AD::Variable variable = this->adapter_.variable(*value);
-    if (!scalars.valueKinds().isDefined(variable))
-        this->assignValue(scalars, variable, AD::Interval::top(),
-                          AD::AddressSet::bottom());
     return scalars.addresses().addressSet(variable);
 }
 
@@ -203,9 +209,7 @@ bool NativeSemiSparseAbstractInterpretation::hasAbsValue(
         return true;
     if (!value || !this->adapter_.contains(*value))
         return false;
-    const DenseState* scalars = findScalarState();
-    return scalars &&
-           scalars->valueKinds().isDefined(this->adapter_.variable(*value));
+    return this->adapter_.contains(*value);
 }
 
 void NativeSemiSparseAbstractInterpretation::updateValue(
@@ -250,10 +254,7 @@ bool NativeSemiSparseAbstractInterpretation::isAbstractStateEquivalent(
 void NativeSemiSparseAbstractInterpretation::forgetActiveScalarValues(
     DenseState& denseState) const
 {
-    const std::vector<AD::Variable> defined =
-        denseState.valueKinds().definedVariables(
-            denseState.numerical().environment());
-    for (AD::Variable variable : defined)
+    for (AD::Variable variable : nonDefaultVariables(denseState))
     {
         if (this->adapter_.value(variable))
             this->forgetValue(denseState, variable);
@@ -263,10 +264,7 @@ void NativeSemiSparseAbstractInterpretation::forgetActiveScalarValues(
 void NativeSemiSparseAbstractInterpretation::forgetMemoryValues(
     DenseState& denseState) const
 {
-    const std::vector<AD::Variable> defined =
-        denseState.valueKinds().definedVariables(
-            denseState.numerical().environment());
-    for (AD::Variable variable : defined)
+    for (AD::Variable variable : nonDefaultVariables(denseState))
     {
         if (this->adapter_.contentObject(variable))
             this->forgetValue(denseState, variable);
@@ -278,18 +276,14 @@ void NativeSemiSparseAbstractInterpretation::applyScalarRefinement(
 {
     PhaseTimer timer(sparseProfile_.scalarRefinement,
                      Options::AESparseProfile());
-    const std::vector<AD::Variable> defined =
-        checkpoint.valueKinds().definedVariables(
-            checkpoint.numerical().environment());
-    for (AD::Variable variable : defined)
+    for (AD::Variable variable : checkpoint.numerical().constrainedVariables())
     {
-        if (!this->adapter_.value(variable) ||
-            !checkpoint.valueKinds().hasNumeric(variable))
+        const ValVar* value = this->adapter_.value(variable);
+        if (!value || value->isPointer())
             continue;
         this->constrainInterval(denseState, variable,
                                 checkpoint.numerical().bound(variable));
-        denseState.addresses().assign(variable, AD::AddressSet::bottom());
-        denseState.valueKinds().assign(variable, true);
+        denseState.addresses().forget(variable);
     }
 }
 
@@ -300,18 +294,10 @@ void NativeSemiSparseAbstractInterpretation::materializeValue(
                      Options::AESparseProfile());
     if (!value || !this->adapter_.contains(*value))
         return;
-    const AD::Variable variable = this->adapter_.variable(*value);
-    if (denseState.valueKinds().isDefined(variable))
+    if (!value->isPointer())
         return;
-    auto materializeFacets = [&]() {
-        denseState.addresses().assign(variable, getAddressSet(value, node));
-        denseState.valueKinds().assign(variable,
-                                   !getInterval(value, node).isBottom());
-    };
-    // Branch-refinement states carry numerical constraints without marking
-    // the corresponding scalar as a persistent product value. Preserve that
-    // latent constraint and materialize only its address/value-kind facets.
-    materializeFacets();
+    const AD::Variable variable = this->adapter_.variable(*value);
+    denseState.addresses().assign(variable, getAddressSet(value, node));
 }
 
 void NativeSemiSparseAbstractInterpretation::loadValue(
@@ -445,8 +431,7 @@ std::unique_ptr<AD::AbstractDomain> NativeSemiSparseAbstractInterpretation::
     DenseState snapshot = this->state(head);
     for (const ValVar* value : this->preAnalysis->getCycleValVars(cycle))
     {
-        if (!value || !this->adapter_.contains(*value) ||
-            !hasAbsValue(value, head))
+        if (!value || !this->adapter_.contains(*value))
             continue;
         this->assignValue(snapshot, this->adapter_.variable(*value),
                           getInterval(value, head), getAddressSet(value, head));
@@ -462,14 +447,13 @@ void NativeSemiSparseAbstractInterpretation::scatterCycleValues(
         if (!value || !this->adapter_.contains(*value))
             continue;
         const AD::Variable variable = this->adapter_.variable(*value);
-        if (!cycleState.valueKinds().isDefined(variable))
-            continue;
-        updateValue(value,
-                    cycleState.valueKinds().hasNumeric(variable)
-                        ? cycleState.numerical().bound(variable)
-                        : AD::Interval::bottom(),
-                    cycleState.addresses().addressSet(variable),
-                    cycle->head()->getICFGNode());
+        updateValue(
+            value,
+            value->isPointer() ? AD::Interval::bottom()
+                               : cycleState.numerical().bound(variable),
+            value->isPointer() ? cycleState.addresses().addressSet(variable)
+                               : AD::AddressSet::bottom(),
+            cycle->head()->getICFGNode());
     }
 }
 
@@ -536,10 +520,7 @@ void NativeFullSparseAbstractInterpretation::filterPropagatedState(
     PhaseTimer timer(this->sparseProfile_.stateFiltering,
                      Options::AESparseProfile());
     this->forgetActiveScalarValues(denseState);
-    const std::vector<AD::Variable> defined =
-        denseState.valueKinds().definedVariables(
-            denseState.numerical().environment());
-    for (AD::Variable variable : defined)
+    for (AD::Variable variable : nonDefaultVariables(denseState))
     {
         const ObjVar* object = this->adapter_.contentObject(variable);
         if (object && !SVFUtil::isa<GepObjVar>(object))
@@ -606,16 +587,13 @@ void NativeFullSparseAbstractInterpretation::pullObjectValueFlows(
                      Options::AESparseProfile());
     NodeBS denseLocalObjects;
     const DenseState& destination = this->state(node);
-    const std::vector<AD::Variable> defined =
-        destination.valueKinds().definedVariables(
-            destination.numerical().environment());
-    for (AD::Variable variable : defined)
+    for (AD::Variable variable : nonDefaultVariables(destination))
     {
         const ObjVar* object = this->adapter_.contentObject(variable);
-        if (object && SVFUtil::isa<GepObjVar>(object) &&
-            destination.valueKinds().isDefined(variable))
+        if (object && SVFUtil::isa<GepObjVar>(object))
             denseLocalObjects.set(object->getId());
     }
+    NodeBS pulledObjects;
 
     for (const VFGNode* valueFlowNode : node->getVFGNodes())
     {
@@ -653,12 +631,12 @@ void NativeFullSparseAbstractInterpretation::pullObjectValueFlows(
                         continue;
                     const auto* object = SVFUtil::dyn_cast<ObjVar>(
                         this->svfir->getGNode(fieldId));
-                    if (!object || !Base::hasAbsValue(object, source))
+                    if (!object)
                         continue;
 
                     AD::Interval interval = AD::Interval::bottom();
                     AD::AddressSet addresses = AD::AddressSet::bottom();
-                    if (Base::hasAbsValue(object, node))
+                    if (pulledObjects.test(fieldId))
                     {
                         interval = Base::getInterval(object, node);
                         addresses = Base::getAddressSet(object, node);
@@ -666,6 +644,7 @@ void NativeFullSparseAbstractInterpretation::pullObjectValueFlows(
                     interval.joinWith(Base::getInterval(object, source));
                     addresses.joinWith(Base::getAddressSet(object, source));
                     Base::updateValue(object, interval, addresses, node);
+                    pulledObjects.set(fieldId);
                 }
             }
         }
@@ -798,7 +777,7 @@ void NativeFullSparseAbstractInterpretation::propagateAndApplyMemoryRefinement(
         if (!object || !this->adapter_.contains(*object))
             continue;
         const AD::Variable content = this->adapter_.contentVariable(*object);
-        if (denseState.valueKinds().isDefined(content))
+        if (!object->isPointer())
             this->constrainInterval(denseState, content, constraint);
     }
 }

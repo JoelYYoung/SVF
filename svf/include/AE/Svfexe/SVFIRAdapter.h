@@ -31,6 +31,7 @@ public:
     AbstractDomain::Location location(const ObjVar& object) const;
     AbstractDomain::Variable contentVariable(const ObjVar& object) const;
     const ObjVar* contentObject(AbstractDomain::Variable variable) const;
+    bool isPointer(AbstractDomain::Variable variable) const;
     const ObjVar& object(AbstractDomain::Location location) const;
 
     const AbstractDomain::VariableEnvironment& environment() const;

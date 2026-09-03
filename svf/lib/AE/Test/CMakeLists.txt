@@ -57,6 +57,10 @@ if(TARGET SvfLLVM)
     add_box_ae_test(
       box-ae-memory-refinement-${sparsity} SparseMemoryFlow.ll ${sparsity}
     )
+    add_box_ae_test(
+      box-ae-conservative-unknown-casts-${sparsity}
+      ConservativeUnknownCasts.ll ${sparsity}
+    )
   endforeach()
   add_box_ae_test(
     box-ae-global-scalar-environment GlobalScalarEnvironment.ll dense

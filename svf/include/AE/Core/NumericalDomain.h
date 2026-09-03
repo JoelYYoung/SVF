@@ -597,6 +597,10 @@ public:
     CheckResult entails(const LinearConstraint& constraint) const override;
     Interval bound(Variable variable) const override;
     Interval bound(const LinearExpression& expression) const override;
+    /// Variables whose bounds are represented explicitly because they are
+    /// stricter than the vocabulary-wide Top default. This is a storage
+    /// observation for sparse scheduling; absence never means undefined.
+    std::vector<Variable> constrainedVariables() const;
     LinearConstraintSet toConstraints() const override;
     void close() override;
     void canonicalize() override;

@@ -121,6 +121,38 @@ void validateSparseMemoryRefinement(const SVFIR& graph,
         throw std::runtime_error(
             "Box sparse memory refinement did not reach the second load");
 }
+
+void validateConservativeUnknownCasts(const SVFIR& graph,
+                                      AbstractInterpretation& analysis)
+{
+    auto findScalar = [&](const char* name) -> const ValVar* {
+        const SVFVar* value = findValue(graph, name);
+        return value ? SVFUtil::dyn_cast<ValVar>(value) : nullptr;
+    };
+    const ValVar* unknownInteger = findScalar("unknown_integer");
+    const ValVar* unknownPointer = findScalar("unknown_pointer");
+    const ValVar* nullPointer = findScalar("null_pointer");
+    if (!unknownInteger && !unknownPointer && !nullPointer)
+        return;
+    if (!unknownInteger || !unknownPointer || !nullPointer)
+        throw std::runtime_error("unknown-cast fixture is incomplete");
+
+    bool sawUnknownInteger = false;
+    bool sawUnknownPointer = false;
+    bool sawNullPointer = false;
+    for (const ICFGNode* node : analysis.getAnalyzedNodes())
+    {
+        sawUnknownInteger |= analysis.getInterval(unknownInteger, node).isTop();
+        sawUnknownPointer |=
+            analysis.getAddressSet(unknownPointer, node).isTop();
+        const AD::AddressSet nulls = analysis.getAddressSet(nullPointer, node);
+        sawNullPointer |= nulls.isSingleton() &&
+                          nulls.contains(AD::Location::null());
+    }
+    if (!sawUnknownInteger || !sawUnknownPointer || !sawNullPointer)
+        throw std::runtime_error(
+            "typed Top or inttoptr conservative fallback was not preserved");
+}
 } // namespace
 
 int main(int argc, char** argv)
@@ -142,6 +174,7 @@ int main(int argc, char** argv)
         validateAuthoritativeStorage(analysis);
         validateProjection(*graph, analysis);
         validateSparseMemoryRefinement(*graph, analysis);
+        validateConservativeUnknownCasts(*graph, analysis);
 
         std::cout << "Box AE integration test: PASS\n";
         AndersenWaveDiff::releaseAndersenWaveDiff();

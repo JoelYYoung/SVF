@@ -907,7 +907,7 @@ void AbstractInterpretation::updateStateOnAddr(const AddrStmt* addr)
 void AbstractInterpretation::updateStateOnBinary(const BinaryOPStmt* binary)
 {
     const ICFGNode* node = binary->getICFGNode();
-    // Treat bottom (uninitialized) operands as top for soundness
+    // Treat any unexpected bottom operand as unconstrained for soundness.
     AD::Interval lhs = getInterval(binary->getOpVar(0), node);
     AD::Interval rhs = getInterval(binary->getOpVar(1), node);
     if (lhs.isBottom())
@@ -1259,7 +1259,14 @@ void AbstractInterpretation::updateStateOnCopy(const CopyStmt* copy)
     }
     else if (copy->getCopyKind() == CopyStmt::INTTOPTR)
     {
-        // insert nullptr
+        // Without an integer-to-location provenance map, only zero has a
+        // precise portable pointer interpretation. Every other integer range
+        // may denote any address and must conservatively become address Top.
+        const AD::AddressSet converted =
+            rhsInterval.isZero()
+                ? AD::AddressSet::singleton(AD::Location::null())
+                : AD::AddressSet::top();
+        updateValue(lhsVar, AD::Interval::bottom(), converted, node);
     }
     else if (copy->getCopyKind() == CopyStmt::PTRTOINT)
     {

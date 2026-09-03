@@ -12,7 +12,7 @@ namespace SVF
 {
 
 /// Native dense AE storage backed by one complete AbstractDomain state per
-/// ICFG node. Values, memory, lifetimes, definedness, joins, widening, and
+/// ICFG node. Values, memory, lifetimes, joins, widening, and
 /// fixpoint checks all operate on BoxProgramState; no compatibility trace
 /// is maintained by this implementation.
 class DenseAbstractInterpretation : public AbstractInterpretation

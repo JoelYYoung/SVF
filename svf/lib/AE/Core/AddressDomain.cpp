@@ -183,6 +183,18 @@ AddressSet AddressDomain::addressSet(Variable variable) const
     return iterator == values_->end() ? defaultValue() : iterator->second;
 }
 
+std::vector<Variable> AddressDomain::nonDefaultVariables() const
+{
+    std::vector<Variable> variables;
+    variables.reserve(values_->size());
+    for (const auto& [variable, value] : *values_)
+    {
+        (void)value;
+        variables.push_back(variable);
+    }
+    return variables;
+}
+
 void AddressDomain::assign(Variable variable, AddressSet addresses)
 {
     if (!environment_.contains(variable))

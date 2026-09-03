@@ -11,6 +11,7 @@
 #include <memory>
 #include <set>
 #include <string>
+#include <vector>
 
 namespace SVF::AbstractDomain
 {
@@ -121,6 +122,10 @@ public:
         return environment_;
     }
     AddressSet addressSet(Variable variable) const;
+    /// Variables with a value different from the domain's uniform default.
+    /// This exposes physical sparsity without assigning semantic meaning to
+    /// an absent map entry.
+    std::vector<Variable> nonDefaultVariables() const;
     void assign(Variable variable, AddressSet addresses);
     void forget(Variable variable);
     void changeEnvironment(const VariableEnvironment& environment);

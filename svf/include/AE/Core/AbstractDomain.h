@@ -22,7 +22,6 @@ enum class DomainKind
     Box,
     Address,
     Lifetime,
-    ValueKind,
     Product
 };
 

@@ -147,6 +147,15 @@ const ObjVar* SVFIRAdapter::contentObject(Variable variable) const
                : nullptr;
 }
 
+bool SVFIRAdapter::isPointer(Variable variable) const
+{
+    if (const ValVar* scalar = value(variable))
+        return scalar->isPointer();
+    if (const ObjVar* object = contentObject(variable))
+        return object->isPointer();
+    throw std::invalid_argument("Variable is not tracked by this adapter");
+}
+
 const ObjVar& SVFIRAdapter::object(Location location) const
 {
     const auto iterator = objects_.find(location);

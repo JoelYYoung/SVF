@@ -294,12 +294,18 @@ void DenseAbstractInterpretation::assignValue(DenseState& denseState,
                                               const AD::Interval& interval,
                                               const AD::AddressSet& addresses)
 {
-    if (!interval.isBottom())
-        assignInterval(denseState, variable, interval);
-    else
+    if (adapter_.isPointer(variable))
+    {
         denseState.numerical().forget(variable);
-    denseState.addresses().assign(variable, addresses);
-    denseState.valueKinds().assign(variable, !interval.isBottom());
+        denseState.addresses().assign(variable, addresses);
+        return;
+    }
+
+    if (interval.isBottom())
+        denseState.numerical().forget(variable);
+    else
+        assignInterval(denseState, variable, interval);
+    denseState.addresses().forget(variable);
 }
 
 void DenseAbstractInterpretation::materializeValue(DenseState&, const ValVar*,
@@ -313,11 +319,7 @@ void DenseAbstractInterpretation::forgetValue(DenseState& denseState,
     if (!denseState.numerical().environment().contains(variable))
         return;
     denseState.numerical().forget(variable);
-    // This helper removes an AE value; it does not model an unknown pointer.
-    // AddressDomain::forget means address-top and would retain an explicit map
-    // entry for every purged sparse scalar.
-    denseState.addresses().assign(variable, AD::AddressSet::bottom());
-    denseState.valueKinds().forget(variable);
+    denseState.addresses().forget(variable);
 }
 
 AD::Interval DenseAbstractInterpretation::getInterval(const ValVar* var,
@@ -328,16 +330,11 @@ AD::Interval DenseAbstractInterpretation::getInterval(const ValVar* var,
     if (!adapter_.contains(*var))
         return AD::Interval::top();
 
-    DenseState& denseState = ensureState(node);
+    const DenseState& denseState = ensureState(node);
     const AD::Variable variable = adapter_.variable(*var);
-    if (!denseState.valueKinds().isDefined(variable))
-        assignValue(denseState, variable, AD::Interval::top(),
-                    AD::AddressSet::bottom());
     if (var->isPointer())
         return AD::Interval::bottom();
-    return denseState.valueKinds().hasNumeric(variable)
-               ? denseState.numerical().bound(variable)
-               : AD::Interval::bottom();
+    return denseState.numerical().bound(variable);
 }
 
 AD::Interval DenseAbstractInterpretation::getInterval(const ObjVar* var,
@@ -345,14 +342,10 @@ AD::Interval DenseAbstractInterpretation::getInterval(const ObjVar* var,
 {
     if (!adapter_.contains(*var))
         return AD::Interval::bottom();
-    DenseState& denseState = ensureState(node);
+    const DenseState& denseState = ensureState(node);
     const AD::Variable content = adapter_.contentVariable(*var);
-    if (!denseState.valueKinds().isDefined(content))
-        assignValue(denseState, content, AD::Interval::bottom(),
-                    AD::AddressSet::bottom());
-    return denseState.valueKinds().hasNumeric(content)
-               ? denseState.numerical().bound(content)
-               : AD::Interval::bottom();
+    return var->isPointer() ? AD::Interval::bottom()
+                            : denseState.numerical().bound(content);
 }
 
 AD::Interval DenseAbstractInterpretation::getInterval(const SVFVar* var,
@@ -370,11 +363,10 @@ AD::AddressSet DenseAbstractInterpretation::getAddressSet(const ValVar* var,
 {
     if (!adapter_.contains(*var))
         return AD::AddressSet::top();
-    DenseState& denseState = ensureState(node);
+    if (!var->isPointer())
+        return AD::AddressSet::bottom();
+    const DenseState& denseState = ensureState(node);
     const AD::Variable variable = adapter_.variable(*var);
-    if (!denseState.valueKinds().isDefined(variable))
-        assignValue(denseState, variable, AD::Interval::top(),
-                    AD::AddressSet::bottom());
     return denseState.addresses().addressSet(variable);
 }
 
@@ -383,11 +375,10 @@ AD::AddressSet DenseAbstractInterpretation::getAddressSet(const ObjVar* var,
 {
     if (!adapter_.contains(*var))
         return AD::AddressSet::bottom();
-    DenseState& denseState = ensureState(node);
+    if (!var->isPointer())
+        return AD::AddressSet::bottom();
+    const DenseState& denseState = ensureState(node);
     const AD::Variable content = adapter_.contentVariable(*var);
-    if (!denseState.valueKinds().isDefined(content))
-        assignValue(denseState, content, AD::Interval::bottom(),
-                    AD::AddressSet::bottom());
     return denseState.addresses().addressSet(content);
 }
 
@@ -406,17 +397,13 @@ bool DenseAbstractInterpretation::hasAbsValue(const ValVar* var,
 {
     if (SVFUtil::isa<ConstIntValVar>(var))
         return true;
-    if (denseTrace_.count(node) == 0 || !adapter_.contains(*var))
-        return false;
-    return state(node).valueKinds().isDefined(adapter_.variable(*var));
+    return denseTrace_.count(node) != 0 && adapter_.contains(*var);
 }
 
 bool DenseAbstractInterpretation::hasAbsValue(const ObjVar* var,
                                               const ICFGNode* node) const
 {
-    if (denseTrace_.count(node) == 0 || !adapter_.contains(*var))
-        return false;
-    return state(node).valueKinds().isDefined(adapter_.contentVariable(*var));
+    return denseTrace_.count(node) != 0 && adapter_.contains(*var);
 }
 
 bool DenseAbstractInterpretation::hasAbsValue(const SVFVar* var,
@@ -519,8 +506,7 @@ void DenseAbstractInterpretation::loadValue(const ValVar* pointer,
     }
     DenseState& denseState = ensureState(node);
     materializeValue(denseState, pointer, node);
-    const AD::AddressSet pointees =
-        denseState.addresses().addressSet(adapter_.variable(*pointer));
+    const AD::AddressSet pointees = getAddressSet(pointer, node);
     if (pointees.isTop())
     {
         interval = AD::Interval::top();
@@ -540,11 +526,11 @@ void DenseAbstractInterpretation::loadValue(const ValVar* pointer,
         }
         if (denseState.memoryLayout().contains(location))
         {
-            const AD::Variable content =
-                denseState.memoryLayout().contentOf(location);
-            if (denseState.valueKinds().hasNumeric(content))
-                interval.joinWith(denseState.numerical().bound(content));
-            addresses.joinWith(denseState.addresses().addressSet(content));
+            const ObjVar* object = objectAt(location);
+            if (!object)
+                continue;
+            interval.joinWith(getInterval(object, node));
+            addresses.joinWith(getAddressSet(object, node));
         }
     }
 }
@@ -561,25 +547,23 @@ void DenseAbstractInterpretation::storeValue(const ValVar* pointer,
     }
     DenseState& denseState = ensureState(node);
     materializeValue(denseState, pointer, node);
-    const AD::AddressSet pointees =
-        denseState.addresses().addressSet(adapter_.variable(*pointer));
+    const AD::AddressSet pointees = getAddressSet(pointer, node);
     const bool strong = pointees.isSingleton();
     auto write = [&](AD::Location location) {
         if (!denseState.memoryLayout().contains(location))
             return;
         const AD::Variable content =
             denseState.memoryLayout().contentOf(location);
+        const ObjVar* object = objectAt(location);
+        if (!object)
+            return;
         if (strong)
         {
             assignValue(denseState, content, interval, addresses);
             return;
         }
-        AD::Interval joinedInterval =
-            denseState.valueKinds().hasNumeric(content)
-                ? denseState.numerical().bound(content)
-                : AD::Interval::bottom();
-        AD::AddressSet joinedAddresses =
-            denseState.addresses().addressSet(content);
+        AD::Interval joinedInterval = getInterval(object, node);
+        AD::AddressSet joinedAddresses = getAddressSet(object, node);
         joinedInterval.joinWith(interval);
         joinedAddresses.joinWith(addresses);
         assignValue(denseState, content, joinedInterval, joinedAddresses);
@@ -714,7 +698,7 @@ void DenseAbstractInterpretation::recordBranchRefinement(
 
     DenseState& denseState = static_cast<DenseState&>(abstractState);
     const AD::Variable content = adapter_.contentVariable(*object);
-    if (!denseState.valueKinds().hasNumeric(content))
+    if (object->isPointer())
         return;
     AD::Interval refined = denseState.numerical().bound(content);
     refined.meetWith(narrowed);
