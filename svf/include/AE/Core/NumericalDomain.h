@@ -53,6 +53,7 @@ public:
     Rational(const Integer& numerator, const Integer& denominator);
 
     static Rational fromRaw(const mpq_class& value);
+    static Rational fromDouble(double value);
 
     const mpq_class& value() const
     {

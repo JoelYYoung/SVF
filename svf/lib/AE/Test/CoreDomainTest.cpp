@@ -60,6 +60,10 @@ Interval integerInterval(std::int64_t value)
 
 void testScalarTransferOperations()
 {
+    require(Rational::fromDouble(0.0) == Rational(0) &&
+                Rational::fromDouble(0.5) ==
+                    Rational(Integer(1), Integer(2)),
+            "native floating-to-rational conversion was not exact");
     const Interval two = integerInterval(2);
     const Interval four = integerInterval(4);
     require(add(two, four) == integerInterval(6) &&

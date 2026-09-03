@@ -176,6 +176,8 @@ int main(int argc, char** argv)
         validateSparseMemoryRefinement(*graph, analysis);
         validateConservativeUnknownCasts(*graph, analysis);
 
+        std::cout << "AE_GENERIC_OBSERVATION analyzed_nodes="
+                  << analysis.getAnalyzedNodes().size() << '\n';
         std::cout << "Box AE integration test: PASS\n";
         AndersenWaveDiff::releaseAndersenWaveDiff();
         LLVMModuleSet::releaseLLVMModuleSet();

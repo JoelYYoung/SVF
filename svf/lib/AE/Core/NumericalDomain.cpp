@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -71,6 +72,16 @@ Rational::Rational(mpq_class value, int) : value_(std::move(value))
 Rational Rational::fromRaw(const mpq_class& value)
 {
     return Rational(value, 0);
+}
+
+Rational Rational::fromDouble(double value)
+{
+    if (!std::isfinite(value))
+        throw std::invalid_argument("a non-finite floating value is not rational");
+    mpq_class rational;
+    mpq_set_d(rational.get_mpq_t(), value);
+    rational.canonicalize();
+    return fromRaw(rational);
 }
 
 std::string Rational::toString() const

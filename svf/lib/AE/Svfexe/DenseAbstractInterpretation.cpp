@@ -117,7 +117,7 @@ void DenseAbstractInterpretation::initializeObjectValue(
         else if (const auto* floating =
                      SVFUtil::dyn_cast<ConstFPObjVar>(object))
             interval = AD::Interval::singleton(
-                AD::Rational(std::to_string(floating->getFPValue())));
+                AD::Rational::fromDouble(floating->getFPValue()));
         else if (SVFUtil::isa<ConstNullPtrObjVar>(object))
             addresses = AD::AddressSet::singleton(AD::Location::null());
         else if (!SVFUtil::isa<GlobalObjVar>(object))
