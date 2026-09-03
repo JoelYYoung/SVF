@@ -5,6 +5,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <optional>
 
 #include "AE/Svfexe/DenseAbstractInterpretation.h"
 
@@ -16,24 +17,20 @@ class SVFGBuilder;
 class VFGNode;
 
 /// Semi-sparse AE backed by BoxProgramState. Box values use one module-wide
-/// scalar carrier plus sparse definition checkpoints. Persistent ICFG states
-/// carry memory and lifetime values, while transfers materialize scalar
-/// operands only temporarily.
-template <typename NumericalDomainT>
+/// scalar carrier. Persistent ICFG states carry memory and lifetime values,
+/// while transfers materialize scalar operands only temporarily.
 class NativeSemiSparseAbstractInterpretation
-    : public DenseAbstractInterpretation<NumericalDomainT>
+    : public DenseAbstractInterpretation
 {
 public:
-    using Base = DenseAbstractInterpretation<NumericalDomainT>;
+    using Base = DenseAbstractInterpretation;
     using DenseState = typename Base::DenseState;
 
     NativeSemiSparseAbstractInterpretation();
     ~NativeSemiSparseAbstractInterpretation() override = default;
     void runOnModule() override;
-    const AbstractDomain::AbstractDomain* getScalarAbstractState(
-        const FunObjVar* function) const override;
-    const AbstractDomain::AbstractDomain* getScalarAbstractState(
-        const ValVar* value) const override;
+    const AbstractDomain::AbstractDomain* getScalarAbstractState()
+        const override;
 
 protected:
     void handleGlobalNode() override;
@@ -48,11 +45,10 @@ protected:
         PhaseMetric total;
         PhaseMetric stateCopy;
         PhaseMetric stateMerge;
-        PhaseMetric environmentAlignment;
         PhaseMetric stateJoin;
         PhaseMetric stateEquivalence;
         PhaseMetric scalarMaterialization;
-        PhaseMetric scalarCheckpoint;
+        PhaseMetric scalarRefinement;
         PhaseMetric stateFiltering;
         PhaseMetric cycle;
         PhaseMetric svfgBuild;
@@ -112,19 +108,18 @@ protected:
     virtual void collectMemoryBranchRefinement(const IntraCFGEdge* edge,
                                                DenseState& state);
 
-    DenseState& scalarState(const FunObjVar* function);
-    const DenseState* findScalarState(const FunObjVar* function) const;
-    DenseState flowState(const FunObjVar* function, bool bottom = false) const;
+    DenseState& scalarState();
+    const DenseState* findScalarState() const;
+    DenseState flowState(bool bottom = false) const;
     void forgetActiveScalarValues(DenseState& state) const;
     void forgetMemoryValues(DenseState& state) const;
-    void applyScalarCheckpoint(DenseState& state, const DenseState& checkpoint);
+    void applyScalarRefinement(DenseState& state, const DenseState& checkpoint);
     void scatterCycleValues(const ICFGCycleWTO* cycle, const DenseState& state);
     virtual const char* sparseProfileMode() const;
     void reportSparseProfile() const;
 
     Map<const ICFGNode*, DenseState> refinementTrace_;
-    Map<const FunObjVar*, DenseState> scalarStates_;
-    Map<const ValVar*, DenseState> scalarCheckpoints_;
+    std::optional<DenseState> scalarState_;
     mutable SparsePhaseProfile sparseProfile_;
 };
 
@@ -133,12 +128,11 @@ protected:
 /// along MemorySSA/SVFG def-use edges; GepObjVar snapshots and lifetime facts
 /// continue to flow along the ICFG because they are not fully represented by
 /// those edges.
-template <typename NumericalDomainT>
 class NativeFullSparseAbstractInterpretation
-    : public NativeSemiSparseAbstractInterpretation<NumericalDomainT>
+    : public NativeSemiSparseAbstractInterpretation
 {
 public:
-    using Base = NativeSemiSparseAbstractInterpretation<NumericalDomainT>;
+    using Base = NativeSemiSparseAbstractInterpretation;
     using DenseState = typename Base::DenseState;
 
     NativeFullSparseAbstractInterpretation();
@@ -172,11 +166,6 @@ private:
         memoryRefinementTrace_;
     std::unique_ptr<SVFGBuilder> svfgBuilder_;
 };
-
-extern template class NativeSemiSparseAbstractInterpretation<
-    AbstractDomain::BoxDomain>;
-extern template class NativeFullSparseAbstractInterpretation<
-    AbstractDomain::BoxDomain>;
 
 } // namespace SVF
 

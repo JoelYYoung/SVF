@@ -44,11 +44,7 @@ const BoxProgramState& requireBoxState(const AD::AbstractDomain& state)
 const BoxProgramState& stateForValue(AbstractInterpretation& analysis,
                                      const ValVar* value, const ICFGNode* node)
 {
-    if (const AD::AbstractDomain* checkpoint =
-            analysis.getScalarAbstractState(value))
-        return requireBoxState(*checkpoint);
-    if (const AD::AbstractDomain* scalar =
-            analysis.getScalarAbstractState(value->getFunction()))
+    if (const AD::AbstractDomain* scalar = analysis.getScalarAbstractState())
         return requireBoxState(*scalar);
     return requireBoxState(analysis.getAbstractState(node));
 }

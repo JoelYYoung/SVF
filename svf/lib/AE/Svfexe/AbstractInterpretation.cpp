@@ -78,35 +78,19 @@ AbstractInterpretation::AbstractInterpretation()
 /// Must only be called after the option parser has populated AESparsity.
 AbstractInterpretation& AbstractInterpretation::getAEInstance()
 {
-    // Leak the singleton on purpose.  AbstractInterpretation owns a
-    // Map<std::string, std::function<void(const CallICFGNode*)>> func_map
-    // whose lambda closures back-reference state owned by other globals
-    // (preAnalysis's WTO, the call graph, ...).  Letting the static
-    // unique_ptr's atexit-time destructor run hits a static-destruction-
-    // order issue: the func_map hashtable's destructor calls into
-    // std::function destroyers whose closures touch already-destroyed
-    // state, and ~_Hashtable() segfaults during normal program shutdown.
-    //
-    // Reliably reproducible from any downstream tool that drives a full
-    // AE analysis to completion and then exits normally:
-    //   - SSA's ass3 binary (Software-Security-Analysis/Assignment-3)
-    //   - pysvf via Python interpreter shutdown
-    //
-    // A process-lifetime singleton has no observable lifecycle past
-    // program exit, so leaking is benign and avoids the use-after-destroy.
+    // Keep the singleton alive until process exit. Several owned analysis
+    // objects refer to process-global SVF state whose destruction order is
+    // outside AE's control.
     static AbstractInterpretation* instance = []() -> AbstractInterpretation* {
         switch (Options::AESparsity())
         {
         case AESparsity::SemiSparse:
-            return new NativeSemiSparseAbstractInterpretation<
-                SVF::AbstractDomain::BoxDomain>();
+            return new NativeSemiSparseAbstractInterpretation();
         case AESparsity::Sparse:
-            return new NativeFullSparseAbstractInterpretation<
-                SVF::AbstractDomain::BoxDomain>();
+            return new NativeFullSparseAbstractInterpretation();
         case AESparsity::Dense:
         default:
-            return new DenseAbstractInterpretation<
-                SVF::AbstractDomain::BoxDomain>();
+            return new DenseAbstractInterpretation();
         }
     }();
     return *instance;
@@ -119,8 +103,6 @@ AbstractInterpretation::~AbstractInterpretation()
     delete stat;
     delete preAnalysis;
 }
-
-void AbstractInterpretation::initializeDomainState(const ICFGNode*) {}
 
 /// Collect entry point functions for analysis.
 /// In main mode, entry is main/svf.main. In no-main mode,
@@ -574,8 +556,6 @@ bool AbstractInterpretation::handleICFGNode(const ICFGNode* node)
         }
     }
 
-    initializeDomainState(node);
-
     // Store the previous state for fixpoint detection
     std::unique_ptr<AbstractDomain::AbstractDomain> previousState =
         cloneAbstractState(node);
@@ -600,8 +580,6 @@ bool AbstractInterpretation::handleICFGNode(const ICFGNode* node)
         detector->detect(node);
 
     finalizeAbstractState(node);
-    stat->countStateSize();
-
     // Track this node as analyzed (for coverage statistics across all entry
     // points)
     allAnalyzedNodes.insert(node);

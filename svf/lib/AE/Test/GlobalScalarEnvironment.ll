@@ -1,7 +1,6 @@
-; Cross-function fixture for state-local environment growth.  Processing the
-; call introduces callee variables into a caller state after its fixpoint
-; snapshot was taken, so native Dense AE must align environments before state
-; equivalence checks.
+; Cross-function fixture for the immutable module-wide Box environment. Caller
+; and callee values share one schema, so calls never require state-local
+; environment growth or alignment during fixpoint iteration.
 
 define i32 @callee(i32 %callee_x) {
 entry:

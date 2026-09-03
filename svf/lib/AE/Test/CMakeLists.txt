@@ -59,7 +59,7 @@ if(TARGET SvfLLVM)
     )
   endforeach()
   add_box_ae_test(
-    box-ae-environment-alignment DenseEnvironmentAlignment.ll dense
+    box-ae-global-scalar-environment GlobalScalarEnvironment.ll dense
   )
   add_box_ae_test(
     box-ae-wide-integer WideIntegerTruncation.ll dense

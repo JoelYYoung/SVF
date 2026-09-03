@@ -51,7 +51,7 @@ private:
     std::uint32_t id_;
 };
 
-/// Scalar projection of one pointer variable.
+/// Finite points-to set for one pointer variable, with an explicit top value.
 class AddressSet
 {
 public:

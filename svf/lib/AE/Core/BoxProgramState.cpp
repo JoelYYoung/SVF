@@ -23,9 +23,7 @@ std::set<Key> combinedKeys(const std::map<Key, Value>& lhs,
     return keys;
 }
 
-} // namespace
-
-Lifetime join(Lifetime lhs, Lifetime rhs)
+Lifetime joinLifetime(Lifetime lhs, Lifetime rhs)
 {
     if (lhs == Lifetime::Bottom)
         return rhs;
@@ -34,7 +32,7 @@ Lifetime join(Lifetime lhs, Lifetime rhs)
     return Lifetime::MaybeFreed;
 }
 
-Lifetime meet(Lifetime lhs, Lifetime rhs)
+Lifetime meetLifetime(Lifetime lhs, Lifetime rhs)
 {
     if (lhs == Lifetime::MaybeFreed)
         return rhs;
@@ -43,12 +41,12 @@ Lifetime meet(Lifetime lhs, Lifetime rhs)
     return Lifetime::Bottom;
 }
 
-bool isSubsetOf(Lifetime lhs, Lifetime rhs)
+bool lifetimeIsSubsetOf(Lifetime lhs, Lifetime rhs)
 {
     return lhs == Lifetime::Bottom || rhs == Lifetime::MaybeFreed || lhs == rhs;
 }
 
-const char* toString(Lifetime lifetime)
+const char* lifetimeToString(Lifetime lifetime)
 {
     switch (lifetime)
     {
@@ -64,47 +62,49 @@ const char* toString(Lifetime lifetime)
     return "invalid";
 }
 
-LifetimeState LifetimeState::top()
+} // namespace
+
+LifetimeDomain LifetimeDomain::top()
 {
-    return LifetimeState(Lifetime::MaybeFreed);
+    return LifetimeDomain(Lifetime::MaybeFreed);
 }
 
-LifetimeState LifetimeState::bottom()
+LifetimeDomain LifetimeDomain::bottom()
 {
-    return LifetimeState(Lifetime::Bottom);
+    return LifetimeDomain(Lifetime::Bottom);
 }
 
-ValueShapeState ValueShapeState::top()
+ValueKindDomain ValueKindDomain::top()
 {
-    return ValueShapeState(true, true);
+    return ValueKindDomain(true, true);
 }
 
-ValueShapeState ValueShapeState::bottom()
+ValueKindDomain ValueKindDomain::bottom()
 {
-    return ValueShapeState(false, false);
+    return ValueKindDomain(false, false);
 }
 
-std::unique_ptr<AbstractDomain> ValueShapeState::clone() const
+std::unique_ptr<AbstractDomain> ValueKindDomain::clone() const
 {
-    return std::make_unique<ValueShapeState>(*this);
+    return std::make_unique<ValueKindDomain>(*this);
 }
 
-ValueShapeState::Shape ValueShapeState::shapeOf(Variable variable) const
+ValueKindDomain::Shape ValueKindDomain::shapeOf(Variable variable) const
 {
     return decode(encodedShapeOf(variable));
 }
 
-bool ValueShapeState::isDefined(Variable variable) const
+bool ValueKindDomain::isDefined(Variable variable) const
 {
     return shapeOf(variable).defined;
 }
 
-bool ValueShapeState::hasNumeric(Variable variable) const
+bool ValueKindDomain::hasNumeric(Variable variable) const
 {
     return shapeOf(variable).numeric;
 }
 
-std::vector<Variable> ValueShapeState::definedVariables(
+std::vector<Variable> ValueKindDomain::definedVariables(
     const VariableEnvironment& environment) const
 {
     std::vector<Variable> result;
@@ -134,17 +134,17 @@ std::vector<Variable> ValueShapeState::definedVariables(
     return result;
 }
 
-void ValueShapeState::assign(Variable variable, bool numeric)
+void ValueKindDomain::assign(Variable variable, bool numeric)
 {
     setEncodedShape(variable, encode({true, numeric}));
 }
 
-void ValueShapeState::forget(Variable variable)
+void ValueKindDomain::forget(Variable variable)
 {
     setEncodedShape(variable, encode({false, false}));
 }
 
-void ValueShapeState::changeEnvironment(const VariableEnvironment& environment)
+void ValueKindDomain::changeEnvironment(const VariableEnvironment& environment)
 {
     std::vector<ShapePageEntry> next;
     next.reserve(pages_.size());
@@ -172,14 +172,14 @@ void ValueShapeState::changeEnvironment(const VariableEnvironment& environment)
     pages_ = std::move(next);
 }
 
-bool ValueShapeState::hasCompatibleDomain(const AbstractDomain& other) const
+bool ValueKindDomain::hasCompatibleDomain(const AbstractDomain& other) const
 {
-    return other.isDomain<ValueShapeState>();
+    return other.isDomain<ValueKindDomain>();
 }
 
-void ValueShapeState::joinDomain(const AbstractDomain& other)
+void ValueKindDomain::joinDomain(const AbstractDomain& other)
 {
-    const auto& state = static_cast<const ValueShapeState&>(other);
+    const auto& state = static_cast<const ValueKindDomain&>(other);
     if (state.isBottomDomain())
         return;
     if (isBottomDomain())
@@ -220,9 +220,9 @@ void ValueShapeState::joinDomain(const AbstractDomain& other)
     pages_ = std::move(next);
 }
 
-void ValueShapeState::meetDomain(const AbstractDomain& other)
+void ValueKindDomain::meetDomain(const AbstractDomain& other)
 {
-    const auto& state = static_cast<const ValueShapeState&>(other);
+    const auto& state = static_cast<const ValueKindDomain&>(other);
     if (state.isTopDomain())
         return;
     if (isTopDomain())
@@ -263,29 +263,29 @@ void ValueShapeState::meetDomain(const AbstractDomain& other)
     pages_ = std::move(next);
 }
 
-void ValueShapeState::widenDomain(const AbstractDomain& next)
+void ValueKindDomain::widenDomain(const AbstractDomain& next)
 {
     joinDomain(next);
 }
 
-void ValueShapeState::narrowDomain(const AbstractDomain& next)
+void ValueKindDomain::narrowDomain(const AbstractDomain& next)
 {
     meetDomain(next);
 }
 
-bool ValueShapeState::isBottomDomain() const
+bool ValueKindDomain::isBottomDomain() const
 {
     return default_ == encode({false, false}) && pages_.empty();
 }
 
-bool ValueShapeState::isTopDomain() const
+bool ValueKindDomain::isTopDomain() const
 {
     return default_ == encode({true, true}) && pages_.empty();
 }
 
-bool ValueShapeState::leqDomain(const AbstractDomain& other) const
+bool ValueKindDomain::leqDomain(const AbstractDomain& other) const
 {
-    const auto& state = static_cast<const ValueShapeState&>(other);
+    const auto& state = static_cast<const ValueKindDomain&>(other);
     if (default_ == state.default_ && pages_.size() == state.pages_.size())
     {
         bool equal = true;
@@ -336,7 +336,7 @@ bool ValueShapeState::leqDomain(const AbstractDomain& other) const
     return true;
 }
 
-std::string ValueShapeState::domainToString() const
+std::string ValueKindDomain::domainToString() const
 {
     std::ostringstream output;
     const Shape defaultShape = decode(default_);
@@ -362,18 +362,18 @@ std::string ValueShapeState::domainToString() const
     return output.str();
 }
 
-std::uint8_t ValueShapeState::encode(Shape shape)
+std::uint8_t ValueKindDomain::encode(Shape shape)
 {
     return static_cast<std::uint8_t>((shape.defined ? 1U : 0U) |
                                      (shape.numeric ? 2U : 0U));
 }
 
-ValueShapeState::Shape ValueShapeState::decode(std::uint8_t shape)
+ValueKindDomain::Shape ValueKindDomain::decode(std::uint8_t shape)
 {
     return {(shape & 1U) != 0, (shape & 2U) != 0};
 }
 
-std::uint8_t ValueShapeState::encodedShapeOf(Variable variable) const
+std::uint8_t ValueKindDomain::encodedShapeOf(Variable variable) const
 {
     const std::size_t pageIndex = variable.id() / ShapesPerPage;
     const auto iterator =
@@ -386,7 +386,7 @@ std::uint8_t ValueShapeState::encodedShapeOf(Variable variable) const
     return iterator->page->shapes[variable.id() % ShapesPerPage];
 }
 
-void ValueShapeState::setEncodedShape(Variable variable, std::uint8_t shape)
+void ValueKindDomain::setEncodedShape(Variable variable, std::uint8_t shape)
 {
     const std::size_t pageIndex = variable.id() / ShapesPerPage;
     auto iterator =
@@ -411,7 +411,7 @@ void ValueShapeState::setEncodedShape(Variable variable, std::uint8_t shape)
         pages_.erase(iterator);
 }
 
-bool ValueShapeState::pageIsDefault(const ShapePage& page,
+bool ValueKindDomain::pageIsDefault(const ShapePage& page,
                                     std::uint8_t defaultShape)
 {
     return std::all_of(
@@ -419,23 +419,23 @@ bool ValueShapeState::pageIsDefault(const ShapePage& page,
         [defaultShape](std::uint8_t shape) { return shape == defaultShape; });
 }
 
-std::unique_ptr<AbstractDomain> LifetimeState::clone() const
+std::unique_ptr<AbstractDomain> LifetimeDomain::clone() const
 {
-    return std::make_unique<LifetimeState>(*this);
+    return std::make_unique<LifetimeDomain>(*this);
 }
 
-Lifetime LifetimeState::statusOf(Location location) const
+Lifetime LifetimeDomain::statusOf(Location location) const
 {
     const auto it = values_->find(location);
     return it == values_->end() ? defaultValue_ : it->second;
 }
 
-void LifetimeState::allocate(Location location)
+void LifetimeDomain::allocate(Location location)
 {
     set(location, Lifetime::Alive);
 }
 
-void LifetimeState::release(Location location)
+void LifetimeDomain::release(Location location)
 {
     const Lifetime current = statusOf(location);
     set(location, current == Lifetime::Alive || current == Lifetime::Freed
@@ -443,25 +443,25 @@ void LifetimeState::release(Location location)
                       : Lifetime::MaybeFreed);
 }
 
-bool LifetimeState::mayBeFreed(Location location) const
+bool LifetimeDomain::mayBeFreed(Location location) const
 {
     const Lifetime lifetime = statusOf(location);
     return lifetime == Lifetime::Freed || lifetime == Lifetime::MaybeFreed;
 }
 
-bool LifetimeState::mustBeFreed(Location location) const
+bool LifetimeDomain::mustBeFreed(Location location) const
 {
     return statusOf(location) == Lifetime::Freed;
 }
 
-bool LifetimeState::hasCompatibleDomain(const AbstractDomain& other) const
+bool LifetimeDomain::hasCompatibleDomain(const AbstractDomain& other) const
 {
-    return other.isDomain<LifetimeState>();
+    return other.isDomain<LifetimeDomain>();
 }
 
-void LifetimeState::joinDomain(const AbstractDomain& other)
+void LifetimeDomain::joinDomain(const AbstractDomain& other)
 {
-    const auto& state = static_cast<const LifetimeState&>(other);
+    const auto& state = static_cast<const LifetimeDomain&>(other);
     if (state.isBottomDomain())
         return;
     if (isBottomDomain())
@@ -470,12 +470,13 @@ void LifetimeState::joinDomain(const AbstractDomain& other)
         return;
     }
     const std::set<Location> locations = combinedKeys(*values_, *state.values_);
-    const Lifetime nextDefault = join(defaultValue_, state.defaultValue_);
+    const Lifetime nextDefault =
+        joinLifetime(defaultValue_, state.defaultValue_);
     std::map<Location, Lifetime> next;
     for (Location location : locations)
     {
         const Lifetime value =
-            join(statusOf(location), state.statusOf(location));
+            joinLifetime(statusOf(location), state.statusOf(location));
         if (value != nextDefault)
             next.emplace(location, value);
     }
@@ -483,9 +484,9 @@ void LifetimeState::joinDomain(const AbstractDomain& other)
     values_ = std::make_shared<Values>(std::move(next));
 }
 
-void LifetimeState::meetDomain(const AbstractDomain& other)
+void LifetimeDomain::meetDomain(const AbstractDomain& other)
 {
-    const auto& state = static_cast<const LifetimeState&>(other);
+    const auto& state = static_cast<const LifetimeDomain&>(other);
     if (state.isTopDomain())
         return;
     if (isTopDomain())
@@ -494,12 +495,13 @@ void LifetimeState::meetDomain(const AbstractDomain& other)
         return;
     }
     const std::set<Location> locations = combinedKeys(*values_, *state.values_);
-    const Lifetime nextDefault = meet(defaultValue_, state.defaultValue_);
+    const Lifetime nextDefault =
+        meetLifetime(defaultValue_, state.defaultValue_);
     std::map<Location, Lifetime> next;
     for (Location location : locations)
     {
         const Lifetime value =
-            meet(statusOf(location), state.statusOf(location));
+            meetLifetime(statusOf(location), state.statusOf(location));
         if (value != nextDefault)
             next.emplace(location, value);
     }
@@ -507,60 +509,59 @@ void LifetimeState::meetDomain(const AbstractDomain& other)
     values_ = std::make_shared<Values>(std::move(next));
 }
 
-void LifetimeState::widenDomain(const AbstractDomain& next)
+void LifetimeDomain::widenDomain(const AbstractDomain& next)
 {
     joinDomain(next);
 }
 
-void LifetimeState::narrowDomain(const AbstractDomain& next)
+void LifetimeDomain::narrowDomain(const AbstractDomain& next)
 {
     meetDomain(next);
 }
 
-bool LifetimeState::isBottomDomain() const
+bool LifetimeDomain::isBottomDomain() const
 {
     return defaultValue_ == Lifetime::Bottom && values_->empty();
 }
 
-bool LifetimeState::isTopDomain() const
+bool LifetimeDomain::isTopDomain() const
 {
     return defaultValue_ == Lifetime::MaybeFreed && values_->empty();
 }
 
-bool LifetimeState::leqDomain(const AbstractDomain& other) const
+bool LifetimeDomain::leqDomain(const AbstractDomain& other) const
 {
-    const auto& state = static_cast<const LifetimeState&>(other);
+    const auto& state = static_cast<const LifetimeDomain&>(other);
     if (defaultValue_ == state.defaultValue_ &&
         (values_ == state.values_ || *values_ == *state.values_))
         return true;
-    if (!SVF::AbstractDomain::isSubsetOf(defaultValue_, state.defaultValue_))
+    if (!lifetimeIsSubsetOf(defaultValue_, state.defaultValue_))
         return false;
     const std::set<Location> locations = combinedKeys(*values_, *state.values_);
     return std::all_of(locations.begin(), locations.end(),
                        [&](Location location) {
-                           return SVF::AbstractDomain::isSubsetOf(
+                           return lifetimeIsSubsetOf(
                                statusOf(location), state.statusOf(location));
                        });
 }
 
-std::string LifetimeState::domainToString() const
+std::string LifetimeDomain::domainToString() const
 {
     std::ostringstream output;
-    output << "default=" << SVF::AbstractDomain::toString(defaultValue_)
-           << " {";
+    output << "default=" << lifetimeToString(defaultValue_) << " {";
     bool first = true;
     for (const auto& [location, value] : *values_)
     {
         if (!first)
             output << ", ";
         first = false;
-        output << location.id() << "=" << SVF::AbstractDomain::toString(value);
+        output << location.id() << "=" << lifetimeToString(value);
     }
     output << "}";
     return output.str();
 }
 
-void LifetimeState::set(Location location, Lifetime lifetime)
+void LifetimeDomain::set(Location location, Lifetime lifetime)
 {
     if (lifetime == defaultValue_)
         writableValues().erase(location);
@@ -568,7 +569,7 @@ void LifetimeState::set(Location location, Lifetime lifetime)
         writableValues()[location] = lifetime;
 }
 
-LifetimeState::Values& LifetimeState::writableValues()
+LifetimeDomain::Values& LifetimeDomain::writableValues()
 {
     if (values_.use_count() != 1)
         values_ = std::make_shared<Values>(*values_);

@@ -48,11 +48,6 @@ namespace SVF
 class AbstractInterpretation;
 class AbsExtAPI;
 class AEStat;
-class AEAPI;
-class AndersenWaveDiff;
-
-template <typename T> class FILOWorkList;
-
 /// AbstractInterpretation is same as Abstract Execution.
 ///
 /// Owns the per-node abstract trace and exposes the read/write API
@@ -62,7 +57,6 @@ template <typename T> class FILOWorkList;
 class AbstractInterpretation
 {
     friend class AEStat;
-    friend class AEAPI;
     friend class BufOverflowDetector;
     friend class NullptrDerefDetector;
 
@@ -208,17 +202,11 @@ public:
     virtual const AbstractDomain::AbstractDomain& getAbstractState(
         const ICFGNode* node) const = 0;
 
-    /// Return the analysis-wide SSA-value carrier for `function` when the
-    /// selected sparse implementation separates ValVars from ICFG memory
-    /// states. Other implementations return nullptr.
-    virtual const AbstractDomain::AbstractDomain* getScalarAbstractState(
-        const FunObjVar* function) const;
-
-    /// Return the sparse relational checkpoint associated with a particular
-    /// SSA definition, or nullptr when the implementation has no separated
-    /// definition checkpoint.
-    virtual const AbstractDomain::AbstractDomain* getScalarAbstractState(
-        const ValVar* value) const;
+    /// Return the analysis-wide SSA-value carrier when the selected sparse
+    /// implementation separates ValVars from ICFG memory states. Other
+    /// implementations return nullptr.
+    virtual const AbstractDomain::AbstractDomain* getScalarAbstractState()
+        const;
 
     virtual bool hasAbsState(const ICFGNode* node) const = 0;
 
@@ -243,7 +231,6 @@ public:
                             const AbstractDomain::AddressSet& addresses,
                             const ICFGNode* node) = 0;
 
-    const SVFType* getPointeeElement(const ObjVar* var, const ICFGNode* node);
     u32_t getAllocaInstByteSize(const AddrStmt* addr);
 
     const Set<const ICFGNode*>& getAnalyzedNodes() const
@@ -377,9 +364,6 @@ protected:
 
     void updateStateOnPhi(const PhiStmt* phi);
 
-    /// Execution State, used to store the Interval Value of every SVF variable
-    AEAPI* api{nullptr};
-
     ICFG* icfg;
     CallGraph* callGraph;
     AEStat* stat;
@@ -401,12 +385,8 @@ protected:
     bool skipRecursiveCall(const CallICFGNode* callNode);
     const FunObjVar* getCallee(const CallICFGNode* callNode);
 
-    // there data should be shared with subclasses
-    Map<std::string, std::function<void(const CallICFGNode*)>> func_map;
-
     Set<const ICFGNode*>
         allAnalyzedNodes; // All nodes ever analyzed (across all entry points)
-    std::string moduleName;
 
     std::vector<std::unique_ptr<AEDetector>> detectors;
     AbsExtAPI* utils;
@@ -417,7 +397,5 @@ protected:
     AEWTO* preAnalysis{nullptr};
 
     bool shouldApplyNarrowing(const FunObjVar* fun);
-
-    virtual void initializeDomainState(const ICFGNode* node);
 };
 } // namespace SVF

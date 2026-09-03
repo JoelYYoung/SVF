@@ -15,7 +15,6 @@ namespace SVF
 /// ICFG node. Values, memory, lifetimes, definedness, joins, widening, and
 /// fixpoint checks all operate on BoxProgramState; no compatibility trace
 /// is maintained by this implementation.
-template <typename NumericalDomainT>
 class DenseAbstractInterpretation : public AbstractInterpretation
 {
 public:
@@ -23,8 +22,6 @@ public:
 
     DenseAbstractInterpretation();
     ~DenseAbstractInterpretation() override = default;
-    void runOnModule() override;
-
     const AbstractDomain::AbstractDomain& getAbstractState(
         const ICFGNode* node) const override;
     bool hasAbsState(const ICFGNode* node) const override;
@@ -115,23 +112,16 @@ protected:
                                 AbstractDomain::AbstractDomain& state,
                                 const ICFGNode* loadNode,
                                 const ICFGNode* successor) override;
-    void initializeDomainState(const ICFGNode* node) override;
 
 protected:
     DenseState& ensureState(const ICFGNode* node);
     const DenseState& state(const ICFGNode* node) const;
-    DenseState topState(const ICFGNode* node) const;
-    DenseState bottomState(const ICFGNode* node) const;
-    NumericalDomainT makeNumericalTop(
-        const AbstractDomain::VariableEnvironment& environment) const;
-    NumericalDomainT makeNumericalBottom(
-        const AbstractDomain::VariableEnvironment& environment) const;
+    DenseState topState() const;
+    DenseState bottomState() const;
 
     void assignValue(DenseState& state, AbstractDomain::Variable variable,
                      const AbstractDomain::Interval& interval,
                      const AbstractDomain::AddressSet& addresses);
-    void ensureVariable(DenseState& state,
-                        AbstractDomain::Variable variable) const;
     void assignInterval(DenseState& state, AbstractDomain::Variable variable,
                         const AbstractDomain::Interval& interval);
     void constrainInterval(DenseState& state, AbstractDomain::Variable variable,
@@ -140,14 +130,11 @@ protected:
                                   const ICFGNode* node);
     void forgetValue(DenseState& state,
                      AbstractDomain::Variable variable) const;
-    void forgetScalarValues(DenseState& state) const;
     void assumeBranch(const IntraCFGEdge* edge, DenseState& state);
 
     SVFIRAdapter adapter_;
     Map<const ICFGNode*, DenseState> denseTrace_;
 };
-
-extern template class DenseAbstractInterpretation<AbstractDomain::BoxDomain>;
 
 } // namespace SVF
 

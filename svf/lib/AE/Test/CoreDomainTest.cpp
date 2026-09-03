@@ -295,6 +295,49 @@ void testProgramStateMemoryFacet()
             "Box program-state join omitted a component");
 }
 
+void testLifetimeAndValueKindDomains()
+{
+    const Location object(10);
+    LifetimeDomain alive = LifetimeDomain::bottom();
+    alive.allocate(object);
+    LifetimeDomain freed = alive;
+    freed.release(object);
+    require(alive.statusOf(object) == Lifetime::Alive &&
+                freed.mustBeFreed(object),
+            "lifetime copy-on-write changed the source property");
+
+    LifetimeDomain maybeFreed = alive;
+    maybeFreed.joinWith(freed);
+    require(maybeFreed.mayBeFreed(object) &&
+                !maybeFreed.mustBeFreed(object),
+            "lifetime join lost a path-dependent release");
+    maybeFreed.meetWith(alive);
+    require(maybeFreed.statusOf(object) == Lifetime::Alive,
+            "lifetime meet did not recover the live alternative");
+
+    const Variable x(1);
+    const Variable y(130);
+    const VariableEnvironment environment(
+        {{x, NumericType::integer(), "x"},
+         {y, NumericType::integer(), "y"}});
+    ValueKindDomain addressOnly = ValueKindDomain::bottom();
+    addressOnly.assign(x, false);
+    ValueKindDomain numeric = addressOnly;
+    numeric.assign(x, true);
+    require(addressOnly.isDefined(x) && !addressOnly.hasNumeric(x) &&
+                numeric.hasNumeric(x),
+            "value-kind copy-on-write changed the source property");
+
+    ValueKindDomain joined = addressOnly;
+    joined.joinWith(numeric);
+    require(joined.isDefined(x) && joined.hasNumeric(x),
+            "value-kind join lost a present numerical facet");
+    joined.changeEnvironment(VariableEnvironment(
+        {{y, NumericType::integer(), "y"}}));
+    require(joined.isBottom(),
+            "value-kind environment projection retained a removed value");
+}
+
 void testAddressDomain()
 {
     const Variable p(1);
@@ -360,6 +403,7 @@ int main()
         testEnvironmentExpandFoldAndTrees();
         testPagedCopyOnWriteAndSerialization();
         testProgramStateMemoryFacet();
+        testLifetimeAndValueKindDomains();
         testAddressDomain();
         std::cout << "SVF AE core domain test: PASS\n";
         return EXIT_SUCCESS;

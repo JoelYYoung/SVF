@@ -2420,20 +2420,6 @@ BoxDomain BoxDomain::bottom(const VariableEnvironment& environment,
     return result;
 }
 
-BoxDomain BoxDomain::fromBox(const VariableEnvironment& environment,
-                             const IntervalBox& box,
-                             const BoxSemanticConfig& config)
-{
-    BoxDomain result = top(environment, config);
-    for (const auto& [variable, interval] : box.bounds)
-    {
-        if (!environment.contains(variable))
-            throw std::invalid_argument("box contains an unknown variable");
-        result.setBound(environment.dimensionOf(variable), interval);
-    }
-    return result;
-}
-
 BoxDomain BoxDomain::fromConstraints(const VariableEnvironment& environment,
                                      const LinearConstraintSet& constraints,
                                      const BoxSemanticConfig& config)
@@ -2446,25 +2432,6 @@ BoxDomain BoxDomain::fromConstraints(const VariableEnvironment& environment,
 std::unique_ptr<AbstractDomain> BoxDomain::clone() const
 {
     return std::make_unique<BoxDomain>(*this);
-}
-
-DomainCapabilities BoxDomain::capabilities() const
-{
-    DomainCapabilities result;
-    result.strictInequalities = true;
-    result.integerTightening = config_.integerTightening;
-    result.thresholdWidening = true;
-    result.narrowing = true;
-    result.parallelAssignments = true;
-    result.expressionBounds = true;
-    result.backwardAssignments = true;
-    result.topologicalClosure = true;
-    result.canonicalization = true;
-    result.expandFold = true;
-    result.operationMetadata = true;
-    result.ieeeTreeExpressions = true;
-    result.nonlinearTreeExpressions = true;
-    return result;
 }
 
 void BoxDomain::assign(Variable target, const LinearExpression& expression)
@@ -2862,17 +2829,6 @@ Interval BoxDomain::bound(const LinearExpression& expression) const
     if (bottom_)
         return Interval(Bound::plusInfinity(), Bound::minusInfinity());
     return evaluate(*this, expression);
-}
-
-IntervalBox BoxDomain::toBox() const
-{
-    IntervalBox result;
-    for (Dimension dimension = 0; dimension < environment_.size(); ++dimension)
-        result.bounds.emplace(environment_.variableOf(dimension),
-                              bottom_
-                                  ? bound(environment_.variableOf(dimension))
-                                  : boundAt(dimension));
-    return result;
 }
 
 LinearConstraintSet BoxDomain::toConstraints() const

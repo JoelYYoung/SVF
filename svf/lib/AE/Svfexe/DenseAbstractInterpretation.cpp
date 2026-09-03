@@ -7,10 +7,8 @@
 
 #include <algorithm>
 #include <iostream>
-#include <set>
 #include <stdexcept>
 #include <tuple>
-#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -83,68 +81,14 @@ bool constraintKind(u32_t predicate, AD::ConstraintKind& kind)
     }
 }
 
-template <typename DenseStateT>
-void alignEnvironments(DenseStateT& lhs, DenseStateT& rhs)
-{
-    if (lhs.numerical().environment() == rhs.numerical().environment())
-        return;
-    const AD::VariableEnvironment environment =
-        lhs.numerical().environment().merge(rhs.numerical().environment());
-    if (lhs.numerical().environment() != environment)
-        lhs.changeEnvironment(environment);
-    if (rhs.numerical().environment() != environment)
-        rhs.changeEnvironment(environment);
-}
-
 } // namespace
 
-template <typename NumericalDomainT>
-DenseAbstractInterpretation<NumericalDomainT>::DenseAbstractInterpretation()
-    : adapter_(*svfir)
-{
-}
+DenseAbstractInterpretation::DenseAbstractInterpretation() : adapter_(*svfir) {}
 
-template <typename NumericalDomainT>
-void DenseAbstractInterpretation<NumericalDomainT>::runOnModule()
-{
-    AbstractInterpretation::runOnModule();
-}
-
-template <typename NumericalDomainT>
-void DenseAbstractInterpretation<NumericalDomainT>::handleGlobalNode()
+void DenseAbstractInterpretation::handleGlobalNode()
 {
     const ICFGNode* node = icfg->getGlobalICFGNode();
-    // The global ICFG node contains address initializers for local pointer
-    // values from every function.  Growing a relational environment once per
-    // initializer repeatedly rebuilds and normalizes the same state.  Batch
-    // those result dimensions into the initial top state instead.
-    std::vector<AD::VariableDeclaration> initialDeclarations;
-    std::set<AD::Variable> initialVariables;
-    auto addInitialValue = [&](const SVFVar* variable) {
-        const auto* value = SVFUtil::dyn_cast<ValVar>(variable);
-        if (!value || !adapter_.contains(*value))
-            return;
-        const AD::Variable symbol = adapter_.variable(*value);
-        if (!adapter_.environment().contains(symbol) &&
-            initialVariables.insert(symbol).second)
-            initialDeclarations.push_back(adapter_.declaration(symbol));
-    };
-    for (const SVFStmt* statement : node->getSVFStmts())
-    {
-        if (const auto* assignment = SVFUtil::dyn_cast<AssignStmt>(statement))
-            addInitialValue(assignment->getLHSVar());
-        else if (const auto* multi =
-                     SVFUtil::dyn_cast<MultiOpndStmt>(statement))
-            addInitialValue(multi->getRes());
-    }
-    if (const auto* blackHole = SVFUtil::dyn_cast<ValVar>(
-            svfir->getGNode(PAG::getPAG()->getBlkPtr())))
-        addInitialValue(blackHole);
-    const AD::VariableEnvironment initialEnvironment =
-        adapter_.environment().add(std::move(initialDeclarations));
-    denseTrace_.insert_or_assign(
-        node, DenseState(makeNumericalTop(initialEnvironment),
-                         adapter_.memoryLayout()));
+    denseTrace_.insert_or_assign(node, topState());
     for (const SVFStmt* statement : node->getSVFStmts())
         handleSVFStatement(statement);
 
@@ -153,8 +97,7 @@ void DenseAbstractInterpretation<NumericalDomainT>::handleGlobalNode()
         updateValue(variable, AD::Interval::top(), AD::AddressSet::top(), node);
 }
 
-template <typename NumericalDomainT>
-void DenseAbstractInterpretation<NumericalDomainT>::initializeObjectValue(
+void DenseAbstractInterpretation::initializeObjectValue(
     const ObjVar* object, AD::Interval& interval, AD::AddressSet& addresses,
     const ICFGNode* node)
 {
@@ -188,88 +131,53 @@ void DenseAbstractInterpretation<NumericalDomainT>::initializeObjectValue(
         addresses = AD::AddressSet::top();
 }
 
-template <typename NumericalDomainT>
-const AbstractDomain::AbstractDomain& DenseAbstractInterpretation<
-    NumericalDomainT>::getAbstractState(const ICFGNode* node) const
+const AbstractDomain::AbstractDomain& DenseAbstractInterpretation::
+    getAbstractState(const ICFGNode* node) const
 {
     return state(node);
 }
 
-template <typename NumericalDomainT>
-bool DenseAbstractInterpretation<NumericalDomainT>::hasAbsState(
-    const ICFGNode* node) const
+bool DenseAbstractInterpretation::hasAbsState(const ICFGNode* node) const
 {
     return denseTrace_.count(node) != 0;
 }
 
-template <typename NumericalDomainT>
-AD::Location DenseAbstractInterpretation<NumericalDomainT>::locationOf(
-    const ObjVar* object) const
+AD::Location DenseAbstractInterpretation::locationOf(const ObjVar* object) const
 {
     return object && adapter_.contains(*object) ? adapter_.location(*object)
                                                 : AD::Location::null();
 }
 
-template <typename NumericalDomainT>
-const ObjVar* DenseAbstractInterpretation<NumericalDomainT>::objectAt(
-    AD::Location location) const
+const ObjVar* DenseAbstractInterpretation::objectAt(AD::Location location) const
 {
     return location.isNull() ? nullptr : &adapter_.object(location);
 }
 
-template <typename NumericalDomainT>
-typename DenseAbstractInterpretation<NumericalDomainT>::DenseState
-DenseAbstractInterpretation<NumericalDomainT>::topState(
-    const ICFGNode* node) const
+DenseAbstractInterpretation::DenseState
+DenseAbstractInterpretation::topState() const
 {
-    return DenseState(
-        makeNumericalTop(adapter_.environment(node ? node->getFun() : nullptr)),
-        adapter_.memoryLayout());
-}
-
-template <typename NumericalDomainT>
-typename DenseAbstractInterpretation<NumericalDomainT>::DenseState
-DenseAbstractInterpretation<NumericalDomainT>::bottomState(
-    const ICFGNode* node) const
-{
-    return DenseState(makeNumericalBottom(adapter_.environment(
-                          node ? node->getFun() : nullptr)),
+    return DenseState(AD::BoxDomain::top(adapter_.environment()),
                       adapter_.memoryLayout());
 }
 
-template <typename NumericalDomainT>
-NumericalDomainT DenseAbstractInterpretation<NumericalDomainT>::
-    makeNumericalTop(const AD::VariableEnvironment& environment) const
+DenseAbstractInterpretation::DenseState
+DenseAbstractInterpretation::bottomState() const
 {
-    if constexpr (std::is_same_v<NumericalDomainT, AD::BoxDomain>)
-        return AD::BoxDomain::top(environment);
-    else
-        return NumericalDomainT::top(environment);
+    return DenseState(AD::BoxDomain::bottom(adapter_.environment()),
+                      adapter_.memoryLayout());
 }
 
-template <typename NumericalDomainT>
-NumericalDomainT DenseAbstractInterpretation<NumericalDomainT>::
-    makeNumericalBottom(const AD::VariableEnvironment& environment) const
-{
-    if constexpr (std::is_same_v<NumericalDomainT, AD::BoxDomain>)
-        return AD::BoxDomain::bottom(environment);
-    else
-        return NumericalDomainT::bottom(environment);
-}
-
-template <typename NumericalDomainT>
-typename DenseAbstractInterpretation<NumericalDomainT>::DenseState&
-DenseAbstractInterpretation<NumericalDomainT>::ensureState(const ICFGNode* node)
+DenseAbstractInterpretation::DenseState& DenseAbstractInterpretation::
+    ensureState(const ICFGNode* node)
 {
     auto iterator = denseTrace_.find(node);
     if (iterator == denseTrace_.end())
-        iterator = denseTrace_.emplace(node, topState(node)).first;
+        iterator = denseTrace_.emplace(node, topState()).first;
     return iterator->second;
 }
 
-template <typename NumericalDomainT>
-const typename DenseAbstractInterpretation<NumericalDomainT>::DenseState&
-DenseAbstractInterpretation<NumericalDomainT>::state(const ICFGNode* node) const
+const DenseAbstractInterpretation::DenseState& DenseAbstractInterpretation::
+    state(const ICFGNode* node) const
 {
     const auto iterator = denseTrace_.find(node);
     if (iterator == denseTrace_.end())
@@ -277,63 +185,42 @@ DenseAbstractInterpretation<NumericalDomainT>::state(const ICFGNode* node) const
     return iterator->second;
 }
 
-template <typename NumericalDomainT>
-void DenseAbstractInterpretation<NumericalDomainT>::resetAbstractState(
-    const ICFGNode* node)
+void DenseAbstractInterpretation::resetAbstractState(const ICFGNode* node)
 {
-    denseTrace_.insert_or_assign(node, topState(node));
+    denseTrace_.insert_or_assign(node, topState());
 }
 
-template <typename NumericalDomainT>
-void DenseAbstractInterpretation<NumericalDomainT>::copyAbstractState(
-    const ICFGNode* source, const ICFGNode* destination)
+void DenseAbstractInterpretation::copyAbstractState(const ICFGNode* source,
+                                                    const ICFGNode* destination)
 {
-    DenseState copy = state(source);
-    const AD::VariableEnvironment& destinationEnvironment =
-        adapter_.environment(destination->getFun());
-    if (copy.numerical().environment() == destinationEnvironment)
-    {
-        denseTrace_.insert_or_assign(destination, std::move(copy));
-        return;
-    }
-
-    copy.changeEnvironment(destinationEnvironment);
-    denseTrace_.insert_or_assign(destination, std::move(copy));
+    denseTrace_.insert_or_assign(destination, state(source));
 }
 
-template <typename NumericalDomainT>
-std::unique_ptr<AbstractDomain::AbstractDomain> DenseAbstractInterpretation<
-    NumericalDomainT>::cloneAbstractState(const ICFGNode* node) const
+std::unique_ptr<AbstractDomain::AbstractDomain> DenseAbstractInterpretation::
+    cloneAbstractState(const ICFGNode* node) const
 {
     return state(node).clone();
 }
 
-template <typename NumericalDomainT>
-bool DenseAbstractInterpretation<NumericalDomainT>::isAbstractStateEquivalent(
+bool DenseAbstractInterpretation::isAbstractStateEquivalent(
     const ICFGNode* node, const AbstractDomain::AbstractDomain& snapshot) const
 {
-    DenseState current = state(node);
-    DenseState previous = static_cast<const DenseState&>(snapshot);
-    alignEnvironments(current, previous);
-    return current.isEquivalentTo(previous) ==
+    return state(node).isEquivalentTo(snapshot) ==
            AbstractDomain::CheckResult::True;
 }
 
-template <typename NumericalDomainT>
-std::unique_ptr<AbstractDomain::AbstractDomain> DenseAbstractInterpretation<
-    NumericalDomainT>::cloneCycleHeadState(const ICFGCycleWTO* cycle)
+std::unique_ptr<AbstractDomain::AbstractDomain> DenseAbstractInterpretation::
+    cloneCycleHeadState(const ICFGCycleWTO* cycle)
 {
     return cloneAbstractState(cycle->head()->getICFGNode());
 }
 
-template <typename NumericalDomainT>
-bool DenseAbstractInterpretation<NumericalDomainT>::widenCycleState(
+bool DenseAbstractInterpretation::widenCycleState(
     const AbstractDomain::AbstractDomain& previous,
     const AbstractDomain::AbstractDomain& current, const ICFGCycleWTO* cycle)
 {
-    DenseState previousDense = static_cast<const DenseState&>(previous);
-    DenseState currentDense = static_cast<const DenseState&>(current);
-    alignEnvironments(previousDense, currentDense);
+    const DenseState& previousDense = static_cast<const DenseState&>(previous);
+    const DenseState& currentDense = static_cast<const DenseState&>(current);
     DenseState next = previousDense;
     next.widenWith(currentDense);
     const bool fixpoint =
@@ -343,17 +230,15 @@ bool DenseAbstractInterpretation<NumericalDomainT>::widenCycleState(
     return fixpoint;
 }
 
-template <typename NumericalDomainT>
-bool DenseAbstractInterpretation<NumericalDomainT>::narrowCycleState(
+bool DenseAbstractInterpretation::narrowCycleState(
     const AbstractDomain::AbstractDomain& previous,
     const AbstractDomain::AbstractDomain& current, const ICFGCycleWTO* cycle)
 {
     const ICFGNode* head = cycle->head()->getICFGNode();
     if (!shouldApplyNarrowing(head->getFun()))
         return true;
-    DenseState previousDense = static_cast<const DenseState&>(previous);
+    const DenseState& previousDense = static_cast<const DenseState&>(previous);
     DenseState currentDense = static_cast<const DenseState&>(current);
-    alignEnvironments(previousDense, currentDense);
     // Sparse transfers may materialize a new MemorySSA/cycle facet during the
     // descending phase. Enforce narrowing's generic next <= current contract.
     // The normal descending path already satisfies that contract. Avoid
@@ -371,27 +256,15 @@ bool DenseAbstractInterpretation<NumericalDomainT>::narrowCycleState(
     return fixpoint;
 }
 
-template <typename NumericalDomainT>
-void DenseAbstractInterpretation<NumericalDomainT>::ensureVariable(
-    DenseState& denseState, AD::Variable variable) const
+void DenseAbstractInterpretation::assignInterval(DenseState& denseState,
+                                                 AD::Variable variable,
+                                                 const AD::Interval& interval)
 {
-    if (denseState.numerical().environment().contains(variable))
-        return;
-    denseState.changeEnvironment(denseState.numerical().environment().add(
-        {adapter_.declaration(variable)}));
-}
-
-template <typename NumericalDomainT>
-void DenseAbstractInterpretation<NumericalDomainT>::assignInterval(
-    DenseState& denseState, AD::Variable variable, const AD::Interval& interval)
-{
-    ensureVariable(denseState, variable);
     denseState.numerical().forget(variable);
     constrainInterval(denseState, variable, interval);
 }
 
-template <typename NumericalDomainT>
-void DenseAbstractInterpretation<NumericalDomainT>::constrainInterval(
+void DenseAbstractInterpretation::constrainInterval(
     DenseState& denseState, AD::Variable variable, const AD::Interval& interval)
 {
     if (interval.isBottom())
@@ -416,36 +289,26 @@ void DenseAbstractInterpretation<NumericalDomainT>::constrainInterval(
     denseState.numerical().assumeAll(constraints);
 }
 
-template <typename NumericalDomainT>
-void DenseAbstractInterpretation<NumericalDomainT>::initializeDomainState(
-    const ICFGNode* node)
+void DenseAbstractInterpretation::assignValue(DenseState& denseState,
+                                              AD::Variable variable,
+                                              const AD::Interval& interval,
+                                              const AD::AddressSet& addresses)
 {
-    (void)ensureState(node);
-}
-
-template <typename NumericalDomainT>
-void DenseAbstractInterpretation<NumericalDomainT>::assignValue(
-    DenseState& denseState, AD::Variable variable, const AD::Interval& interval,
-    const AD::AddressSet& addresses)
-{
-    ensureVariable(denseState, variable);
     if (!interval.isBottom())
         assignInterval(denseState, variable, interval);
     else
         denseState.numerical().forget(variable);
     denseState.addresses().assign(variable, addresses);
-    denseState.shapes().assign(variable, !interval.isBottom());
+    denseState.valueKinds().assign(variable, !interval.isBottom());
 }
 
-template <typename NumericalDomainT>
-void DenseAbstractInterpretation<NumericalDomainT>::materializeValue(
-    DenseState&, const ValVar*, const ICFGNode*)
+void DenseAbstractInterpretation::materializeValue(DenseState&, const ValVar*,
+                                                   const ICFGNode*)
 {
 }
 
-template <typename NumericalDomainT>
-void DenseAbstractInterpretation<NumericalDomainT>::forgetValue(
-    DenseState& denseState, AD::Variable variable) const
+void DenseAbstractInterpretation::forgetValue(DenseState& denseState,
+                                              AD::Variable variable) const
 {
     if (!denseState.numerical().environment().contains(variable))
         return;
@@ -454,24 +317,11 @@ void DenseAbstractInterpretation<NumericalDomainT>::forgetValue(
     // AddressDomain::forget means address-top and would retain an explicit map
     // entry for every purged sparse scalar.
     denseState.addresses().assign(variable, AD::AddressSet::bottom());
-    denseState.shapes().forget(variable);
+    denseState.valueKinds().forget(variable);
 }
 
-template <typename NumericalDomainT>
-void DenseAbstractInterpretation<NumericalDomainT>::forgetScalarValues(
-    DenseState& denseState) const
-{
-    for (const AD::VariableDeclaration& declaration :
-         denseState.numerical().environment().variables())
-    {
-        if (adapter_.value(declaration.variable))
-            forgetValue(denseState, declaration.variable);
-    }
-}
-
-template <typename NumericalDomainT>
-AD::Interval DenseAbstractInterpretation<NumericalDomainT>::getInterval(
-    const ValVar* var, const ICFGNode* node)
+AD::Interval DenseAbstractInterpretation::getInterval(const ValVar* var,
+                                                      const ICFGNode* node)
 {
     if (const auto* integer = SVFUtil::dyn_cast<ConstIntValVar>(var))
         return AD::Interval::singleton(AD::Rational(integer->getSExtValue()));
@@ -480,35 +330,33 @@ AD::Interval DenseAbstractInterpretation<NumericalDomainT>::getInterval(
 
     DenseState& denseState = ensureState(node);
     const AD::Variable variable = adapter_.variable(*var);
-    if (!denseState.shapes().isDefined(variable))
+    if (!denseState.valueKinds().isDefined(variable))
         assignValue(denseState, variable, AD::Interval::top(),
                     AD::AddressSet::bottom());
     if (var->isPointer())
         return AD::Interval::bottom();
-    return denseState.shapes().hasNumeric(variable)
+    return denseState.valueKinds().hasNumeric(variable)
                ? denseState.numerical().bound(variable)
                : AD::Interval::bottom();
 }
 
-template <typename NumericalDomainT>
-AD::Interval DenseAbstractInterpretation<NumericalDomainT>::getInterval(
-    const ObjVar* var, const ICFGNode* node)
+AD::Interval DenseAbstractInterpretation::getInterval(const ObjVar* var,
+                                                      const ICFGNode* node)
 {
     if (!adapter_.contains(*var))
         return AD::Interval::bottom();
     DenseState& denseState = ensureState(node);
     const AD::Variable content = adapter_.contentVariable(*var);
-    if (!denseState.shapes().isDefined(content))
+    if (!denseState.valueKinds().isDefined(content))
         assignValue(denseState, content, AD::Interval::bottom(),
                     AD::AddressSet::bottom());
-    return denseState.shapes().hasNumeric(content)
+    return denseState.valueKinds().hasNumeric(content)
                ? denseState.numerical().bound(content)
                : AD::Interval::bottom();
 }
 
-template <typename NumericalDomainT>
-AD::Interval DenseAbstractInterpretation<NumericalDomainT>::getInterval(
-    const SVFVar* var, const ICFGNode* node)
+AD::Interval DenseAbstractInterpretation::getInterval(const SVFVar* var,
+                                                      const ICFGNode* node)
 {
     if (const auto* object = SVFUtil::dyn_cast<ObjVar>(var))
         return getInterval(object, node);
@@ -517,37 +365,34 @@ AD::Interval DenseAbstractInterpretation<NumericalDomainT>::getInterval(
     throw std::invalid_argument("unsupported SVF variable kind");
 }
 
-template <typename NumericalDomainT>
-AD::AddressSet DenseAbstractInterpretation<NumericalDomainT>::getAddressSet(
-    const ValVar* var, const ICFGNode* node)
+AD::AddressSet DenseAbstractInterpretation::getAddressSet(const ValVar* var,
+                                                          const ICFGNode* node)
 {
     if (!adapter_.contains(*var))
         return AD::AddressSet::top();
     DenseState& denseState = ensureState(node);
     const AD::Variable variable = adapter_.variable(*var);
-    if (!denseState.shapes().isDefined(variable))
+    if (!denseState.valueKinds().isDefined(variable))
         assignValue(denseState, variable, AD::Interval::top(),
                     AD::AddressSet::bottom());
     return denseState.addresses().addressSet(variable);
 }
 
-template <typename NumericalDomainT>
-AD::AddressSet DenseAbstractInterpretation<NumericalDomainT>::getAddressSet(
-    const ObjVar* var, const ICFGNode* node)
+AD::AddressSet DenseAbstractInterpretation::getAddressSet(const ObjVar* var,
+                                                          const ICFGNode* node)
 {
     if (!adapter_.contains(*var))
         return AD::AddressSet::bottom();
     DenseState& denseState = ensureState(node);
     const AD::Variable content = adapter_.contentVariable(*var);
-    if (!denseState.shapes().isDefined(content))
+    if (!denseState.valueKinds().isDefined(content))
         assignValue(denseState, content, AD::Interval::bottom(),
                     AD::AddressSet::bottom());
     return denseState.addresses().addressSet(content);
 }
 
-template <typename NumericalDomainT>
-AD::AddressSet DenseAbstractInterpretation<NumericalDomainT>::getAddressSet(
-    const SVFVar* var, const ICFGNode* node)
+AD::AddressSet DenseAbstractInterpretation::getAddressSet(const SVFVar* var,
+                                                          const ICFGNode* node)
 {
     if (const auto* object = SVFUtil::dyn_cast<ObjVar>(var))
         return getAddressSet(object, node);
@@ -556,29 +401,26 @@ AD::AddressSet DenseAbstractInterpretation<NumericalDomainT>::getAddressSet(
     throw std::invalid_argument("unsupported SVF variable kind");
 }
 
-template <typename NumericalDomainT>
-bool DenseAbstractInterpretation<NumericalDomainT>::hasAbsValue(
-    const ValVar* var, const ICFGNode* node) const
+bool DenseAbstractInterpretation::hasAbsValue(const ValVar* var,
+                                              const ICFGNode* node) const
 {
     if (SVFUtil::isa<ConstIntValVar>(var))
         return true;
     if (denseTrace_.count(node) == 0 || !adapter_.contains(*var))
         return false;
-    return state(node).shapes().isDefined(adapter_.variable(*var));
+    return state(node).valueKinds().isDefined(adapter_.variable(*var));
 }
 
-template <typename NumericalDomainT>
-bool DenseAbstractInterpretation<NumericalDomainT>::hasAbsValue(
-    const ObjVar* var, const ICFGNode* node) const
+bool DenseAbstractInterpretation::hasAbsValue(const ObjVar* var,
+                                              const ICFGNode* node) const
 {
     if (denseTrace_.count(node) == 0 || !adapter_.contains(*var))
         return false;
-    return state(node).shapes().isDefined(adapter_.contentVariable(*var));
+    return state(node).valueKinds().isDefined(adapter_.contentVariable(*var));
 }
 
-template <typename NumericalDomainT>
-bool DenseAbstractInterpretation<NumericalDomainT>::hasAbsValue(
-    const SVFVar* var, const ICFGNode* node) const
+bool DenseAbstractInterpretation::hasAbsValue(const SVFVar* var,
+                                              const ICFGNode* node) const
 {
     if (const auto* object = SVFUtil::dyn_cast<ObjVar>(var))
         return hasAbsValue(object, node);
@@ -587,28 +429,27 @@ bool DenseAbstractInterpretation<NumericalDomainT>::hasAbsValue(
     return false;
 }
 
-template <typename NumericalDomainT>
-void DenseAbstractInterpretation<NumericalDomainT>::updateValue(
-    const ValVar* var, const AD::Interval& interval,
-    const AD::AddressSet& addresses, const ICFGNode* node)
+void DenseAbstractInterpretation::updateValue(const ValVar* var,
+                                              const AD::Interval& interval,
+                                              const AD::AddressSet& addresses,
+                                              const ICFGNode* node)
 {
     if (adapter_.contains(*var))
         assignValue(ensureState(node), adapter_.variable(*var), interval,
                     addresses);
 }
 
-template <typename NumericalDomainT>
-void DenseAbstractInterpretation<NumericalDomainT>::updateValue(
-    const ObjVar* var, const AD::Interval& interval,
-    const AD::AddressSet& addresses, const ICFGNode* node)
+void DenseAbstractInterpretation::updateValue(const ObjVar* var,
+                                              const AD::Interval& interval,
+                                              const AD::AddressSet& addresses,
+                                              const ICFGNode* node)
 {
     if (adapter_.contains(*var))
         assignValue(ensureState(node), adapter_.contentVariable(*var), interval,
                     addresses);
 }
 
-template <typename NumericalDomainT>
-AD::Interval DenseAbstractInterpretation<NumericalDomainT>::getMemoryInterval(
+AD::Interval DenseAbstractInterpretation::getMemoryInterval(
     AD::Location location, const ICFGNode* node)
 {
     if (location.isNull())
@@ -616,25 +457,21 @@ AD::Interval DenseAbstractInterpretation<NumericalDomainT>::getMemoryInterval(
     return getInterval(&adapter_.object(location), node);
 }
 
-template <typename NumericalDomainT>
-AD::AddressSet DenseAbstractInterpretation<
-    NumericalDomainT>::getMemoryAddressSet(AD::Location location,
-                                           const ICFGNode* node)
+AD::AddressSet DenseAbstractInterpretation::getMemoryAddressSet(
+    AD::Location location, const ICFGNode* node)
 {
     if (location.isNull())
         return AD::AddressSet::bottom();
     return getAddressSet(&adapter_.object(location), node);
 }
 
-template <typename NumericalDomainT>
-bool DenseAbstractInterpretation<NumericalDomainT>::hasMemoryValue(
-    AD::Location location, const ICFGNode* node) const
+bool DenseAbstractInterpretation::hasMemoryValue(AD::Location location,
+                                                 const ICFGNode* node) const
 {
     return !location.isNull() && hasAbsValue(&adapter_.object(location), node);
 }
 
-template <typename NumericalDomainT>
-void DenseAbstractInterpretation<NumericalDomainT>::updateMemoryValue(
+void DenseAbstractInterpretation::updateMemoryValue(
     AD::Location location, const AD::Interval& interval,
     const AD::AddressSet& addresses, const ICFGNode* node)
 {
@@ -642,27 +479,25 @@ void DenseAbstractInterpretation<NumericalDomainT>::updateMemoryValue(
         updateValue(&adapter_.object(location), interval, addresses, node);
 }
 
-template <typename NumericalDomainT>
-void DenseAbstractInterpretation<NumericalDomainT>::markFreedMemory(
-    AD::Location location, const ICFGNode* node)
+void DenseAbstractInterpretation::markFreedMemory(AD::Location location,
+                                                  const ICFGNode* node)
 {
     if (!location.isNull())
         ensureState(node).lifetimes().release(location);
 }
 
-template <typename NumericalDomainT>
-bool DenseAbstractInterpretation<NumericalDomainT>::isFreedMemory(
-    AD::Location location, const ICFGNode* node) const
+bool DenseAbstractInterpretation::isFreedMemory(AD::Location location,
+                                                const ICFGNode* node) const
 {
     if (denseTrace_.count(node) == 0 || location.isNull())
         return false;
     return state(node).lifetimes().mayBeFreed(location);
 }
 
-template <typename NumericalDomainT>
-void DenseAbstractInterpretation<NumericalDomainT>::updateValue(
-    const SVFVar* var, const AD::Interval& interval,
-    const AD::AddressSet& addresses, const ICFGNode* node)
+void DenseAbstractInterpretation::updateValue(const SVFVar* var,
+                                              const AD::Interval& interval,
+                                              const AD::AddressSet& addresses,
+                                              const ICFGNode* node)
 {
     if (const auto* object = SVFUtil::dyn_cast<ObjVar>(var))
         updateValue(object, interval, addresses, node);
@@ -672,10 +507,10 @@ void DenseAbstractInterpretation<NumericalDomainT>::updateValue(
         throw std::invalid_argument("unsupported SVF variable kind");
 }
 
-template <typename NumericalDomainT>
-void DenseAbstractInterpretation<NumericalDomainT>::loadValue(
-    const ValVar* pointer, AD::Interval& interval, AD::AddressSet& addresses,
-    const ICFGNode* node)
+void DenseAbstractInterpretation::loadValue(const ValVar* pointer,
+                                            AD::Interval& interval,
+                                            AD::AddressSet& addresses,
+                                            const ICFGNode* node)
 {
     if (!adapter_.contains(*pointer))
     {
@@ -707,17 +542,17 @@ void DenseAbstractInterpretation<NumericalDomainT>::loadValue(
         {
             const AD::Variable content =
                 denseState.memoryLayout().contentOf(location);
-            if (denseState.shapes().hasNumeric(content))
+            if (denseState.valueKinds().hasNumeric(content))
                 interval.joinWith(denseState.numerical().bound(content));
             addresses.joinWith(denseState.addresses().addressSet(content));
         }
     }
 }
 
-template <typename NumericalDomainT>
-void DenseAbstractInterpretation<NumericalDomainT>::storeValue(
-    const ValVar* pointer, const AD::Interval& interval,
-    const AD::AddressSet& addresses, const ICFGNode* node)
+void DenseAbstractInterpretation::storeValue(const ValVar* pointer,
+                                             const AD::Interval& interval,
+                                             const AD::AddressSet& addresses,
+                                             const ICFGNode* node)
 {
     if (!adapter_.contains(*pointer))
     {
@@ -740,7 +575,7 @@ void DenseAbstractInterpretation<NumericalDomainT>::storeValue(
             return;
         }
         AD::Interval joinedInterval =
-            denseState.shapes().hasNumeric(content)
+            denseState.valueKinds().hasNumeric(content)
                 ? denseState.numerical().bound(content)
                 : AD::Interval::bottom();
         AD::AddressSet joinedAddresses =
@@ -766,9 +601,8 @@ void DenseAbstractInterpretation<NumericalDomainT>::storeValue(
     }
 }
 
-template <typename NumericalDomainT>
-void DenseAbstractInterpretation<NumericalDomainT>::assumeBranch(
-    const IntraCFGEdge* edge, DenseState& denseState)
+void DenseAbstractInterpretation::assumeBranch(const IntraCFGEdge* edge,
+                                               DenseState& denseState)
 {
     const SVFVar* condition = edge->getCondition();
     if (!condition || condition->getInEdges().empty())
@@ -781,7 +615,6 @@ void DenseAbstractInterpretation<NumericalDomainT>::assumeBranch(
         if (!value || !adapter_.contains(*value))
             return;
         materializeValue(denseState, value, edge->getSrcNode());
-        ensureVariable(denseState, adapter_.variable(*value));
         denseState.assume(AD::equal(
             AD::LinearExpression(adapter_.variable(*value)),
             AD::LinearExpression(AD::Rational(edge->getSuccessorCondValue()))));
@@ -806,7 +639,6 @@ void DenseAbstractInterpretation<NumericalDomainT>::assumeBranch(
         if (!value || !adapter_.contains(*value))
             return false;
         materializeValue(denseState, value, edge->getSrcNode());
-        ensureVariable(denseState, adapter_.variable(*value));
         expression = AD::LinearExpression(adapter_.variable(*value));
         return true;
     };
@@ -819,11 +651,10 @@ void DenseAbstractInterpretation<NumericalDomainT>::assumeBranch(
     denseState.assume(AD::LinearConstraint(lhs - rhs, kind));
 }
 
-template <typename NumericalDomainT>
-bool DenseAbstractInterpretation<NumericalDomainT>::mergeStatesFromPredecessors(
+bool DenseAbstractInterpretation::mergeStatesFromPredecessors(
     const ICFGNode* node)
 {
-    DenseState merged = bottomState(node);
+    DenseState merged = bottomState();
     bool hasFeasiblePredecessor = false;
 
     for (const ICFGEdge* edge : orderedIncomingEdges(node))
@@ -855,10 +686,6 @@ bool DenseAbstractInterpretation<NumericalDomainT>::mergeStatesFromPredecessors(
             continue;
 
         DenseState source = state(predecessor);
-        const AD::VariableEnvironment& destinationEnvironment =
-            adapter_.environment(node->getFun());
-        if (source.numerical().environment() != destinationEnvironment)
-            source.changeEnvironment(destinationEnvironment);
         if (conditional && conditional->getCondition())
         {
             assumeBranch(conditional, source);
@@ -867,11 +694,6 @@ bool DenseAbstractInterpretation<NumericalDomainT>::mergeStatesFromPredecessors(
         if (source.isBottom())
             continue;
 
-        // Branch refinement can materialize a condition variable that is not
-        // present in the destination function's precomputed environment (for
-        // example, a value returned across a call edge).  Join over the union
-        // environment just as the other fixpoint comparison paths do.
-        alignEnvironments(merged, source);
         merged.joinWith(source);
         hasFeasiblePredecessor = true;
     }
@@ -882,8 +704,7 @@ bool DenseAbstractInterpretation<NumericalDomainT>::mergeStatesFromPredecessors(
     return true;
 }
 
-template <typename NumericalDomainT>
-void DenseAbstractInterpretation<NumericalDomainT>::recordBranchRefinement(
+void DenseAbstractInterpretation::recordBranchRefinement(
     NodeID objectId, const AD::Interval& narrowed,
     AD::AbstractDomain& abstractState, const ICFGNode*, const ICFGNode*)
 {
@@ -893,24 +714,19 @@ void DenseAbstractInterpretation<NumericalDomainT>::recordBranchRefinement(
 
     DenseState& denseState = static_cast<DenseState&>(abstractState);
     const AD::Variable content = adapter_.contentVariable(*object);
-    if (!denseState.shapes().hasNumeric(content))
+    if (!denseState.valueKinds().hasNumeric(content))
         return;
     AD::Interval refined = denseState.numerical().bound(content);
     refined.meetWith(narrowed);
     assignValue(denseState, content, refined, AD::AddressSet::bottom());
 }
 
-template <typename NumericalDomainT>
-bool DenseAbstractInterpretation<NumericalDomainT>::isBranchEdgeFeasibleAt(
+bool DenseAbstractInterpretation::isBranchEdgeFeasibleAt(
     const IntraCFGEdge* edge, const ICFGNode* predecessor)
 {
     DenseState candidate = state(predecessor);
     assumeBranch(edge, candidate);
     return !candidate.isBottom();
 }
-
-#ifndef SVF_DENSE_AE_SUPPRESS_EXPLICIT_INSTANTIATIONS
-template class DenseAbstractInterpretation<AD::BoxDomain>;
-#endif
 
 } // namespace SVF

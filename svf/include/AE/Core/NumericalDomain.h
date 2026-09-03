@@ -372,9 +372,7 @@ enum class OperationKind
     TopologicalClosure,
     Canonicalization,
     Expand,
-    Fold,
-    GeneratorImport,
-    GeneratorExport
+    Fold
 };
 
 /// APRON-style information about the most recently completed mutating
@@ -404,31 +402,6 @@ public:
     virtual void report(const Diagnostic& diagnostic) = 0;
 };
 
-struct DomainCapabilities
-{
-    bool strictInequalities = false;
-    bool integerTightening = false;
-    bool thresholdWidening = false;
-    bool narrowing = false;
-    bool parallelAssignments = false;
-    bool expressionBounds = false;
-    bool backwardAssignments = false;
-    bool topologicalClosure = false;
-    bool canonicalization = false;
-    bool expandFold = false;
-    bool operationMetadata = false;
-    bool generatorExchange = false;
-    bool ieeeTreeExpressions = false;
-    /// True only when nonlinear TreeExpression operations retain domain facts
-    /// instead of applying a sound forget/ignore fallback.
-    bool nonlinearTreeExpressions = false;
-};
-
-struct IntervalBox
-{
-    std::map<Variable, Interval> bounds;
-};
-
 /// Common interface for numerical abstract properties. The representation and
 /// lattice algorithms remain domain-specific; clients such as the SVF adapter
 /// and test oracles only need this transfer/query surface.
@@ -454,7 +427,6 @@ public:
     static std::unique_ptr<NumericalDomain> deserializeRaw(
         const RawBuffer& buffer);
 
-    virtual DomainCapabilities capabilities() const = 0;
     const OperationMetadata& lastOperation() const
     {
         return lastOperation_;
@@ -519,7 +491,6 @@ public:
     /// exceptional IEEE outcomes that cannot be represented numerically lose
     /// the affected bound to top.
     Interval bound(const TreeExpression& expression) const;
-    virtual IntervalBox toBox() const = 0;
     virtual LinearConstraintSet toConstraints() const = 0;
 
     /// Replace strict boundaries by non-strict boundaries. This is the
@@ -585,9 +556,6 @@ public:
                          const BoxSemanticConfig& config = {});
     static BoxDomain bottom(const VariableEnvironment& environment,
                             const BoxSemanticConfig& config = {});
-    static BoxDomain fromBox(const VariableEnvironment& environment,
-                             const IntervalBox& box,
-                             const BoxSemanticConfig& config = {});
     static BoxDomain fromConstraints(const VariableEnvironment& environment,
                                      const LinearConstraintSet& constraints,
                                      const BoxSemanticConfig& config = {});
@@ -602,8 +570,6 @@ public:
         return DomainKind::Box;
     }
     std::unique_ptr<AbstractDomain> clone() const override;
-    DomainCapabilities capabilities() const override;
-
     const VariableEnvironment& environment() const override
     {
         return environment_;
@@ -631,7 +597,6 @@ public:
     CheckResult entails(const LinearConstraint& constraint) const override;
     Interval bound(Variable variable) const override;
     Interval bound(const LinearExpression& expression) const override;
-    IntervalBox toBox() const override;
     LinearConstraintSet toConstraints() const override;
     void close() override;
     void canonicalize() override;

@@ -15,12 +15,9 @@
 namespace SVF
 {
 
-using AbstractDomain::LinearExpression;
 using AbstractDomain::Location;
 using AbstractDomain::MemoryLayout;
 using AbstractDomain::NumericType;
-using AbstractDomain::Rational;
-using AbstractDomain::TreeExpression;
 using AbstractDomain::Variable;
 using AbstractDomain::VariableDeclaration;
 using AbstractDomain::VariableEnvironment;
@@ -60,7 +57,7 @@ SVFIRAdapter::SVFIRAdapter(const SVFIR& svfir)
             if (value->isConstDataOrAggDataButNotNullPtr())
                 continue;
             if (!value->isPointer() &&
-                    !SVFUtil::isa<SVFIntegerType>(value->getType()))
+                !SVFUtil::isa<SVFIntegerType>(value->getType()))
                 continue;
 
             const Variable variable = nextVariable(nextVariableId);
@@ -70,7 +67,6 @@ SVFIRAdapter::SVFIRAdapter(const SVFIR& svfir)
             VariableDeclaration declaration{variable, NumericType::integer(),
                                             "svf_value_" +
                                                 std::to_string(value->getId())};
-            declarations_.emplace(variable, declaration);
             allScalarDeclarations.push_back(declaration);
             commonDeclarations.push_back(std::move(declaration));
             continue;
@@ -89,21 +85,18 @@ SVFIRAdapter::SVFIRAdapter(const SVFIR& svfir)
         VariableDeclaration declaration{
             content, NumericType::integer(),
             "svf_object_" + std::to_string(object->getId()) + "_content"};
-        declarations_.emplace(content, declaration);
         commonDeclarations.push_back(std::move(declaration));
         cells.emplace(location, content);
     }
 
     globalEnvironment_ = VariableEnvironment(commonDeclarations);
-    allScalarEnvironment_ = VariableEnvironment(allScalarDeclarations);
+    scalarEnvironment_ = VariableEnvironment(allScalarDeclarations);
     memoryLayout_ = MemoryLayout(std::move(cells));
 }
 
-const VariableEnvironment& SVFIRAdapter::scalarEnvironment(
-    const FunObjVar* function) const
+const VariableEnvironment& SVFIRAdapter::scalarEnvironment() const
 {
-    (void)function;
-    return allScalarEnvironment_;
+    return scalarEnvironment_;
 }
 
 bool SVFIRAdapter::contains(const ValVar& value) const
@@ -129,14 +122,6 @@ const ValVar* SVFIRAdapter::value(Variable variable) const
     return variable.id() < valuesByVariableId_.size()
                ? valuesByVariableId_[variable.id()]
                : nullptr;
-}
-
-const VariableDeclaration& SVFIRAdapter::declaration(Variable variable) const
-{
-    const auto iterator = declarations_.find(variable);
-    if (iterator == declarations_.end())
-        throw std::invalid_argument("variable is not tracked by this adapter");
-    return iterator->second;
 }
 
 Location SVFIRAdapter::location(const ObjVar& object) const
@@ -170,44 +155,9 @@ const ObjVar& SVFIRAdapter::object(Location location) const
     return *iterator->second;
 }
 
-const VariableEnvironment& SVFIRAdapter::environment(
-    const FunObjVar* function) const
+const VariableEnvironment& SVFIRAdapter::environment() const
 {
-    (void)function;
     return globalEnvironment_;
-}
-
-LinearExpression SVFIRAdapter::linearExpression(
-    const std::vector<std::pair<const ValVar*, Rational>>& terms,
-    Rational constant) const
-{
-    LinearExpression expression(std::move(constant));
-    for (const auto& [value, coefficient] : terms)
-    {
-        if (!value)
-            throw std::invalid_argument("affine term has a null ValVar");
-        if (const auto* integer = SVFUtil::dyn_cast<ConstIntValVar>(value))
-        {
-            expression.setConstant(expression.constant() +
-                                   coefficient *
-                                       Rational(integer->getSExtValue()));
-            continue;
-        }
-        const Variable symbol = variable(*value);
-        expression.setCoefficient(symbol,
-                                  expression.coefficient(symbol) + coefficient);
-    }
-    return expression;
-}
-
-TreeExpression SVFIRAdapter::treeExpression(const ValVar& value) const
-{
-    if (const auto* integer = SVFUtil::dyn_cast<ConstIntValVar>(&value))
-        return TreeExpression::constant(Rational(integer->getSExtValue()),
-                                        NumericType::integer());
-    const Variable symbol = variable(value);
-    return TreeExpression::variable(
-        symbol, environment(value.getFunction()).typeOf(symbol));
 }
 
 } // namespace SVF

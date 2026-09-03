@@ -11,7 +11,6 @@
 #include <iomanip>
 #include <iostream>
 #include <optional>
-#include <type_traits>
 
 namespace SVF
 {
@@ -51,91 +50,49 @@ private:
 
 } // namespace
 
-template <typename NumericalDomainT>
-NativeSemiSparseAbstractInterpretation<
-    NumericalDomainT>::NativeSemiSparseAbstractInterpretation()
+NativeSemiSparseAbstractInterpretation::NativeSemiSparseAbstractInterpretation()
 {
     this->preAnalysis->initCycleValVars();
 }
 
-template <typename NumericalDomainT>
-typename NativeSemiSparseAbstractInterpretation<NumericalDomainT>::DenseState
-NativeSemiSparseAbstractInterpretation<NumericalDomainT>::flowState(
-    const FunObjVar* function, bool bottom) const
+NativeSemiSparseAbstractInterpretation::DenseState
+NativeSemiSparseAbstractInterpretation::flowState(bool bottom) const
 {
-    const AD::VariableEnvironment& environment =
-        this->adapter_.environment(function);
-    return DenseState(bottom ? this->makeNumericalBottom(environment)
-                             : this->makeNumericalTop(environment),
+    const AD::VariableEnvironment& environment = this->adapter_.environment();
+    return DenseState(bottom ? AD::BoxDomain::bottom(environment)
+                             : AD::BoxDomain::top(environment),
                       this->adapter_.memoryLayout());
 }
 
-template <typename NumericalDomainT>
-typename NativeSemiSparseAbstractInterpretation<NumericalDomainT>::DenseState&
-NativeSemiSparseAbstractInterpretation<NumericalDomainT>::scalarState(
-    const FunObjVar* function)
+NativeSemiSparseAbstractInterpretation::DenseState&
+NativeSemiSparseAbstractInterpretation::scalarState()
 {
-    if constexpr (std::is_same_v<NumericalDomainT, AD::BoxDomain>)
-        function = nullptr;
-    auto iterator = scalarStates_.find(function);
-    if (iterator == scalarStates_.end())
-    {
-        iterator =
-            scalarStates_
-                .emplace(
-                    function,
-                    DenseState(
-                        this->makeNumericalTop(
-                            std::is_same_v<NumericalDomainT, AD::BoxDomain>
-                                ? this->adapter_.allScalarEnvironment()
-                                : this->adapter_.scalarEnvironment(function)),
-                        this->adapter_.memoryLayout()))
-                .first;
-    }
-    return iterator->second;
+    if (!scalarState_)
+        scalarState_.emplace(
+            AD::BoxDomain::top(this->adapter_.scalarEnvironment()),
+            this->adapter_.memoryLayout());
+    return *scalarState_;
 }
 
-template <typename NumericalDomainT>
-const typename NativeSemiSparseAbstractInterpretation<
-    NumericalDomainT>::DenseState*
-NativeSemiSparseAbstractInterpretation<NumericalDomainT>::findScalarState(
-    const FunObjVar* function) const
+const NativeSemiSparseAbstractInterpretation::DenseState*
+NativeSemiSparseAbstractInterpretation::findScalarState() const
 {
-    if constexpr (std::is_same_v<NumericalDomainT, AD::BoxDomain>)
-        function = nullptr;
-    const auto iterator = scalarStates_.find(function);
-    return iterator == scalarStates_.end() ? nullptr : &iterator->second;
+    return scalarState_ ? &*scalarState_ : nullptr;
 }
 
-template <typename NumericalDomainT>
-const AD::AbstractDomain* NativeSemiSparseAbstractInterpretation<
-    NumericalDomainT>::getScalarAbstractState(const FunObjVar* function) const
+const AD::AbstractDomain* NativeSemiSparseAbstractInterpretation::
+    getScalarAbstractState() const
 {
-    return findScalarState(function);
+    return findScalarState();
 }
 
-template <typename NumericalDomainT>
-const AD::AbstractDomain* NativeSemiSparseAbstractInterpretation<
-    NumericalDomainT>::getScalarAbstractState(const ValVar* value) const
-{
-    if (!value)
-        return nullptr;
-    const auto iterator = scalarCheckpoints_.find(value);
-    return iterator == scalarCheckpoints_.end()
-               ? getScalarAbstractState(value->getFunction())
-               : &iterator->second;
-}
-
-template <typename NumericalDomainT>
-void NativeSemiSparseAbstractInterpretation<
-    NumericalDomainT>::handleGlobalNode()
+void NativeSemiSparseAbstractInterpretation::handleGlobalNode()
 {
     Base::handleGlobalNode();
     finalizeAbstractState(this->icfg->getGlobalICFGNode());
 }
 
-template <typename NumericalDomainT>
-void NativeSemiSparseAbstractInterpretation<NumericalDomainT>::runOnModule()
+void NativeSemiSparseAbstractInterpretation::runOnModule()
 {
     {
         PhaseTimer timer(sparseProfile_.total, Options::AESparseProfile());
@@ -145,16 +102,12 @@ void NativeSemiSparseAbstractInterpretation<NumericalDomainT>::runOnModule()
         reportSparseProfile();
 }
 
-template <typename NumericalDomainT>
-const char* NativeSemiSparseAbstractInterpretation<
-    NumericalDomainT>::sparseProfileMode() const
+const char* NativeSemiSparseAbstractInterpretation::sparseProfileMode() const
 {
     return "semi";
 }
 
-template <typename NumericalDomainT>
-void NativeSemiSparseAbstractInterpretation<
-    NumericalDomainT>::reportSparseProfile() const
+void NativeSemiSparseAbstractInterpretation::reportSparseProfile() const
 {
     const std::ios::fmtflags previousFlags = std::cout.flags();
     const std::streamsize previousPrecision = std::cout.precision();
@@ -174,11 +127,10 @@ void NativeSemiSparseAbstractInterpretation<
     report("total", sparseProfile_.total);
     report("state-copy", sparseProfile_.stateCopy);
     report("state-merge", sparseProfile_.stateMerge);
-    report("environment-alignment", sparseProfile_.environmentAlignment);
     report("state-join", sparseProfile_.stateJoin);
     report("state-equivalence", sparseProfile_.stateEquivalence);
     report("scalar-materialization", sparseProfile_.scalarMaterialization);
-    report("scalar-checkpoint", sparseProfile_.scalarCheckpoint);
+    report("scalar-refinement", sparseProfile_.scalarRefinement);
     report("state-filtering", sparseProfile_.stateFiltering);
     report("cycle", sparseProfile_.cycle);
     report("svfg-build", sparseProfile_.svfgBuild);
@@ -189,23 +141,22 @@ void NativeSemiSparseAbstractInterpretation<
     std::cout.precision(previousPrecision);
 }
 
-template <typename NumericalDomainT>
-AD::Interval NativeSemiSparseAbstractInterpretation<
-    NumericalDomainT>::getInterval(const ValVar* value, const ICFGNode* node)
+AD::Interval NativeSemiSparseAbstractInterpretation::getInterval(
+    const ValVar* value, const ICFGNode* node)
 {
     if (const auto* integer = SVFUtil::dyn_cast<ConstIntValVar>(value))
         return AD::Interval::singleton(AD::Rational(integer->getSExtValue()));
     if (!value || !this->adapter_.contains(*value))
         return AD::Interval::top();
 
-    DenseState& scalars = scalarState(value->getFunction());
+    DenseState& scalars = scalarState();
     const AD::Variable variable = this->adapter_.variable(*value);
-    if (!scalars.shapes().isDefined(variable))
+    if (!scalars.valueKinds().isDefined(variable))
         this->assignValue(scalars, variable, AD::Interval::top(),
                           AD::AddressSet::bottom());
     if (value->isPointer())
         return AD::Interval::bottom();
-    AD::Interval result = scalars.shapes().hasNumeric(variable)
+    AD::Interval result = scalars.valueKinds().hasNumeric(variable)
                               ? scalars.numerical().bound(variable)
                               : AD::Interval::bottom();
     // Conditional-edge refinement is intentionally local to the ICFG state.
@@ -230,23 +181,21 @@ AD::Interval NativeSemiSparseAbstractInterpretation<
     return result;
 }
 
-template <typename NumericalDomainT>
-AD::AddressSet NativeSemiSparseAbstractInterpretation<
-    NumericalDomainT>::getAddressSet(const ValVar* value, const ICFGNode* node)
+AD::AddressSet NativeSemiSparseAbstractInterpretation::getAddressSet(
+    const ValVar* value, const ICFGNode* node)
 {
     (void)node;
     if (!value || !this->adapter_.contains(*value))
         return AD::AddressSet::top();
-    DenseState& scalars = scalarState(value->getFunction());
+    DenseState& scalars = scalarState();
     const AD::Variable variable = this->adapter_.variable(*value);
-    if (!scalars.shapes().isDefined(variable))
+    if (!scalars.valueKinds().isDefined(variable))
         this->assignValue(scalars, variable, AD::Interval::top(),
                           AD::AddressSet::bottom());
     return scalars.addresses().addressSet(variable);
 }
 
-template <typename NumericalDomainT>
-bool NativeSemiSparseAbstractInterpretation<NumericalDomainT>::hasAbsValue(
+bool NativeSemiSparseAbstractInterpretation::hasAbsValue(
     const ValVar* value, const ICFGNode* node) const
 {
     (void)node;
@@ -254,92 +203,68 @@ bool NativeSemiSparseAbstractInterpretation<NumericalDomainT>::hasAbsValue(
         return true;
     if (!value || !this->adapter_.contains(*value))
         return false;
-    const DenseState* scalars = findScalarState(value->getFunction());
+    const DenseState* scalars = findScalarState();
     return scalars &&
-           scalars->shapes().isDefined(this->adapter_.variable(*value));
+           scalars->valueKinds().isDefined(this->adapter_.variable(*value));
 }
 
-template <typename NumericalDomainT>
-void NativeSemiSparseAbstractInterpretation<NumericalDomainT>::updateValue(
+void NativeSemiSparseAbstractInterpretation::updateValue(
     const ValVar* value, const AD::Interval& interval,
     const AD::AddressSet& addresses, const ICFGNode* node)
 {
     (void)node;
     if (value && this->adapter_.contains(*value))
-        this->assignValue(scalarState(value->getFunction()),
-                          this->adapter_.variable(*value), interval, addresses);
+        this->assignValue(scalarState(), this->adapter_.variable(*value),
+                          interval, addresses);
 }
 
-template <typename NumericalDomainT>
-void NativeSemiSparseAbstractInterpretation<
-    NumericalDomainT>::copyAbstractState(const ICFGNode* source,
-                                         const ICFGNode* destination)
+void NativeSemiSparseAbstractInterpretation::copyAbstractState(
+    const ICFGNode* source, const ICFGNode* destination)
 {
     PhaseTimer timer(sparseProfile_.stateCopy, Options::AESparseProfile());
-    DenseState copy = this->state(source);
-    const AD::VariableEnvironment& destinationEnvironment =
-        this->adapter_.environment(destination->getFun());
-    if (copy.numerical().environment() != destinationEnvironment)
-        copy.changeEnvironment(destinationEnvironment);
-    this->denseTrace_.insert_or_assign(destination, std::move(copy));
+    this->denseTrace_.insert_or_assign(destination, this->state(source));
 }
 
-template <typename NumericalDomainT>
-void NativeSemiSparseAbstractInterpretation<
-    NumericalDomainT>::resetAbstractState(const ICFGNode* node)
+void NativeSemiSparseAbstractInterpretation::resetAbstractState(
+    const ICFGNode* node)
 {
-    this->denseTrace_.insert_or_assign(node, flowState(node->getFun()));
+    this->denseTrace_.insert_or_assign(node, flowState());
 }
 
-template <typename NumericalDomainT>
-void NativeSemiSparseAbstractInterpretation<
-    NumericalDomainT>::finalizeAbstractState(const ICFGNode* node)
+void NativeSemiSparseAbstractInterpretation::finalizeAbstractState(
+    const ICFGNode* node)
 {
     PhaseTimer timer(sparseProfile_.stateFiltering, Options::AESparseProfile());
     DenseState& denseState = this->ensureState(node);
     forgetActiveScalarValues(denseState);
 }
 
-template <typename NumericalDomainT>
-bool NativeSemiSparseAbstractInterpretation<NumericalDomainT>::
-    isAbstractStateEquivalent(const ICFGNode* node,
-                              const AD::AbstractDomain& snapshot) const
+bool NativeSemiSparseAbstractInterpretation::isAbstractStateEquivalent(
+    const ICFGNode* node, const AD::AbstractDomain& snapshot) const
 {
     PhaseTimer timer(sparseProfile_.stateEquivalence,
                      Options::AESparseProfile());
     return Base::isAbstractStateEquivalent(node, snapshot);
 }
 
-template <typename NumericalDomainT>
-void NativeSemiSparseAbstractInterpretation<
-    NumericalDomainT>::forgetActiveScalarValues(DenseState& denseState) const
+void NativeSemiSparseAbstractInterpretation::forgetActiveScalarValues(
+    DenseState& denseState) const
 {
-    if constexpr (std::is_same_v<NumericalDomainT, AD::BoxDomain>)
+    const std::vector<AD::Variable> defined =
+        denseState.valueKinds().definedVariables(
+            denseState.numerical().environment());
+    for (AD::Variable variable : defined)
     {
-        const std::vector<AD::Variable> defined =
-            denseState.shapes().definedVariables(
-                denseState.numerical().environment());
-        for (AD::Variable variable : defined)
-        {
-            if (this->adapter_.value(variable))
-                this->forgetValue(denseState, variable);
-        }
-    }
-    else
-    {
-        // Box checkpoints may constrain a variable without exposing
-        // it through the definedness facet, so relational domains retain the
-        // conservative full-environment purge.
-        this->forgetScalarValues(denseState);
+        if (this->adapter_.value(variable))
+            this->forgetValue(denseState, variable);
     }
 }
 
-template <typename NumericalDomainT>
-void NativeSemiSparseAbstractInterpretation<
-    NumericalDomainT>::forgetMemoryValues(DenseState& denseState) const
+void NativeSemiSparseAbstractInterpretation::forgetMemoryValues(
+    DenseState& denseState) const
 {
     const std::vector<AD::Variable> defined =
-        denseState.shapes().definedVariables(
+        denseState.valueKinds().definedVariables(
             denseState.numerical().environment());
     for (AD::Variable variable : defined)
     {
@@ -348,51 +273,27 @@ void NativeSemiSparseAbstractInterpretation<
     }
 }
 
-template <typename NumericalDomainT>
-void NativeSemiSparseAbstractInterpretation<
-    NumericalDomainT>::applyScalarCheckpoint(DenseState& denseState,
-                                             const DenseState& checkpoint)
+void NativeSemiSparseAbstractInterpretation::applyScalarRefinement(
+    DenseState& denseState, const DenseState& checkpoint)
 {
-    PhaseTimer timer(sparseProfile_.scalarCheckpoint,
+    PhaseTimer timer(sparseProfile_.scalarRefinement,
                      Options::AESparseProfile());
-    if constexpr (std::is_same_v<NumericalDomainT, AD::BoxDomain>)
+    const std::vector<AD::Variable> defined =
+        checkpoint.valueKinds().definedVariables(
+            checkpoint.numerical().environment());
+    for (AD::Variable variable : defined)
     {
-        const std::vector<AD::Variable> defined =
-            checkpoint.shapes().definedVariables(
-                checkpoint.numerical().environment());
-        for (AD::Variable variable : defined)
-        {
-            if (!this->adapter_.value(variable) ||
-                !checkpoint.shapes().hasNumeric(variable))
-                continue;
-            if (!denseState.numerical().environment().contains(variable))
-                this->ensureVariable(denseState, variable);
-            this->constrainInterval(denseState, variable,
-                                    checkpoint.numerical().bound(variable));
-            denseState.addresses().assign(variable, AD::AddressSet::bottom());
-            denseState.shapes().assign(variable, true);
-        }
-        return;
+        if (!this->adapter_.value(variable) ||
+            !checkpoint.valueKinds().hasNumeric(variable))
+            continue;
+        this->constrainInterval(denseState, variable,
+                                checkpoint.numerical().bound(variable));
+        denseState.addresses().assign(variable, AD::AddressSet::bottom());
+        denseState.valueKinds().assign(variable, true);
     }
-
-    if (checkpoint.isTop())
-        return;
-    DenseState scalar = checkpoint;
-    forgetMemoryValues(scalar);
-    if (denseState.numerical().environment() !=
-        scalar.numerical().environment())
-    {
-        const AD::VariableEnvironment environment =
-            denseState.numerical().environment().merge(
-                scalar.numerical().environment());
-        denseState.changeEnvironment(environment);
-        scalar.changeEnvironment(environment);
-    }
-    denseState.numerical().meetWith(scalar.numerical());
 }
 
-template <typename NumericalDomainT>
-void NativeSemiSparseAbstractInterpretation<NumericalDomainT>::materializeValue(
+void NativeSemiSparseAbstractInterpretation::materializeValue(
     DenseState& denseState, const ValVar* value, const ICFGNode* node)
 {
     PhaseTimer timer(sparseProfile_.scalarMaterialization,
@@ -400,37 +301,20 @@ void NativeSemiSparseAbstractInterpretation<NumericalDomainT>::materializeValue(
     if (!value || !this->adapter_.contains(*value))
         return;
     const AD::Variable variable = this->adapter_.variable(*value);
-    if (denseState.shapes().isDefined(variable))
+    if (denseState.valueKinds().isDefined(variable))
         return;
     auto materializeFacets = [&]() {
         denseState.addresses().assign(variable, getAddressSet(value, node));
-        denseState.shapes().assign(variable,
+        denseState.valueKinds().assign(variable,
                                    !getInterval(value, node).isBottom());
     };
-    if constexpr (!std::is_same_v<NumericalDomainT, AD::BoxDomain>)
-    {
-        const auto checkpoint = scalarCheckpoints_.find(value);
-        if (checkpoint != scalarCheckpoints_.end())
-        {
-            applyScalarCheckpoint(denseState, checkpoint->second);
-            materializeFacets();
-            return;
-        }
-    }
     // Branch-refinement states carry numerical constraints without marking
     // the corresponding scalar as a persistent product value. Preserve that
-    // latent constraint and materialize only its address/shape facets.
-    if (denseState.numerical().environment().contains(variable))
-    {
-        materializeFacets();
-        return;
-    }
-    this->assignValue(denseState, variable, getInterval(value, node),
-                      getAddressSet(value, node));
+    // latent constraint and materialize only its address/value-kind facets.
+    materializeFacets();
 }
 
-template <typename NumericalDomainT>
-void NativeSemiSparseAbstractInterpretation<NumericalDomainT>::loadValue(
+void NativeSemiSparseAbstractInterpretation::loadValue(
     const ValVar* pointer, AD::Interval& interval, AD::AddressSet& addresses,
     const ICFGNode* node)
 {
@@ -440,8 +324,7 @@ void NativeSemiSparseAbstractInterpretation<NumericalDomainT>::loadValue(
                           this->adapter_.variable(*pointer));
 }
 
-template <typename NumericalDomainT>
-void NativeSemiSparseAbstractInterpretation<NumericalDomainT>::storeValue(
+void NativeSemiSparseAbstractInterpretation::storeValue(
     const ValVar* pointer, const AD::Interval& interval,
     const AD::AddressSet& addresses, const ICFGNode* node)
 {
@@ -451,27 +334,23 @@ void NativeSemiSparseAbstractInterpretation<NumericalDomainT>::storeValue(
                           this->adapter_.variable(*pointer));
 }
 
-template <typename NumericalDomainT>
-void NativeSemiSparseAbstractInterpretation<
-    NumericalDomainT>::filterPropagatedState(DenseState& denseState) const
+void NativeSemiSparseAbstractInterpretation::filterPropagatedState(
+    DenseState& denseState) const
 {
     (void)denseState;
 }
 
-template <typename NumericalDomainT>
-void NativeSemiSparseAbstractInterpretation<
-    NumericalDomainT>::collectMemoryBranchRefinement(const IntraCFGEdge* edge,
-                                                     DenseState& state)
+void NativeSemiSparseAbstractInterpretation::collectMemoryBranchRefinement(
+    const IntraCFGEdge* edge, DenseState& state)
 {
     this->collectBranchRefinement(edge, state);
 }
 
-template <typename NumericalDomainT>
-bool NativeSemiSparseAbstractInterpretation<
-    NumericalDomainT>::mergeStatesFromPredecessors(const ICFGNode* node)
+bool NativeSemiSparseAbstractInterpretation::mergeStatesFromPredecessors(
+    const ICFGNode* node)
 {
     PhaseTimer timer(sparseProfile_.stateMerge, Options::AESparseProfile());
-    DenseState merged = flowState(node->getFun(), true);
+    DenseState merged = flowState(true);
     std::optional<DenseState> mergedRefinement;
     bool refinementIsTop = false;
     bool hasFeasiblePredecessor = false;
@@ -510,15 +389,7 @@ bool NativeSemiSparseAbstractInterpretation<
         {
             refinement = refinementIterator != refinementTrace_.end()
                              ? refinementIterator->second
-                             : this->topState(node);
-            const AD::VariableEnvironment& destinationEnvironment =
-                this->adapter_.environment(node->getFun());
-            if (refinement->numerical().environment() != destinationEnvironment)
-            {
-                PhaseTimer environmentTimer(sparseProfile_.environmentAlignment,
-                                            Options::AESparseProfile());
-                refinement->changeEnvironment(destinationEnvironment);
-            }
+                             : this->topState();
             if (hasConditional)
                 this->assumeBranch(conditional, *refinement);
             if (refinement->isBottom())
@@ -527,14 +398,6 @@ bool NativeSemiSparseAbstractInterpretation<
 
         DenseState source = this->state(predecessor);
         filterPropagatedState(source);
-        const AD::VariableEnvironment& destinationEnvironment =
-            this->adapter_.environment(node->getFun());
-        if (source.numerical().environment() != destinationEnvironment)
-        {
-            PhaseTimer environmentTimer(sparseProfile_.environmentAlignment,
-                                        Options::AESparseProfile());
-            source.changeEnvironment(destinationEnvironment);
-        }
         if (hasConditional)
             collectMemoryBranchRefinement(conditional, source);
 
@@ -564,7 +427,7 @@ bool NativeSemiSparseAbstractInterpretation<
     if (mergedRefinement && !refinementIsTop && !mergedRefinement->isTop())
     {
         refinementTrace_.insert_or_assign(node, *mergedRefinement);
-        applyScalarCheckpoint(merged, *mergedRefinement);
+        applyScalarRefinement(merged, *mergedRefinement);
     }
     else
     {
@@ -574,9 +437,8 @@ bool NativeSemiSparseAbstractInterpretation<
     return true;
 }
 
-template <typename NumericalDomainT>
-std::unique_ptr<AD::AbstractDomain> NativeSemiSparseAbstractInterpretation<
-    NumericalDomainT>::cloneCycleHeadState(const ICFGCycleWTO* cycle)
+std::unique_ptr<AD::AbstractDomain> NativeSemiSparseAbstractInterpretation::
+    cloneCycleHeadState(const ICFGCycleWTO* cycle)
 {
     PhaseTimer timer(sparseProfile_.cycle, Options::AESparseProfile());
     const ICFGNode* head = cycle->head()->getICFGNode();
@@ -592,20 +454,18 @@ std::unique_ptr<AD::AbstractDomain> NativeSemiSparseAbstractInterpretation<
     return std::make_unique<DenseState>(std::move(snapshot));
 }
 
-template <typename NumericalDomainT>
-void NativeSemiSparseAbstractInterpretation<
-    NumericalDomainT>::scatterCycleValues(const ICFGCycleWTO* cycle,
-                                          const DenseState& cycleState)
+void NativeSemiSparseAbstractInterpretation::scatterCycleValues(
+    const ICFGCycleWTO* cycle, const DenseState& cycleState)
 {
     for (const ValVar* value : this->preAnalysis->getCycleValVars(cycle))
     {
         if (!value || !this->adapter_.contains(*value))
             continue;
         const AD::Variable variable = this->adapter_.variable(*value);
-        if (!cycleState.shapes().isDefined(variable))
+        if (!cycleState.valueKinds().isDefined(variable))
             continue;
         updateValue(value,
-                    cycleState.shapes().hasNumeric(variable)
+                    cycleState.valueKinds().hasNumeric(variable)
                         ? cycleState.numerical().bound(variable)
                         : AD::Interval::bottom(),
                     cycleState.addresses().addressSet(variable),
@@ -613,8 +473,7 @@ void NativeSemiSparseAbstractInterpretation<
     }
 }
 
-template <typename NumericalDomainT>
-bool NativeSemiSparseAbstractInterpretation<NumericalDomainT>::widenCycleState(
+bool NativeSemiSparseAbstractInterpretation::widenCycleState(
     const AD::AbstractDomain& previous, const AD::AbstractDomain& current,
     const ICFGCycleWTO* cycle)
 {
@@ -625,8 +484,7 @@ bool NativeSemiSparseAbstractInterpretation<NumericalDomainT>::widenCycleState(
     return fixpoint;
 }
 
-template <typename NumericalDomainT>
-bool NativeSemiSparseAbstractInterpretation<NumericalDomainT>::narrowCycleState(
+bool NativeSemiSparseAbstractInterpretation::narrowCycleState(
     const AD::AbstractDomain& previous, const AD::AbstractDomain& current,
     const ICFGCycleWTO* cycle)
 {
@@ -656,9 +514,7 @@ bool hasRedefinitionOf(const ICFGNode* node, const IndirectSVFGEdge* edge)
 
 } // namespace
 
-template <typename NumericalDomainT>
-NativeFullSparseAbstractInterpretation<
-    NumericalDomainT>::NativeFullSparseAbstractInterpretation()
+NativeFullSparseAbstractInterpretation::NativeFullSparseAbstractInterpretation()
 {
     PhaseTimer timer(this->sparseProfile_.svfgBuild,
                      Options::AESparseProfile());
@@ -666,26 +522,22 @@ NativeFullSparseAbstractInterpretation<
     svfgBuilder_->buildFullSVFG(this->preAnalysis->getPointerAnalysis());
 }
 
-template <typename NumericalDomainT>
-NativeFullSparseAbstractInterpretation<
-    NumericalDomainT>::~NativeFullSparseAbstractInterpretation() = default;
+NativeFullSparseAbstractInterpretation::
+    ~NativeFullSparseAbstractInterpretation() = default;
 
-template <typename NumericalDomainT>
-const char* NativeFullSparseAbstractInterpretation<
-    NumericalDomainT>::sparseProfileMode() const
+const char* NativeFullSparseAbstractInterpretation::sparseProfileMode() const
 {
     return "full";
 }
 
-template <typename NumericalDomainT>
-void NativeFullSparseAbstractInterpretation<
-    NumericalDomainT>::filterPropagatedState(DenseState& denseState) const
+void NativeFullSparseAbstractInterpretation::filterPropagatedState(
+    DenseState& denseState) const
 {
     PhaseTimer timer(this->sparseProfile_.stateFiltering,
                      Options::AESparseProfile());
     this->forgetActiveScalarValues(denseState);
     const std::vector<AD::Variable> defined =
-        denseState.shapes().definedVariables(
+        denseState.valueKinds().definedVariables(
             denseState.numerical().environment());
     for (AD::Variable variable : defined)
     {
@@ -695,21 +547,15 @@ void NativeFullSparseAbstractInterpretation<
     }
 }
 
-template <typename NumericalDomainT>
-void NativeFullSparseAbstractInterpretation<
-    NumericalDomainT>::collectMemoryBranchRefinement(const IntraCFGEdge* edge,
-                                                     DenseState& state)
+void NativeFullSparseAbstractInterpretation::collectMemoryBranchRefinement(
+    const IntraCFGEdge* edge, DenseState& state)
 {
     this->collectBranchRefinement(edge, state);
 }
 
-template <typename NumericalDomainT>
-void NativeFullSparseAbstractInterpretation<
-    NumericalDomainT>::recordBranchRefinement(NodeID objectId,
-                                              const AD::Interval& narrowed,
-                                              AD::AbstractDomain&,
-                                              const ICFGNode*,
-                                              const ICFGNode* successor)
+void NativeFullSparseAbstractInterpretation::recordBranchRefinement(
+    NodeID objectId, const AD::Interval& narrowed, AD::AbstractDomain&,
+    const ICFGNode*, const ICFGNode* successor)
 {
     if (narrowed.isBottom())
         return;
@@ -721,8 +567,7 @@ void NativeFullSparseAbstractInterpretation<
         iterator->second.joinWith(narrowed);
 }
 
-template <typename NumericalDomainT>
-void NativeFullSparseAbstractInterpretation<NumericalDomainT>::storeValue(
+void NativeFullSparseAbstractInterpretation::storeValue(
     const ValVar* pointer, const AD::Interval& interval,
     const AD::AddressSet& valueAddresses, const ICFGNode* node)
 {
@@ -737,9 +582,8 @@ void NativeFullSparseAbstractInterpretation<NumericalDomainT>::storeValue(
     Base::storeValue(pointer, interval, valueAddresses, node);
 }
 
-template <typename NumericalDomainT>
-bool NativeFullSparseAbstractInterpretation<
-    NumericalDomainT>::mergeStatesFromPredecessors(const ICFGNode* node)
+bool NativeFullSparseAbstractInterpretation::mergeStatesFromPredecessors(
+    const ICFGNode* node)
 {
     memoryRefinementTrace_.erase(node);
     if (!Base::mergeStatesFromPredecessors(node))
@@ -755,22 +599,21 @@ bool NativeFullSparseAbstractInterpretation<
     return true;
 }
 
-template <typename NumericalDomainT>
-void NativeFullSparseAbstractInterpretation<
-    NumericalDomainT>::pullObjectValueFlows(const ICFGNode* node)
+void NativeFullSparseAbstractInterpretation::pullObjectValueFlows(
+    const ICFGNode* node)
 {
     PhaseTimer timer(this->sparseProfile_.objectPull,
                      Options::AESparseProfile());
     NodeBS denseLocalObjects;
     const DenseState& destination = this->state(node);
     const std::vector<AD::Variable> defined =
-        destination.shapes().definedVariables(
+        destination.valueKinds().definedVariables(
             destination.numerical().environment());
     for (AD::Variable variable : defined)
     {
         const ObjVar* object = this->adapter_.contentObject(variable);
         if (object && SVFUtil::isa<GepObjVar>(object) &&
-            destination.shapes().isDefined(variable))
+            destination.valueKinds().isDefined(variable))
             denseLocalObjects.set(object->getId());
     }
 
@@ -829,19 +672,15 @@ void NativeFullSparseAbstractInterpretation<
     }
 }
 
-template <typename NumericalDomainT>
-bool NativeFullSparseAbstractInterpretation<
-    NumericalDomainT>::isIntraEdgeBranchFeasible(const IntraCFGEdge* edge,
-                                                 const ICFGNode* source)
+bool NativeFullSparseAbstractInterpretation::isIntraEdgeBranchFeasible(
+    const IntraCFGEdge* edge, const ICFGNode* source)
 {
     return !edge->getCondition() || !this->hasAbsState(source) ||
            this->isBranchEdgeFeasibleAt(edge, source);
 }
 
-template <typename NumericalDomainT>
-bool NativeFullSparseAbstractInterpretation<
-    NumericalDomainT>::isIndirectSVFGEdgeFeasible(const IndirectSVFGEdge* edge,
-                                                  const VFGNode* destination)
+bool NativeFullSparseAbstractInterpretation::isIndirectSVFGEdgeFeasible(
+    const IndirectSVFGEdge* edge, const VFGNode* destination)
 {
     PhaseTimer timer(this->sparseProfile_.pathFeasibility,
                      Options::AESparseProfile());
@@ -895,9 +734,8 @@ bool NativeFullSparseAbstractInterpretation<
     return false;
 }
 
-template <typename NumericalDomainT>
-void NativeFullSparseAbstractInterpretation<
-    NumericalDomainT>::propagateAndApplyMemoryRefinement(const ICFGNode* node)
+void NativeFullSparseAbstractInterpretation::propagateAndApplyMemoryRefinement(
+    const ICFGNode* node)
 {
     PhaseTimer timer(this->sparseProfile_.memoryRefinement,
                      Options::AESparseProfile());
@@ -960,12 +798,9 @@ void NativeFullSparseAbstractInterpretation<
         if (!object || !this->adapter_.contains(*object))
             continue;
         const AD::Variable content = this->adapter_.contentVariable(*object);
-        if (denseState.shapes().isDefined(content))
+        if (denseState.valueKinds().isDefined(content))
             this->constrainInterval(denseState, content, constraint);
     }
 }
-
-template class NativeSemiSparseAbstractInterpretation<AD::BoxDomain>;
-template class NativeFullSparseAbstractInterpretation<AD::BoxDomain>;
 
 } // namespace SVF

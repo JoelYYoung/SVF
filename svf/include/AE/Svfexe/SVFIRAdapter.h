@@ -28,44 +28,28 @@ public:
 
     AbstractDomain::Variable variable(const ValVar& value) const;
     const ValVar* value(AbstractDomain::Variable variable) const;
-    const AbstractDomain::VariableDeclaration& declaration(
-        AbstractDomain::Variable variable) const;
     AbstractDomain::Location location(const ObjVar& object) const;
     AbstractDomain::Variable contentVariable(const ObjVar& object) const;
     const ObjVar* contentObject(AbstractDomain::Variable variable) const;
     const ObjVar& object(AbstractDomain::Location location) const;
 
-    const AbstractDomain::VariableEnvironment& environment(
-        const FunObjVar* function = nullptr) const;
-    const AbstractDomain::VariableEnvironment& scalarEnvironment(
-        const FunObjVar* function = nullptr) const;
-    const AbstractDomain::VariableEnvironment& allScalarEnvironment() const
-    {
-        return allScalarEnvironment_;
-    }
+    const AbstractDomain::VariableEnvironment& environment() const;
+    const AbstractDomain::VariableEnvironment& scalarEnvironment() const;
 
     const AbstractDomain::MemoryLayout& memoryLayout() const
     {
         return memoryLayout_;
     }
 
-    AbstractDomain::LinearExpression linearExpression(
-        const std::vector<std::pair<const ValVar*, AbstractDomain::Rational>>&
-            terms,
-        AbstractDomain::Rational constant = {}) const;
-    AbstractDomain::TreeExpression treeExpression(const ValVar& value) const;
-
 private:
     std::map<const ValVar*, AbstractDomain::Variable> variables_;
     std::vector<const ValVar*> valuesByVariableId_;
-    std::map<AbstractDomain::Variable, AbstractDomain::VariableDeclaration>
-        declarations_;
     std::map<const ObjVar*, AbstractDomain::Location> locations_;
     std::map<AbstractDomain::Location, const ObjVar*> objects_;
     std::map<const ObjVar*, AbstractDomain::Variable> contentVariables_;
     std::vector<const ObjVar*> contentObjectsByVariableId_;
     AbstractDomain::VariableEnvironment globalEnvironment_;
-    AbstractDomain::VariableEnvironment allScalarEnvironment_;
+    AbstractDomain::VariableEnvironment scalarEnvironment_;
     AbstractDomain::MemoryLayout memoryLayout_;
 };
 

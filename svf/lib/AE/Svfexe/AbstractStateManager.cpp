@@ -35,14 +35,7 @@ AD::Interval finiteInterval(s64_t lower, s64_t upper)
 
 } // namespace
 
-const AD::AbstractDomain* AbstractInterpretation::getScalarAbstractState(
-    const FunObjVar*) const
-{
-    return nullptr;
-}
-
-const AD::AbstractDomain* AbstractInterpretation::getScalarAbstractState(
-    const ValVar*) const
+const AD::AbstractDomain* AbstractInterpretation::getScalarAbstractState() const
 {
     return nullptr;
 }
@@ -260,24 +253,6 @@ void AbstractInterpretation::storeValue(const ValVar* pointer,
         return;
     for (AD::Location location : pointees)
         updateMemoryValue(location, interval, addresses, node);
-}
-
-const SVFType* AbstractInterpretation::getPointeeElement(const ObjVar* variable,
-                                                         const ICFGNode* node)
-{
-    const AD::AddressSet pointees = getAddressSet(variable, node);
-    if (pointees.isTop())
-        return nullptr;
-    for (AD::Location location : pointees)
-    {
-        const ObjVar* object = objectAt(location);
-        if (object)
-        {
-            if (const BaseObjVar* base = svfir->getBaseObject(object->getId()))
-                return base->getType();
-        }
-    }
-    return nullptr;
 }
 
 u32_t AbstractInterpretation::getAllocaInstByteSize(const AddrStmt* address)
