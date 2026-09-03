@@ -13,11 +13,10 @@ if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
   set(ABSTRACT_DOMAIN_SOURCE_ROOT "${SVF_REPOSITORY_ROOT}/svf")
   add_library(
     AbstractDomainCore
-    ${ABSTRACT_DOMAIN_SOURCE_ROOT}/lib/AE/Core/AbstractState.cpp
-    ${ABSTRACT_DOMAIN_SOURCE_ROOT}/lib/AE/Core/BoxDomain.cpp
-    ${ABSTRACT_DOMAIN_SOURCE_ROOT}/lib/AE/Core/LinearConstraint.cpp
+    ${ABSTRACT_DOMAIN_SOURCE_ROOT}/lib/AE/Core/AbstractDomain.cpp
+    ${ABSTRACT_DOMAIN_SOURCE_ROOT}/lib/AE/Core/AddressDomain.cpp
+    ${ABSTRACT_DOMAIN_SOURCE_ROOT}/lib/AE/Core/LinearExpression.cpp
     ${ABSTRACT_DOMAIN_SOURCE_ROOT}/lib/AE/Core/BoxProgramState.cpp
-    ${ABSTRACT_DOMAIN_SOURCE_ROOT}/lib/AE/Core/NumericPrimitives.cpp
     ${ABSTRACT_DOMAIN_SOURCE_ROOT}/lib/AE/Core/NumericalDomain.cpp
     ${ABSTRACT_DOMAIN_SOURCE_ROOT}/lib/AE/Core/VariableEnvironment.cpp
   )
@@ -28,9 +27,9 @@ if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
   target_link_libraries(AbstractDomainCore PUBLIC GMP::GMPXX MPFR::MPFR)
 endif()
 
-add_executable(svf-box-domain-test BoxDomainTest.cpp)
-target_link_libraries(svf-box-domain-test PRIVATE AbstractDomainCore)
-add_test(NAME box-domain COMMAND svf-box-domain-test)
+add_executable(svf-core-domain-test CoreDomainTest.cpp)
+target_link_libraries(svf-core-domain-test PRIVATE AbstractDomainCore)
+add_test(NAME core-domain COMMAND svf-core-domain-test)
 
 if(TARGET SvfLLVM)
   add_executable(svf-box-ae-integration-test BoxAEIntegrationTest.cpp)
@@ -72,7 +71,7 @@ if(APPLE AND TARGET z3::libz3)
   get_filename_component(
     Z3_TEST_LIBRARY_DIRECTORY "${Z3_TEST_LIBRARY}" DIRECTORY
   )
-  set(box_test_targets svf-box-domain-test)
+  set(box_test_targets svf-core-domain-test)
   if(TARGET svf-box-ae-integration-test)
     list(APPEND box_test_targets svf-box-ae-integration-test)
   endif()

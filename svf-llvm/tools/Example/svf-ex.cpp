@@ -26,7 +26,7 @@
  // Author: Yulei Sui,
  */
 
-#include "AE/Core/AbstractState.h"
+#include "AE/Core/AbstractDomain.h"
 #include "Graphs/SVFG.h"
 #include "MSSA/SVFGBuilder.h"
 #include "SVF-LLVM/LLVMUtil.h"

@@ -28,7 +28,7 @@
 
 #include <functional>
 
-#include "AE/Core/IntervalValue.h"
+#include "AE/Core/ScalarProjection.h"
 #include "SVFIR/SVFIR.h"
 #include "Util/GeneralType.h"
 
@@ -90,25 +90,25 @@ public:
     u32_t getElementSize(const ValVar* var);
 
     /// Check if an interval length is usable (not bottom, not unbounded).
-    static bool isValidLength(const IntervalValue& len);
+    static bool isValidLength(const IntegerIntervalProjection& len);
 
     /// Calculate the length of a null-terminated string in abstract state.
-    IntervalValue getStrlen(const ValVar *strValue, const ICFGNode* node);
+    IntegerIntervalProjection getStrlen(const ValVar *strValue, const ICFGNode* node);
 
     // --- String/memory operation handlers ---
 
     void handleStrcpy(const CallICFGNode *call);
     void handleStrcat(const CallICFGNode *call);
     void handleStrncat(const CallICFGNode *call);
-    void handleMemcpy(const ValVar *dst, const ValVar *src, const IntervalValue& len, u32_t start_idx, const ICFGNode* node);
-    void handleMemset(const ValVar* dst, const IntervalValue& elem, const IntervalValue& len, const ICFGNode* node);
+    void handleMemcpy(const ValVar *dst, const ValVar *src, const IntegerIntervalProjection& len, u32_t start_idx, const ICFGNode* node);
+    void handleMemset(const ValVar* dst, const IntegerIntervalProjection& elem, const IntegerIntervalProjection& len, const ICFGNode* node);
 
     /**
      * @brief Gets the range limit from a type.
      * @param type Pointer to the SVF type.
      * @return The interval value representing the range limit.
      */
-    IntervalValue getRangeLimitFromType(const SVFType* type);
+    IntegerIntervalProjection getRangeLimitFromType(const SVFType* type);
 
     void collectCheckPoint();
     void checkPointAllSet();

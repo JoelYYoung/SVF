@@ -29,8 +29,8 @@
 // Engineering. (ICSE24)
 //
 #pragma once
-#include "AE/Core/AbstractState.h"
-#include "AE/Core/AbstractValue.h"
+#include "AE/Core/AbstractDomain.h"
+#include "AE/Core/ScalarProjection.h"
 #include "AE/Core/ICFGWTO.h"
 #include "AE/Svfexe/AEDetector.h"
 #include "AE/Svfexe/AEStat.h"
@@ -143,11 +143,11 @@ public:
     /// resolution chain (def-site walk, call-result fallback, etc.).
     /// All three overloads are virtual so full-sparse can route ObjVar
     /// reads through the SVFG.
-    virtual AbstractValue getAbsValue(const ValVar* var,
+    virtual ScalarProjection getAbsValue(const ValVar* var,
                                       const ICFGNode* node) = 0;
-    virtual AbstractValue getAbsValue(const ObjVar* var,
+    virtual ScalarProjection getAbsValue(const ObjVar* var,
                                       const ICFGNode* node) = 0;
-    virtual AbstractValue getAbsValue(const SVFVar* var,
+    virtual ScalarProjection getAbsValue(const SVFVar* var,
                                       const ICFGNode* node) = 0;
 
     /// Side-effect-free existence check.
@@ -157,20 +157,20 @@ public:
 
     /// Write a variable's abstract value.  Sparse subclasses re-route
     /// ValVar writes to the def-site.
-    virtual void updateAbsValue(const ValVar* var, const AbstractValue& value,
+    virtual void updateAbsValue(const ValVar* var, const ScalarProjection& value,
                                 const ICFGNode* node) = 0;
-    virtual void updateAbsValue(const ObjVar* var, const AbstractValue& value,
+    virtual void updateAbsValue(const ObjVar* var, const ScalarProjection& value,
                                 const ICFGNode* node) = 0;
-    virtual void updateAbsValue(const SVFVar* var, const AbstractValue& value,
+    virtual void updateAbsValue(const SVFVar* var, const ScalarProjection& value,
                                 const ICFGNode* node) = 0;
 
     /// Representation-independent memory and lifetime access.  Addresses use
     /// the existing AE virtual-address encoding at this API boundary; native
     /// domains translate them to Location internally.
-    virtual AbstractValue getMemoryValue(u32_t address,
+    virtual ScalarProjection getMemoryValue(u32_t address,
                                          const ICFGNode* node) = 0;
     virtual bool hasMemoryValue(u32_t address, const ICFGNode* node) const = 0;
-    virtual void updateMemoryValue(u32_t address, const AbstractValue& value,
+    virtual void updateMemoryValue(u32_t address, const ScalarProjection& value,
                                    const ICFGNode* node) = 0;
     virtual void markFreedMemory(u32_t address, const ICFGNode* node) = 0;
     virtual bool isFreedMemory(u32_t address, const ICFGNode* node) const = 0;
@@ -184,33 +184,33 @@ public:
 
     /// Return the authoritative complete state used for control-flow joins
     /// and fixpoint computation.
-    virtual const AbstractDomain::AbstractState& getAbstractState(
+    virtual const AbstractDomain::AbstractDomain& getAbstractState(
         const ICFGNode* node) const = 0;
 
     /// Return the analysis-wide SSA-value carrier for `function` when the
     /// selected sparse implementation separates ValVars from ICFG memory
     /// states. Other implementations return nullptr.
-    virtual const AbstractDomain::AbstractState* getScalarAbstractState(
+    virtual const AbstractDomain::AbstractDomain* getScalarAbstractState(
         const FunObjVar* function) const;
 
     /// Return the sparse relational checkpoint associated with a particular
     /// SSA definition, or nullptr when the implementation has no separated
     /// definition checkpoint.
-    virtual const AbstractDomain::AbstractState* getScalarAbstractState(
+    virtual const AbstractDomain::AbstractDomain* getScalarAbstractState(
         const ValVar* value) const;
 
     virtual bool hasAbsState(const ICFGNode* node) const = 0;
 
     // ---- GEP / Load-Store / Type Helpers ------------------------------
 
-    IntervalValue getGepElementIndex(const GepStmt* gep);
-    IntervalValue getGepByteOffset(const GepStmt* gep);
-    AddressValue getGepObjAddrs(const ValVar* pointer, IntervalValue offset);
+    IntegerIntervalProjection getGepElementIndex(const GepStmt* gep);
+    IntegerIntervalProjection getGepByteOffset(const GepStmt* gep);
+    EncodedAddressSet getGepObjAddrs(const ValVar* pointer, IntegerIntervalProjection offset);
 
     /// Virtual so full-sparse can layer the GepObj overlay on top.
-    virtual AbstractValue loadValue(const ValVar* pointer,
+    virtual ScalarProjection loadValue(const ValVar* pointer,
                                     const ICFGNode* node) = 0;
-    virtual void storeValue(const ValVar* pointer, const AbstractValue& val,
+    virtual void storeValue(const ValVar* pointer, const ScalarProjection& val,
                             const ICFGNode* node) = 0;
 
     const SVFType* getPointeeElement(const ObjVar* var, const ICFGNode* node);
@@ -233,21 +233,21 @@ protected:
     /// Clone the complete cycle-head state. Sparse subclasses may first gather
     /// values held at def-sites; dense implementations clone their domain
     /// state directly.
-    virtual std::unique_ptr<AbstractDomain::AbstractState> cloneCycleHeadState(
+    virtual std::unique_ptr<AbstractDomain::AbstractDomain> cloneCycleHeadState(
         const ICFGCycleWTO* cycle) = 0;
 
     /// Widen prev with cur; write the widened state to trace[cycle_head].
     /// Returns true when next == prev (fixpoint).  Semi-sparse subclass
     /// additionally scatters ValVars to their def-sites.
-    virtual bool widenCycleState(const AbstractDomain::AbstractState& prev,
-                                 const AbstractDomain::AbstractState& cur,
+    virtual bool widenCycleState(const AbstractDomain::AbstractDomain& prev,
+                                 const AbstractDomain::AbstractDomain& cur,
                                  const ICFGCycleWTO* cycle) = 0;
 
     /// Narrow prev with cur; write the narrowed state back.  Returns true
     /// when narrowing is disabled or the narrowed state equals prev.
     /// Semi-sparse subclass scatters the narrowed ValVars on non-fixpoint.
-    virtual bool narrowCycleState(const AbstractDomain::AbstractState& prev,
-                                  const AbstractDomain::AbstractState& cur,
+    virtual bool narrowCycleState(const AbstractDomain::AbstractDomain& prev,
+                                  const AbstractDomain::AbstractDomain& cur,
                                   const ICFGCycleWTO* cycle) = 0;
 
 protected:
@@ -257,11 +257,11 @@ protected:
     virtual void resetAbstractState(const ICFGNode* node) = 0;
     virtual void copyAbstractState(const ICFGNode* source,
                                    const ICFGNode* destination) = 0;
-    virtual std::unique_ptr<AbstractDomain::AbstractState> cloneAbstractState(
+    virtual std::unique_ptr<AbstractDomain::AbstractDomain> cloneAbstractState(
         const ICFGNode* node) const = 0;
     virtual bool isAbstractStateEquivalent(
         const ICFGNode* node,
-        const AbstractDomain::AbstractState& snapshot) const = 0;
+        const AbstractDomain::AbstractDomain& snapshot) const = 0;
 
     /// Normalize a node after its transfers and detectors have consumed any
     /// temporary operands. Native sparse implementations use this boundary to
@@ -283,14 +283,14 @@ protected:
     /// Collect branch-induced interval refinement after a feasible edge has
     /// been selected for normal CFG-state merging.
     void collectBranchRefinement(const IntraCFGEdge* edge,
-                                 AbstractDomain::AbstractState& state);
+                                 AbstractDomain::AbstractDomain& state);
 
     /// Hook called by collectBranchRefinement for each object narrowed by the
     /// branch. Dense and semi-sparse implementations meet the constraint into
     /// the transient edge state; full-sparse records it for MemorySSA flow.
     virtual void recordBranchRefinement(NodeID objId,
-                                        const IntervalValue& narrowed,
-                                        AbstractDomain::AbstractState& state,
+                                        const IntegerIntervalProjection& narrowed,
+                                        AbstractDomain::AbstractDomain& state,
                                         const ICFGNode* loadIcfg,
                                         const ICFGNode* succ);
 
@@ -301,7 +301,7 @@ protected:
 
     /// Materialise the value produced by an AddrStmt without prescribing a
     /// concrete state representation.
-    virtual AbstractValue initializeObjectAddress(const ObjVar* object,
+    virtual ScalarProjection initializeObjectAddress(const ObjVar* object,
                                                   const ICFGNode* node) = 0;
 
     /// Handle a call site node: dispatch to ext-call, direct-call, or
@@ -390,13 +390,13 @@ protected:
     // ---- Domain-specific precision hooks -----------------------------
     // Sparse modes use the no-op base implementations. Dense mode updates
     // its selected numerical domain through these hooks after legacy
-    // transfer code computes the compatibility AbstractValue.
+    // transfer code computes the compatibility ScalarProjection.
     virtual void initializeDomainState(const ICFGNode* node);
     virtual void assignDomainInterval(const ICFGNode* node,
                                       const SVFVar* target,
-                                      const IntervalValue& interval);
+                                      const IntegerIntervalProjection& interval);
     virtual void updateDomainOnBinary(const BinaryOPStmt* binary,
-                                      const IntervalValue& result);
+                                      const IntegerIntervalProjection& result);
     virtual void updateDomainOnCopy(const CopyStmt* copy);
     virtual void updateDomainCopyValue(const ICFGNode* node,
                                        const SVFVar* target,

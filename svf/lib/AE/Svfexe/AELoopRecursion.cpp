@@ -60,7 +60,7 @@ void AbstractInterpretation::skipRecursionWithTop(const CallICFGNode* callNode)
         {
             if (!retPE->getLHSVar()->isPointer() &&
                 !retPE->getLHSVar()->isConstDataOrAggDataButNotNullPtr())
-                updateAbsValue(retPE->getLHSVar(), IntervalValue::top(),
+                updateAbsValue(retPE->getLHSVar(), IntegerIntervalProjection::top(),
                                callNode);
         }
     }
@@ -84,13 +84,13 @@ void AbstractInterpretation::skipRecursionWithTop(const CallICFGNode* callNode)
                     if (!rhsVar->isPointer() &&
                         !rhsVar->isConstDataOrAggDataButNotNullPtr())
                     {
-                        const AbstractValue& addrs =
+                        const ScalarProjection& addrs =
                             getAbsValue(store->getLHSVar(), callNode);
                         if (addrs.isAddr())
                         {
                             for (const auto& addr : addrs.getAddrs())
                             {
-                                updateMemoryValue(addr, IntervalValue::top(),
+                                updateMemoryValue(addr, IntegerIntervalProjection::top(),
                                                   callNode);
                             }
                         }
@@ -220,12 +220,12 @@ void AbstractInterpretation::handleLoopOrRecursion(const ICFGCycleWTO* cycle,
         {
             // cloneCycleHeadState handles dense (returns trace[cycle_head])
             // and semi-sparse (collects ValVars from def-sites) uniformly.
-            std::unique_ptr<AbstractDomain::AbstractState> previous =
+            std::unique_ptr<AbstractDomain::AbstractDomain> previous =
                 cloneCycleHeadState(cycle);
 
             if (mergeStatesFromPredecessors(cycle_head))
                 handleICFGNode(cycle_head);
-            std::unique_ptr<AbstractDomain::AbstractState> current =
+            std::unique_ptr<AbstractDomain::AbstractDomain> current =
                 cloneCycleHeadState(cycle);
 
             if (increasing)

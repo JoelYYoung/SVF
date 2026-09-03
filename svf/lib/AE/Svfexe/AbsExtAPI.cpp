@@ -47,12 +47,12 @@ void AbsExtAPI::initExtFunMap()
         auto sse_##FUNC_NAME = [this](const CallICFGNode *callNode) { \
         /* run real ext function */            \
         const SVFVar* argVar = callNode->getArgument(0); \
-        const AbstractValue& argVal = ae->getAbsValue(argVar, callNode); \
+        const ScalarProjection& argVal = ae->getAbsValue(argVar, callNode); \
         if (!argVal.isInterval() && !argVal.isAddr()) return; \
         u32_t rhs = argVal.getInterval().lb().getIntNumeral(); \
         s32_t res = FUNC_NAME(rhs);            \
         const SVFVar* retVar = callNode->getRetICFGNode()->getActualRet(); \
-        ae->updateAbsValue(retVar, IntervalValue(res), callNode); \
+        ae->updateAbsValue(retVar, IntegerIntervalProjection(res), callNode); \
         return; \
     };                                                                         \
     func_map[#FUNC_NAME] = sse_##FUNC_NAME;
@@ -79,8 +79,8 @@ void AbsExtAPI::initExtFunMap()
     auto sse_svf_assert = [this](const CallICFGNode* callNode)
     {
         checkpoints.erase(callNode);
-        const AbstractValue& arg0Val = ae->getAbsValue(callNode->getArgument(0), callNode);
-        if (arg0Val.getInterval().equals(IntervalValue(1, 1)))
+        const ScalarProjection& arg0Val = ae->getAbsValue(callNode->getArgument(0), callNode);
+        if (arg0Val.getInterval().equals(IntegerIntervalProjection(1, 1)))
         {
             SVFUtil::errs() << SVFUtil::sucMsg("The assertion is successfully verified!!\n");
         }
@@ -95,8 +95,8 @@ void AbsExtAPI::initExtFunMap()
 
     auto svf_assert_eq = [this](const CallICFGNode* callNode)
     {
-        const AbstractValue& arg0Val = ae->getAbsValue(callNode->getArgument(0), callNode);
-        const AbstractValue& arg1Val = ae->getAbsValue(callNode->getArgument(1), callNode);
+        const ScalarProjection& arg0Val = ae->getAbsValue(callNode->getArgument(0), callNode);
+        const ScalarProjection& arg1Val = ae->getAbsValue(callNode->getArgument(1), callNode);
         if (arg0Val.getInterval().equals(arg1Val.getInterval()))
         {
             SVFUtil::errs() << SVFUtil::sucMsg("The assertion is successfully verified!!\n");
@@ -114,7 +114,7 @@ void AbsExtAPI::initExtFunMap()
     {
         if (callNode->arg_size() < 2) return;
         std::string text = strRead(callNode->getArgument(1), callNode);
-        IntervalValue itv = ae->getAbsValue(callNode->getArgument(0), callNode).getInterval();
+        IntegerIntervalProjection itv = ae->getAbsValue(callNode->getArgument(0), callNode).getInterval();
         std::cout << "Text: " << text <<", Value: " << callNode->getArgument(0)->toString()
                   << ", PrintVal: " << itv.toString() << ", Loc:" << callNode->getSourceLoc() << std::endl;
         return;
@@ -124,12 +124,12 @@ void AbsExtAPI::initExtFunMap()
     auto svf_set_value = [&](const CallICFGNode* callNode)
     {
         if (callNode->arg_size() < 2) return;
-        const AbstractValue& lbVal = ae->getAbsValue(callNode->getArgument(1), callNode);
-        const AbstractValue& ubVal = ae->getAbsValue(callNode->getArgument(2), callNode);
+        const ScalarProjection& lbVal = ae->getAbsValue(callNode->getArgument(1), callNode);
+        const ScalarProjection& ubVal = ae->getAbsValue(callNode->getArgument(2), callNode);
         assert(lbVal.getInterval().is_numeral() && ubVal.getInterval().is_numeral());
-        AbstractValue num;
+        ScalarProjection num;
         num.getInterval().set_to_top();
-        num.getInterval().meet_with(IntervalValue(lbVal.getInterval().lb(), ubVal.getInterval().ub()));
+        num.getInterval().meet_with(IntegerIntervalProjection(lbVal.getInterval().lb(), ubVal.getInterval().ub()));
         ae->updateAbsValue(callNode->getArgument(0), num, callNode);
         const ICFGNode* node = SVFUtil::cast<ValVar>(callNode->getArgument(0))->getICFGNode();
         for (const SVFStmt* stmt: node->getSVFStmts())
@@ -137,7 +137,7 @@ void AbsExtAPI::initExtFunMap()
             if (SVFUtil::isa<LoadStmt>(stmt))
             {
                 const LoadStmt* load = SVFUtil::cast<LoadStmt>(stmt);
-                const AbstractValue& ptrVal = ae->getAbsValue(load->getRHSVar(), callNode);
+                const ScalarProjection& ptrVal = ae->getAbsValue(load->getRHSVar(), callNode);
                 for (auto addr : ptrVal.getAddrs())
                     ae->updateMemoryValue(addr, num, callNode);
             }
@@ -149,9 +149,9 @@ void AbsExtAPI::initExtFunMap()
     auto sse_fread = [&](const CallICFGNode *callNode)
     {
         if (callNode->arg_size() < 3) return;
-        IntervalValue block_count = ae->getAbsValue(callNode->getArgument(2), callNode).getInterval();
-        IntervalValue block_size = ae->getAbsValue(callNode->getArgument(1), callNode).getInterval();
-        IntervalValue block_byte = block_count * block_size;
+        IntegerIntervalProjection block_count = ae->getAbsValue(callNode->getArgument(2), callNode).getInterval();
+        IntegerIntervalProjection block_size = ae->getAbsValue(callNode->getArgument(1), callNode).getInterval();
+        IntegerIntervalProjection block_byte = block_count * block_size;
         (void)block_byte;
     };
     func_map["fread"] = sse_fread;
@@ -179,8 +179,8 @@ void AbsExtAPI::initExtFunMap()
         {
             return;
         }
-        IntervalValue size = ae->getAbsValue(callNode->getArgument(1), callNode).getInterval()
-                             * IntervalValue(elemSize) - IntervalValue(1);
+        IntegerIntervalProjection size = ae->getAbsValue(callNode->getArgument(1), callNode).getInterval()
+                             * IntegerIntervalProjection(elemSize) - IntegerIntervalProjection(1);
         (void)size;
     };
     func_map["__snprintf_chk"] = sse_snprintf;
@@ -209,10 +209,10 @@ void AbsExtAPI::initExtFunMap()
     {
         if (callNode->arg_size() < 1) return;
         const SVFVar* retVar = callNode->getRetICFGNode()->getActualRet();
-        IntervalValue byteLen = getStrlen(callNode->getArgument(0), callNode);
+        IntegerIntervalProjection byteLen = getStrlen(callNode->getArgument(0), callNode);
         u32_t elemSize = getElementSize(callNode->getArgument(0));
         if (byteLen.is_numeral() && elemSize > 1)
-            ae->updateAbsValue(retVar, IntervalValue(byteLen.getIntNumeral() / (s64_t)elemSize), callNode);
+            ae->updateAbsValue(retVar, IntegerIntervalProjection(byteLen.getIntNumeral() / (s64_t)elemSize), callNode);
         else
             ae->updateAbsValue(retVar, byteLen, callNode);
     };
@@ -222,7 +222,7 @@ void AbsExtAPI::initExtFunMap()
     auto sse_recv = [&](const CallICFGNode *callNode)
     {
         if (callNode->arg_size() < 4) return;
-        IntervalValue len = ae->getAbsValue(callNode->getArgument(2), callNode).getInterval() - IntervalValue(1);
+        IntegerIntervalProjection len = ae->getAbsValue(callNode->getArgument(2), callNode).getInterval() - IntegerIntervalProjection(1);
         const SVFVar* retVar = callNode->getRetICFGNode()->getActualRet();
         ae->updateAbsValue(retVar, len, callNode);
     };
@@ -232,7 +232,7 @@ void AbsExtAPI::initExtFunMap()
     auto sse_free = [&](const CallICFGNode *callNode)
     {
         if (callNode->arg_size() < 1) return;
-        const AbstractValue& ptrVal = ae->getAbsValue(callNode->getArgument(0), callNode);
+        const ScalarProjection& ptrVal = ae->getAbsValue(callNode->getArgument(0), callNode);
         for (auto addr: ptrVal.getAddrs())
         {
             if (addr == BlackHoleObjAddr)
@@ -322,10 +322,10 @@ std::string AbsExtAPI::strRead(const ValVar* rhs, const ICFGNode* node)
     for (u32_t index = 0; index < Options::MaxFieldLimit(); index++)
     {
         if (!ae->getAbsValue(rhs, node).isAddr()) continue;
-        AbstractValue expr0 =
-            ae->getGepObjAddrs(rhs, IntervalValue(index));
+        ScalarProjection expr0 =
+            ae->getGepObjAddrs(rhs, IntegerIntervalProjection(index));
 
-        AbstractValue val;
+        ScalarProjection val;
         for (const auto &addr: expr0.getAddrs())
         {
             val.join_with(ae->getMemoryValue(addr, node));
@@ -370,10 +370,10 @@ void AbsExtAPI::handleExtAPI(const CallICFGNode *call)
         {
             if (const SVFVar* ret = call->getRetICFGNode()->getActualRet())
             {
-                const AbstractValue& retVal = ae->getAbsValue(ret, call);
+                const ScalarProjection& retVal = ae->getAbsValue(ret, call);
                 if (!retVal.isAddr())
                 {
-                    ae->updateAbsValue(ret, IntervalValue(), call);
+                    ae->updateAbsValue(ret, IntegerIntervalProjection(), call);
                 }
             }
             return;
@@ -382,13 +382,13 @@ void AbsExtAPI::handleExtAPI(const CallICFGNode *call)
     // 1. memcpy functions like memcpy_chk, strncpy, annotate("MEMCPY"), annotate("BUF_CHECK:Arg0, Arg2"), annotate("BUF_CHECK:Arg1, Arg2")
     else if (extType == MEMCPY)
     {
-        IntervalValue len = ae->getAbsValue(call->getArgument(2), call).getInterval();
+        IntegerIntervalProjection len = ae->getAbsValue(call->getArgument(2), call).getInterval();
         handleMemcpy(call->getArgument(0), call->getArgument(1), len, 0, call);
     }
     else if (extType == MEMSET)
     {
-        IntervalValue len = ae->getAbsValue(call->getArgument(2), call).getInterval();
-        IntervalValue elem = ae->getAbsValue(call->getArgument(1), call).getInterval();
+        IntegerIntervalProjection len = ae->getAbsValue(call->getArgument(2), call).getInterval();
+        IntegerIntervalProjection elem = ae->getAbsValue(call->getArgument(1), call).getInterval();
         handleMemset(call->getArgument(0), elem, len, call);
     }
     else if (extType == STRCPY)
@@ -434,19 +434,19 @@ u32_t AbsExtAPI::getElementSize(const ValVar* var)
 /// Check if an interval length is usable for memory operations.
 /// Returns false for bottom (no information) or unbounded lower bound
 /// (cannot determine a concrete start for iteration).
-bool AbsExtAPI::isValidLength(const IntervalValue& len)
+bool AbsExtAPI::isValidLength(const IntegerIntervalProjection& len)
 {
     return !len.isBottom() && !len.lb().is_minus_infinity();
 }
 
 /// Calculate the length of a null-terminated string in abstract state.
 /// Scans memory from the base of strValue looking for a '\0' byte.
-/// Returns an IntervalValue: exact length if '\0' found, otherwise [0, MaxFieldLimit].
-IntervalValue AbsExtAPI::getStrlen(const ValVar *strValue, const ICFGNode* node)
+/// Returns an IntegerIntervalProjection: exact length if '\0' found, otherwise [0, MaxFieldLimit].
+IntegerIntervalProjection AbsExtAPI::getStrlen(const ValVar *strValue, const ICFGNode* node)
 {
     // Step 1: determine the buffer size (in bytes) backing this pointer
     u32_t dst_size = 0;
-    const AbstractValue& ptrVal = ae->getAbsValue(strValue, node);
+    const ScalarProjection& ptrVal = ae->getAbsValue(strValue, node);
     for (const auto& addr : ptrVal.getAddrs())
     {
         NodeID objId = AbstractInterpretation::objectIdFromAddress(addr);
@@ -485,20 +485,20 @@ IntervalValue AbsExtAPI::getStrlen(const ValVar *strValue, const ICFGNode* node)
     {
         for (u32_t index = 0; index < dst_size; index++)
         {
-            AbstractValue expr0 =
-                ae->getGepObjAddrs(strValue, IntervalValue(index));
-            AbstractValue val;
+            ScalarProjection expr0 =
+                ae->getGepObjAddrs(strValue, IntegerIntervalProjection(index));
+            ScalarProjection val;
             for (const auto &addr: expr0.getAddrs())
             {
                 val.join_with(ae->getMemoryValue(addr, node));
             }
             if (!val.getInterval().is_numeral())
-                return IntervalValue((s64_t)0,
+                return IntegerIntervalProjection((s64_t)0,
                                      (s64_t)Options::MaxFieldLimit());
             if (val.getInterval().getIntNumeral() == 0)
             {
                 const u32_t elemSize = getElementSize(strValue);
-                return IntervalValue(index * elemSize);
+                return IntegerIntervalProjection(index * elemSize);
             }
         }
     }
@@ -506,7 +506,7 @@ IntervalValue AbsExtAPI::getStrlen(const ValVar *strValue, const ICFGNode* node)
     // No definite terminator was established.  This includes unknown backing
     // size, an empty points-to set, and a fully scanned but unterminated
     // buffer.  Preserve the documented conservative fallback.
-    return IntervalValue((s64_t)0, (s64_t)Options::MaxFieldLimit());
+    return IntegerIntervalProjection((s64_t)0, (s64_t)Options::MaxFieldLimit());
 }
 
 // ===----------------------------------------------------------------------===//
@@ -519,7 +519,7 @@ void AbsExtAPI::handleStrcpy(const CallICFGNode *call)
 {
     const ValVar* dst = call->getArgument(0);
     const ValVar* src = call->getArgument(1);
-    IntervalValue srcLen = getStrlen(src, call);
+    IntegerIntervalProjection srcLen = getStrlen(src, call);
     if (!isValidLength(srcLen)) return;
     handleMemcpy(dst, src, srcLen, 0, call);
 }
@@ -530,8 +530,8 @@ void AbsExtAPI::handleStrcat(const CallICFGNode *call)
 {
     const ValVar* dst = call->getArgument(0);
     const ValVar* src = call->getArgument(1);
-    IntervalValue dstLen = getStrlen(dst, call);
-    IntervalValue srcLen = getStrlen(src, call);
+    IntegerIntervalProjection dstLen = getStrlen(dst, call);
+    IntegerIntervalProjection srcLen = getStrlen(src, call);
     if (!isValidLength(dstLen)) return;
     handleMemcpy(dst, src, srcLen, dstLen.lb().getIntNumeral(), call);
 }
@@ -542,15 +542,15 @@ void AbsExtAPI::handleStrncat(const CallICFGNode *call)
 {
     const ValVar* dst = call->getArgument(0);
     const ValVar* src = call->getArgument(1);
-    IntervalValue n = ae->getAbsValue(call->getArgument(2), call).getInterval();
-    IntervalValue dstLen = getStrlen(dst, call);
+    IntegerIntervalProjection n = ae->getAbsValue(call->getArgument(2), call).getInterval();
+    IntegerIntervalProjection dstLen = getStrlen(dst, call);
     if (!isValidLength(dstLen)) return;
     handleMemcpy(dst, src, n, dstLen.lb().getIntNumeral(), call);
 }
 
 /// Core memcpy: copy `len` bytes from src to dst starting at dst[start_idx].
 void AbsExtAPI::handleMemcpy(const ValVar *dst,
-                             const ValVar *src, const IntervalValue& len,
+                             const ValVar *src, const IntegerIntervalProjection& len,
                              u32_t start_idx, const ICFGNode* node)
 {
     if (!isValidLength(len)) return;
@@ -565,10 +565,10 @@ void AbsExtAPI::handleMemcpy(const ValVar *dst,
 
     for (u32_t index = 0; index < range_val; index++)
     {
-        AbstractValue expr_src =
-            ae->getGepObjAddrs(src, IntervalValue(index));
-        AbstractValue expr_dst =
-            ae->getGepObjAddrs(dst, IntervalValue(index + start_idx));
+        ScalarProjection expr_src =
+            ae->getGepObjAddrs(src, IntegerIntervalProjection(index));
+        ScalarProjection expr_dst =
+            ae->getGepObjAddrs(dst, IntegerIntervalProjection(index + start_idx));
         for (const auto &dstAddr: expr_dst.getAddrs())
         {
             for (const auto &srcAddr: expr_src.getAddrs())
@@ -587,7 +587,7 @@ void AbsExtAPI::handleMemcpy(const ValVar *dst,
 /// wchar_t[100], elemSize = sizeof(wchar_t[100]), so range_val reflects the
 /// number of top-level GEP fields, not individual array elements.
 void AbsExtAPI::handleMemset(const ValVar *dst,
-                             const IntervalValue& elem, const IntervalValue& len, const ICFGNode* node)
+                             const IntegerIntervalProjection& elem, const IntegerIntervalProjection& len, const ICFGNode* node)
 {
     if (!isValidLength(len)) return;
 
@@ -613,12 +613,12 @@ void AbsExtAPI::handleMemset(const ValVar *dst,
     {
         if (!ae->getAbsValue(dst, node).isAddr())
             break;
-        AbstractValue lhs_gep = ae->getGepObjAddrs(dst, IntervalValue(index));
+        ScalarProjection lhs_gep = ae->getGepObjAddrs(dst, IntegerIntervalProjection(index));
         for (const auto &addr: lhs_gep.getAddrs())
         {
             if (ae->hasMemoryValue(addr, node))
             {
-                AbstractValue tmp = ae->getMemoryValue(addr, node);
+                ScalarProjection tmp = ae->getMemoryValue(addr, node);
                 tmp.join_with(elem);
                 ae->updateMemoryValue(addr, tmp, node);
             }
@@ -635,13 +635,13 @@ void AbsExtAPI::handleMemset(const ValVar *dst,
  * a numeric range for a given SVFType. It is used to determine the possible value
  * range of integer types. If the type is an SVFIntegerType, it calculates the bounds
  * based on the size and signedness of the type. The calculated bounds are returned
- * as an IntervalValue representing the lower (lb) and upper (ub) limits of the range.
+ * as an IntegerIntervalProjection representing the lower (lb) and upper (ub) limits of the range.
  *
  * @param type   The SVFType for which to calculate the value range.
  *
- * @return       An IntervalValue representing the lower and upper bounds of the range.
+ * @return       An IntegerIntervalProjection representing the lower and upper bounds of the range.
  */
-IntervalValue AbsExtAPI::getRangeLimitFromType(const SVFType* type)
+IntegerIntervalProjection AbsExtAPI::getRangeLimitFromType(const SVFType* type)
 {
     if (const SVFIntegerType* intType = SVFUtil::dyn_cast<SVFIntegerType>(type))
     {
@@ -687,18 +687,18 @@ IntervalValue AbsExtAPI::getRangeLimitFromType(const SVFType* type)
                 lb = static_cast<s64_t>(std::numeric_limits<uint8_t>::min());
             }
         }
-        return IntervalValue(lb, ub);
+        return IntegerIntervalProjection(lb, ub);
     }
     else if (SVFUtil::isa<SVFOtherType>(type))
     {
         // handle other type like float double, set s32_t as the range
         s64_t ub = static_cast<s64_t>(std::numeric_limits<s32_t>::max());
         s64_t lb = static_cast<s64_t>(std::numeric_limits<s32_t>::min());
-        return IntervalValue(lb, ub);
+        return IntegerIntervalProjection(lb, ub);
     }
     else
     {
-        return IntervalValue::top();
+        return IntegerIntervalProjection::top();
         // other types, return top interval
     }
 }

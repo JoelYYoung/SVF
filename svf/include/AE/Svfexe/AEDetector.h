@@ -27,7 +27,7 @@
 //
 #pragma once
 #include <SVFIR/SVFIR.h>
-#include <AE/Core/AbstractValue.h>
+#include <AE/Core/ScalarProjection.h>
 #include "Util/SVFBugReport.h"
 
 namespace SVF
@@ -171,9 +171,9 @@ public:
      * @param offset The interval value of the offset.
      */
     void updateGepObjOffsetFromBase(const ICFGNode* node,
-                                    AddressValue gepAddrs,
-                                    AddressValue objAddrs,
-                                    IntervalValue offset);
+                                    EncodedAddressSet gepAddrs,
+                                    EncodedAddressSet objAddrs,
+                                    IntegerIntervalProjection offset);
 
     /**
      * @brief Detect buffer overflow issues within a node.
@@ -194,7 +194,7 @@ public:
      * @param obj Pointer to the GEP object.
      * @param offset The interval value of the offset.
      */
-    void addToGepObjOffsetFromBase(const GepObjVar* obj, const IntervalValue& offset)
+    void addToGepObjOffsetFromBase(const GepObjVar* obj, const IntegerIntervalProjection& offset)
     {
         gepObjOffsetFromBase[obj] = offset;
     }
@@ -214,7 +214,7 @@ public:
      * @param obj Pointer to the GEP object.
      * @return The interval value of the offset.
      */
-    IntervalValue getGepObjOffsetFromBase(const GepObjVar* obj) const
+    IntegerIntervalProjection getGepObjOffsetFromBase(const GepObjVar* obj) const
     {
         if (hasGepObjOffsetFromBase(obj))
             return gepObjOffsetFromBase.at(obj);
@@ -232,7 +232,7 @@ public:
      * @param gep Pointer to the GEP statement.
      * @return The interval value of the access offset.
      */
-    IntervalValue getAccessOffset(NodeID objId, const GepStmt* gep);
+    IntegerIntervalProjection getAccessOffset(NodeID objId, const GepStmt* gep);
 
     /**
      * @brief Adds a bug to the reporter based on an exception.
@@ -304,7 +304,7 @@ public:
      * @param node The ICFG node providing context.
      * @return True if the memory access is safe, false otherwise.
      */
-    bool canSafelyAccessMemory(const ValVar *value, const IntervalValue &len, const ICFGNode* node);
+    bool canSafelyAccessMemory(const ValVar *value, const IntegerIntervalProjection &len, const ICFGNode* node);
 
 private:
     /**
@@ -322,7 +322,7 @@ private:
     bool detectStrcpy(const CallICFGNode *call);
 
 private:
-    Map<const GepObjVar*, IntervalValue> gepObjOffsetFromBase; ///< Maps GEP objects to their offsets from the base.
+    Map<const GepObjVar*, IntegerIntervalProjection> gepObjOffsetFromBase; ///< Maps GEP objects to their offsets from the base.
     Map<std::string, std::vector<std::pair<u32_t, u32_t>>> extAPIBufOverflowCheckRules; ///< Rules for checking buffer overflows in external APIs.
     Set<std::string> bugLoc; ///< Set of locations where bugs have been reported.
     SVFBugReport recoder; ///< Recorder for abstract execution bugs.
@@ -362,7 +362,7 @@ public:
      * @param v The Abstract Value to check.
      * @return True if the value is uninitialized, false otherwise.
      */
-    bool isUninit(AbstractValue v)
+    bool isUninit(ScalarProjection v)
     {
         // uninitialized value has neither interval value nor address value
         bool is = v.getAddrs().isBottom() && v.getInterval().isBottom();
@@ -429,7 +429,7 @@ public:
      *
      * @param v An Abstract Value of loaded from an address in an Abstract State.
      */
-    bool isNull(AbstractValue v)
+    bool isNull(ScalarProjection v)
     {
         return !v.isAddr() && !v.isInterval();
     }

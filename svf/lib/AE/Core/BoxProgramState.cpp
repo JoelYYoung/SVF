@@ -25,276 +25,6 @@ std::set<Key> combinedKeys(const std::map<Key, Value>& lhs,
 
 } // namespace
 
-PointeeSet PointeeSet::bottom()
-{
-    return PointeeSet(false);
-}
-
-PointeeSet PointeeSet::top()
-{
-    return PointeeSet(true);
-}
-
-PointeeSet PointeeSet::singleton(Location location)
-{
-    PointeeSet result = bottom();
-    result.insert(location);
-    return result;
-}
-
-bool PointeeSet::isBottom() const
-{
-    return !top_ && locations_.empty();
-}
-
-bool PointeeSet::isTop() const
-{
-    return top_;
-}
-
-bool PointeeSet::contains(Location location) const
-{
-    return top_ || locations_.count(location) != 0;
-}
-
-bool PointeeSet::isSingleton() const
-{
-    return !top_ && locations_.size() == 1;
-}
-
-const std::set<Location>& PointeeSet::locations() const
-{
-    if (top_)
-        throw std::logic_error("top address set has no finite enumeration");
-    return locations_;
-}
-
-void PointeeSet::insert(Location location)
-{
-    if (!top_)
-        locations_.insert(location);
-}
-
-void PointeeSet::joinWith(const PointeeSet& other)
-{
-    if (top_ || other.isBottom())
-        return;
-    if (other.top_)
-    {
-        *this = top();
-        return;
-    }
-    locations_.insert(other.locations_.begin(), other.locations_.end());
-}
-
-void PointeeSet::meetWith(const PointeeSet& other)
-{
-    if (other.top_ || isBottom())
-        return;
-    if (top_)
-    {
-        *this = other;
-        return;
-    }
-    std::set<Location> intersection;
-    std::set_intersection(locations_.begin(), locations_.end(),
-                          other.locations_.begin(), other.locations_.end(),
-                          std::inserter(intersection, intersection.begin()));
-    locations_ = std::move(intersection);
-}
-
-bool PointeeSet::isSubsetOf(const PointeeSet& other) const
-{
-    if (other.top_ || isBottom())
-        return true;
-    if (top_)
-        return false;
-    return std::includes(other.locations_.begin(), other.locations_.end(),
-                         locations_.begin(), locations_.end());
-}
-
-std::string PointeeSet::toString() const
-{
-    if (top_)
-        return "top";
-    if (locations_.empty())
-        return "bottom";
-    std::ostringstream output;
-    output << "{";
-    bool first = true;
-    for (Location location : locations_)
-    {
-        if (!first)
-            output << ",";
-        first = false;
-        output << location.id();
-    }
-    output << "}";
-    return output.str();
-}
-
-PointerMap PointerMap::top()
-{
-    return PointerMap(true);
-}
-
-PointerMap PointerMap::bottom()
-{
-    return PointerMap(false);
-}
-
-PointeeSet PointerMap::pointeesOf(Variable variable) const
-{
-    const auto it = values_->find(variable);
-    return it == values_->end() ? defaultValue() : it->second;
-}
-
-void PointerMap::assign(Variable variable, PointeeSet addresses)
-{
-    writableValues()[variable] = std::move(addresses);
-    normalize(variable);
-}
-
-void PointerMap::forget(Variable variable)
-{
-    assign(variable, PointeeSet::top());
-}
-
-void PointerMap::changeEnvironment(const VariableEnvironment& environment)
-{
-    const bool hasOutOfScope =
-        std::any_of(values_->begin(), values_->end(), [&](const auto& entry) {
-            return !environment.contains(entry.first);
-        });
-    if (!hasOutOfScope)
-        return;
-    Values& values = writableValues();
-    for (auto iterator = values.begin(); iterator != values.end();)
-    {
-        if (!environment.contains(iterator->first))
-            iterator = values.erase(iterator);
-        else
-            ++iterator;
-    }
-}
-
-void PointerMap::joinWith(const PointerMap& other)
-{
-    if (other.isBottom())
-        return;
-    if (isBottom())
-    {
-        *this = other;
-        return;
-    }
-    const std::set<Variable> variables = combinedKeys(*values_, *other.values_);
-    const bool nextDefaultTop = defaultTop_ || other.defaultTop_;
-    std::map<Variable, PointeeSet> next;
-    for (Variable variable : variables)
-    {
-        PointeeSet value = pointeesOf(variable);
-        value.joinWith(other.pointeesOf(variable));
-        if (value !=
-            (nextDefaultTop ? PointeeSet::top() : PointeeSet::bottom()))
-            next.emplace(variable, std::move(value));
-    }
-    defaultTop_ = nextDefaultTop;
-    values_ = std::make_shared<Values>(std::move(next));
-}
-
-void PointerMap::meetWith(const PointerMap& other)
-{
-    if (other.isTop())
-        return;
-    if (isTop())
-    {
-        *this = other;
-        return;
-    }
-    const std::set<Variable> variables = combinedKeys(*values_, *other.values_);
-    const bool nextDefaultTop = defaultTop_ && other.defaultTop_;
-    std::map<Variable, PointeeSet> next;
-    for (Variable variable : variables)
-    {
-        PointeeSet value = pointeesOf(variable);
-        value.meetWith(other.pointeesOf(variable));
-        if (value !=
-            (nextDefaultTop ? PointeeSet::top() : PointeeSet::bottom()))
-            next.emplace(variable, std::move(value));
-    }
-    defaultTop_ = nextDefaultTop;
-    values_ = std::make_shared<Values>(std::move(next));
-}
-
-void PointerMap::widenWith(const PointerMap& next)
-{
-    joinWith(next);
-}
-
-void PointerMap::narrowWith(const PointerMap& next)
-{
-    meetWith(next);
-}
-
-bool PointerMap::isBottom() const
-{
-    return !defaultTop_ && values_->empty();
-}
-
-bool PointerMap::isTop() const
-{
-    return defaultTop_ && values_->empty();
-}
-
-bool PointerMap::isSubsetOf(const PointerMap& other) const
-{
-    if (defaultTop_ == other.defaultTop_ &&
-        (values_ == other.values_ || *values_ == *other.values_))
-        return true;
-    if (defaultTop_ && !other.defaultTop_)
-        return false;
-    const std::set<Variable> variables = combinedKeys(*values_, *other.values_);
-    return std::all_of(
-        variables.begin(), variables.end(), [&](Variable variable) {
-            return pointeesOf(variable).isSubsetOf(other.pointeesOf(variable));
-        });
-}
-
-std::string PointerMap::toString() const
-{
-    std::ostringstream output;
-    output << "default=" << defaultValue().toString() << " {";
-    bool first = true;
-    for (const auto& [variable, value] : *values_)
-    {
-        if (!first)
-            output << ", ";
-        first = false;
-        output << variable.id() << "=" << value.toString();
-    }
-    output << "}";
-    return output.str();
-}
-
-void PointerMap::normalize(Variable variable)
-{
-    const auto it = values_->find(variable);
-    if (it != values_->end() && it->second == defaultValue())
-        writableValues().erase(variable);
-}
-
-PointerMap::Values& PointerMap::writableValues()
-{
-    if (values_.use_count() != 1)
-        values_ = std::make_shared<Values>(*values_);
-    return *values_;
-}
-
-PointeeSet PointerMap::defaultValue() const
-{
-    return defaultTop_ ? PointeeSet::top() : PointeeSet::bottom();
-}
-
 Lifetime join(Lifetime lhs, Lifetime rhs)
 {
     if (lhs == Lifetime::Bottom)
@@ -354,14 +84,9 @@ ValueShapeState ValueShapeState::bottom()
     return ValueShapeState(false, false);
 }
 
-std::unique_ptr<AbstractState> ValueShapeState::clone() const
+std::unique_ptr<AbstractDomain> ValueShapeState::clone() const
 {
     return std::make_unique<ValueShapeState>(*this);
-}
-
-const char* ValueShapeState::name() const
-{
-    return "ValueShapeState";
 }
 
 ValueShapeState::Shape ValueShapeState::shapeOf(Variable variable) const
@@ -447,17 +172,17 @@ void ValueShapeState::changeEnvironment(const VariableEnvironment& environment)
     pages_ = std::move(next);
 }
 
-bool ValueShapeState::hasCompatibleDomain(const AbstractState& other) const
+bool ValueShapeState::hasCompatibleDomain(const AbstractDomain& other) const
 {
-    return other.isState<ValueShapeState>();
+    return other.isDomain<ValueShapeState>();
 }
 
-void ValueShapeState::joinState(const AbstractState& other)
+void ValueShapeState::joinDomain(const AbstractDomain& other)
 {
     const auto& state = static_cast<const ValueShapeState&>(other);
-    if (state.isBottomState())
+    if (state.isBottomDomain())
         return;
-    if (isBottomState())
+    if (isBottomDomain())
     {
         *this = state;
         return;
@@ -495,12 +220,12 @@ void ValueShapeState::joinState(const AbstractState& other)
     pages_ = std::move(next);
 }
 
-void ValueShapeState::meetState(const AbstractState& other)
+void ValueShapeState::meetDomain(const AbstractDomain& other)
 {
     const auto& state = static_cast<const ValueShapeState&>(other);
-    if (state.isTopState())
+    if (state.isTopDomain())
         return;
-    if (isTopState())
+    if (isTopDomain())
     {
         *this = state;
         return;
@@ -538,27 +263,27 @@ void ValueShapeState::meetState(const AbstractState& other)
     pages_ = std::move(next);
 }
 
-void ValueShapeState::widenState(const AbstractState& next)
+void ValueShapeState::widenDomain(const AbstractDomain& next)
 {
-    joinState(next);
+    joinDomain(next);
 }
 
-void ValueShapeState::narrowState(const AbstractState& next)
+void ValueShapeState::narrowDomain(const AbstractDomain& next)
 {
-    meetState(next);
+    meetDomain(next);
 }
 
-bool ValueShapeState::isBottomState() const
+bool ValueShapeState::isBottomDomain() const
 {
     return default_ == encode({false, false}) && pages_.empty();
 }
 
-bool ValueShapeState::isTopState() const
+bool ValueShapeState::isTopDomain() const
 {
     return default_ == encode({true, true}) && pages_.empty();
 }
 
-bool ValueShapeState::leqState(const AbstractState& other) const
+bool ValueShapeState::leqDomain(const AbstractDomain& other) const
 {
     const auto& state = static_cast<const ValueShapeState&>(other);
     if (default_ == state.default_ && pages_.size() == state.pages_.size())
@@ -611,7 +336,7 @@ bool ValueShapeState::leqState(const AbstractState& other) const
     return true;
 }
 
-std::string ValueShapeState::stateToString() const
+std::string ValueShapeState::domainToString() const
 {
     std::ostringstream output;
     const Shape defaultShape = decode(default_);
@@ -694,14 +419,9 @@ bool ValueShapeState::pageIsDefault(const ShapePage& page,
         [defaultShape](std::uint8_t shape) { return shape == defaultShape; });
 }
 
-std::unique_ptr<AbstractState> LifetimeState::clone() const
+std::unique_ptr<AbstractDomain> LifetimeState::clone() const
 {
     return std::make_unique<LifetimeState>(*this);
-}
-
-const char* LifetimeState::name() const
-{
-    return "LifetimeState";
 }
 
 Lifetime LifetimeState::statusOf(Location location) const
@@ -734,17 +454,17 @@ bool LifetimeState::mustBeFreed(Location location) const
     return statusOf(location) == Lifetime::Freed;
 }
 
-bool LifetimeState::hasCompatibleDomain(const AbstractState& other) const
+bool LifetimeState::hasCompatibleDomain(const AbstractDomain& other) const
 {
-    return other.isState<LifetimeState>();
+    return other.isDomain<LifetimeState>();
 }
 
-void LifetimeState::joinState(const AbstractState& other)
+void LifetimeState::joinDomain(const AbstractDomain& other)
 {
     const auto& state = static_cast<const LifetimeState&>(other);
-    if (state.isBottomState())
+    if (state.isBottomDomain())
         return;
-    if (isBottomState())
+    if (isBottomDomain())
     {
         *this = state;
         return;
@@ -763,12 +483,12 @@ void LifetimeState::joinState(const AbstractState& other)
     values_ = std::make_shared<Values>(std::move(next));
 }
 
-void LifetimeState::meetState(const AbstractState& other)
+void LifetimeState::meetDomain(const AbstractDomain& other)
 {
     const auto& state = static_cast<const LifetimeState&>(other);
-    if (state.isTopState())
+    if (state.isTopDomain())
         return;
-    if (isTopState())
+    if (isTopDomain())
     {
         *this = state;
         return;
@@ -787,27 +507,27 @@ void LifetimeState::meetState(const AbstractState& other)
     values_ = std::make_shared<Values>(std::move(next));
 }
 
-void LifetimeState::widenState(const AbstractState& next)
+void LifetimeState::widenDomain(const AbstractDomain& next)
 {
-    joinState(next);
+    joinDomain(next);
 }
 
-void LifetimeState::narrowState(const AbstractState& next)
+void LifetimeState::narrowDomain(const AbstractDomain& next)
 {
-    meetState(next);
+    meetDomain(next);
 }
 
-bool LifetimeState::isBottomState() const
+bool LifetimeState::isBottomDomain() const
 {
     return defaultValue_ == Lifetime::Bottom && values_->empty();
 }
 
-bool LifetimeState::isTopState() const
+bool LifetimeState::isTopDomain() const
 {
     return defaultValue_ == Lifetime::MaybeFreed && values_->empty();
 }
 
-bool LifetimeState::leqState(const AbstractState& other) const
+bool LifetimeState::leqDomain(const AbstractDomain& other) const
 {
     const auto& state = static_cast<const LifetimeState&>(other);
     if (defaultValue_ == state.defaultValue_ &&
@@ -823,7 +543,7 @@ bool LifetimeState::leqState(const AbstractState& other) const
                        });
 }
 
-std::string LifetimeState::stateToString() const
+std::string LifetimeState::domainToString() const
 {
     std::ostringstream output;
     output << "default=" << SVF::AbstractDomain::toString(defaultValue_)

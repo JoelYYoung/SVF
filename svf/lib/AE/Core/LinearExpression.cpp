@@ -1,6 +1,7 @@
-//===- LinearConstraint.cpp -- Domain-neutral linear syntax -------------===//
+//===- LinearExpression.cpp -- Domain-neutral linear syntax -------------===//
 
-#include "AE/Core/LinearConstraint.h"
+#include "AE/Core/LinearExpression.h"
+#include "AE/Core/TreeExpression.h"
 
 #include <sstream>
 #include <stdexcept>
@@ -80,8 +81,8 @@ LinearExpression LinearExpression::substituted(
     {
         const auto replacement = replacements.find(variable);
         if (replacement == replacements.end())
-            result.setCoefficient(
-                variable, result.coefficient(variable) + coefficient);
+            result.setCoefficient(variable,
+                                  result.coefficient(variable) + coefficient);
         else
             result += replacement->second * coefficient;
     }
@@ -99,7 +100,8 @@ void LinearExpression::removeZeroTerms()
     }
 }
 
-std::string LinearExpression::toString(const VariableEnvironment* environment) const
+std::string LinearExpression::toString(
+    const VariableEnvironment* environment) const
 {
     std::ostringstream output;
     bool first = true;
@@ -236,7 +238,8 @@ LinearConstraint::LinearConstraint(LinearExpression expression,
 {
 }
 
-std::string LinearConstraint::toString(const VariableEnvironment* environment) const
+std::string LinearConstraint::toString(
+    const VariableEnvironment* environment) const
 {
     const char* relation;
     switch (kind_)
@@ -270,38 +273,32 @@ TreeConstraint::TreeConstraint(TreeExpression expression, ConstraintKind kind)
 {
 }
 
-LinearConstraint equal(LinearExpression lhs,
-                                            LinearExpression rhs)
+LinearConstraint equal(LinearExpression lhs, LinearExpression rhs)
 {
     return LinearConstraint(std::move(lhs) - rhs, ConstraintKind::Equal);
 }
 
-LinearConstraint notEqual(LinearExpression lhs,
-                                               LinearExpression rhs)
+LinearConstraint notEqual(LinearExpression lhs, LinearExpression rhs)
 {
     return LinearConstraint(std::move(lhs) - rhs, ConstraintKind::NotEqual);
 }
 
-LinearConstraint lessEqual(LinearExpression lhs,
-                                                LinearExpression rhs)
+LinearConstraint lessEqual(LinearExpression lhs, LinearExpression rhs)
 {
     return LinearConstraint(std::move(lhs) - rhs, ConstraintKind::LessEqual);
 }
 
-LinearConstraint lessThan(LinearExpression lhs,
-                                               LinearExpression rhs)
+LinearConstraint lessThan(LinearExpression lhs, LinearExpression rhs)
 {
     return LinearConstraint(std::move(lhs) - rhs, ConstraintKind::LessThan);
 }
 
-LinearConstraint greaterEqual(LinearExpression lhs,
-                                                   LinearExpression rhs)
+LinearConstraint greaterEqual(LinearExpression lhs, LinearExpression rhs)
 {
     return LinearConstraint(std::move(lhs) - rhs, ConstraintKind::GreaterEqual);
 }
 
-LinearConstraint greaterThan(LinearExpression lhs,
-                                                  LinearExpression rhs)
+LinearConstraint greaterThan(LinearExpression lhs, LinearExpression rhs)
 {
     return LinearConstraint(std::move(lhs) - rhs, ConstraintKind::GreaterThan);
 }

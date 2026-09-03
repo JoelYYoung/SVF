@@ -29,13 +29,13 @@
 
 using namespace SVF;
 
-const AbstractDomain::AbstractState* AbstractInterpretation::
+const AbstractDomain::AbstractDomain* AbstractInterpretation::
     getScalarAbstractState(const FunObjVar*) const
 {
     return nullptr;
 }
 
-const AbstractDomain::AbstractState* AbstractInterpretation::
+const AbstractDomain::AbstractDomain* AbstractInterpretation::
     getScalarAbstractState(const ValVar*) const
 {
     return nullptr;
@@ -43,13 +43,13 @@ const AbstractDomain::AbstractState* AbstractInterpretation::
 
 void AbstractInterpretation::finalizeAbstractState(const ICFGNode*) {}
 
-IntervalValue AbstractInterpretation::getGepElementIndex(const GepStmt* gep)
+IntegerIntervalProjection AbstractInterpretation::getGepElementIndex(const GepStmt* gep)
 {
     const ICFGNode* node = gep->getICFGNode();
     if (gep->isConstantOffset())
-        return IntervalValue((s64_t)gep->accumulateConstantOffset());
+        return IntegerIntervalProjection((s64_t)gep->accumulateConstantOffset());
 
-    IntervalValue res(0);
+    IntegerIntervalProjection res(0);
     for (int i = gep->getOffsetVarAndGepTypePairVec().size() - 1; i >= 0; i--)
     {
         const ValVar* var = gep->getOffsetVarAndGepTypePairVec()[i].first;
@@ -61,7 +61,7 @@ IntervalValue AbstractInterpretation::getGepElementIndex(const GepStmt* gep)
             idxLb = idxUb = constInt->getSExtValue();
         else
         {
-            IntervalValue idxItv = getAbsValue(var, node).getInterval();
+            IntegerIntervalProjection idxItv = getAbsValue(var, node).getInterval();
             if (idxItv.isBottom())
                 idxLb = idxUb = 0;
             else
@@ -99,21 +99,21 @@ IntervalValue AbstractInterpretation::getGepElementIndex(const GepStmt* gep)
             else
                 idxLb = idxUb = 0;
         }
-        res = res + IntervalValue(idxLb, idxUb);
+        res = res + IntegerIntervalProjection(idxLb, idxUb);
     }
-    res.meet_with(IntervalValue((s64_t)0, (s64_t)Options::MaxFieldLimit()));
+    res.meet_with(IntegerIntervalProjection((s64_t)0, (s64_t)Options::MaxFieldLimit()));
     if (res.isBottom())
-        res = IntervalValue(0);
+        res = IntegerIntervalProjection(0);
     return res;
 }
 
-IntervalValue AbstractInterpretation::getGepByteOffset(const GepStmt* gep)
+IntegerIntervalProjection AbstractInterpretation::getGepByteOffset(const GepStmt* gep)
 {
     const ICFGNode* node = gep->getICFGNode();
     if (gep->isConstantOffset())
-        return IntervalValue((s64_t)gep->accumulateConstantByteOffset());
+        return IntegerIntervalProjection((s64_t)gep->accumulateConstantByteOffset());
 
-    IntervalValue res(0);
+    IntegerIntervalProjection res(0);
     for (int i = gep->getOffsetVarAndGepTypePairVec().size() - 1; i >= 0; i--)
     {
         const ValVar* idxOperandVar =
@@ -142,14 +142,14 @@ IntervalValue AbstractInterpretation::getGepByteOffset(const GepStmt* gep)
                                    op->getSExtValue()
                                ? op->getSExtValue() * elemByteSize
                                : Options::MaxFieldLimit();
-                res = res + IntervalValue(lb, lb);
+                res = res + IntegerIntervalProjection(lb, lb);
             }
             else
             {
-                IntervalValue idxVal =
+                IntegerIntervalProjection idxVal =
                     getAbsValue(idxOperandVar, node).getInterval();
                 if (idxVal.isBottom())
-                    res = res + IntervalValue(0, 0);
+                    res = res + IntegerIntervalProjection(0, 0);
                 else
                 {
                     s64_t ub =
@@ -164,14 +164,14 @@ IntervalValue AbstractInterpretation::getGepByteOffset(const GepStmt* gep)
                                 idxVal.lb().getIntNumeral()
                             ? elemByteSize * idxVal.lb().getIntNumeral()
                             : Options::MaxFieldLimit();
-                    res = res + IntervalValue(lb, ub);
+                    res = res + IntegerIntervalProjection(lb, ub);
                 }
             }
         }
         else if (const SVFStructType* structOperandType =
                      SVFUtil::dyn_cast<SVFStructType>(idxOperandType))
         {
-            res = res + IntervalValue(gep->getAccessPath().getStructFieldOffset(
+            res = res + IntegerIntervalProjection(gep->getAccessPath().getStructFieldOffset(
                             idxOperandVar, structOperandType));
         }
         else
@@ -182,11 +182,11 @@ IntervalValue AbstractInterpretation::getGepByteOffset(const GepStmt* gep)
     return res;
 }
 
-AddressValue AbstractInterpretation::getGepObjAddrs(const ValVar* pointer,
-                                                    IntervalValue offset)
+EncodedAddressSet AbstractInterpretation::getGepObjAddrs(const ValVar* pointer,
+                                                    IntegerIntervalProjection offset)
 {
     const ICFGNode* node = pointer->getICFGNode();
-    AddressValue gepAddrs;
+    EncodedAddressSet gepAddrs;
     APOffset lb = offset.lb().getIntNumeral() < Options::MaxFieldLimit()
                       ? offset.lb().getIntNumeral()
                       : Options::MaxFieldLimit();
@@ -195,24 +195,24 @@ AddressValue AbstractInterpretation::getGepObjAddrs(const ValVar* pointer,
                       : Options::MaxFieldLimit();
     for (APOffset i = lb; i <= ub; i++)
     {
-        const AbstractValue& addrs = getAbsValue(pointer, node);
+        const ScalarProjection& addrs = getAbsValue(pointer, node);
         for (const auto& addr : addrs.getAddrs())
         {
             s64_t baseObj = objectIdFromAddress(addr);
             assert(SVFUtil::isa<ObjVar>(svfir->getSVFVar(baseObj)) &&
                    "Fail to get the base object address!");
             NodeID gepObj = svfir->getGepObjVar(baseObj, i);
-            gepAddrs.insert(AddressValue::getVirtualMemAddress(gepObj));
+            gepAddrs.insert(EncodedAddressSet::getVirtualMemAddress(gepObj));
         }
     }
     return gepAddrs;
 }
 
-AbstractValue AbstractInterpretation::loadValue(const ValVar* pointer,
+ScalarProjection AbstractInterpretation::loadValue(const ValVar* pointer,
                                                 const ICFGNode* node)
 {
-    const AbstractValue& ptrVal = getAbsValue(pointer, node);
-    AbstractValue res;
+    const ScalarProjection& ptrVal = getAbsValue(pointer, node);
+    ScalarProjection res;
     for (auto addr : ptrVal.getAddrs())
     {
         res.join_with(getMemoryValue(addr, node));
@@ -221,10 +221,10 @@ AbstractValue AbstractInterpretation::loadValue(const ValVar* pointer,
 }
 
 void AbstractInterpretation::storeValue(const ValVar* pointer,
-                                        const AbstractValue& val,
+                                        const ScalarProjection& val,
                                         const ICFGNode* node)
 {
-    const AbstractValue& ptrVal = getAbsValue(pointer, node);
+    const ScalarProjection& ptrVal = getAbsValue(pointer, node);
     for (auto addr : ptrVal.getAddrs())
         updateMemoryValue(addr, val, node);
 }
@@ -232,7 +232,7 @@ void AbstractInterpretation::storeValue(const ValVar* pointer,
 const SVFType* AbstractInterpretation::getPointeeElement(const ObjVar* var,
                                                          const ICFGNode* node)
 {
-    const AbstractValue& ptrVal = getAbsValue(var, node);
+    const ScalarProjection& ptrVal = getAbsValue(var, node);
     if (!ptrVal.isAddr())
         return nullptr;
     for (auto addr : ptrVal.getAddrs())
@@ -261,10 +261,10 @@ u32_t AbstractInterpretation::getAllocaInstByteSize(const AddrStmt* addr)
             u64_t res = elementSize;
             for (const SVFVar* value : sizes)
             {
-                const AbstractValue& sizeVal = getAbsValue(value, node);
-                IntervalValue itv = sizeVal.getInterval();
+                const ScalarProjection& sizeVal = getAbsValue(value, node);
+                IntegerIntervalProjection itv = sizeVal.getInterval();
                 if (itv.isBottom())
-                    itv = IntervalValue(Options::MaxFieldLimit());
+                    itv = IntegerIntervalProjection(Options::MaxFieldLimit());
                 res = res * itv.ub().getIntNumeral() > Options::MaxFieldLimit()
                           ? Options::MaxFieldLimit()
                           : res * itv.ub().getIntNumeral();

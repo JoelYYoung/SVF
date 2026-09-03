@@ -29,7 +29,7 @@
 #include <AE/Svfexe/AEDetector.h>
 #include <AE/Svfexe/AbsExtAPI.h>
 #include <AE/Svfexe/AbstractInterpretation.h>
-#include "AE/Core/AddressValue.h"
+#include "AE/Core/ScalarProjection.h"
 
 using namespace SVF;
 /**
@@ -55,12 +55,12 @@ void BufOverflowDetector::detect(const ICFGNode* node)
                 SVFIR* svfir = PAG::getPAG();
 
                 // Update the GEP object offset from its base
-                const AbstractValue& lhsVal = ae.getAbsValue(gep->getLHSVar(), node);
-                const AbstractValue& rhsVal = ae.getAbsValue(gep->getRHSVar(), node);
+                const ScalarProjection& lhsVal = ae.getAbsValue(gep->getLHSVar(), node);
+                const ScalarProjection& rhsVal = ae.getAbsValue(gep->getRHSVar(), node);
                 updateGepObjOffsetFromBase(node, lhsVal.getAddrs(), rhsVal.getAddrs(),
                                            ae.getGepByteOffset(gep));
 
-                const AddressValue& objAddrs = rhsVal.getAddrs();
+                const EncodedAddressSet& objAddrs = rhsVal.getAddrs();
                 for (const auto& addr : objAddrs)
                 {
                     NodeID objId = AbstractInterpretation::objectIdFromAddress(addr);
@@ -84,7 +84,7 @@ void BufOverflowDetector::detect(const ICFGNode* node)
                     }
 
                     // Calculate access offset and check for potential overflow
-                    IntervalValue accessOffset = getAccessOffset(objId, gep);
+                    IntegerIntervalProjection accessOffset = getAccessOffset(objId, gep);
                     if (accessOffset.ub().getIntNumeral() >= size)
                     {
                         AEException bug(stmt->toString());
@@ -123,10 +123,10 @@ void BufOverflowDetector::handleStubFunctions(const SVF::CallICFGNode* callNode)
         ae.getUtils()->checkpoints.erase(callNode);
         if (callNode->arg_size() < 2)
             return;
-        IntervalValue val = ae.getAbsValue(callNode->getArgument(1), callNode).getInterval();
+        IntegerIntervalProjection val = ae.getAbsValue(callNode->getArgument(1), callNode).getInterval();
         if (val.isBottom())
         {
-            val = IntervalValue(0);
+            val = IntegerIntervalProjection(0);
             assert(false && "SAFE_BUFACCESS size is bottom");
         }
         const ValVar* arg0Val = callNode->getArgument(0);
@@ -148,7 +148,7 @@ void BufOverflowDetector::handleStubFunctions(const SVF::CallICFGNode* callNode)
     {
         ae.getUtils()->checkpoints.erase(callNode);
         if (callNode->arg_size() < 2) return;
-        IntervalValue val = ae.getAbsValue(callNode->getArgument(1), callNode).getInterval();
+        IntegerIntervalProjection val = ae.getAbsValue(callNode->getArgument(1), callNode).getInterval();
         if (val.isBottom())
         {
             assert(false && "UNSAFE_BUFACCESS size is bottom");
@@ -241,7 +241,7 @@ void BufOverflowDetector::detectExtAPI(const CallICFGNode* call)
                                               extAPIBufOverflowCheckRules.at(call->getCalledFunction()->getName());
         for (auto arg : args)
         {
-            IntervalValue offset = ae.getAbsValue(call->getArgument(arg.second), call).getInterval() - IntervalValue(1);
+            IntegerIntervalProjection offset = ae.getAbsValue(call->getArgument(arg.second), call).getInterval() - IntegerIntervalProjection(1);
             const ValVar* argVar = call->getArgument(arg.first);
             if (!canSafelyAccessMemory(argVar, offset, call))
             {
@@ -261,7 +261,7 @@ void BufOverflowDetector::detectExtAPI(const CallICFGNode* call)
                                               extAPIBufOverflowCheckRules.at(call->getCalledFunction()->getName());
         for (auto arg : args)
         {
-            IntervalValue offset = ae.getAbsValue(call->getArgument(arg.second), call).getInterval() - IntervalValue(1);
+            IntegerIntervalProjection offset = ae.getAbsValue(call->getArgument(arg.second), call).getInterval() - IntegerIntervalProjection(1);
             const ValVar* argVar = call->getArgument(arg.first);
             if (!canSafelyAccessMemory(argVar, offset, call))
             {
@@ -302,7 +302,7 @@ void BufOverflowDetector::detectExtAPI(const CallICFGNode* call)
  * @param gep Pointer to the GEP statement.
  * @return The interval value of the access offset.
  */
-IntervalValue BufOverflowDetector::getAccessOffset(SVF::NodeID objId, const SVF::GepStmt* gep)
+IntegerIntervalProjection BufOverflowDetector::getAccessOffset(SVF::NodeID objId, const SVF::GepStmt* gep)
 {
     SVFIR* svfir = PAG::getPAG();
     auto& ae = AbstractInterpretation::getAEInstance();
@@ -319,7 +319,7 @@ IntervalValue BufOverflowDetector::getAccessOffset(SVF::NodeID objId, const SVF:
     else
     {
         assert(SVFUtil::isa<DummyObjVar>(obj) && "Unknown object type");
-        return IntervalValue::top();
+        return IntegerIntervalProjection::top();
     }
 }
 
@@ -333,7 +333,7 @@ IntervalValue BufOverflowDetector::getAccessOffset(SVF::NodeID objId, const SVF:
  * @param objAddrs The addresses of the base objects.
  * @param offset The interval value of the offset.
  */
-void BufOverflowDetector::updateGepObjOffsetFromBase(const SVF::ICFGNode* node, SVF::AddressValue gepAddrs, SVF::AddressValue objAddrs, SVF::IntervalValue offset)
+void BufOverflowDetector::updateGepObjOffsetFromBase(const SVF::ICFGNode* node, SVF::EncodedAddressSet gepAddrs, SVF::EncodedAddressSet objAddrs, SVF::IntegerIntervalProjection offset)
 {
     SVFIR* svfir = PAG::getPAG();
     (void)node;
@@ -374,7 +374,7 @@ void BufOverflowDetector::updateGepObjOffsetFromBase(const SVF::ICFGNode* node, 
                 {
                     if (hasGepObjOffsetFromBase(objVar))
                     {
-                        IntervalValue objOffsetFromBase =
+                        IntegerIntervalProjection objOffsetFromBase =
                             getGepObjOffsetFromBase(objVar);
                         if (!hasGepObjOffsetFromBase(gepObjVar))
                             addToGepObjOffsetFromBase(
@@ -410,7 +410,7 @@ bool BufOverflowDetector::detectStrcpy(const CallICFGNode *call)
     const ValVar* arg0Val = call->getArgument(0);
     const ValVar* arg1Val = call->getArgument(1);
     auto& ae = AbstractInterpretation::getAEInstance();
-    IntervalValue strLen = ae.getUtils()->getStrlen(arg1Val, call);
+    IntegerIntervalProjection strLen = ae.getUtils()->getStrlen(arg1Val, call);
     return canSafelyAccessMemory(arg0Val, strLen, call);
 }
 
@@ -424,18 +424,18 @@ bool BufOverflowDetector::detectStrcat(const CallICFGNode *call)
     {
         const ValVar* arg0Val = call->getArgument(0);
         const ValVar* arg1Val = call->getArgument(1);
-        IntervalValue strLen0 = ae.getUtils()->getStrlen(arg0Val, call);
-        IntervalValue strLen1 = ae.getUtils()->getStrlen(arg1Val, call);
-        IntervalValue totalLen = strLen0 + strLen1;
+        IntegerIntervalProjection strLen0 = ae.getUtils()->getStrlen(arg0Val, call);
+        IntegerIntervalProjection strLen1 = ae.getUtils()->getStrlen(arg1Val, call);
+        IntegerIntervalProjection totalLen = strLen0 + strLen1;
         return canSafelyAccessMemory(arg0Val, totalLen, call);
     }
     else if (std::find(strncatGroup.begin(), strncatGroup.end(), call->getCalledFunction()->getName()) != strncatGroup.end())
     {
         const ValVar* arg0Val = call->getArgument(0);
         const ValVar* arg2Val = call->getArgument(2);
-        IntervalValue arg2Num = ae.getAbsValue(arg2Val, call).getInterval();
-        IntervalValue strLen0 = ae.getUtils()->getStrlen(arg0Val, call);
-        IntervalValue totalLen = strLen0 + arg2Num;
+        IntegerIntervalProjection arg2Num = ae.getAbsValue(arg2Val, call).getInterval();
+        IntegerIntervalProjection strLen0 = ae.getUtils()->getStrlen(arg0Val, call);
+        IntegerIntervalProjection totalLen = strLen0 + arg2Num;
         return canSafelyAccessMemory(arg0Val, totalLen, call);
     }
     else
@@ -456,15 +456,15 @@ bool BufOverflowDetector::detectStrcat(const CallICFGNode *call)
  * @param len The interval value representing the length of the memory access.
  * @return True if the memory access is safe, false otherwise.
  */
-bool BufOverflowDetector::canSafelyAccessMemory(const SVF::ValVar* value, const SVF::IntervalValue& len, const ICFGNode* node)
+bool BufOverflowDetector::canSafelyAccessMemory(const SVF::ValVar* value, const SVF::IntegerIntervalProjection& len, const ICFGNode* node)
 {
     SVFIR* svfir = PAG::getPAG();
     auto& ae = AbstractInterpretation::getAEInstance();
 
-    AbstractValue ptrVal = ae.getAbsValue(value, node);
+    ScalarProjection ptrVal = ae.getAbsValue(value, node);
     if (!ptrVal.isAddr())
     {
-        ptrVal = AddressValue(BlackHoleObjAddr);
+        ptrVal = EncodedAddressSet(BlackHoleObjAddr);
         ae.updateAbsValue(value, ptrVal, node);
     }
     for (const auto& addr : ptrVal.getAddrs())
@@ -489,7 +489,7 @@ bool BufOverflowDetector::canSafelyAccessMemory(const SVF::ValVar* value, const 
             }
         }
 
-        IntervalValue offset(0);
+        IntegerIntervalProjection offset(0);
         // if the object is a GepObjVar, get the offset from the base object
         if (SVFUtil::isa<GepObjVar>(svfir->getSVFVar(objId)))
         {
@@ -668,7 +668,7 @@ void NullptrDerefDetector::detectExtAPI(const CallICFGNode* call)
 bool NullptrDerefDetector::canSafelyDerefPtr(const ValVar* value, const ICFGNode* node)
 {
     auto& ae = AbstractInterpretation::getAEInstance();
-    const AbstractValue& AbsVal = ae.getAbsValue(value, node);
+    const ScalarProjection& AbsVal = ae.getAbsValue(value, node);
     if (isUninit(AbsVal)) return false;
     if (!AbsVal.isAddr()) return true;
     for (const auto &addr: AbsVal.getAddrs())

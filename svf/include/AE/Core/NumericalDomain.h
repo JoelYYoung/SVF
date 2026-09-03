@@ -1,20 +1,323 @@
-//===- NumericalDomain.h -- Shared numerical-domain API --------*- C++ -*-===//
+//===- NumericalDomain.h -- Numerical properties and Box domain -*- C++ -*-===//
 
 #ifndef SVF_AE_NUMERICAL_DOMAIN_H
 #define SVF_AE_NUMERICAL_DOMAIN_H
 
-#include "AE/Core/AbstractState.h"
-#include "AE/Core/LinearConstraint.h"
+#include "AE/Core/AbstractDomain.h"
+#include "AE/Core/VariableEnvironment.h"
 
+#include <gmpxx.h>
+#include <mpfr.h>
+
+#include <array>
 #include <cstdint>
 #include <map>
 #include <memory>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
 
 namespace SVF::AbstractDomain
 {
+
+class Integer
+{
+public:
+    Integer();
+    explicit Integer(std::int64_t value);
+    explicit Integer(const std::string& value);
+
+    const mpz_class& value() const
+    {
+        return value_;
+    }
+    std::string toString() const;
+
+    friend bool operator==(const Integer& lhs, const Integer& rhs)
+    {
+        return lhs.value_ == rhs.value_;
+    }
+
+private:
+    mpz_class value_;
+};
+
+class Rational
+{
+public:
+    Rational();
+    explicit Rational(std::int64_t value);
+    explicit Rational(const Integer& value);
+    explicit Rational(const std::string& value);
+    Rational(const Integer& numerator, const Integer& denominator);
+
+    static Rational fromRaw(const mpq_class& value);
+
+    const mpq_class& value() const
+    {
+        return value_;
+    }
+    bool isZero() const
+    {
+        return value_ == 0;
+    }
+    int sign() const
+    {
+        return mpq_sgn(value_.get_mpq_t());
+    }
+    std::string toString() const;
+
+    Rational floor() const;
+    Rational ceil() const;
+    Rational dividedByPowerOfTwo(unsigned exponent) const;
+    Rational& assignSum(const Rational& lhs, const Rational& rhs);
+    Rational& divideByPowerOfTwoInPlace(unsigned exponent);
+
+    Rational& operator+=(const Rational& rhs);
+    Rational& operator-=(const Rational& rhs);
+    Rational& operator*=(const Rational& rhs);
+    Rational& operator/=(const Rational& rhs);
+
+    friend Rational operator+(Rational lhs, const Rational& rhs)
+    {
+        return lhs += rhs;
+    }
+    friend Rational operator-(Rational lhs, const Rational& rhs)
+    {
+        return lhs -= rhs;
+    }
+    friend Rational operator*(Rational lhs, const Rational& rhs)
+    {
+        return lhs *= rhs;
+    }
+    friend Rational operator/(Rational lhs, const Rational& rhs)
+    {
+        return lhs /= rhs;
+    }
+    friend Rational operator-(const Rational& value)
+    {
+        return Rational::fromRaw(-value.value_);
+    }
+
+    friend bool operator==(const Rational& lhs, const Rational& rhs)
+    {
+        return lhs.value_ == rhs.value_;
+    }
+    friend bool operator!=(const Rational& lhs, const Rational& rhs)
+    {
+        return !(lhs == rhs);
+    }
+    friend bool operator<(const Rational& lhs, const Rational& rhs)
+    {
+        return lhs.value_ < rhs.value_;
+    }
+    friend bool operator<=(const Rational& lhs, const Rational& rhs)
+    {
+        return lhs.value_ <= rhs.value_;
+    }
+    friend bool operator>(const Rational& lhs, const Rational& rhs)
+    {
+        return rhs < lhs;
+    }
+    friend bool operator>=(const Rational& lhs, const Rational& rhs)
+    {
+        return rhs <= lhs;
+    }
+
+private:
+    explicit Rational(mpq_class value, int);
+    mpq_class value_;
+};
+
+/// An ordered extended-rational endpoint.  For a finite upper bound, strict
+/// means "< value" and non-strict means "<= value".  At an equal numeric
+/// value a strict bound is tighter than a non-strict one.
+class Bound
+{
+public:
+    enum class Kind
+    {
+        MinusInfinity,
+        Finite,
+        PlusInfinity
+    };
+
+    Bound();
+    static Bound minusInfinity();
+    static Bound finite(Rational value, bool strict = false);
+    static Bound plusInfinity();
+
+    Kind kind() const
+    {
+        return kind_;
+    }
+    bool isFinite() const
+    {
+        return kind_ == Kind::Finite;
+    }
+    bool isMinusInfinity() const
+    {
+        return kind_ == Kind::MinusInfinity;
+    }
+    bool isPlusInfinity() const
+    {
+        return kind_ == Kind::PlusInfinity;
+    }
+    const Rational& value() const;
+    bool isStrict() const
+    {
+        return strict_;
+    }
+
+    /// Ordering used by upper bounds: tighter/smaller first.
+    static int compare(const Bound& lhs, const Bound& rhs);
+    static Bound min(const Bound& lhs, const Bound& rhs);
+    static Bound max(const Bound& lhs, const Bound& rhs);
+    static Bound add(const Bound& lhs, const Bound& rhs);
+    Bound& assignSum(const Bound& lhs, const Bound& rhs);
+    Bound& divideByTwoInPlace();
+    static Bound divideByTwo(const Bound& bound);
+    static Bound divideByPositive(const Bound& bound, const Rational& divisor);
+
+    std::string toString() const;
+
+    friend bool operator==(const Bound& lhs, const Bound& rhs)
+    {
+        return compare(lhs, rhs) == 0;
+    }
+    friend bool operator!=(const Bound& lhs, const Bound& rhs)
+    {
+        return !(lhs == rhs);
+    }
+    friend bool operator<(const Bound& lhs, const Bound& rhs)
+    {
+        return compare(lhs, rhs) < 0;
+    }
+    friend bool operator<=(const Bound& lhs, const Bound& rhs)
+    {
+        return compare(lhs, rhs) <= 0;
+    }
+
+private:
+    Bound(Kind kind, Rational value, bool strict);
+
+    Kind kind_ = Kind::PlusInfinity;
+    Rational value_;
+    bool strict_ = false;
+};
+
+class Interval
+{
+public:
+    Interval();
+    Interval(Bound lower, Bound upper);
+
+    static Interval top();
+    static Interval singleton(const Rational& value);
+
+    const Bound& lower() const
+    {
+        return lower_;
+    }
+    const Bound& upper() const
+    {
+        return upper_;
+    }
+    bool isTop() const;
+    bool isBottom() const;
+    std::string toString() const;
+
+    friend bool operator==(const Interval& lhs, const Interval& rhs)
+    {
+        return lhs.lower_ == rhs.lower_ && lhs.upper_ == rhs.upper_;
+    }
+    friend bool operator!=(const Interval& lhs, const Interval& rhs)
+    {
+        return !(lhs == rhs);
+    }
+
+private:
+    Bound lower_;
+    Bound upper_;
+};
+
+enum class RoundingMode
+{
+    NearestTiesToEven,
+    TowardZero,
+    TowardPositive,
+    TowardNegative
+};
+
+class MpfrValue
+{
+public:
+    explicit MpfrValue(mpfr_prec_t precision);
+    MpfrValue(const MpfrValue& rhs);
+    MpfrValue(MpfrValue&& rhs) noexcept;
+    MpfrValue& operator=(const MpfrValue& rhs);
+    MpfrValue& operator=(MpfrValue&& rhs) noexcept;
+    ~MpfrValue();
+
+    mpfr_ptr raw()
+    {
+        return value_;
+    }
+    mpfr_srcptr raw() const
+    {
+        return value_;
+    }
+    mpfr_prec_t precision() const
+    {
+        return mpfr_get_prec(value_);
+    }
+
+    void set(const Rational& value, mpfr_rnd_t rounding);
+    Rational toRational() const;
+
+private:
+    mpfr_t value_;
+};
+
+/// Ground MPFR operations used at the floating-semantics boundary.  The
+/// returned rational is the exact dyadic value of the rounded MPFR result.
+class FloatSemantics
+{
+public:
+    static Rational add(const Rational& lhs, const Rational& rhs,
+                        unsigned significandBits, RoundingMode rounding);
+    static Rational subtract(const Rational& lhs, const Rational& rhs,
+                             unsigned significandBits, RoundingMode rounding);
+    static Rational multiply(const Rational& lhs, const Rational& rhs,
+                             unsigned significandBits, RoundingMode rounding);
+    static Rational divide(const Rational& lhs, const Rational& rhs,
+                           unsigned significandBits, RoundingMode rounding);
+
+private:
+    enum class BinaryOperation
+    {
+        Add,
+        Subtract,
+        Multiply,
+        Divide
+    };
+
+    static Rational evaluate(BinaryOperation operation, const Rational& lhs,
+                             const Rational& rhs, unsigned significandBits,
+                             RoundingMode rounding);
+};
+
+class LinearExpression;
+class TreeExpression;
+class LinearConstraint;
+class TreeConstraint;
+struct LinearAssignment;
+struct TreeAssignment;
+struct WideningPolicy;
+using LinearAssignmentList = std::vector<LinearAssignment>;
+using TreeAssignmentList = std::vector<TreeAssignment>;
+using LinearConstraintSet = std::vector<LinearConstraint>;
 
 enum class ApproximationKind
 {
@@ -94,57 +397,17 @@ struct IntervalBox
     std::map<Variable, Interval> bounds;
 };
 
-struct WideningPolicy
-{
-    WideningPolicy() = default;
-
-    explicit WideningPolicy(std::vector<Rational> thresholdValues)
-        : thresholds(std::move(thresholdValues))
-    {
-    }
-
-    WideningPolicy(std::vector<Rational> thresholdValues,
-                   LinearConstraintSet linearThresholdValues)
-        : thresholds(std::move(thresholdValues)),
-          linearThresholds(std::move(linearThresholdValues))
-    {
-    }
-
-    /// Constants used to delay a bound's jump to infinity.
-    std::vector<Rational> thresholds;
-    /// General linear thresholds retained by a widening when both operands
-    /// entail them. Domains that cannot represent a threshold may ignore it
-    /// conservatively when the selected domain cannot represent one.
-    LinearConstraintSet linearThresholds;
-};
-
-struct LinearAssignment
-{
-    Variable target;
-    LinearExpression expression;
-};
-
-using LinearAssignmentList = std::vector<LinearAssignment>;
-
-struct TreeAssignment
-{
-    Variable target;
-    TreeExpression expression;
-};
-
-using TreeAssignmentList = std::vector<TreeAssignment>;
-
-/// Common interface for numerical abstract states. The representation and
+/// Common interface for numerical abstract properties. The representation and
 /// lattice algorithms remain domain-specific; clients such as the SVF adapter
 /// and test oracles only need this transfer/query surface.
-class NumericalState : public AbstractState
+class NumericalDomain : public AbstractDomain
 {
 public:
     using RawBuffer = std::vector<std::uint8_t>;
 
-    ~NumericalState() override = default;
+    ~NumericalDomain() override = default;
 
-    /// Return a deterministic semantic hash. Compatible states that are
+    /// Return a deterministic semantic hash. Compatible properties that are
     /// equivalent according to isEquivalentTo() have the same hash. Hash
     /// equality is not a substitute for an exact equivalence check.
     std::uint64_t hash() const;
@@ -154,9 +417,9 @@ public:
     /// buffer. Diagnostic sinks are observational and are not serialized.
     RawBuffer serializeRaw() const;
 
-    /// Restore a Box state from serializeRaw().
+    /// Restore a Box property from serializeRaw().
     /// Malformed, truncated, corrupt, or unsupported data is rejected.
-    static std::unique_ptr<NumericalState> deserializeRaw(
+    static std::unique_ptr<NumericalDomain> deserializeRaw(
         const RawBuffer& buffer);
 
     virtual DomainCapabilities capabilities() const = 0;
@@ -243,7 +506,7 @@ public:
     /// Align both states to the union variable schema in one API-level
     /// operation. Lattice compatibility is still checked later.
     VariableEnvironment unifyEnvironmentWith(
-        NumericalState& other, bool initializeNewVariablesToZero = false);
+        NumericalDomain& other, bool initializeNewVariablesToZero = false);
 
 protected:
     /// Evaluate nonlinear and finite IEEE trees by sound interval semantics,
@@ -263,6 +526,140 @@ protected:
 
 private:
     mutable OperationMetadata lastOperation_;
+};
+
+struct BoxSemanticConfig
+{
+    bool integerTightening = true;
+    std::shared_ptr<DiagnosticSink> diagnostics;
+
+    bool operationCompatible(const BoxSemanticConfig& other) const
+    {
+        return integerTightening == other.integerTightening;
+    }
+};
+
+/// Non-relational numerical property with one exact-rational interval per
+/// environment dimension.
+class BoxDomain final : public NumericalDomain
+{
+public:
+    using NumericalDomain::assignParallel;
+    using NumericalDomain::bound;
+    using NumericalDomain::substitute;
+    using NumericalDomain::substituteParallel;
+
+    static BoxDomain top(const VariableEnvironment& environment,
+                         const BoxSemanticConfig& config = {});
+    static BoxDomain bottom(const VariableEnvironment& environment,
+                            const BoxSemanticConfig& config = {});
+    static BoxDomain fromBox(const VariableEnvironment& environment,
+                             const IntervalBox& box,
+                             const BoxSemanticConfig& config = {});
+    static BoxDomain fromConstraints(const VariableEnvironment& environment,
+                                     const LinearConstraintSet& constraints,
+                                     const BoxSemanticConfig& config = {});
+
+    BoxDomain(const BoxDomain& other);
+    BoxDomain(BoxDomain&& other) noexcept = default;
+    BoxDomain& operator=(const BoxDomain& other) = default;
+    BoxDomain& operator=(BoxDomain&& other) noexcept = default;
+
+    DomainKind kind() const noexcept override
+    {
+        return DomainKind::Box;
+    }
+    std::unique_ptr<AbstractDomain> clone() const override;
+    DomainCapabilities capabilities() const override;
+
+    const VariableEnvironment& environment() const override
+    {
+        return environment_;
+    }
+    const BoxSemanticConfig& config() const
+    {
+        return config_;
+    }
+
+    void assign(Variable target, const LinearExpression& expression) override;
+    void assign(Variable target, const TreeExpression& expression) override;
+    void assignParallel(const LinearAssignmentList& assignments) override;
+    void substitute(Variable target,
+                    const LinearExpression& expression) override;
+    void substituteParallel(const LinearAssignmentList& assignments) override;
+    void assume(const LinearConstraint& constraint) override;
+    void assume(const TreeConstraint& constraint) override;
+    void forget(Variable variable) override;
+    void changeEnvironment(const VariableEnvironment& environment,
+                           bool initializeNewVariablesToZero = false) override;
+    void expand(Variable source,
+                const std::vector<VariableDeclaration>& copies) override;
+    void fold(Variable target, const std::vector<Variable>& folded) override;
+
+    CheckResult entails(const LinearConstraint& constraint) const override;
+    Interval bound(Variable variable) const override;
+    Interval bound(const LinearExpression& expression) const override;
+    IntervalBox toBox() const override;
+    LinearConstraintSet toConstraints() const override;
+    void close() override;
+    void canonicalize() override;
+
+    BoxDomain join(const BoxDomain& other) const;
+    BoxDomain meet(const BoxDomain& other) const;
+    BoxDomain widen(const BoxDomain& next) const;
+    BoxDomain widen(const BoxDomain& next, const WideningPolicy& policy) const;
+    BoxDomain narrow(const BoxDomain& next) const;
+
+private:
+    static constexpr std::size_t BoundsPerPage = 64;
+
+    struct BoundPage
+    {
+        std::array<std::optional<Interval>, BoundsPerPage> bounds;
+    };
+
+    struct BoundPageEntry
+    {
+        std::size_t index;
+        std::shared_ptr<BoundPage> page;
+    };
+
+    using BoundPageDirectory = std::vector<BoundPageEntry>;
+    BoxDomain(VariableEnvironment environment, BoxSemanticConfig config,
+              bool bottom);
+
+    const void* dynamicTypeToken() const noexcept override
+    {
+        return staticTypeToken<BoxDomain>();
+    }
+    bool hasCompatibleDomain(const AbstractDomain& other) const override;
+    void joinDomain(const AbstractDomain& other) override;
+    void meetDomain(const AbstractDomain& other) override;
+    void widenDomain(const AbstractDomain& next) override;
+    void narrowDomain(const AbstractDomain& next) override;
+    bool isBottomDomain() const override;
+    bool isTopDomain() const override;
+    bool leqDomain(const AbstractDomain& other) const override;
+    std::string domainToString() const override;
+
+    const BoxDomain& requireBox(const AbstractDomain& other) const;
+    const Interval& boundAt(Dimension dimension) const;
+    BoundPage& writablePage(std::size_t pageIndex);
+    void eraseBound(Dimension dimension);
+    static bool pageIsEmpty(const BoundPage& page);
+    std::vector<Dimension> boundedDimensions() const;
+    void makeBottom();
+    void canonicalize(Dimension dimension);
+    void setBound(Dimension dimension, Interval interval);
+    void report(OperationKind operation, ApproximationKind approximation,
+                std::string reason, bool best = true) const;
+    VariableEnvironment environment_;
+    BoxSemanticConfig config_;
+    /// Missing pages and empty slots denote top. Active pages are kept sorted,
+    /// shared by property copies, and detached only when one of their bounds
+    /// changes.
+    BoundPageDirectory boundPages_;
+    bool bottom_ = false;
 };
 
 } // namespace SVF::AbstractDomain

@@ -321,12 +321,6 @@ endif()
 # Expose the required ABI flags (e.g., whether RTTI was disabled) in the build & install trees
 target_compile_options(SvfFlags INTERFACE $<$<NOT:$<BOOL:${SVF_ENABLE_RTTI}>>:-fno-rtti>)
 target_link_options(SvfFlags INTERFACE $<$<NOT:$<BOOL:${SVF_ENABLE_RTTI}>>:-fno-rtti>)
-if(TARGET AbstractStateCore)
-  target_compile_options(
-    AbstractStateCore PUBLIC
-    $<$<NOT:$<BOOL:${SVF_ENABLE_RTTI}>>:-fno-rtti>
-  )
-endif()
 if(TARGET AbstractDomainCore)
   target_compile_options(
     AbstractDomainCore PUBLIC

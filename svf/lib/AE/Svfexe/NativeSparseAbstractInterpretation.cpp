@@ -51,16 +51,16 @@ private:
 
 } // namespace
 
-template <typename NumericalStateT>
+template <typename NumericalDomainT>
 NativeSemiSparseAbstractInterpretation<
-    NumericalStateT>::NativeSemiSparseAbstractInterpretation()
+    NumericalDomainT>::NativeSemiSparseAbstractInterpretation()
 {
     this->preAnalysis->initCycleValVars();
 }
 
-template <typename NumericalStateT>
-typename NativeSemiSparseAbstractInterpretation<NumericalStateT>::DenseState
-NativeSemiSparseAbstractInterpretation<NumericalStateT>::flowState(
+template <typename NumericalDomainT>
+typename NativeSemiSparseAbstractInterpretation<NumericalDomainT>::DenseState
+NativeSemiSparseAbstractInterpretation<NumericalDomainT>::flowState(
     const FunObjVar* function, bool bottom) const
 {
     const AD::VariableEnvironment& environment =
@@ -70,12 +70,12 @@ NativeSemiSparseAbstractInterpretation<NumericalStateT>::flowState(
                       this->adapter_.memoryLayout());
 }
 
-template <typename NumericalStateT>
-typename NativeSemiSparseAbstractInterpretation<NumericalStateT>::DenseState&
-NativeSemiSparseAbstractInterpretation<NumericalStateT>::scalarState(
+template <typename NumericalDomainT>
+typename NativeSemiSparseAbstractInterpretation<NumericalDomainT>::DenseState&
+NativeSemiSparseAbstractInterpretation<NumericalDomainT>::scalarState(
     const FunObjVar* function)
 {
-    if constexpr (std::is_same_v<NumericalStateT, AD::BoxState>)
+    if constexpr (std::is_same_v<NumericalDomainT, AD::BoxDomain>)
         function = nullptr;
     auto iterator = scalarStates_.find(function);
     if (iterator == scalarStates_.end())
@@ -86,7 +86,7 @@ NativeSemiSparseAbstractInterpretation<NumericalStateT>::scalarState(
                     function,
                     DenseState(
                         this->makeNumericalTop(
-                            std::is_same_v<NumericalStateT, AD::BoxState>
+                            std::is_same_v<NumericalDomainT, AD::BoxDomain>
                                 ? this->adapter_.allScalarEnvironment()
                                 : this->adapter_.scalarEnvironment(function)),
                         this->adapter_.memoryLayout()))
@@ -95,28 +95,28 @@ NativeSemiSparseAbstractInterpretation<NumericalStateT>::scalarState(
     return iterator->second;
 }
 
-template <typename NumericalStateT>
+template <typename NumericalDomainT>
 const typename NativeSemiSparseAbstractInterpretation<
-    NumericalStateT>::DenseState*
-NativeSemiSparseAbstractInterpretation<NumericalStateT>::findScalarState(
+    NumericalDomainT>::DenseState*
+NativeSemiSparseAbstractInterpretation<NumericalDomainT>::findScalarState(
     const FunObjVar* function) const
 {
-    if constexpr (std::is_same_v<NumericalStateT, AD::BoxState>)
+    if constexpr (std::is_same_v<NumericalDomainT, AD::BoxDomain>)
         function = nullptr;
     const auto iterator = scalarStates_.find(function);
     return iterator == scalarStates_.end() ? nullptr : &iterator->second;
 }
 
-template <typename NumericalStateT>
-const AD::AbstractState* NativeSemiSparseAbstractInterpretation<
-    NumericalStateT>::getScalarAbstractState(const FunObjVar* function) const
+template <typename NumericalDomainT>
+const AD::AbstractDomain* NativeSemiSparseAbstractInterpretation<
+    NumericalDomainT>::getScalarAbstractState(const FunObjVar* function) const
 {
     return findScalarState(function);
 }
 
-template <typename NumericalStateT>
-const AD::AbstractState* NativeSemiSparseAbstractInterpretation<
-    NumericalStateT>::getScalarAbstractState(const ValVar* value) const
+template <typename NumericalDomainT>
+const AD::AbstractDomain* NativeSemiSparseAbstractInterpretation<
+    NumericalDomainT>::getScalarAbstractState(const ValVar* value) const
 {
     if (!value)
         return nullptr;
@@ -126,15 +126,15 @@ const AD::AbstractState* NativeSemiSparseAbstractInterpretation<
                : &iterator->second;
 }
 
-template <typename NumericalStateT>
-void NativeSemiSparseAbstractInterpretation<NumericalStateT>::handleGlobalNode()
+template <typename NumericalDomainT>
+void NativeSemiSparseAbstractInterpretation<NumericalDomainT>::handleGlobalNode()
 {
     Base::handleGlobalNode();
     finalizeAbstractState(this->icfg->getGlobalICFGNode());
 }
 
-template <typename NumericalStateT>
-void NativeSemiSparseAbstractInterpretation<NumericalStateT>::runOnModule()
+template <typename NumericalDomainT>
+void NativeSemiSparseAbstractInterpretation<NumericalDomainT>::runOnModule()
 {
     {
         PhaseTimer timer(sparseProfile_.total, Options::AESparseProfile());
@@ -144,16 +144,16 @@ void NativeSemiSparseAbstractInterpretation<NumericalStateT>::runOnModule()
         reportSparseProfile();
 }
 
-template <typename NumericalStateT>
+template <typename NumericalDomainT>
 const char* NativeSemiSparseAbstractInterpretation<
-    NumericalStateT>::sparseProfileMode() const
+    NumericalDomainT>::sparseProfileMode() const
 {
     return "semi";
 }
 
-template <typename NumericalStateT>
+template <typename NumericalDomainT>
 void NativeSemiSparseAbstractInterpretation<
-    NumericalStateT>::reportSparseProfile() const
+    NumericalDomainT>::reportSparseProfile() const
 {
     const std::ios::fmtflags previousFlags = std::cout.flags();
     const std::streamsize previousPrecision = std::cout.precision();
@@ -188,28 +188,28 @@ void NativeSemiSparseAbstractInterpretation<
     std::cout.precision(previousPrecision);
 }
 
-template <typename NumericalStateT>
-AbstractValue NativeSemiSparseAbstractInterpretation<
-    NumericalStateT>::getAbsValue(const ValVar* value, const ICFGNode* node)
+template <typename NumericalDomainT>
+ScalarProjection NativeSemiSparseAbstractInterpretation<
+    NumericalDomainT>::getAbsValue(const ValVar* value, const ICFGNode* node)
 {
     (void)node;
     if (const auto* integer = SVFUtil::dyn_cast<ConstIntValVar>(value))
-        return IntervalValue(integer->getSExtValue());
+        return IntegerIntervalProjection(integer->getSExtValue());
     if (!value || !this->adapter_.contains(*value))
-        return IntervalValue::top();
+        return IntegerIntervalProjection::top();
 
     DenseState& scalars = scalarState(value->getFunction());
     const AD::Variable variable = this->adapter_.variable(*value);
     if (!scalars.shapes().isDefined(variable))
-        this->assignValue(scalars, variable, IntervalValue::top());
-    AbstractValue result = this->projectValue(scalars, variable);
+        this->assignValue(scalars, variable, IntegerIntervalProjection::top());
+    ScalarProjection result = this->projectValue(scalars, variable);
     if (value->isPointer())
-        result.interval = IntervalValue::bottom();
+        result.interval = IntegerIntervalProjection::bottom();
     return result;
 }
 
-template <typename NumericalStateT>
-bool NativeSemiSparseAbstractInterpretation<NumericalStateT>::hasAbsValue(
+template <typename NumericalDomainT>
+bool NativeSemiSparseAbstractInterpretation<NumericalDomainT>::hasAbsValue(
     const ValVar* value, const ICFGNode* node) const
 {
     (void)node;
@@ -222,9 +222,9 @@ bool NativeSemiSparseAbstractInterpretation<NumericalStateT>::hasAbsValue(
            scalars->shapes().isDefined(this->adapter_.variable(*value));
 }
 
-template <typename NumericalStateT>
-void NativeSemiSparseAbstractInterpretation<NumericalStateT>::updateAbsValue(
-    const ValVar* value, const AbstractValue& abstractValue,
+template <typename NumericalDomainT>
+void NativeSemiSparseAbstractInterpretation<NumericalDomainT>::updateAbsValue(
+    const ValVar* value, const ScalarProjection& abstractValue,
     const ICFGNode* node)
 {
     (void)node;
@@ -233,8 +233,8 @@ void NativeSemiSparseAbstractInterpretation<NumericalStateT>::updateAbsValue(
                           this->adapter_.variable(*value), abstractValue);
 }
 
-template <typename NumericalStateT>
-void NativeSemiSparseAbstractInterpretation<NumericalStateT>::copyAbstractState(
+template <typename NumericalDomainT>
+void NativeSemiSparseAbstractInterpretation<NumericalDomainT>::copyAbstractState(
     const ICFGNode* source, const ICFGNode* destination)
 {
     PhaseTimer timer(sparseProfile_.stateCopy, Options::AESparseProfile());
@@ -246,37 +246,37 @@ void NativeSemiSparseAbstractInterpretation<NumericalStateT>::copyAbstractState(
     this->denseTrace_.insert_or_assign(destination, std::move(copy));
 }
 
-template <typename NumericalStateT>
+template <typename NumericalDomainT>
 void NativeSemiSparseAbstractInterpretation<
-    NumericalStateT>::resetAbstractState(const ICFGNode* node)
+    NumericalDomainT>::resetAbstractState(const ICFGNode* node)
 {
     this->denseTrace_.insert_or_assign(node, flowState(node->getFun()));
 }
 
-template <typename NumericalStateT>
+template <typename NumericalDomainT>
 void NativeSemiSparseAbstractInterpretation<
-    NumericalStateT>::finalizeAbstractState(const ICFGNode* node)
+    NumericalDomainT>::finalizeAbstractState(const ICFGNode* node)
 {
     PhaseTimer timer(sparseProfile_.stateFiltering, Options::AESparseProfile());
     DenseState& denseState = this->ensureState(node);
     forgetActiveScalarValues(denseState);
 }
 
-template <typename NumericalStateT>
-bool NativeSemiSparseAbstractInterpretation<NumericalStateT>::
+template <typename NumericalDomainT>
+bool NativeSemiSparseAbstractInterpretation<NumericalDomainT>::
     isAbstractStateEquivalent(const ICFGNode* node,
-                              const AD::AbstractState& snapshot) const
+                              const AD::AbstractDomain& snapshot) const
 {
     PhaseTimer timer(sparseProfile_.stateEquivalence,
                      Options::AESparseProfile());
     return Base::isAbstractStateEquivalent(node, snapshot);
 }
 
-template <typename NumericalStateT>
+template <typename NumericalDomainT>
 void NativeSemiSparseAbstractInterpretation<
-    NumericalStateT>::forgetActiveScalarValues(DenseState& denseState) const
+    NumericalDomainT>::forgetActiveScalarValues(DenseState& denseState) const
 {
-    if constexpr (std::is_same_v<NumericalStateT, AD::BoxState>)
+    if constexpr (std::is_same_v<NumericalDomainT, AD::BoxDomain>)
     {
         const std::vector<AD::Variable> defined =
             denseState.shapes().definedVariables(
@@ -296,9 +296,9 @@ void NativeSemiSparseAbstractInterpretation<
     }
 }
 
-template <typename NumericalStateT>
+template <typename NumericalDomainT>
 void NativeSemiSparseAbstractInterpretation<
-    NumericalStateT>::forgetMemoryValues(DenseState& denseState) const
+    NumericalDomainT>::forgetMemoryValues(DenseState& denseState) const
 {
     const std::vector<AD::Variable> defined =
         denseState.shapes().definedVariables(
@@ -310,14 +310,14 @@ void NativeSemiSparseAbstractInterpretation<
     }
 }
 
-template <typename NumericalStateT>
+template <typename NumericalDomainT>
 void NativeSemiSparseAbstractInterpretation<
-    NumericalStateT>::applyScalarCheckpoint(DenseState& denseState,
+    NumericalDomainT>::applyScalarCheckpoint(DenseState& denseState,
                                             const DenseState& checkpoint)
 {
     PhaseTimer timer(sparseProfile_.scalarCheckpoint,
                      Options::AESparseProfile());
-    if constexpr (std::is_same_v<NumericalStateT, AD::BoxState>)
+    if constexpr (std::is_same_v<NumericalDomainT, AD::BoxDomain>)
     {
         const std::vector<AD::Variable> defined =
             checkpoint.shapes().definedVariables(
@@ -329,12 +329,12 @@ void NativeSemiSparseAbstractInterpretation<
                 continue;
             if (!denseState.numerical().environment().contains(variable))
                 this->ensureVariable(denseState, variable);
-            const AbstractValue value =
+            const ScalarProjection value =
                 this->projectValue(checkpoint, variable);
             if (!value.isInterval())
                 continue;
             this->constrainInterval(denseState, variable, value.getInterval());
-            denseState.pointers().assign(variable, AD::PointeeSet::bottom());
+            denseState.addresses().assign(variable, AD::AddressSet::bottom());
             denseState.shapes().assign(variable, true);
         }
         return;
@@ -356,8 +356,8 @@ void NativeSemiSparseAbstractInterpretation<
     denseState.numerical().meetWith(scalar.numerical());
 }
 
-template <typename NumericalStateT>
-void NativeSemiSparseAbstractInterpretation<NumericalStateT>::materializeValue(
+template <typename NumericalDomainT>
+void NativeSemiSparseAbstractInterpretation<NumericalDomainT>::materializeValue(
     DenseState& denseState, const ValVar* value, const ICFGNode* node)
 {
     PhaseTimer timer(sparseProfile_.scalarMaterialization,
@@ -368,8 +368,8 @@ void NativeSemiSparseAbstractInterpretation<NumericalStateT>::materializeValue(
     if (denseState.shapes().isDefined(variable))
         return;
     auto materializeFacets = [&]() {
-        const AbstractValue projected = getAbsValue(value, node);
-        AD::PointeeSet addresses = AD::PointeeSet::bottom();
+        const ScalarProjection projected = getAbsValue(value, node);
+        AD::AddressSet addresses = AD::AddressSet::bottom();
         for (u32_t address : projected.getAddrs())
         {
             const auto* object = SVFUtil::dyn_cast<ObjVar>(
@@ -377,10 +377,10 @@ void NativeSemiSparseAbstractInterpretation<NumericalStateT>::materializeValue(
             if (object && this->adapter_.contains(*object))
                 addresses.insert(this->adapter_.location(*object));
         }
-        denseState.pointers().assign(variable, std::move(addresses));
+        denseState.addresses().assign(variable, std::move(addresses));
         denseState.shapes().assign(variable, projected.isInterval());
     };
-    if constexpr (!std::is_same_v<NumericalStateT, AD::BoxState>)
+    if constexpr (!std::is_same_v<NumericalDomainT, AD::BoxDomain>)
     {
         const auto checkpoint = scalarCheckpoints_.find(value);
         if (checkpoint != scalarCheckpoints_.end())
@@ -401,20 +401,20 @@ void NativeSemiSparseAbstractInterpretation<NumericalStateT>::materializeValue(
     this->assignValue(denseState, variable, getAbsValue(value, node));
 }
 
-template <typename NumericalStateT>
-AbstractValue NativeSemiSparseAbstractInterpretation<
-    NumericalStateT>::loadValue(const ValVar* pointer, const ICFGNode* node)
+template <typename NumericalDomainT>
+ScalarProjection NativeSemiSparseAbstractInterpretation<
+    NumericalDomainT>::loadValue(const ValVar* pointer, const ICFGNode* node)
 {
-    AbstractValue result = Base::loadValue(pointer, node);
+    ScalarProjection result = Base::loadValue(pointer, node);
     if (pointer && this->adapter_.contains(*pointer))
         this->forgetValue(this->ensureState(node),
                           this->adapter_.variable(*pointer));
     return result;
 }
 
-template <typename NumericalStateT>
-void NativeSemiSparseAbstractInterpretation<NumericalStateT>::storeValue(
-    const ValVar* pointer, const AbstractValue& value, const ICFGNode* node)
+template <typename NumericalDomainT>
+void NativeSemiSparseAbstractInterpretation<NumericalDomainT>::storeValue(
+    const ValVar* pointer, const ScalarProjection& value, const ICFGNode* node)
 {
     Base::storeValue(pointer, value, node);
     if (pointer && this->adapter_.contains(*pointer))
@@ -422,24 +422,24 @@ void NativeSemiSparseAbstractInterpretation<NumericalStateT>::storeValue(
                           this->adapter_.variable(*pointer));
 }
 
-template <typename NumericalStateT>
+template <typename NumericalDomainT>
 void NativeSemiSparseAbstractInterpretation<
-    NumericalStateT>::filterPropagatedState(DenseState& denseState) const
+    NumericalDomainT>::filterPropagatedState(DenseState& denseState) const
 {
     (void)denseState;
 }
 
-template <typename NumericalStateT>
+template <typename NumericalDomainT>
 void NativeSemiSparseAbstractInterpretation<
-    NumericalStateT>::collectMemoryBranchRefinement(const IntraCFGEdge* edge,
+    NumericalDomainT>::collectMemoryBranchRefinement(const IntraCFGEdge* edge,
                                                      DenseState& state)
 {
     this->collectBranchRefinement(edge, state);
 }
 
-template <typename NumericalStateT>
+template <typename NumericalDomainT>
 bool NativeSemiSparseAbstractInterpretation<
-    NumericalStateT>::mergeStatesFromPredecessors(const ICFGNode* node)
+    NumericalDomainT>::mergeStatesFromPredecessors(const ICFGNode* node)
 {
     PhaseTimer timer(sparseProfile_.stateMerge, Options::AESparseProfile());
     DenseState merged = flowState(node->getFun(), true);
@@ -545,9 +545,9 @@ bool NativeSemiSparseAbstractInterpretation<
     return true;
 }
 
-template <typename NumericalStateT>
-std::unique_ptr<AD::AbstractState> NativeSemiSparseAbstractInterpretation<
-    NumericalStateT>::cloneCycleHeadState(const ICFGCycleWTO* cycle)
+template <typename NumericalDomainT>
+std::unique_ptr<AD::AbstractDomain> NativeSemiSparseAbstractInterpretation<
+    NumericalDomainT>::cloneCycleHeadState(const ICFGCycleWTO* cycle)
 {
     PhaseTimer timer(sparseProfile_.cycle, Options::AESparseProfile());
     const ICFGNode* head = cycle->head()->getICFGNode();
@@ -563,9 +563,9 @@ std::unique_ptr<AD::AbstractState> NativeSemiSparseAbstractInterpretation<
     return std::make_unique<DenseState>(std::move(snapshot));
 }
 
-template <typename NumericalStateT>
+template <typename NumericalDomainT>
 void NativeSemiSparseAbstractInterpretation<
-    NumericalStateT>::scatterCycleValues(const ICFGCycleWTO* cycle,
+    NumericalDomainT>::scatterCycleValues(const ICFGCycleWTO* cycle,
                                          const DenseState& cycleState)
 {
     for (const ValVar* value : this->preAnalysis->getCycleValVars(cycle))
@@ -580,9 +580,9 @@ void NativeSemiSparseAbstractInterpretation<
     }
 }
 
-template <typename NumericalStateT>
-bool NativeSemiSparseAbstractInterpretation<NumericalStateT>::widenCycleState(
-    const AD::AbstractState& previous, const AD::AbstractState& current,
+template <typename NumericalDomainT>
+bool NativeSemiSparseAbstractInterpretation<NumericalDomainT>::widenCycleState(
+    const AD::AbstractDomain& previous, const AD::AbstractDomain& current,
     const ICFGCycleWTO* cycle)
 {
     PhaseTimer timer(sparseProfile_.cycle, Options::AESparseProfile());
@@ -592,9 +592,9 @@ bool NativeSemiSparseAbstractInterpretation<NumericalStateT>::widenCycleState(
     return fixpoint;
 }
 
-template <typename NumericalStateT>
-bool NativeSemiSparseAbstractInterpretation<NumericalStateT>::narrowCycleState(
-    const AD::AbstractState& previous, const AD::AbstractState& current,
+template <typename NumericalDomainT>
+bool NativeSemiSparseAbstractInterpretation<NumericalDomainT>::narrowCycleState(
+    const AD::AbstractDomain& previous, const AD::AbstractDomain& current,
     const ICFGCycleWTO* cycle)
 {
     PhaseTimer timer(sparseProfile_.cycle, Options::AESparseProfile());
@@ -607,11 +607,11 @@ bool NativeSemiSparseAbstractInterpretation<NumericalStateT>::narrowCycleState(
     return fixpoint;
 }
 
-template <typename NumericalStateT>
+template <typename NumericalDomainT>
 void NativeSemiSparseAbstractInterpretation<
-    NumericalStateT>::assignDomainInterval(const ICFGNode* node,
+    NumericalDomainT>::assignDomainInterval(const ICFGNode* node,
                                            const SVFVar* target,
-                                           const IntervalValue& interval)
+                                           const IntegerIntervalProjection& interval)
 {
     if (const auto* value = SVFUtil::dyn_cast<ValVar>(target))
     {
@@ -624,23 +624,23 @@ void NativeSemiSparseAbstractInterpretation<
     Base::assignDomainInterval(node, target, interval);
 }
 
-template <typename NumericalStateT>
+template <typename NumericalDomainT>
 void NativeSemiSparseAbstractInterpretation<
-    NumericalStateT>::commitBinaryResult(const BinaryOPStmt* binary,
+    NumericalDomainT>::commitBinaryResult(const BinaryOPStmt* binary,
                                          const DenseState& transferState,
-                                         const IntervalValue& fallback)
+                                         const IntegerIntervalProjection& fallback)
 {
     const auto* target = SVFUtil::dyn_cast<ValVar>(binary->getRes());
     if (!target || !this->adapter_.contains(*target))
         return;
 
     const AD::Variable targetVariable = this->adapter_.variable(*target);
-    AbstractValue projected = this->projectValue(transferState, targetVariable);
-    const IntervalValue interval =
+    ScalarProjection projected = this->projectValue(transferState, targetVariable);
+    const IntegerIntervalProjection interval =
         projected.isInterval() ? projected.getInterval() : fallback;
     DenseState& scalars = scalarState(target->getFunction());
     this->assignInterval(scalars, targetVariable, interval);
-    if constexpr (!std::is_same_v<NumericalStateT, AD::BoxState>)
+    if constexpr (!std::is_same_v<NumericalDomainT, AD::BoxDomain>)
     {
         DenseState checkpoint = transferState;
         checkpoint.changeEnvironment(
@@ -649,10 +649,10 @@ void NativeSemiSparseAbstractInterpretation<
     }
 }
 
-template <typename NumericalStateT>
+template <typename NumericalDomainT>
 void NativeSemiSparseAbstractInterpretation<
-    NumericalStateT>::updateDomainOnBinary(const BinaryOPStmt* binary,
-                                           const IntervalValue& result)
+    NumericalDomainT>::updateDomainOnBinary(const BinaryOPStmt* binary,
+                                           const IntegerIntervalProjection& result)
 {
     Base::updateDomainOnBinary(binary, result);
     DenseState& transferState = this->ensureState(binary->getICFGNode());
@@ -660,14 +660,14 @@ void NativeSemiSparseAbstractInterpretation<
         target && this->adapter_.contains(*target))
     {
         const AD::Variable variable = this->adapter_.variable(*target);
-        transferState.pointers().assign(variable, AD::PointeeSet::bottom());
+        transferState.addresses().assign(variable, AD::AddressSet::bottom());
         transferState.shapes().assign(variable, true);
     }
     commitBinaryResult(binary, transferState, result);
 }
 
-template <typename NumericalStateT>
-void NativeSemiSparseAbstractInterpretation<NumericalStateT>::commitCopyResult(
+template <typename NumericalDomainT>
+void NativeSemiSparseAbstractInterpretation<NumericalDomainT>::commitCopyResult(
     const SVFVar* target, bool exactMathematicalCopy,
     const DenseState& transferState)
 {
@@ -675,14 +675,14 @@ void NativeSemiSparseAbstractInterpretation<NumericalStateT>::commitCopyResult(
     if (!targetValue || !this->adapter_.contains(*targetValue))
         return;
     const AD::Variable targetVariable = this->adapter_.variable(*targetValue);
-    const AbstractValue projected =
+    const ScalarProjection projected =
         this->projectValue(transferState, targetVariable);
     if (!projected.isInterval())
         return;
 
     DenseState& scalars = scalarState(targetValue->getFunction());
     this->assignInterval(scalars, targetVariable, projected.getInterval());
-    if constexpr (!std::is_same_v<NumericalStateT, AD::BoxState>)
+    if constexpr (!std::is_same_v<NumericalDomainT, AD::BoxDomain>)
     {
         if (exactMathematicalCopy)
         {
@@ -695,9 +695,9 @@ void NativeSemiSparseAbstractInterpretation<NumericalStateT>::commitCopyResult(
     }
 }
 
-template <typename NumericalStateT>
+template <typename NumericalDomainT>
 void NativeSemiSparseAbstractInterpretation<
-    NumericalStateT>::updateDomainCopyValue(const ICFGNode* node,
+    NumericalDomainT>::updateDomainCopyValue(const ICFGNode* node,
                                             const SVFVar* target,
                                             const SVFVar* source,
                                             bool exactMathematicalCopy)
@@ -709,7 +709,7 @@ void NativeSemiSparseAbstractInterpretation<
         getAbsValue(targetValue, node).isInterval())
     {
         const AD::Variable variable = this->adapter_.variable(*targetValue);
-        transferState.pointers().assign(variable, AD::PointeeSet::bottom());
+        transferState.addresses().assign(variable, AD::AddressSet::bottom());
         transferState.shapes().assign(variable, true);
     }
     commitCopyResult(target, exactMathematicalCopy, transferState);
@@ -731,9 +731,9 @@ bool hasRedefinitionOf(const ICFGNode* node, const IndirectSVFGEdge* edge)
 
 } // namespace
 
-template <typename NumericalStateT>
+template <typename NumericalDomainT>
 NativeFullSparseAbstractInterpretation<
-    NumericalStateT>::NativeFullSparseAbstractInterpretation()
+    NumericalDomainT>::NativeFullSparseAbstractInterpretation()
 {
     PhaseTimer timer(this->sparseProfile_.svfgBuild,
                      Options::AESparseProfile());
@@ -741,20 +741,20 @@ NativeFullSparseAbstractInterpretation<
     svfgBuilder_->buildFullSVFG(this->preAnalysis->getPointerAnalysis());
 }
 
-template <typename NumericalStateT>
+template <typename NumericalDomainT>
 NativeFullSparseAbstractInterpretation<
-    NumericalStateT>::~NativeFullSparseAbstractInterpretation() = default;
+    NumericalDomainT>::~NativeFullSparseAbstractInterpretation() = default;
 
-template <typename NumericalStateT>
+template <typename NumericalDomainT>
 const char* NativeFullSparseAbstractInterpretation<
-    NumericalStateT>::sparseProfileMode() const
+    NumericalDomainT>::sparseProfileMode() const
 {
     return "full";
 }
 
-template <typename NumericalStateT>
+template <typename NumericalDomainT>
 void NativeFullSparseAbstractInterpretation<
-    NumericalStateT>::filterPropagatedState(DenseState& denseState) const
+    NumericalDomainT>::filterPropagatedState(DenseState& denseState) const
 {
     PhaseTimer timer(this->sparseProfile_.stateFiltering,
                      Options::AESparseProfile());
@@ -770,19 +770,19 @@ void NativeFullSparseAbstractInterpretation<
     }
 }
 
-template <typename NumericalStateT>
+template <typename NumericalDomainT>
 void NativeFullSparseAbstractInterpretation<
-    NumericalStateT>::collectMemoryBranchRefinement(const IntraCFGEdge* edge,
+    NumericalDomainT>::collectMemoryBranchRefinement(const IntraCFGEdge* edge,
                                                      DenseState& state)
 {
     this->collectBranchRefinement(edge, state);
 }
 
-template <typename NumericalStateT>
+template <typename NumericalDomainT>
 void NativeFullSparseAbstractInterpretation<
-    NumericalStateT>::recordBranchRefinement(NodeID objectId,
-                                             const IntervalValue& narrowed,
-                                             AD::AbstractState&,
+    NumericalDomainT>::recordBranchRefinement(NodeID objectId,
+                                             const IntegerIntervalProjection& narrowed,
+                                             AD::AbstractDomain&,
                                              const ICFGNode*,
                                              const ICFGNode* successor)
 {
@@ -796,11 +796,11 @@ void NativeFullSparseAbstractInterpretation<
         iterator->second.join_with(narrowed);
 }
 
-template <typename NumericalStateT>
-void NativeFullSparseAbstractInterpretation<NumericalStateT>::storeValue(
-    const ValVar* pointer, const AbstractValue& value, const ICFGNode* node)
+template <typename NumericalDomainT>
+void NativeFullSparseAbstractInterpretation<NumericalDomainT>::storeValue(
+    const ValVar* pointer, const ScalarProjection& value, const ICFGNode* node)
 {
-    const AbstractValue addresses = Base::getAbsValue(pointer, node);
+    const ScalarProjection addresses = Base::getAbsValue(pointer, node);
     auto refinement = memoryRefinementTrace_.find(node);
     if (refinement != memoryRefinementTrace_.end())
     {
@@ -810,9 +810,9 @@ void NativeFullSparseAbstractInterpretation<NumericalStateT>::storeValue(
     Base::storeValue(pointer, value, node);
 }
 
-template <typename NumericalStateT>
+template <typename NumericalDomainT>
 bool NativeFullSparseAbstractInterpretation<
-    NumericalStateT>::mergeStatesFromPredecessors(const ICFGNode* node)
+    NumericalDomainT>::mergeStatesFromPredecessors(const ICFGNode* node)
 {
     memoryRefinementTrace_.erase(node);
     if (!Base::mergeStatesFromPredecessors(node))
@@ -828,9 +828,9 @@ bool NativeFullSparseAbstractInterpretation<
     return true;
 }
 
-template <typename NumericalStateT>
+template <typename NumericalDomainT>
 void NativeFullSparseAbstractInterpretation<
-    NumericalStateT>::pullObjectValueFlows(const ICFGNode* node)
+    NumericalDomainT>::pullObjectValueFlows(const ICFGNode* node)
 {
     PhaseTimer timer(this->sparseProfile_.objectPull,
                      Options::AESparseProfile());
@@ -886,7 +886,7 @@ void NativeFullSparseAbstractInterpretation<
                     if (!object || !Base::hasAbsValue(object, source))
                         continue;
 
-                    AbstractValue joined;
+                    ScalarProjection joined;
                     if (Base::hasAbsValue(object, node))
                         joined = Base::getAbsValue(object, node);
                     joined.join_with(Base::getAbsValue(object, source));
@@ -897,18 +897,18 @@ void NativeFullSparseAbstractInterpretation<
     }
 }
 
-template <typename NumericalStateT>
+template <typename NumericalDomainT>
 bool NativeFullSparseAbstractInterpretation<
-    NumericalStateT>::isIntraEdgeBranchFeasible(const IntraCFGEdge* edge,
+    NumericalDomainT>::isIntraEdgeBranchFeasible(const IntraCFGEdge* edge,
                                                 const ICFGNode* source)
 {
     return !edge->getCondition() || !this->hasAbsState(source) ||
            this->isBranchEdgeFeasibleAt(edge, source);
 }
 
-template <typename NumericalStateT>
+template <typename NumericalDomainT>
 bool NativeFullSparseAbstractInterpretation<
-    NumericalStateT>::isIndirectSVFGEdgeFeasible(const IndirectSVFGEdge* edge,
+    NumericalDomainT>::isIndirectSVFGEdgeFeasible(const IndirectSVFGEdge* edge,
                                                  const VFGNode* destination)
 {
     PhaseTimer timer(this->sparseProfile_.pathFeasibility,
@@ -963,13 +963,13 @@ bool NativeFullSparseAbstractInterpretation<
     return false;
 }
 
-template <typename NumericalStateT>
+template <typename NumericalDomainT>
 void NativeFullSparseAbstractInterpretation<
-    NumericalStateT>::propagateAndApplyMemoryRefinement(const ICFGNode* node)
+    NumericalDomainT>::propagateAndApplyMemoryRefinement(const ICFGNode* node)
 {
     PhaseTimer timer(this->sparseProfile_.memoryRefinement,
                      Options::AESparseProfile());
-    Map<NodeID, IntervalValue> inherited;
+    Map<NodeID, IntegerIntervalProjection> inherited;
     bool canInherit = true;
     bool first = true;
     for (const ICFGEdge* edge : node->getInEdges())
@@ -1033,7 +1033,7 @@ void NativeFullSparseAbstractInterpretation<
     }
 }
 
-template class NativeSemiSparseAbstractInterpretation<AD::BoxState>;
-template class NativeFullSparseAbstractInterpretation<AD::BoxState>;
+template class NativeSemiSparseAbstractInterpretation<AD::BoxDomain>;
+template class NativeFullSparseAbstractInterpretation<AD::BoxDomain>;
 
 } // namespace SVF

@@ -1,8 +1,8 @@
-//===- NumericalDomain.cpp -- Shared numerical-state implementation ----===//
+//===- NumericalDomain.cpp -- Numerical properties and Box domain -------===//
 
 #include "AE/Core/NumericalDomain.h"
-
-#include "AE/Core/BoxDomain.h"
+#include "AE/Core/LinearExpression.h"
+#include "AE/Core/TreeExpression.h"
 
 #include <algorithm>
 #include <array>
@@ -12,6 +12,7 @@
 #include <map>
 #include <optional>
 #include <set>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -19,6 +20,436 @@
 
 namespace SVF::AbstractDomain
 {
+
+Integer::Integer() : value_(0) {}
+
+Integer::Integer(std::int64_t value)
+{
+    if (mpz_set_str(value_.get_mpz_t(), std::to_string(value).c_str(), 10) != 0)
+        throw std::invalid_argument("invalid 64-bit integer");
+}
+
+Integer::Integer(const std::string& value) : value_(value) {}
+
+std::string Integer::toString() const
+{
+    return value_.get_str();
+}
+
+Rational::Rational() : value_(0) {}
+
+Rational::Rational(std::int64_t value)
+{
+    mpz_class integer;
+    if (mpz_set_str(integer.get_mpz_t(), std::to_string(value).c_str(), 10) !=
+        0)
+        throw std::invalid_argument("invalid 64-bit rational integer");
+    mpq_set_z(value_.get_mpq_t(), integer.get_mpz_t());
+}
+
+Rational::Rational(const Integer& value) : value_(value.value()) {}
+
+Rational::Rational(const std::string& value) : value_(value)
+{
+    value_.canonicalize();
+}
+
+Rational::Rational(const Integer& numerator, const Integer& denominator)
+{
+    if (denominator.value() == 0)
+        throw std::invalid_argument("a rational denominator cannot be zero");
+    mpq_set_num(value_.get_mpq_t(), numerator.value().get_mpz_t());
+    mpq_set_den(value_.get_mpq_t(), denominator.value().get_mpz_t());
+    value_.canonicalize();
+}
+
+Rational::Rational(mpq_class value, int) : value_(std::move(value))
+{
+    value_.canonicalize();
+}
+
+Rational Rational::fromRaw(const mpq_class& value)
+{
+    return Rational(value, 0);
+}
+
+std::string Rational::toString() const
+{
+    return value_.get_str();
+}
+
+Rational Rational::floor() const
+{
+    mpz_class result;
+    mpz_fdiv_q(result.get_mpz_t(), mpq_numref(value_.get_mpq_t()),
+               mpq_denref(value_.get_mpq_t()));
+    return Rational::fromRaw(mpq_class(result));
+}
+
+Rational Rational::ceil() const
+{
+    mpz_class result;
+    mpz_cdiv_q(result.get_mpz_t(), mpq_numref(value_.get_mpq_t()),
+               mpq_denref(value_.get_mpq_t()));
+    return Rational::fromRaw(mpq_class(result));
+}
+
+Rational Rational::dividedByPowerOfTwo(unsigned exponent) const
+{
+    Rational result;
+    mpq_div_2exp(result.value_.get_mpq_t(), value_.get_mpq_t(), exponent);
+    return result;
+}
+
+Rational& Rational::assignSum(const Rational& lhs, const Rational& rhs)
+{
+    mpq_add(value_.get_mpq_t(), lhs.value_.get_mpq_t(), rhs.value_.get_mpq_t());
+    return *this;
+}
+
+Rational& Rational::divideByPowerOfTwoInPlace(unsigned exponent)
+{
+    mpq_div_2exp(value_.get_mpq_t(), value_.get_mpq_t(), exponent);
+    return *this;
+}
+
+Rational& Rational::operator+=(const Rational& rhs)
+{
+    value_ += rhs.value_;
+    return *this;
+}
+
+Rational& Rational::operator-=(const Rational& rhs)
+{
+    value_ -= rhs.value_;
+    return *this;
+}
+
+Rational& Rational::operator*=(const Rational& rhs)
+{
+    value_ *= rhs.value_;
+    return *this;
+}
+
+Rational& Rational::operator/=(const Rational& rhs)
+{
+    if (rhs.isZero())
+        throw std::domain_error("division by zero rational");
+    value_ /= rhs.value_;
+    return *this;
+}
+
+Bound::Bound() = default;
+
+Bound::Bound(Kind kind, Rational value, bool strict)
+    : kind_(kind), value_(std::move(value)),
+      strict_(kind == Kind::Finite && strict)
+{
+}
+
+Bound Bound::minusInfinity()
+{
+    return Bound(Kind::MinusInfinity, Rational(), false);
+}
+
+Bound Bound::finite(Rational value, bool strict)
+{
+    return Bound(Kind::Finite, std::move(value), strict);
+}
+
+Bound Bound::plusInfinity()
+{
+    return Bound(Kind::PlusInfinity, Rational(), false);
+}
+
+const Rational& Bound::value() const
+{
+    if (!isFinite())
+        throw std::logic_error("an infinite bound has no finite value");
+    return value_;
+}
+
+int Bound::compare(const Bound& lhs, const Bound& rhs)
+{
+    if (lhs.kind_ != rhs.kind_)
+        return static_cast<int>(lhs.kind_) < static_cast<int>(rhs.kind_) ? -1
+                                                                         : 1;
+    if (!lhs.isFinite())
+        return 0;
+    if (lhs.value_ < rhs.value_)
+        return -1;
+    if (rhs.value_ < lhs.value_)
+        return 1;
+    if (lhs.strict_ == rhs.strict_)
+        return 0;
+    return lhs.strict_ ? -1 : 1;
+}
+
+Bound Bound::min(const Bound& lhs, const Bound& rhs)
+{
+    return lhs <= rhs ? lhs : rhs;
+}
+
+Bound Bound::max(const Bound& lhs, const Bound& rhs)
+{
+    return lhs <= rhs ? rhs : lhs;
+}
+
+Bound Bound::add(const Bound& lhs, const Bound& rhs)
+{
+    if ((lhs.isMinusInfinity() && rhs.isPlusInfinity()) ||
+        (lhs.isPlusInfinity() && rhs.isMinusInfinity()))
+        throw std::domain_error("indeterminate sum of opposite infinities");
+    if (lhs.isMinusInfinity() || rhs.isMinusInfinity())
+        return minusInfinity();
+    if (lhs.isPlusInfinity() || rhs.isPlusInfinity())
+        return plusInfinity();
+    return finite(lhs.value_ + rhs.value_, lhs.strict_ || rhs.strict_);
+}
+
+Bound& Bound::assignSum(const Bound& lhs, const Bound& rhs)
+{
+    if ((lhs.isMinusInfinity() && rhs.isPlusInfinity()) ||
+        (lhs.isPlusInfinity() && rhs.isMinusInfinity()))
+        throw std::domain_error("indeterminate sum of opposite infinities");
+    if (lhs.isMinusInfinity() || rhs.isMinusInfinity())
+    {
+        kind_ = Kind::MinusInfinity;
+        strict_ = false;
+        return *this;
+    }
+    if (lhs.isPlusInfinity() || rhs.isPlusInfinity())
+    {
+        kind_ = Kind::PlusInfinity;
+        strict_ = false;
+        return *this;
+    }
+    kind_ = Kind::Finite;
+    value_.assignSum(lhs.value_, rhs.value_);
+    strict_ = lhs.strict_ || rhs.strict_;
+    return *this;
+}
+
+Bound& Bound::divideByTwoInPlace()
+{
+    if (isFinite())
+        value_.divideByPowerOfTwoInPlace(1);
+    return *this;
+}
+
+Bound Bound::divideByTwo(const Bound& bound)
+{
+    if (!bound.isFinite())
+        return bound;
+    return finite(bound.value_.dividedByPowerOfTwo(1), bound.strict_);
+}
+
+Bound Bound::divideByPositive(const Bound& bound, const Rational& divisor)
+{
+    if (divisor.sign() <= 0)
+        throw std::invalid_argument("bound divisor must be positive");
+    if (!bound.isFinite())
+        return bound;
+    return finite(bound.value_ / divisor, bound.strict_);
+}
+
+std::string Bound::toString() const
+{
+    if (isMinusInfinity())
+        return "-inf";
+    if (isPlusInfinity())
+        return "+inf";
+    return std::string(strict_ ? "<" : "<=") + value_.toString();
+}
+
+Interval::Interval()
+    : lower_(Bound::minusInfinity()), upper_(Bound::plusInfinity())
+{
+}
+
+Interval::Interval(Bound lower, Bound upper)
+    : lower_(std::move(lower)), upper_(std::move(upper))
+{
+}
+
+Interval Interval::top()
+{
+    return Interval();
+}
+
+Interval Interval::singleton(const Rational& value)
+{
+    return Interval(Bound::finite(value), Bound::finite(value));
+}
+
+bool Interval::isTop() const
+{
+    return lower_.isMinusInfinity() && upper_.isPlusInfinity();
+}
+
+bool Interval::isBottom() const
+{
+    if (lower_.isPlusInfinity() || upper_.isMinusInfinity())
+        return true;
+    if (!lower_.isFinite() || !upper_.isFinite())
+        return false;
+    if (upper_.value() < lower_.value())
+        return true;
+    return upper_.value() == lower_.value() &&
+           (lower_.isStrict() || upper_.isStrict());
+}
+
+std::string Interval::toString() const
+{
+    const char left = lower_.isStrict() ? '(' : '[';
+    const char right = upper_.isStrict() ? ')' : ']';
+    const std::string lower = lower_.isMinusInfinity() ? "-inf"
+                              : lower_.isPlusInfinity()
+                                  ? "+inf"
+                                  : lower_.value().toString();
+    const std::string upper = upper_.isPlusInfinity() ? "+inf"
+                              : upper_.isMinusInfinity()
+                                  ? "-inf"
+                                  : upper_.value().toString();
+    return std::string(1, left) + lower + ", " + upper + std::string(1, right);
+}
+
+MpfrValue::MpfrValue(mpfr_prec_t precision)
+{
+    if (precision < MPFR_PREC_MIN || precision > MPFR_PREC_MAX)
+        throw std::invalid_argument("invalid MPFR precision");
+    mpfr_init2(value_, precision);
+    mpfr_set_zero(value_, 1);
+}
+
+MpfrValue::MpfrValue(const MpfrValue& rhs)
+{
+    mpfr_init2(value_, rhs.precision());
+    mpfr_set(value_, rhs.value_, MPFR_RNDN);
+}
+
+MpfrValue::MpfrValue(MpfrValue&& rhs) noexcept
+{
+    mpfr_init2(value_, rhs.precision());
+    mpfr_swap(value_, rhs.value_);
+}
+
+MpfrValue& MpfrValue::operator=(const MpfrValue& rhs)
+{
+    if (this == &rhs)
+        return *this;
+    mpfr_set_prec(value_, rhs.precision());
+    mpfr_set(value_, rhs.value_, MPFR_RNDN);
+    return *this;
+}
+
+MpfrValue& MpfrValue::operator=(MpfrValue&& rhs) noexcept
+{
+    if (this != &rhs)
+        mpfr_swap(value_, rhs.value_);
+    return *this;
+}
+
+MpfrValue::~MpfrValue()
+{
+    mpfr_clear(value_);
+}
+
+void MpfrValue::set(const Rational& value, mpfr_rnd_t rounding)
+{
+    mpfr_set_q(value_, value.value().get_mpq_t(), rounding);
+}
+
+Rational MpfrValue::toRational() const
+{
+    if (!mpfr_number_p(value_))
+        throw std::domain_error("a non-finite MPFR value is not rational");
+    mpq_class result;
+    mpfr_get_q(result.get_mpq_t(), value_);
+    result.canonicalize();
+    return Rational::fromRaw(result);
+}
+
+namespace
+{
+mpfr_rnd_t toMpfrRounding(RoundingMode mode)
+{
+    switch (mode)
+    {
+    case RoundingMode::NearestTiesToEven:
+        return MPFR_RNDN;
+    case RoundingMode::TowardZero:
+        return MPFR_RNDZ;
+    case RoundingMode::TowardPositive:
+        return MPFR_RNDU;
+    case RoundingMode::TowardNegative:
+        return MPFR_RNDD;
+    }
+    return MPFR_RNDN;
+}
+} // namespace
+
+Rational FloatSemantics::evaluate(BinaryOperation operation,
+                                  const Rational& lhs, const Rational& rhs,
+                                  unsigned significandBits,
+                                  RoundingMode rounding)
+{
+    if (significandBits < static_cast<unsigned>(MPFR_PREC_MIN))
+        throw std::invalid_argument("invalid floating significand precision");
+
+    const mpfr_rnd_t mode = toMpfrRounding(rounding);
+    MpfrValue left(significandBits);
+    MpfrValue right(significandBits);
+    MpfrValue result(significandBits);
+    left.set(lhs, mode);
+    right.set(rhs, mode);
+
+    switch (operation)
+    {
+    case BinaryOperation::Add:
+        mpfr_add(result.raw(), left.raw(), right.raw(), mode);
+        break;
+    case BinaryOperation::Subtract:
+        mpfr_sub(result.raw(), left.raw(), right.raw(), mode);
+        break;
+    case BinaryOperation::Multiply:
+        mpfr_mul(result.raw(), left.raw(), right.raw(), mode);
+        break;
+    case BinaryOperation::Divide:
+        mpfr_div(result.raw(), left.raw(), right.raw(), mode);
+        break;
+    }
+    return result.toRational();
+}
+
+Rational FloatSemantics::add(const Rational& lhs, const Rational& rhs,
+                             unsigned significandBits, RoundingMode rounding)
+{
+    return evaluate(BinaryOperation::Add, lhs, rhs, significandBits, rounding);
+}
+
+Rational FloatSemantics::subtract(const Rational& lhs, const Rational& rhs,
+                                  unsigned significandBits,
+                                  RoundingMode rounding)
+{
+    return evaluate(BinaryOperation::Subtract, lhs, rhs, significandBits,
+                    rounding);
+}
+
+Rational FloatSemantics::multiply(const Rational& lhs, const Rational& rhs,
+                                  unsigned significandBits,
+                                  RoundingMode rounding)
+{
+    return evaluate(BinaryOperation::Multiply, lhs, rhs, significandBits,
+                    rounding);
+}
+
+Rational FloatSemantics::divide(const Rational& lhs, const Rational& rhs,
+                                unsigned significandBits, RoundingMode rounding)
+{
+    return evaluate(BinaryOperation::Divide, lhs, rhs, significandBits,
+                    rounding);
+}
 
 namespace
 {
@@ -85,7 +516,7 @@ public:
         bytes_.insert(bytes_.end(), RawMagic.begin(), RawMagic.end());
     }
 
-    NumericalState::RawBuffer finish()
+    NumericalDomain::RawBuffer finish()
     {
         const std::uint64_t checksum = fnv1a(bytes_.data(), bytes_.size());
         writeU64(checksum);
@@ -93,10 +524,10 @@ public:
     }
 
 private:
-    NumericalState::RawBuffer bytes_;
+    NumericalDomain::RawBuffer bytes_;
 };
 
-std::uint64_t readTrailingU64(const NumericalState::RawBuffer& buffer)
+std::uint64_t readTrailingU64(const NumericalDomain::RawBuffer& buffer)
 {
     if (buffer.size() < sizeof(std::uint64_t))
         throw std::invalid_argument("raw state buffer is truncated");
@@ -111,7 +542,7 @@ std::uint64_t readTrailingU64(const NumericalState::RawBuffer& buffer)
 class Reader
 {
 public:
-    explicit Reader(const NumericalState::RawBuffer& bytes)
+    explicit Reader(const NumericalDomain::RawBuffer& bytes)
         : bytes_(bytes), limit_(checkedLimit(bytes))
     {
         const std::uint64_t expected = readTrailingU64(bytes_);
@@ -167,7 +598,7 @@ public:
     }
 
 private:
-    static std::size_t checkedLimit(const NumericalState::RawBuffer& bytes)
+    static std::size_t checkedLimit(const NumericalDomain::RawBuffer& bytes)
     {
         if (bytes.size() <
             RawMagic.size() + sizeof(std::uint16_t) + 2 + sizeof(std::uint64_t))
@@ -181,7 +612,7 @@ private:
             throw std::invalid_argument("raw state buffer is truncated");
     }
 
-    const NumericalState::RawBuffer& bytes_;
+    const NumericalDomain::RawBuffer& bytes_;
     std::size_t limit_;
     std::size_t position_ = 0;
 };
@@ -256,20 +687,20 @@ ConstraintKind decodeConstraintKind(std::uint8_t value)
     }
 }
 
-DomainTag domainTag(const NumericalState& state)
+DomainTag domainTag(const NumericalDomain& state)
 {
-    if (state.isState<BoxState>())
+    if (state.isDomain<BoxDomain>())
         return DomainTag::Box;
     throw std::invalid_argument(
         "raw serialization does not support this domain");
 }
 
-std::uint8_t configurationFlags(const NumericalState& state, DomainTag tag)
+std::uint8_t configurationFlags(const NumericalDomain& state, DomainTag tag)
 {
     switch (tag)
     {
     case DomainTag::Box: {
-        const auto& box = static_cast<const BoxState&>(state);
+        const auto& box = static_cast<const BoxDomain&>(state);
         return box.config().integerTightening ? 1U : 0U;
     }
     }
@@ -331,7 +762,8 @@ void writeConstraints(Writer& writer, const LinearConstraintSet& constraints)
     }
 }
 
-LinearConstraintSet canonicalConstraints(const NumericalState& state, DomainTag)
+LinearConstraintSet canonicalConstraints(const NumericalDomain& state,
+                                         DomainTag)
 {
     return state.isBottom() ? LinearConstraintSet{} : state.toConstraints();
 }
@@ -395,23 +827,23 @@ DomainTag decodeDomainTag(std::uint8_t value)
     }
 }
 
-std::unique_ptr<NumericalState> restore(DomainTag tag, std::uint8_t flags,
-                                        const VariableEnvironment& environment,
-                                        bool bottom,
-                                        const LinearConstraintSet& constraints)
+std::unique_ptr<NumericalDomain> restore(DomainTag tag, std::uint8_t flags,
+                                         const VariableEnvironment& environment,
+                                         bool bottom,
+                                         const LinearConstraintSet& constraints)
 {
     switch (tag)
     {
     case DomainTag::Box: {
         if ((flags & ~1U) != 0)
             throw std::invalid_argument("raw Box state has invalid flags");
-        BoxConfig config;
+        BoxSemanticConfig config;
         config.integerTightening = (flags & 1U) != 0;
-        BoxState state =
+        BoxDomain state =
             bottom
-                ? BoxState::bottom(environment, config)
-                : BoxState::fromConstraints(environment, constraints, config);
-        return std::make_unique<BoxState>(std::move(state));
+                ? BoxDomain::bottom(environment, config)
+                : BoxDomain::fromConstraints(environment, constraints, config);
+        return std::make_unique<BoxDomain>(std::move(state));
     }
     }
     throw std::logic_error("unknown raw state domain tag");
@@ -804,7 +1236,7 @@ Interval castInterval(const Interval& operand, const NumericType& type,
     return Interval(Bound::finite(lower), Bound::finite(upper));
 }
 
-Interval evaluateTree(const NumericalState& state,
+Interval evaluateTree(const NumericalDomain& state,
                       const TreeExpression& expression)
 {
     switch (expression.kind())
@@ -1003,7 +1435,7 @@ bool decomposeSingleProduct(const TreeExpression& expression,
 
 } // namespace
 
-void NumericalState::assignParallel(const LinearAssignmentList& assignments)
+void NumericalDomain::assignParallel(const LinearAssignmentList& assignments)
 {
     if (assignments.empty())
     {
@@ -1104,7 +1536,7 @@ void NumericalState::assignParallel(const LinearAssignmentList& assignments)
                     std::move(reason));
 }
 
-void NumericalState::assignParallel(const TreeAssignmentList& assignments)
+void NumericalDomain::assignParallel(const TreeAssignmentList& assignments)
 {
     std::set<Variable> targets;
     LinearAssignmentList affine;
@@ -1141,7 +1573,7 @@ void NumericalState::assignParallel(const TreeAssignmentList& assignments)
                         "interval-linearized");
 }
 
-void NumericalState::assumeAll(const LinearConstraintSet& constraints)
+void NumericalDomain::assumeAll(const LinearConstraintSet& constraints)
 {
     if (constraints.empty())
     {
@@ -1163,7 +1595,7 @@ void NumericalState::assumeAll(const LinearConstraintSet& constraints)
         constraints.size() * (environment().size() + 1) + 1;
     for (std::size_t pass = 0; pass < limit; ++pass)
     {
-        const std::unique_ptr<AbstractState> before = clone();
+        const std::unique_ptr<AbstractDomain> before = clone();
         for (const LinearConstraint& constraint : constraints)
             assume(constraint);
         if (isBottom() || isEquivalentTo(*before) == CheckResult::True)
@@ -1171,7 +1603,7 @@ void NumericalState::assumeAll(const LinearConstraintSet& constraints)
     }
 }
 
-NumericalState::RawBuffer NumericalState::serializeRaw() const
+NumericalDomain::RawBuffer NumericalDomain::serializeRaw() const
 {
     Writer writer;
     writer.writeMagic();
@@ -1185,8 +1617,8 @@ NumericalState::RawBuffer NumericalState::serializeRaw() const
     return writer.finish();
 }
 
-void NumericalState::substitute(Variable target,
-                                const TreeExpression& expression)
+void NumericalDomain::substitute(Variable target,
+                                 const TreeExpression& expression)
 {
     if (const std::optional<LinearExpression> linear = expression.asLinear())
     {
@@ -1202,7 +1634,7 @@ void NumericalState::substitute(Variable target,
                     "nonlinear backward substitution projected the output");
 }
 
-void NumericalState::substituteParallel(const TreeAssignmentList& assignments)
+void NumericalDomain::substituteParallel(const TreeAssignmentList& assignments)
 {
     std::set<Variable> targets;
     LinearAssignmentList affine;
@@ -1236,7 +1668,7 @@ void NumericalState::substituteParallel(const TreeAssignmentList& assignments)
                         "unsupported outputs");
 }
 
-Interval NumericalState::bound(const TreeExpression& expression) const
+Interval NumericalDomain::bound(const TreeExpression& expression) const
 {
     if (const std::optional<LinearExpression> linear = expression.asLinear())
         return bound(*linear);
@@ -1245,7 +1677,7 @@ Interval NumericalState::bound(const TreeExpression& expression) const
     return evaluateTreeExpression(expression);
 }
 
-Interval NumericalState::evaluateTreeExpression(
+Interval NumericalDomain::evaluateTreeExpression(
     const TreeExpression& expression) const
 {
     if (isBottom())
@@ -1253,7 +1685,7 @@ Interval NumericalState::evaluateTreeExpression(
     return evaluateTree(*this, expression);
 }
 
-LinearConstraintSet NumericalState::treeConstraintConsequences(
+LinearConstraintSet NumericalDomain::treeConstraintConsequences(
     const TreeConstraint& constraint) const
 {
     const Interval value = evaluateTreeExpression(constraint.expression());
@@ -1336,7 +1768,7 @@ LinearConstraintSet NumericalState::treeConstraintConsequences(
     return result;
 }
 
-void NumericalState::assignInterval(Variable target, const Interval& value)
+void NumericalDomain::assignInterval(Variable target, const Interval& value)
 {
     if (!environment().contains(target))
         throw std::invalid_argument("assignment target is not in environment");
@@ -1361,17 +1793,17 @@ void NumericalState::assignInterval(Variable target, const Interval& value)
                                      : ConstraintKind::LessEqual));
 }
 
-void NumericalState::recordOperation(OperationKind operation,
-                                     ApproximationKind approximation, bool best,
-                                     std::string reason) const
+void NumericalDomain::recordOperation(OperationKind operation,
+                                      ApproximationKind approximation,
+                                      bool best, std::string reason) const
 {
     lastOperation_ = {operation, approximation,
                       approximation == ApproximationKind::Exact, best,
                       std::move(reason)};
 }
 
-VariableEnvironment NumericalState::unifyEnvironmentWith(
-    NumericalState& other, bool initializeNewVariablesToZero)
+VariableEnvironment NumericalDomain::unifyEnvironmentWith(
+    NumericalDomain& other, bool initializeNewVariablesToZero)
 {
     const VariableEnvironment merged = environment().merge(other.environment());
     changeEnvironment(merged, initializeNewVariablesToZero);
@@ -1379,13 +1811,13 @@ VariableEnvironment NumericalState::unifyEnvironmentWith(
     return merged;
 }
 
-std::uint64_t NumericalState::hash() const
+std::uint64_t NumericalDomain::hash() const
 {
     const RawBuffer raw = serializeRaw();
     return readTrailingU64(raw);
 }
 
-std::unique_ptr<NumericalState> NumericalState::deserializeRaw(
+std::unique_ptr<NumericalDomain> NumericalDomain::deserializeRaw(
     const RawBuffer& buffer)
 {
     Reader reader(buffer);
@@ -1406,6 +1838,1033 @@ std::unique_ptr<NumericalState> NumericalState::deserializeRaw(
         throw std::invalid_argument(
             "raw bottom state unexpectedly contains constraints");
     return restore(tag, flags, environment, bottomByte != 0, constraints);
+}
+
+namespace
+{
+
+int compareLower(const Bound& lhs, const Bound& rhs)
+{
+    if (lhs.kind() != rhs.kind())
+        return static_cast<int>(lhs.kind()) < static_cast<int>(rhs.kind()) ? -1
+                                                                           : 1;
+    if (!lhs.isFinite())
+        return 0;
+    if (lhs.value() < rhs.value())
+        return -1;
+    if (rhs.value() < lhs.value())
+        return 1;
+    if (lhs.isStrict() == rhs.isStrict())
+        return 0;
+    return lhs.isStrict() ? 1 : -1;
+}
+
+Bound minLower(const Bound& lhs, const Bound& rhs)
+{
+    return compareLower(lhs, rhs) <= 0 ? lhs : rhs;
+}
+
+Bound maxLower(const Bound& lhs, const Bound& rhs)
+{
+    return compareLower(lhs, rhs) >= 0 ? lhs : rhs;
+}
+
+Bound scaleBound(const Bound& bound, const Rational& coefficient)
+{
+    if (coefficient.isZero())
+        return Bound::finite(Rational());
+    if (bound.isMinusInfinity())
+        return coefficient.sign() > 0 ? Bound::minusInfinity()
+                                      : Bound::plusInfinity();
+    if (bound.isPlusInfinity())
+        return coefficient.sign() > 0 ? Bound::plusInfinity()
+                                      : Bound::minusInfinity();
+    return Bound::finite(bound.value() * coefficient, bound.isStrict());
+}
+
+Interval scaleInterval(const Interval& interval, const Rational& coefficient)
+{
+    if (coefficient.isZero())
+        return Interval::singleton(Rational());
+    if (coefficient.sign() > 0)
+        return Interval(scaleBound(interval.lower(), coefficient),
+                        scaleBound(interval.upper(), coefficient));
+    return Interval(scaleBound(interval.upper(), coefficient),
+                    scaleBound(interval.lower(), coefficient));
+}
+
+Interval addBoxIntervals(const Interval& lhs, const Interval& rhs)
+{
+    return Interval(Bound::add(lhs.lower(), rhs.lower()),
+                    Bound::add(lhs.upper(), rhs.upper()));
+}
+
+Interval joinIntervals(const Interval& lhs, const Interval& rhs)
+{
+    return Interval(minLower(lhs.lower(), rhs.lower()),
+                    Bound::max(lhs.upper(), rhs.upper()));
+}
+
+Interval meetIntervals(const Interval& lhs, const Interval& rhs)
+{
+    return Interval(maxLower(lhs.lower(), rhs.lower()),
+                    Bound::min(lhs.upper(), rhs.upper()));
+}
+
+bool intervalIncluded(const Interval& lhs, const Interval& rhs)
+{
+    if (lhs.isBottom())
+        return true;
+    if (rhs.isBottom())
+        return false;
+    return compareLower(lhs.lower(), rhs.lower()) >= 0 &&
+           Bound::compare(lhs.upper(), rhs.upper()) <= 0;
+}
+
+Interval evaluate(const BoxDomain& state, const LinearExpression& expression,
+                  std::optional<Variable> excluded = std::nullopt)
+{
+    Interval result = Interval::singleton(expression.constant());
+    for (const auto& [variable, coefficient] : expression.terms())
+    {
+        if (excluded && variable == *excluded)
+            continue;
+        result = addBoxIntervals(
+            result, scaleInterval(state.bound(variable), coefficient));
+    }
+    return result;
+}
+
+Bound integerLower(Bound bound)
+{
+    if (!bound.isFinite())
+        return bound;
+    const Rational value = bound.isStrict()
+                               ? bound.value().floor() + Rational(1)
+                               : bound.value().ceil();
+    return Bound::finite(value);
+}
+
+Bound integerUpper(Bound bound)
+{
+    if (!bound.isFinite())
+        return bound;
+    const Rational value = bound.isStrict() ? bound.value().ceil() - Rational(1)
+                                            : bound.value().floor();
+    return Bound::finite(value);
+}
+
+LinearConstraint normalizedLessEqual(const LinearConstraint& constraint,
+                                     bool& strict)
+{
+    strict = constraint.kind() == ConstraintKind::LessThan ||
+             constraint.kind() == ConstraintKind::GreaterThan;
+    if (constraint.kind() == ConstraintKind::GreaterEqual ||
+        constraint.kind() == ConstraintKind::GreaterThan)
+        return LinearConstraint(-constraint.expression(),
+                                strict ? ConstraintKind::LessThan
+                                       : ConstraintKind::LessEqual);
+    return LinearConstraint(constraint.expression(),
+                            strict ? ConstraintKind::LessThan
+                                   : ConstraintKind::LessEqual);
+}
+
+} // namespace
+
+BoxDomain::BoxDomain(VariableEnvironment environment, BoxSemanticConfig config,
+                     bool bottom)
+    : environment_(std::move(environment)), config_(std::move(config)),
+      bottom_(bottom)
+{
+}
+
+BoxDomain::BoxDomain(const BoxDomain& other)
+    : NumericalDomain(other), environment_(other.environment_),
+      config_(other.config_), boundPages_(other.boundPages_),
+      bottom_(other.bottom_)
+{
+}
+
+BoxDomain BoxDomain::top(const VariableEnvironment& environment,
+                         const BoxSemanticConfig& config)
+{
+    BoxDomain result(environment, config, false);
+    return result;
+}
+
+BoxDomain BoxDomain::bottom(const VariableEnvironment& environment,
+                            const BoxSemanticConfig& config)
+{
+    BoxDomain result(environment, config, true);
+    return result;
+}
+
+BoxDomain BoxDomain::fromBox(const VariableEnvironment& environment,
+                             const IntervalBox& box,
+                             const BoxSemanticConfig& config)
+{
+    BoxDomain result = top(environment, config);
+    for (const auto& [variable, interval] : box.bounds)
+    {
+        if (!environment.contains(variable))
+            throw std::invalid_argument("box contains an unknown variable");
+        result.setBound(environment.dimensionOf(variable), interval);
+    }
+    return result;
+}
+
+BoxDomain BoxDomain::fromConstraints(const VariableEnvironment& environment,
+                                     const LinearConstraintSet& constraints,
+                                     const BoxSemanticConfig& config)
+{
+    BoxDomain result = top(environment, config);
+    result.assumeAll(constraints);
+    return result;
+}
+
+std::unique_ptr<AbstractDomain> BoxDomain::clone() const
+{
+    return std::make_unique<BoxDomain>(*this);
+}
+
+DomainCapabilities BoxDomain::capabilities() const
+{
+    DomainCapabilities result;
+    result.strictInequalities = true;
+    result.integerTightening = config_.integerTightening;
+    result.thresholdWidening = true;
+    result.narrowing = true;
+    result.parallelAssignments = true;
+    result.expressionBounds = true;
+    result.backwardAssignments = true;
+    result.topologicalClosure = true;
+    result.canonicalization = true;
+    result.expandFold = true;
+    result.operationMetadata = true;
+    result.ieeeTreeExpressions = true;
+    result.nonlinearTreeExpressions = true;
+    return result;
+}
+
+void BoxDomain::assign(Variable target, const LinearExpression& expression)
+{
+    if (!environment_.contains(target))
+        throw std::invalid_argument("assignment target is not in environment");
+    for (const auto& [variable, coefficient] : expression.terms())
+    {
+        (void)coefficient;
+        if (!environment_.contains(variable))
+            throw std::invalid_argument(
+                "assignment expression uses an unknown variable");
+    }
+    recordOperation(OperationKind::Assignment, ApproximationKind::Exact, true);
+    if (bottom_)
+        return;
+    setBound(environment_.dimensionOf(target), evaluate(*this, expression));
+}
+
+void BoxDomain::assign(Variable target, const TreeExpression& expression)
+{
+    const std::optional<LinearExpression> linear = expression.asLinear();
+    if (linear)
+    {
+        assign(target, *linear);
+        return;
+    }
+    const Interval value = evaluateTreeExpression(expression);
+    if (!bottom_)
+        setBound(environment_.dimensionOf(target), value);
+    report(OperationKind::Assignment, ApproximationKind::SoundOverApproximation,
+           "nonlinear or finite IEEE assignment was interval-linearized",
+           false);
+}
+
+void BoxDomain::assignParallel(const LinearAssignmentList& assignments)
+{
+    std::set<Variable> targets;
+    for (const LinearAssignment& assignment : assignments)
+    {
+        if (!environment_.contains(assignment.target))
+            throw std::invalid_argument(
+                "parallel assignment target is not in environment");
+        if (!targets.insert(assignment.target).second)
+            throw std::invalid_argument(
+                "parallel assignment contains a duplicate target");
+        for (const auto& [variable, coefficient] :
+             assignment.expression.terms())
+        {
+            (void)coefficient;
+            if (!environment_.contains(variable))
+                throw std::invalid_argument(
+                    "parallel assignment expression uses an unknown variable");
+        }
+    }
+    recordOperation(OperationKind::Assignment, ApproximationKind::Exact, true);
+    if (bottom_)
+        return;
+
+    std::vector<std::pair<Dimension, Interval>> updates;
+    updates.reserve(assignments.size());
+    for (const LinearAssignment& assignment : assignments)
+        updates.emplace_back(environment_.dimensionOf(assignment.target),
+                             evaluate(*this, assignment.expression));
+    for (auto& [dimension, value] : updates)
+        setBound(dimension, std::move(value));
+}
+
+void BoxDomain::substitute(Variable target, const LinearExpression& expression)
+{
+    substituteParallel({{target, expression}});
+}
+
+void BoxDomain::substituteParallel(const LinearAssignmentList& assignments)
+{
+    std::map<Variable, LinearExpression> replacements;
+    for (const LinearAssignment& assignment : assignments)
+    {
+        if (!environment_.contains(assignment.target))
+            throw std::invalid_argument(
+                "substitution target is not in environment");
+        if (!replacements.emplace(assignment.target, assignment.expression)
+                 .second)
+            throw std::invalid_argument(
+                "parallel substitution contains a duplicate target");
+        for (const auto& [variable, coefficient] :
+             assignment.expression.terms())
+        {
+            (void)coefficient;
+            if (!environment_.contains(variable))
+                throw std::invalid_argument(
+                    "substitution expression uses an unknown variable");
+        }
+    }
+    recordOperation(OperationKind::Substitution, ApproximationKind::Exact,
+                    true);
+    if (assignments.empty() || bottom_)
+        return;
+
+    LinearConstraintSet preimage;
+    for (const LinearConstraint& constraint : toConstraints())
+        preimage.emplace_back(constraint.expression().substituted(replacements),
+                              constraint.kind());
+    *this = fromConstraints(environment_, preimage, config_);
+}
+
+void BoxDomain::assume(const LinearConstraint& constraint)
+{
+    recordOperation(OperationKind::Assumption, ApproximationKind::Exact, true);
+    if (bottom_)
+        return;
+    for (const auto& [variable, coefficient] : constraint.expression().terms())
+    {
+        (void)coefficient;
+        if (!environment_.contains(variable))
+            throw std::invalid_argument("constraint uses an unknown variable");
+    }
+
+    if (constraint.kind() == ConstraintKind::NotEqual)
+    {
+        const Interval value = evaluate(*this, constraint.expression());
+        if (!value.lower().isFinite() || !value.upper().isFinite() ||
+            value.lower().value() != Rational() ||
+            value.upper().value() != Rational() || value.lower().isStrict() ||
+            value.upper().isStrict())
+            return;
+        makeBottom();
+        return;
+    }
+
+    if (constraint.kind() == ConstraintKind::Equal)
+    {
+        assume(LinearConstraint(constraint.expression(),
+                                ConstraintKind::LessEqual));
+        assume(LinearConstraint(-constraint.expression(),
+                                ConstraintKind::LessEqual));
+        return;
+    }
+
+    bool strict = false;
+    const LinearConstraint normalized = normalizedLessEqual(constraint, strict);
+    const LinearExpression& expression = normalized.expression();
+
+    // Repeating interval propagation lets bounds inferred for one dimension
+    // tighten another without introducing an unbounded worklist.
+    for (std::size_t pass = 0; pass <= environment_.size(); ++pass)
+    {
+        bool changed = false;
+        for (const auto& [variable, coefficient] : expression.terms())
+        {
+            if (coefficient.isZero())
+                continue;
+            const Interval rest = evaluate(*this, expression, variable);
+            if (!rest.lower().isFinite())
+                continue;
+
+            const Rational rhs = -rest.lower().value() / coefficient;
+            const bool resultStrict = strict || rest.lower().isStrict();
+            const Dimension dimension = environment_.dimensionOf(variable);
+            Interval next = boundAt(dimension);
+            if (coefficient.sign() > 0)
+            {
+                next = meetIntervals(
+                    next, Interval(Bound::minusInfinity(),
+                                   Bound::finite(rhs, resultStrict)));
+            }
+            else
+            {
+                next = meetIntervals(next,
+                                     Interval(Bound::finite(rhs, resultStrict),
+                                              Bound::plusInfinity()));
+            }
+            const Interval previous = boundAt(dimension);
+            setBound(dimension, next);
+            if (bottom_)
+                return;
+            changed = changed ||
+                      !intervalIncluded(previous, boundAt(dimension)) ||
+                      !intervalIncluded(boundAt(dimension), previous);
+        }
+        if (!changed)
+            break;
+    }
+
+    const Interval value = evaluate(*this, expression);
+    if (value.lower().isFinite())
+    {
+        const int sign = value.lower().value().sign();
+        if (sign > 0 || (sign == 0 && (strict || value.lower().isStrict())))
+            makeBottom();
+    }
+}
+
+void BoxDomain::assume(const TreeConstraint& constraint)
+{
+    const std::optional<LinearExpression> linear =
+        constraint.expression().asLinear();
+    if (linear)
+    {
+        assume(LinearConstraint(*linear, constraint.kind()));
+        return;
+    }
+    const LinearConstraintSet consequences =
+        treeConstraintConsequences(constraint);
+    assumeAll(consequences);
+    report(OperationKind::Assumption, ApproximationKind::SoundOverApproximation,
+           consequences.empty()
+               ? "nonlinear or finite IEEE guard had no affine consequence"
+               : "nonlinear guard was reduced to sound affine consequences",
+           false);
+}
+
+void BoxDomain::forget(Variable variable)
+{
+    if (!environment_.contains(variable))
+        throw std::invalid_argument("forgotten variable is not in environment");
+    if (!bottom_)
+        eraseBound(environment_.dimensionOf(variable));
+    recordOperation(OperationKind::Forget, ApproximationKind::Exact, true);
+}
+
+void BoxDomain::changeEnvironment(const VariableEnvironment& environment,
+                                  bool initializeNewVariablesToZero)
+{
+    if (environment_ == environment)
+    {
+        recordOperation(OperationKind::EnvironmentChange,
+                        ApproximationKind::Exact, true);
+        return;
+    }
+    for (const VariableDeclaration& declaration : environment.variables())
+    {
+        if (environment_.contains(declaration.variable) &&
+            environment_.typeOf(declaration.variable) != declaration.type)
+            throw std::invalid_argument(
+                "environment change modifies a variable's numeric type");
+    }
+    BoxDomain next = BoxDomain::top(environment, config_);
+    if (bottom_)
+        next.makeBottom();
+    else
+    {
+        for (Dimension oldDimension : boundedDimensions())
+        {
+            const Variable variable = environment_.variableOf(oldDimension);
+            if (environment.contains(variable))
+                next.setBound(environment.dimensionOf(variable),
+                              boundAt(oldDimension));
+        }
+        if (initializeNewVariablesToZero)
+        {
+            for (const VariableDeclaration& declaration :
+                 environment.variables())
+            {
+                if (!environment_.contains(declaration.variable))
+                    next.setBound(environment.dimensionOf(declaration.variable),
+                                  Interval::singleton(Rational()));
+            }
+        }
+    }
+    environment_ = std::move(next.environment_);
+    boundPages_ = std::move(next.boundPages_);
+    bottom_ = next.bottom_;
+    recordOperation(OperationKind::EnvironmentChange, ApproximationKind::Exact,
+                    true);
+}
+
+void BoxDomain::expand(Variable source,
+                       const std::vector<VariableDeclaration>& copies)
+{
+    if (!environment_.contains(source))
+        throw std::invalid_argument("expanded variable is not in environment");
+    std::set<Variable> seen;
+    for (const VariableDeclaration& copy : copies)
+    {
+        if (environment_.contains(copy.variable) ||
+            !seen.insert(copy.variable).second)
+            throw std::invalid_argument(
+                "expanded variables must be new and unique");
+        if (copy.type != environment_.typeOf(source))
+            throw std::invalid_argument(
+                "expanded variables must have the source numeric type");
+    }
+    if (copies.empty())
+    {
+        recordOperation(OperationKind::Expand, ApproximationKind::Exact, true);
+        return;
+    }
+    const Interval sourceValue = bound(source);
+    changeEnvironment(environment_.add(copies));
+    for (const VariableDeclaration& copy : copies)
+        if (!bottom_)
+            setBound(environment_.dimensionOf(copy.variable), sourceValue);
+    recordOperation(OperationKind::Expand, ApproximationKind::Exact, true);
+}
+
+void BoxDomain::fold(Variable target, const std::vector<Variable>& folded)
+{
+    if (!environment_.contains(target))
+        throw std::invalid_argument("fold target is not in environment");
+    std::set<Variable> seen;
+    std::vector<Variable> sources{target};
+    for (Variable variable : folded)
+    {
+        if (variable == target || !environment_.contains(variable) ||
+            !seen.insert(variable).second)
+            throw std::invalid_argument(
+                "folded variables must be distinct non-target dimensions");
+        if (environment_.typeOf(variable) != environment_.typeOf(target))
+            throw std::invalid_argument(
+                "folded variables must have the target numeric type");
+        sources.push_back(variable);
+    }
+    if (folded.empty())
+    {
+        recordOperation(OperationKind::Fold, ApproximationKind::Exact, true);
+        return;
+    }
+
+    BoxDomain result = bottom(environment_, config_);
+    for (Variable source : sources)
+    {
+        BoxDomain branch = *this;
+        if (source != target)
+            branch.setBound(environment_.dimensionOf(target), bound(source));
+        result = result.join(branch);
+    }
+    result.changeEnvironment(environment_.remove(folded));
+    *this = std::move(result);
+    recordOperation(OperationKind::Fold, ApproximationKind::Exact, true);
+}
+
+CheckResult BoxDomain::entails(const LinearConstraint& constraint) const
+{
+    if (bottom_)
+        return CheckResult::True;
+    const Interval value = evaluate(*this, constraint.expression());
+    const auto upperAtMostZero = [&]() {
+        if (!value.upper().isFinite())
+            return false;
+        return value.upper().value().sign() <= 0;
+    };
+    const auto upperBelowZero = [&]() {
+        return value.upper().isFinite() &&
+               (value.upper().value().sign() < 0 ||
+                (value.upper().value().isZero() && value.upper().isStrict()));
+    };
+    const auto lowerAtLeastZero = [&]() {
+        return value.lower().isFinite() && value.lower().value().sign() >= 0;
+    };
+    const auto lowerAboveZero = [&]() {
+        return value.lower().isFinite() &&
+               (value.lower().value().sign() > 0 ||
+                (value.lower().value().isZero() && value.lower().isStrict()));
+    };
+
+    switch (constraint.kind())
+    {
+    case ConstraintKind::LessEqual:
+        return upperAtMostZero() ? CheckResult::True : CheckResult::Unknown;
+    case ConstraintKind::LessThan:
+        return upperBelowZero() ? CheckResult::True : CheckResult::Unknown;
+    case ConstraintKind::GreaterEqual:
+        return lowerAtLeastZero() ? CheckResult::True : CheckResult::Unknown;
+    case ConstraintKind::GreaterThan:
+        return lowerAboveZero() ? CheckResult::True : CheckResult::Unknown;
+    case ConstraintKind::Equal:
+        return upperAtMostZero() && lowerAtLeastZero() ? CheckResult::True
+                                                       : CheckResult::Unknown;
+    case ConstraintKind::NotEqual:
+        return upperBelowZero() || lowerAboveZero() ? CheckResult::True
+                                                    : CheckResult::Unknown;
+    }
+    return CheckResult::Unknown;
+}
+
+Interval BoxDomain::bound(Variable variable) const
+{
+    if (!environment_.contains(variable))
+        throw std::invalid_argument("bounded variable is not in environment");
+    if (bottom_)
+        return Interval(Bound::plusInfinity(), Bound::minusInfinity());
+    return boundAt(environment_.dimensionOf(variable));
+}
+
+Interval BoxDomain::bound(const LinearExpression& expression) const
+{
+    for (const auto& [variable, coefficient] : expression.terms())
+    {
+        (void)coefficient;
+        if (!environment_.contains(variable))
+            throw std::invalid_argument(
+                "bounded expression uses an unknown variable");
+    }
+    if (bottom_)
+        return Interval(Bound::plusInfinity(), Bound::minusInfinity());
+    return evaluate(*this, expression);
+}
+
+IntervalBox BoxDomain::toBox() const
+{
+    IntervalBox result;
+    for (Dimension dimension = 0; dimension < environment_.size(); ++dimension)
+        result.bounds.emplace(environment_.variableOf(dimension),
+                              bottom_
+                                  ? bound(environment_.variableOf(dimension))
+                                  : boundAt(dimension));
+    return result;
+}
+
+LinearConstraintSet BoxDomain::toConstraints() const
+{
+    LinearConstraintSet result;
+    if (bottom_)
+    {
+        result.emplace_back(LinearExpression(Rational(1)),
+                            ConstraintKind::LessEqual);
+        return result;
+    }
+    for (Dimension dimension : boundedDimensions())
+    {
+        const Variable variable = environment_.variableOf(dimension);
+        const Interval& interval = boundAt(dimension);
+        if (interval.lower().isFinite())
+        {
+            result.emplace_back(LinearExpression(variable) -
+                                    LinearExpression(interval.lower().value()),
+                                interval.lower().isStrict()
+                                    ? ConstraintKind::GreaterThan
+                                    : ConstraintKind::GreaterEqual);
+        }
+        if (interval.upper().isFinite())
+        {
+            result.emplace_back(LinearExpression(variable) -
+                                    LinearExpression(interval.upper().value()),
+                                interval.upper().isStrict()
+                                    ? ConstraintKind::LessThan
+                                    : ConstraintKind::LessEqual);
+        }
+    }
+    return result;
+}
+
+void BoxDomain::close()
+{
+    recordOperation(OperationKind::TopologicalClosure, ApproximationKind::Exact,
+                    true, "topological closure");
+    if (bottom_)
+        return;
+    for (Dimension dimension : boundedDimensions())
+    {
+        const Interval& interval = boundAt(dimension);
+        const Bound lower = interval.lower().isFinite()
+                                ? Bound::finite(interval.lower().value())
+                                : interval.lower();
+        const Bound upper = interval.upper().isFinite()
+                                ? Bound::finite(interval.upper().value())
+                                : interval.upper();
+        setBound(dimension, Interval(lower, upper));
+    }
+}
+
+void BoxDomain::canonicalize()
+{
+    for (Dimension dimension : boundedDimensions())
+        canonicalize(dimension);
+    recordOperation(OperationKind::Canonicalization, ApproximationKind::Exact,
+                    true, "canonicalization");
+}
+
+BoxDomain BoxDomain::join(const BoxDomain& other) const
+{
+    BoxDomain result(*this);
+    result.joinDomain(other);
+    result.recordOperation(OperationKind::Join, ApproximationKind::Exact, true);
+    return result;
+}
+
+BoxDomain BoxDomain::meet(const BoxDomain& other) const
+{
+    BoxDomain result(*this);
+    result.meetDomain(other);
+    result.recordOperation(OperationKind::Meet, ApproximationKind::Exact, true);
+    return result;
+}
+
+BoxDomain BoxDomain::widen(const BoxDomain& next) const
+{
+    return widen(next, WideningPolicy{});
+}
+
+BoxDomain BoxDomain::widen(const BoxDomain& next,
+                           const WideningPolicy& policy) const
+{
+    requireBox(next);
+    if (bottom_)
+    {
+        BoxDomain result(next);
+        result.recordOperation(OperationKind::Widening,
+                               ApproximationKind::SoundOverApproximation, true);
+        return result;
+    }
+    if (next.bottom_)
+    {
+        BoxDomain result(*this);
+        result.recordOperation(OperationKind::Widening,
+                               ApproximationKind::SoundOverApproximation, true);
+        return result;
+    }
+    BoxDomain result(*this);
+    for (Dimension dimension : boundedDimensions())
+    {
+        Bound lower = boundAt(dimension).lower();
+        Bound upper = boundAt(dimension).upper();
+        const Interval& following = next.boundAt(dimension);
+        if (compareLower(following.lower(), lower) < 0)
+        {
+            lower = Bound::minusInfinity();
+            if (following.lower().isFinite())
+            {
+                for (const Rational& threshold : policy.thresholds)
+                {
+                    if (threshold <= following.lower().value() &&
+                        (lower.isMinusInfinity() || lower.value() < threshold))
+                        lower = Bound::finite(threshold);
+                }
+            }
+        }
+        if (Bound::compare(following.upper(), upper) > 0)
+        {
+            upper = Bound::plusInfinity();
+            if (following.upper().isFinite())
+            {
+                for (const Rational& threshold : policy.thresholds)
+                {
+                    if (following.upper().value() <= threshold &&
+                        (upper.isPlusInfinity() || threshold < upper.value()))
+                        upper = Bound::finite(threshold);
+                }
+            }
+        }
+        result.setBound(dimension, Interval(lower, upper));
+    }
+    for (const LinearConstraint& threshold : policy.linearThresholds)
+    {
+        if (entails(threshold) == CheckResult::True &&
+            next.entails(threshold) == CheckResult::True)
+            result.assume(threshold);
+    }
+    result.recordOperation(OperationKind::Widening,
+                           ApproximationKind::SoundOverApproximation, true);
+    return result;
+}
+
+BoxDomain BoxDomain::narrow(const BoxDomain& next) const
+{
+    requireBox(next);
+    if (bottom_ || next.bottom_)
+    {
+        BoxDomain result = bottom(environment_, config_);
+        result.recordOperation(OperationKind::Narrowing,
+                               ApproximationKind::Exact, true);
+        return result;
+    }
+    BoxDomain result(*this);
+    for (Dimension dimension : next.boundedDimensions())
+    {
+        Bound lower = boundAt(dimension).lower();
+        Bound upper = boundAt(dimension).upper();
+        if (lower.isMinusInfinity())
+            lower = next.boundAt(dimension).lower();
+        if (upper.isPlusInfinity())
+            upper = next.boundAt(dimension).upper();
+        result.setBound(dimension, Interval(lower, upper));
+    }
+    result.recordOperation(OperationKind::Narrowing, ApproximationKind::Exact,
+                           true);
+    return result;
+}
+
+bool BoxDomain::hasCompatibleDomain(const AbstractDomain& other) const
+{
+    const auto* box = other.isDomain<BoxDomain>()
+                          ? &static_cast<const BoxDomain&>(other)
+                          : nullptr;
+    return box && environment_ == box->environment_ &&
+           config_.operationCompatible(box->config_);
+}
+
+void BoxDomain::joinDomain(const AbstractDomain& other)
+{
+    const BoxDomain& box = requireBox(other);
+    if (box.bottom_)
+        return;
+    if (bottom_)
+    {
+        *this = box;
+        return;
+    }
+    for (Dimension dimension : boundedDimensions())
+        setBound(dimension,
+                 joinIntervals(boundAt(dimension), box.boundAt(dimension)));
+}
+
+void BoxDomain::meetDomain(const AbstractDomain& other)
+{
+    const BoxDomain& box = requireBox(other);
+    if (bottom_ || box.bottom_)
+    {
+        makeBottom();
+        return;
+    }
+    for (Dimension dimension : box.boundedDimensions())
+    {
+        setBound(dimension,
+                 meetIntervals(boundAt(dimension), box.boundAt(dimension)));
+        if (bottom_)
+            return;
+    }
+}
+
+void BoxDomain::widenDomain(const AbstractDomain& next)
+{
+    *this = widen(requireBox(next));
+}
+
+void BoxDomain::narrowDomain(const AbstractDomain& next)
+{
+    *this = narrow(requireBox(next));
+}
+
+bool BoxDomain::isBottomDomain() const
+{
+    return bottom_;
+}
+
+bool BoxDomain::isTopDomain() const
+{
+    return !bottom_ && boundPages_.empty();
+}
+
+bool BoxDomain::leqDomain(const AbstractDomain& other) const
+{
+    const BoxDomain& box = requireBox(other);
+    if (bottom_ == box.bottom_ && boundPages_.size() == box.boundPages_.size())
+    {
+        bool equal = true;
+        for (std::size_t index = 0; index < boundPages_.size(); ++index)
+        {
+            if (boundPages_[index].index != box.boundPages_[index].index ||
+                (boundPages_[index].page != box.boundPages_[index].page &&
+                 boundPages_[index].page->bounds !=
+                     box.boundPages_[index].page->bounds))
+            {
+                equal = false;
+                break;
+            }
+        }
+        if (equal)
+            return true;
+    }
+    if (bottom_)
+        return true;
+    if (box.bottom_)
+        return false;
+    for (Dimension dimension : box.boundedDimensions())
+    {
+        if (!intervalIncluded(boundAt(dimension), box.boundAt(dimension)))
+            return false;
+    }
+    return true;
+}
+
+std::string BoxDomain::domainToString() const
+{
+    if (bottom_)
+        return "bottom";
+    std::ostringstream output;
+    output << "{";
+    for (Dimension dimension = 0; dimension < environment_.size(); ++dimension)
+    {
+        if (dimension != 0)
+            output << ", ";
+        output << environment_.nameOf(environment_.variableOf(dimension)) << "="
+               << boundAt(dimension).toString();
+    }
+    output << "}";
+    return output.str();
+}
+
+const BoxDomain& BoxDomain::requireBox(const AbstractDomain& other) const
+{
+    requireCompatible(other);
+    return static_cast<const BoxDomain&>(other);
+}
+
+void BoxDomain::canonicalize(Dimension dimension)
+{
+    if (bottom_)
+        return;
+    Interval interval = boundAt(dimension);
+    const Variable variable = environment_.variableOf(dimension);
+    if (config_.integerTightening &&
+        environment_.typeOf(variable).kind == NumericKind::Integer)
+    {
+        interval = Interval(integerLower(interval.lower()),
+                            integerUpper(interval.upper()));
+    }
+    if (interval.isBottom())
+    {
+        makeBottom();
+        return;
+    }
+    if (interval.isTop())
+        eraseBound(dimension);
+    else
+        writablePage(dimension / BoundsPerPage)
+            .bounds[dimension % BoundsPerPage] = std::move(interval);
+}
+
+void BoxDomain::setBound(Dimension dimension, Interval interval)
+{
+    if (interval.isTop())
+        eraseBound(dimension);
+    else
+        writablePage(dimension / BoundsPerPage)
+            .bounds[dimension % BoundsPerPage] = std::move(interval);
+    canonicalize(dimension);
+}
+
+const Interval& BoxDomain::boundAt(Dimension dimension) const
+{
+    static const Interval top = Interval::top();
+    const std::size_t pageIndex = dimension / BoundsPerPage;
+    const auto iterator =
+        std::lower_bound(boundPages_.begin(), boundPages_.end(), pageIndex,
+                         [](const BoundPageEntry& entry, std::size_t index) {
+                             return entry.index < index;
+                         });
+    if (iterator == boundPages_.end() || iterator->index != pageIndex)
+        return top;
+    const auto& slot = iterator->page->bounds[dimension % BoundsPerPage];
+    return slot ? *slot : top;
+}
+
+BoxDomain::BoundPage& BoxDomain::writablePage(std::size_t pageIndex)
+{
+    auto iterator =
+        std::lower_bound(boundPages_.begin(), boundPages_.end(), pageIndex,
+                         [](const BoundPageEntry& entry, std::size_t index) {
+                             return entry.index < index;
+                         });
+    if (iterator == boundPages_.end() || iterator->index != pageIndex)
+        iterator = boundPages_.insert(
+            iterator, {pageIndex, std::make_shared<BoundPage>()});
+    else if (iterator->page.use_count() != 1)
+        iterator->page = std::make_shared<BoundPage>(*iterator->page);
+    return *iterator->page;
+}
+
+void BoxDomain::eraseBound(Dimension dimension)
+{
+    const std::size_t pageIndex = dimension / BoundsPerPage;
+    auto existing =
+        std::lower_bound(boundPages_.begin(), boundPages_.end(), pageIndex,
+                         [](const BoundPageEntry& entry, std::size_t index) {
+                             return entry.index < index;
+                         });
+    if (existing == boundPages_.end() || existing->index != pageIndex)
+        return;
+    const std::size_t offset = dimension % BoundsPerPage;
+    if (!existing->page->bounds[offset])
+        return;
+    auto iterator =
+        std::lower_bound(boundPages_.begin(), boundPages_.end(), pageIndex,
+                         [](const BoundPageEntry& entry, std::size_t index) {
+                             return entry.index < index;
+                         });
+    if (iterator->page.use_count() != 1)
+        iterator->page = std::make_shared<BoundPage>(*iterator->page);
+    iterator->page->bounds[offset].reset();
+    if (pageIsEmpty(*iterator->page))
+        boundPages_.erase(iterator);
+}
+
+bool BoxDomain::pageIsEmpty(const BoundPage& page)
+{
+    return std::none_of(page.bounds.begin(), page.bounds.end(),
+                        [](const auto& bound) { return bound.has_value(); });
+}
+
+std::vector<Dimension> BoxDomain::boundedDimensions() const
+{
+    std::vector<Dimension> dimensions;
+    for (const BoundPageEntry& entry : boundPages_)
+    {
+        for (std::size_t offset = 0; offset < BoundsPerPage; ++offset)
+        {
+            const Dimension dimension = entry.index * BoundsPerPage + offset;
+            if (dimension >= environment_.size())
+                break;
+            if (entry.page->bounds[offset])
+                dimensions.push_back(dimension);
+        }
+    }
+    return dimensions;
+}
+
+void BoxDomain::makeBottom()
+{
+    bottom_ = true;
+    boundPages_.clear();
+}
+
+void BoxDomain::report(OperationKind operation, ApproximationKind approximation,
+                       std::string reason, bool best) const
+{
+    recordOperation(operation, approximation, best, reason);
+    if (config_.diagnostics)
+        config_.diagnostics->report(
+            {operation, approximation, std::move(reason)});
 }
 
 } // namespace SVF::AbstractDomain

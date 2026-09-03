@@ -1,14 +1,13 @@
-//===- LinearConstraint.h -- Domain-neutral linear syntax -------*- C++ -*-===//
+//===- LinearExpression.h -- Domain-neutral linear syntax -------*- C++ -*-===//
 
-#ifndef SVF_AE_LINEAR_CONSTRAINT_H
-#define SVF_AE_LINEAR_CONSTRAINT_H
+#ifndef SVF_AE_LINEAR_EXPRESSION_H
+#define SVF_AE_LINEAR_EXPRESSION_H
 
-#include "AE/Core/VariableEnvironment.h"
+#include "AE/Core/NumericalDomain.h"
 
 #include <map>
-#include <memory>
-#include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace SVF::AbstractDomain
@@ -45,7 +44,8 @@ public:
     LinearExpression substituted(
         const std::map<Variable, LinearExpression>& replacements) const;
 
-    std::string toString(const VariableEnvironment* environment = nullptr) const;
+    std::string toString(
+        const VariableEnvironment* environment = nullptr) const;
 
     friend LinearExpression operator+(LinearExpression lhs,
                                       const LinearExpression& rhs)
@@ -78,93 +78,6 @@ private:
     Terms terms_;
     Rational constant_;
 };
-
-enum class UnaryOperator
-{
-    Negate,
-    Cast,
-    SquareRoot
-};
-
-enum class BinaryOperator
-{
-    Add,
-    Subtract,
-    Multiply,
-    Divide,
-    Remainder
-};
-
-class TreeExpression
-{
-public:
-    enum class Kind
-    {
-        Constant,
-        Variable,
-        Unary,
-        Binary
-    };
-
-    static TreeExpression constant(Rational value,
-                                   NumericType type = NumericType::real());
-    static TreeExpression variable(Variable value, NumericType type);
-    static TreeExpression unary(
-        UnaryOperator operation, TreeExpression operand, NumericType type,
-        RoundingMode rounding = RoundingMode::NearestTiesToEven);
-    static TreeExpression binary(
-        BinaryOperator operation, TreeExpression lhs, TreeExpression rhs,
-        NumericType type,
-        RoundingMode rounding = RoundingMode::NearestTiesToEven);
-
-    Kind kind() const
-    {
-        return kind_;
-    }
-    const NumericType& type() const
-    {
-        return type_;
-    }
-    const Rational& constant() const
-    {
-        return constant_;
-    }
-    Variable variable() const
-    {
-        return variable_;
-    }
-    UnaryOperator unaryOperator() const
-    {
-        return unaryOperator_;
-    }
-    BinaryOperator binaryOperator() const
-    {
-        return binaryOperator_;
-    }
-    RoundingMode roundingMode() const
-    {
-        return roundingMode_;
-    }
-    const TreeExpression& lhs() const;
-    const TreeExpression& rhs() const;
-
-    /// Return an exact affine expression when the tree is affine under
-    /// mathematical integer/real semantics.  Floating and nonlinear trees
-    /// deliberately return nullopt and must use a sound backend fallback.
-    std::optional<LinearExpression> asLinear() const;
-
-private:
-    Kind kind_ = Kind::Constant;
-    NumericType type_ = NumericType::real();
-    Rational constant_;
-    Variable variable_;
-    UnaryOperator unaryOperator_ = UnaryOperator::Negate;
-    BinaryOperator binaryOperator_ = BinaryOperator::Add;
-    RoundingMode roundingMode_ = RoundingMode::NearestTiesToEven;
-    std::shared_ptr<const TreeExpression> lhs_;
-    std::shared_ptr<const TreeExpression> rhs_;
-};
-
 enum class ConstraintKind
 {
     Equal,
@@ -189,34 +102,43 @@ public:
     {
         return kind_;
     }
-    std::string toString(const VariableEnvironment* environment = nullptr) const;
+    std::string toString(
+        const VariableEnvironment* environment = nullptr) const;
 
 private:
     LinearExpression expression_;
     ConstraintKind kind_;
 };
 
-class TreeConstraint
-{
-public:
-    TreeConstraint(TreeExpression expression, ConstraintKind kind);
-
-    const TreeExpression& expression() const
-    {
-        return expression_;
-    }
-    ConstraintKind kind() const
-    {
-        return kind_;
-    }
-
-private:
-    TreeExpression expression_;
-    ConstraintKind kind_;
-};
-
 using LinearConstraintSet = std::vector<LinearConstraint>;
 
+struct WideningPolicy
+{
+    WideningPolicy() = default;
+
+    explicit WideningPolicy(std::vector<Rational> thresholdValues)
+        : thresholds(std::move(thresholdValues))
+    {
+    }
+
+    WideningPolicy(std::vector<Rational> thresholdValues,
+                   LinearConstraintSet linearThresholdValues)
+        : thresholds(std::move(thresholdValues)),
+          linearThresholds(std::move(linearThresholdValues))
+    {
+    }
+
+    std::vector<Rational> thresholds;
+    LinearConstraintSet linearThresholds;
+};
+
+struct LinearAssignment
+{
+    Variable target;
+    LinearExpression expression;
+};
+
+using LinearAssignmentList = std::vector<LinearAssignment>;
 LinearConstraint equal(LinearExpression lhs, LinearExpression rhs);
 LinearConstraint notEqual(LinearExpression lhs, LinearExpression rhs);
 LinearConstraint lessEqual(LinearExpression lhs, LinearExpression rhs);
@@ -226,4 +148,4 @@ LinearConstraint greaterThan(LinearExpression lhs, LinearExpression rhs);
 
 } // namespace SVF::AbstractDomain
 
-#endif // SVF_AE_LINEAR_CONSTRAINT_H
+#endif // SVF_AE_LINEAR_EXPRESSION_H

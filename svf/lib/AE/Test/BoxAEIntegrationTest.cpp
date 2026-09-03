@@ -1,6 +1,6 @@
 //===- BoxAEIntegrationTest.cpp -- Box-backed AE integration test -------===//
 
-#include "AE/Core/BoxDomain.h"
+#include "AE/Core/NumericalDomain.h"
 #include "AE/Core/BoxProgramState.h"
 #include "AE/Svfexe/AbstractInterpretation.h"
 #include "AE/Svfexe/SVFIRAdapter.h"
@@ -34,21 +34,20 @@ const SVFVar* findValue(const SVFIR& graph, const std::string& name)
     return nullptr;
 }
 
-const BoxProgramState& requireBoxState(const AD::AbstractState& state)
+const BoxProgramState& requireBoxState(const AD::AbstractDomain& state)
 {
-    if (!state.isState<BoxProgramState>())
-        throw std::runtime_error(std::string("AE state is not Box-backed: ") +
-                                 state.name());
+    if (!state.isDomain<BoxProgramState>())
+        throw std::runtime_error("AE property is not Box-backed");
     return static_cast<const BoxProgramState&>(state);
 }
 
 const BoxProgramState& stateForValue(AbstractInterpretation& analysis,
                                      const ValVar* value, const ICFGNode* node)
 {
-    if (const AD::AbstractState* checkpoint =
+    if (const AD::AbstractDomain* checkpoint =
             analysis.getScalarAbstractState(value))
         return requireBoxState(*checkpoint);
-    if (const AD::AbstractState* scalar =
+    if (const AD::AbstractDomain* scalar =
             analysis.getScalarAbstractState(value->getFunction()))
         return requireBoxState(*scalar);
     return requireBoxState(analysis.getAbstractState(node));
@@ -88,11 +87,11 @@ void validateProjection(const SVFIR& graph, AbstractInterpretation& analysis)
     {
         if (!analysis.hasAbsValue(scalar, node))
             continue;
-        const AbstractValue projected = analysis.getAbsValue(scalar, node);
+        const ScalarProjection projected = analysis.getAbsValue(scalar, node);
         const BoxProgramState& state = stateForValue(analysis, scalar, node);
         if (projected.isInterval() &&
             projected.getInterval().equals(
-                IntervalValue(expectedLower, expectedUpper)) &&
+                IntegerIntervalProjection(expectedLower, expectedUpper)) &&
             state.numerical().environment().contains(variable) &&
             hasFiniteBounds(state.numerical().bound(variable), expectedLower,
                             expectedUpper))
@@ -114,7 +113,7 @@ void validateSparseMemoryRefinement(const SVFIR& graph,
     {
         if (!analysis.hasAbsValue(result, node))
             continue;
-        const AbstractValue value = analysis.getAbsValue(result, node);
+        const ScalarProjection value = analysis.getAbsValue(result, node);
         observedPositive |= value.isInterval() &&
                             !value.getInterval().lb().is_infinity() &&
                             value.getInterval().lb().getNumeral() == 1;

@@ -1,7 +1,9 @@
-//===- BoxDomainTest.cpp -- Native Box domain regression tests ----------===//
+//===- CoreDomainTest.cpp -- Abstract, Box, and Address domain tests ----===//
 
-#include "AE/Core/BoxDomain.h"
+#include "AE/Core/AddressDomain.h"
 #include "AE/Core/BoxProgramState.h"
+#include "AE/Core/DomainRegistry.h"
+#include "AE/Core/NumericalDomain.h"
 
 #include <cstdlib>
 #include <iostream>
@@ -61,7 +63,16 @@ void testLatticeAndTransferSurface()
                                            {y, NumericType::integer(), "y"},
                                            {z, NumericType::real(), "z"}});
 
-    BoxState state = BoxState::top(environment);
+    BoxDomain state = BoxDomain::top(environment);
+    require(state.kind() == DomainKind::Box,
+            "Box property reported the wrong DomainKind");
+    require(DomainRegistry::isRegistered(DomainKind::Box) &&
+                DomainRegistry::lookup(DomainKind::Box)->numerical &&
+                DomainRegistry::isRegistered(DomainKind::Address),
+            "DomainRegistry omitted a first-step domain implementation");
+    const std::unique_ptr<AbstractDomain> cloned = state.clone();
+    require(cloned->isDomain<BoxDomain>() && cloned->kind() == DomainKind::Box,
+            "AbstractDomain clone lost the concrete Box property type");
     state.assume(atLeast(x, Rational(0)));
     state.assume(atMost(x, Rational(10)));
     state.assign(y, LinearExpression(x) + LinearExpression(Rational(2)));
@@ -72,25 +83,25 @@ void testLatticeAndTransferSurface()
                       Rational(2), Rational(22)),
             "Box expression bounds did not use all terms");
 
-    BoxState simultaneous = state;
+    BoxDomain simultaneous = state;
     simultaneous.assignParallel(
         {{x, LinearExpression(y)}, {y, LinearExpression(x)}});
     require(hasBounds(simultaneous.bound(x), Rational(2), Rational(12)) &&
                 hasBounds(simultaneous.bound(y), Rational(0), Rational(10)),
             "Box parallel assignment was not simultaneous");
 
-    BoxState post = BoxState::top(environment);
+    BoxDomain post = BoxDomain::top(environment);
     post.assume(atLeast(y, Rational(5)));
     post.assume(atMost(y, Rational(7)));
     post.substitute(y, LinearExpression(x) + LinearExpression(Rational(1)));
     require(hasBounds(post.bound(x), Rational(4), Rational(6)),
             "Box backward substitution computed the wrong preimage");
 
-    BoxState alternative = BoxState::top(environment);
+    BoxDomain alternative = BoxDomain::top(environment);
     alternative.assume(atLeast(x, Rational(5)));
     alternative.assume(atMost(x, Rational(20)));
-    const BoxState joined = state.join(alternative);
-    const BoxState met = state.meet(alternative);
+    const BoxDomain joined = state.join(alternative);
+    const BoxDomain met = state.meet(alternative);
     require(hasBounds(joined.bound(x), Rational(0), Rational(20)) &&
                 hasBounds(met.bound(x), Rational(5), Rational(10)),
             "Box join/meet did not compute interval hull/intersection");
@@ -98,14 +109,14 @@ void testLatticeAndTransferSurface()
                 met.isSubsetOf(state) == CheckResult::True,
             "Box lattice ordering disagrees with join/meet");
 
-    const BoxState widened = state.widen(alternative);
+    const BoxDomain widened = state.widen(alternative);
     require(widened.bound(x).upper().isPlusInfinity(),
             "Box widening did not extrapolate an unstable upper bound");
     require(widened.narrow(alternative).bound(x).upper().value() ==
                 Rational(20),
             "Box narrowing did not recover the finite successor bound");
 
-    BoxState contradiction = BoxState::top(environment);
+    BoxDomain contradiction = BoxDomain::top(environment);
     contradiction.assume(atLeast(x, Rational(2)));
     contradiction.assume(atMost(x, Rational(1)));
     require(contradiction.isBottom(),
@@ -119,7 +130,7 @@ void testEnvironmentExpandFoldAndTrees()
     const Variable copy(4097);
     const VariableEnvironment base(
         {{x, NumericType::integer(), "x"}, {y, NumericType::integer(), "y"}});
-    BoxState state = BoxState::top(base);
+    BoxDomain state = BoxDomain::top(base);
     state.assume(atLeast(x, Rational(1)));
     state.assume(atMost(x, Rational(3)));
     state.expand(x, {{copy, NumericType::integer(), "copy"}});
@@ -166,28 +177,28 @@ void testPagedCopyOnWriteAndSerialization()
     const Variable first = environment.variableOf(0);
     const Variable distant = environment.variableOf(200);
 
-    BoxState original = BoxState::top(environment);
+    BoxDomain original = BoxDomain::top(environment);
     original.assume(atLeast(first, Rational(1)));
     original.assume(atMost(first, Rational(3)));
     original.assume(atLeast(distant, Rational(9)));
     original.assume(atMost(distant, Rational(11)));
-    BoxState copy = original;
+    BoxDomain copy = original;
     copy.assign(first, LinearExpression(Rational(7)));
     require(hasBounds(original.bound(first), Rational(1), Rational(3)) &&
                 hasBounds(copy.bound(first), Rational(7), Rational(7)) &&
                 hasBounds(copy.bound(distant), Rational(9), Rational(11)),
             "paged Box COW mutated a source or detached unrelated data");
 
-    const NumericalState::RawBuffer raw = original.serializeRaw();
-    std::unique_ptr<NumericalState> restored =
-        NumericalState::deserializeRaw(raw);
-    require(restored->isState<BoxState>() &&
+    const NumericalDomain::RawBuffer raw = original.serializeRaw();
+    std::unique_ptr<NumericalDomain> restored =
+        NumericalDomain::deserializeRaw(raw);
+    require(restored->isDomain<BoxDomain>() &&
                 restored->isEquivalentTo(original) == CheckResult::True &&
                 restored->hash() == original.hash(),
             "Box raw round-trip changed semantic state or hash");
-    NumericalState::RawBuffer corrupt = raw;
+    NumericalDomain::RawBuffer corrupt = raw;
     corrupt[corrupt.size() / 2] ^= 1U;
-    requireThrows([&] { (void)NumericalState::deserializeRaw(corrupt); },
+    requireThrows([&] { (void)NumericalDomain::deserializeRaw(corrupt); },
                   "Box raw deserialization accepted corrupt data");
 }
 
@@ -203,10 +214,10 @@ void testProgramStateMemoryFacet()
          {target, NumericType::integer(), "target"},
          {cell, NumericType::integer(), "cell"}});
     const Location object(10);
-    BoxProgramState state(BoxState::top(environment),
+    BoxProgramState state(BoxDomain::top(environment),
                           MemoryLayout({{object, cell}}));
     state.allocate(object);
-    state.assignPointer(pointer, PointeeSet::singleton(object));
+    state.assignPointer(pointer, AddressSet::singleton(object));
     state.assignNumeric(source, LinearExpression(Rational(7)));
     state.store(pointer, source);
     state.load(target, pointer);
@@ -224,6 +235,56 @@ void testProgramStateMemoryFacet()
     require(other.isSubsetOf(joined) == CheckResult::True,
             "Box program-state join omitted a component");
 }
+
+void testAddressDomain()
+{
+    const Variable p(1);
+    const Variable q(2);
+    const Location first(10);
+    const Location second(20);
+    const VariableEnvironment environment(
+        {{p, NumericType::integer(), "p"}, {q, NumericType::integer(), "q"}});
+
+    AddressDomain addresses = AddressDomain::bottom(environment);
+    require(addresses.kind() == DomainKind::Address && addresses.isBottom() &&
+                addresses.addressSet(p).isBottom(),
+            "Address bottom did not define the vocabulary-wide default");
+
+    addresses.assign(p, AddressSet::singleton(first));
+    AddressDomain copy = addresses;
+    copy.assign(p, AddressSet::singleton(second));
+    require(addresses.addressSet(p).contains(first) &&
+                !addresses.addressSet(p).contains(second) &&
+                copy.addressSet(p).contains(second),
+            "Address copy-on-write changed the source property");
+
+    AddressDomain joined = addresses;
+    joined.joinWith(copy);
+    require(joined.addressSet(p).contains(first) &&
+                joined.addressSet(p).contains(second) &&
+                addresses.isSubsetOf(joined) == CheckResult::True &&
+                copy.isSubsetOf(joined) == CheckResult::True,
+            "Address join or ordering lost a possible location");
+
+    AddressDomain met = joined;
+    met.meetWith(addresses);
+    require(met.isEquivalentTo(addresses) == CheckResult::True,
+            "Address meet did not compute set intersection");
+
+    const VariableEnvironment projected({{q, NumericType::integer(), "q"}});
+    joined.changeEnvironment(projected);
+    require(!joined.environment().contains(p) && joined.isBottom(),
+            "Address environment projection retained an out-of-scope fact");
+    requireThrows([&] { (void)joined.addressSet(p); },
+                  "Address query accepted a variable outside its environment");
+
+    AddressDomain incompatible = AddressDomain::top(projected);
+    requireThrows([&] { incompatible.joinWith(addresses); },
+                  "Address join silently guessed an environment conversion");
+    BoxDomain numerical = BoxDomain::top(projected);
+    requireThrows([&] { incompatible.joinWith(numerical); },
+                  "AbstractDomain accepted a cross-kind lattice operation");
+}
 } // namespace
 
 int main()
@@ -234,12 +295,13 @@ int main()
         testEnvironmentExpandFoldAndTrees();
         testPagedCopyOnWriteAndSerialization();
         testProgramStateMemoryFacet();
-        std::cout << "SVF Box domain test: PASS\n";
+        testAddressDomain();
+        std::cout << "SVF AE core domain test: PASS\n";
         return EXIT_SUCCESS;
     }
     catch (const std::exception& error)
     {
-        std::cerr << "SVF Box domain test: FAIL: " << error.what() << '\n';
+        std::cerr << "SVF AE core domain test: FAIL: " << error.what() << '\n';
         return EXIT_FAILURE;
     }
 }

@@ -3,8 +3,6 @@
 #ifndef SVF_AE_VARIABLE_ENVIRONMENT_H
 #define SVF_AE_VARIABLE_ENVIRONMENT_H
 
-#include "AE/Core/NumericPrimitives.h"
-
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -16,11 +14,29 @@ namespace SVF::AbstractDomain
 
 using Dimension = std::size_t;
 
+struct FloatFormat
+{
+    unsigned exponentBits = 0;
+    unsigned significandBits = 0;
+
+    static FloatFormat binary32()
+    {
+        return {8, 24};
+    }
+    static FloatFormat binary64()
+    {
+        return {11, 53};
+    }
+};
+
 class Variable
 {
 public:
     explicit Variable(std::uint32_t id = 0) : id_(id) {}
-    std::uint32_t id() const { return id_; }
+    std::uint32_t id() const
+    {
+        return id_;
+    }
 
     friend bool operator==(Variable lhs, Variable rhs)
     {
@@ -51,8 +67,14 @@ struct NumericType
     NumericKind kind = NumericKind::Integer;
     FloatFormat floatFormat{};
 
-    static NumericType integer() { return {NumericKind::Integer, {}}; }
-    static NumericType real() { return {NumericKind::Real, {}}; }
+    static NumericType integer()
+    {
+        return {NumericKind::Integer, {}};
+    }
+    static NumericType real()
+    {
+        return {NumericKind::Real, {}};
+    }
     static NumericType ieee(FloatFormat format)
     {
         return {NumericKind::IEEEFloat, format};
@@ -87,7 +109,10 @@ public:
     explicit VariableEnvironment(std::vector<VariableDeclaration> variables);
 
     std::size_t size() const;
-    bool empty() const { return size() == 0; }
+    bool empty() const
+    {
+        return size() == 0;
+    }
     bool contains(Variable variable) const;
     Dimension dimensionOf(Variable variable) const;
     Variable variableOf(Dimension dimension) const;
@@ -99,8 +124,10 @@ public:
     VariableEnvironment remove(const std::vector<Variable>& variables) const;
     VariableEnvironment merge(const VariableEnvironment& other) const;
 
-    friend bool operator==(const VariableEnvironment& lhs, const VariableEnvironment& rhs);
-    friend bool operator!=(const VariableEnvironment& lhs, const VariableEnvironment& rhs)
+    friend bool operator==(const VariableEnvironment& lhs,
+                           const VariableEnvironment& rhs);
+    friend bool operator!=(const VariableEnvironment& lhs,
+                           const VariableEnvironment& rhs)
     {
         return !(lhs == rhs);
     }

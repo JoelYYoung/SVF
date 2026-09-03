@@ -52,197 +52,197 @@ public:
     void testBinaryOpStmt()
     {
         // test division /
-        assert((IntervalValue(4) / IntervalValue::bottom()).equals(IntervalValue::bottom()));
-        assert((IntervalValue::bottom() / IntervalValue(2)).equals(IntervalValue::bottom()));
-        assert((IntervalValue::top() / IntervalValue(0)).equals(IntervalValue::bottom()));
-        assert((IntervalValue(4) / IntervalValue(2)).equals(IntervalValue(2)));
-        assert((IntervalValue(3) / IntervalValue(2)).equals(IntervalValue(1))); //
-        assert((IntervalValue(-3) / IntervalValue(2)).equals(IntervalValue(-1))); //
-        assert((IntervalValue(1, 3) / IntervalValue(2)).equals(IntervalValue(0, 1))); //
-        assert((IntervalValue(2, 7) / IntervalValue(2)).equals(IntervalValue(1, 3))); //
-        assert((IntervalValue(-3, 3) / IntervalValue(2)).equals(IntervalValue(-1, 1)));
-        assert((IntervalValue(-3, IntervalValue::plus_infinity()) / IntervalValue(2)).equals(IntervalValue(-1, IntervalValue::plus_infinity())));
-        assert((IntervalValue(IntervalValue::minus_infinity(), 3) / IntervalValue(2)).equals(IntervalValue(IntervalValue::minus_infinity(), 1)));
-        assert((IntervalValue(1, 3) / IntervalValue(1, 2)).equals(IntervalValue(0, 3)));//
-        assert((IntervalValue(-3, 3) / IntervalValue(1, 2)).equals(IntervalValue(-3, 3)));
-        assert((IntervalValue(2, 7) / IntervalValue(-2, 3)).equals(IntervalValue(-7, 7))); //
-        assert((IntervalValue(-2, 7) / IntervalValue(-2, 3)).equals(IntervalValue(-7, 7))); //
-        assert((IntervalValue(IntervalValue::minus_infinity(), 7) / IntervalValue(-2, 3)).equals(IntervalValue::top()));
-        assert((IntervalValue(-2, IntervalValue::plus_infinity()) / IntervalValue(-2, 3)).equals(IntervalValue::top()));
+        assert((IntegerIntervalProjection(4) / IntegerIntervalProjection::bottom()).equals(IntegerIntervalProjection::bottom()));
+        assert((IntegerIntervalProjection::bottom() / IntegerIntervalProjection(2)).equals(IntegerIntervalProjection::bottom()));
+        assert((IntegerIntervalProjection::top() / IntegerIntervalProjection(0)).equals(IntegerIntervalProjection::bottom()));
+        assert((IntegerIntervalProjection(4) / IntegerIntervalProjection(2)).equals(IntegerIntervalProjection(2)));
+        assert((IntegerIntervalProjection(3) / IntegerIntervalProjection(2)).equals(IntegerIntervalProjection(1))); //
+        assert((IntegerIntervalProjection(-3) / IntegerIntervalProjection(2)).equals(IntegerIntervalProjection(-1))); //
+        assert((IntegerIntervalProjection(1, 3) / IntegerIntervalProjection(2)).equals(IntegerIntervalProjection(0, 1))); //
+        assert((IntegerIntervalProjection(2, 7) / IntegerIntervalProjection(2)).equals(IntegerIntervalProjection(1, 3))); //
+        assert((IntegerIntervalProjection(-3, 3) / IntegerIntervalProjection(2)).equals(IntegerIntervalProjection(-1, 1)));
+        assert((IntegerIntervalProjection(-3, IntegerIntervalProjection::plus_infinity()) / IntegerIntervalProjection(2)).equals(IntegerIntervalProjection(-1, IntegerIntervalProjection::plus_infinity())));
+        assert((IntegerIntervalProjection(IntegerIntervalProjection::minus_infinity(), 3) / IntegerIntervalProjection(2)).equals(IntegerIntervalProjection(IntegerIntervalProjection::minus_infinity(), 1)));
+        assert((IntegerIntervalProjection(1, 3) / IntegerIntervalProjection(1, 2)).equals(IntegerIntervalProjection(0, 3)));//
+        assert((IntegerIntervalProjection(-3, 3) / IntegerIntervalProjection(1, 2)).equals(IntegerIntervalProjection(-3, 3)));
+        assert((IntegerIntervalProjection(2, 7) / IntegerIntervalProjection(-2, 3)).equals(IntegerIntervalProjection(-7, 7))); //
+        assert((IntegerIntervalProjection(-2, 7) / IntegerIntervalProjection(-2, 3)).equals(IntegerIntervalProjection(-7, 7))); //
+        assert((IntegerIntervalProjection(IntegerIntervalProjection::minus_infinity(), 7) / IntegerIntervalProjection(-2, 3)).equals(IntegerIntervalProjection::top()));
+        assert((IntegerIntervalProjection(-2, IntegerIntervalProjection::plus_infinity()) / IntegerIntervalProjection(-2, 3)).equals(IntegerIntervalProjection::top()));
 
-        assert((IntervalValue(-2, 7) / IntervalValue(IntervalValue::minus_infinity(), 3)).equals(IntervalValue(-7, 7)));
-        assert((IntervalValue(-2, 7) / IntervalValue(-2, IntervalValue::plus_infinity())).equals(IntervalValue(-7, 7)));
-        assert((IntervalValue(-6, -3) / IntervalValue(3, 9)).equals(IntervalValue(-2, 0)));
-        assert((IntervalValue(-6, 6) / IntervalValue(3, 9)).equals(IntervalValue(-2, 2)));
+        assert((IntegerIntervalProjection(-2, 7) / IntegerIntervalProjection(IntegerIntervalProjection::minus_infinity(), 3)).equals(IntegerIntervalProjection(-7, 7)));
+        assert((IntegerIntervalProjection(-2, 7) / IntegerIntervalProjection(-2, IntegerIntervalProjection::plus_infinity())).equals(IntegerIntervalProjection(-7, 7)));
+        assert((IntegerIntervalProjection(-6, -3) / IntegerIntervalProjection(3, 9)).equals(IntegerIntervalProjection(-2, 0)));
+        assert((IntegerIntervalProjection(-6, 6) / IntegerIntervalProjection(3, 9)).equals(IntegerIntervalProjection(-2, 2)));
 
         // test remainder %
-        assert((IntervalValue(4) % IntervalValue::bottom()).equals(IntervalValue::bottom()));
-        assert((IntervalValue::bottom() % IntervalValue(2)).equals(IntervalValue::bottom()));
-        assert((IntervalValue::top() % IntervalValue(0)).equals(IntervalValue::top()));
-        assert((IntervalValue(4) % IntervalValue(2)).equals(IntervalValue(0)));
-        assert((IntervalValue(3) % IntervalValue(2)).equals(IntervalValue(1)));
-        assert((IntervalValue(-3) % IntervalValue(2)).equals(IntervalValue(-1)));
-        assert((IntervalValue(1, 3) % IntervalValue(2)).equals(IntervalValue(0, 1)));
-        assert((IntervalValue(2, 7) % IntervalValue(2)).equals(IntervalValue(0, 1)));
-        assert((IntervalValue(-3, 3) % IntervalValue(2)).equals(IntervalValue(-1, 1)));
-        assert((IntervalValue(-3, IntervalValue::plus_infinity()) % IntervalValue(2)).equals(IntervalValue(-1, 1)));
-        assert((IntervalValue(IntervalValue::minus_infinity(), 3) % IntervalValue(2)).equals(IntervalValue(-1, 1)));
-        assert((IntervalValue(1, 3) % IntervalValue(1, 2)).equals(IntervalValue(0, 1)));
-        assert((IntervalValue(-3, 3) % IntervalValue(1, 2)).equals(IntervalValue(-1, 1)));
-        assert((IntervalValue(2, 7) % IntervalValue(-2, 3)).equals(IntervalValue::top())); //
-        assert((IntervalValue(-2, 7) % IntervalValue(-2, 3)).equals(IntervalValue::top())); //
-        assert((IntervalValue(IntervalValue::minus_infinity(), 7) % IntervalValue(-2, 3)).equals(IntervalValue::top()));
-        assert((IntervalValue(-2, IntervalValue::plus_infinity()) % IntervalValue(-2, 3)).equals(IntervalValue::top()));
-        assert((IntervalValue(-2, 7) % IntervalValue(IntervalValue::minus_infinity(), 3)).equals(IntervalValue::top()));
-        assert((IntervalValue(-2, 7) % IntervalValue(-2, IntervalValue::plus_infinity())).equals(IntervalValue::top()));
-        assert((IntervalValue(-6, -3) % IntervalValue(3, 9)).equals(IntervalValue(-6, 0)));
-        assert((IntervalValue(-6, 6) % IntervalValue(3, 9)).equals(IntervalValue(-6, 6)));
+        assert((IntegerIntervalProjection(4) % IntegerIntervalProjection::bottom()).equals(IntegerIntervalProjection::bottom()));
+        assert((IntegerIntervalProjection::bottom() % IntegerIntervalProjection(2)).equals(IntegerIntervalProjection::bottom()));
+        assert((IntegerIntervalProjection::top() % IntegerIntervalProjection(0)).equals(IntegerIntervalProjection::top()));
+        assert((IntegerIntervalProjection(4) % IntegerIntervalProjection(2)).equals(IntegerIntervalProjection(0)));
+        assert((IntegerIntervalProjection(3) % IntegerIntervalProjection(2)).equals(IntegerIntervalProjection(1)));
+        assert((IntegerIntervalProjection(-3) % IntegerIntervalProjection(2)).equals(IntegerIntervalProjection(-1)));
+        assert((IntegerIntervalProjection(1, 3) % IntegerIntervalProjection(2)).equals(IntegerIntervalProjection(0, 1)));
+        assert((IntegerIntervalProjection(2, 7) % IntegerIntervalProjection(2)).equals(IntegerIntervalProjection(0, 1)));
+        assert((IntegerIntervalProjection(-3, 3) % IntegerIntervalProjection(2)).equals(IntegerIntervalProjection(-1, 1)));
+        assert((IntegerIntervalProjection(-3, IntegerIntervalProjection::plus_infinity()) % IntegerIntervalProjection(2)).equals(IntegerIntervalProjection(-1, 1)));
+        assert((IntegerIntervalProjection(IntegerIntervalProjection::minus_infinity(), 3) % IntegerIntervalProjection(2)).equals(IntegerIntervalProjection(-1, 1)));
+        assert((IntegerIntervalProjection(1, 3) % IntegerIntervalProjection(1, 2)).equals(IntegerIntervalProjection(0, 1)));
+        assert((IntegerIntervalProjection(-3, 3) % IntegerIntervalProjection(1, 2)).equals(IntegerIntervalProjection(-1, 1)));
+        assert((IntegerIntervalProjection(2, 7) % IntegerIntervalProjection(-2, 3)).equals(IntegerIntervalProjection::top())); //
+        assert((IntegerIntervalProjection(-2, 7) % IntegerIntervalProjection(-2, 3)).equals(IntegerIntervalProjection::top())); //
+        assert((IntegerIntervalProjection(IntegerIntervalProjection::minus_infinity(), 7) % IntegerIntervalProjection(-2, 3)).equals(IntegerIntervalProjection::top()));
+        assert((IntegerIntervalProjection(-2, IntegerIntervalProjection::plus_infinity()) % IntegerIntervalProjection(-2, 3)).equals(IntegerIntervalProjection::top()));
+        assert((IntegerIntervalProjection(-2, 7) % IntegerIntervalProjection(IntegerIntervalProjection::minus_infinity(), 3)).equals(IntegerIntervalProjection::top()));
+        assert((IntegerIntervalProjection(-2, 7) % IntegerIntervalProjection(-2, IntegerIntervalProjection::plus_infinity())).equals(IntegerIntervalProjection::top()));
+        assert((IntegerIntervalProjection(-6, -3) % IntegerIntervalProjection(3, 9)).equals(IntegerIntervalProjection(-6, 0)));
+        assert((IntegerIntervalProjection(-6, 6) % IntegerIntervalProjection(3, 9)).equals(IntegerIntervalProjection(-6, 6)));
 
         // shl  <<
-        assert((IntervalValue(IntervalValue::plus_infinity()) << IntervalValue(IntervalValue::plus_infinity())).equals(IntervalValue(IntervalValue::top())));
-        assert((IntervalValue(IntervalValue::plus_infinity()) << IntervalValue(2, 2)).equals(IntervalValue(IntervalValue::plus_infinity())));
-        assert((IntervalValue(IntervalValue::minus_infinity()) << IntervalValue(IntervalValue::plus_infinity())).equals(IntervalValue(IntervalValue::top())));
-        assert((IntervalValue(IntervalValue::minus_infinity()) << IntervalValue(2, 2)).equals(IntervalValue(IntervalValue::minus_infinity())));
-        assert((IntervalValue(2, 2) << IntervalValue(IntervalValue::plus_infinity())).equals(IntervalValue(IntervalValue::top())));
-        assert((IntervalValue(0, 0) << IntervalValue(IntervalValue::plus_infinity())).equals(IntervalValue(0, 0)));
-        assert((IntervalValue(-2, -2) << IntervalValue(IntervalValue::plus_infinity())).equals(IntervalValue(IntervalValue::top())));
-        assert((IntervalValue(0, 0) << IntervalValue(2, 2)).equals(IntervalValue(0, 0)));
-        assert((IntervalValue(2, 2) << IntervalValue(3, 3)).equals(IntervalValue(16, 16)));
-        assert((IntervalValue(-2, -2) << IntervalValue(3, 3)).equals(IntervalValue(-16, -16)));
+        assert((IntegerIntervalProjection(IntegerIntervalProjection::plus_infinity()) << IntegerIntervalProjection(IntegerIntervalProjection::plus_infinity())).equals(IntegerIntervalProjection(IntegerIntervalProjection::top())));
+        assert((IntegerIntervalProjection(IntegerIntervalProjection::plus_infinity()) << IntegerIntervalProjection(2, 2)).equals(IntegerIntervalProjection(IntegerIntervalProjection::plus_infinity())));
+        assert((IntegerIntervalProjection(IntegerIntervalProjection::minus_infinity()) << IntegerIntervalProjection(IntegerIntervalProjection::plus_infinity())).equals(IntegerIntervalProjection(IntegerIntervalProjection::top())));
+        assert((IntegerIntervalProjection(IntegerIntervalProjection::minus_infinity()) << IntegerIntervalProjection(2, 2)).equals(IntegerIntervalProjection(IntegerIntervalProjection::minus_infinity())));
+        assert((IntegerIntervalProjection(2, 2) << IntegerIntervalProjection(IntegerIntervalProjection::plus_infinity())).equals(IntegerIntervalProjection(IntegerIntervalProjection::top())));
+        assert((IntegerIntervalProjection(0, 0) << IntegerIntervalProjection(IntegerIntervalProjection::plus_infinity())).equals(IntegerIntervalProjection(0, 0)));
+        assert((IntegerIntervalProjection(-2, -2) << IntegerIntervalProjection(IntegerIntervalProjection::plus_infinity())).equals(IntegerIntervalProjection(IntegerIntervalProjection::top())));
+        assert((IntegerIntervalProjection(0, 0) << IntegerIntervalProjection(2, 2)).equals(IntegerIntervalProjection(0, 0)));
+        assert((IntegerIntervalProjection(2, 2) << IntegerIntervalProjection(3, 3)).equals(IntegerIntervalProjection(16, 16)));
+        assert((IntegerIntervalProjection(-2, -2) << IntegerIntervalProjection(3, 3)).equals(IntegerIntervalProjection(-16, -16)));
 
-        assert((IntervalValue(4) << IntervalValue::bottom()).equals(IntervalValue::bottom()));
-        assert((IntervalValue::bottom() << IntervalValue(2)).equals(IntervalValue::bottom()));
-        assert((IntervalValue::top() << IntervalValue(0)).equals(IntervalValue::top()));
-        assert((IntervalValue(4) << IntervalValue(2)).equals(IntervalValue(16)));
-        assert((IntervalValue(3) << IntervalValue(2)).equals(IntervalValue(12)));
-        assert((IntervalValue(-3) << IntervalValue(2)).equals(IntervalValue(-12)));
-        assert((IntervalValue(4) << IntervalValue(-2)).equals(IntervalValue::bottom()));
-        assert((IntervalValue(1, 3) << IntervalValue(2)).equals(IntervalValue(4, 12)));
-        assert((IntervalValue(2, 7) << IntervalValue(2)).equals(IntervalValue(8, 28)));
-        assert((IntervalValue(-3, 3) << IntervalValue(2)).equals(IntervalValue(-12, 12)));
-        assert((IntervalValue(-3, IntervalValue::plus_infinity()) << IntervalValue(2)).equals(IntervalValue(-12, IntervalValue::plus_infinity())));
-        assert((IntervalValue(IntervalValue::minus_infinity(), 3) << IntervalValue(2)).equals(IntervalValue(IntervalValue::minus_infinity(), 12)));
-        assert((IntervalValue(1, 3) << IntervalValue(1, 2)).equals(IntervalValue(2, 12)));
-        assert((IntervalValue(-3, 3) << IntervalValue(1, 2)).equals(IntervalValue(-12, 12)));
-        assert((IntervalValue(2, 7) << IntervalValue(-2, 3)).equals(IntervalValue(2, 56)));
-        assert((IntervalValue(-2, 7) << IntervalValue(-2, 3)).equals(IntervalValue(-16, 56)));
-        assert((IntervalValue(IntervalValue::minus_infinity(), 7) << IntervalValue(-2, 3)).equals(IntervalValue(IntervalValue::minus_infinity(), 56)));
-        assert((IntervalValue(-2, IntervalValue::plus_infinity()) << IntervalValue(-2, 3)).equals(IntervalValue(-16, IntervalValue::plus_infinity())));
-        assert((IntervalValue(-2, 7) << IntervalValue(IntervalValue::minus_infinity(), 3)).equals(IntervalValue(-16, 56)));
-        assert((IntervalValue(-2, 7) << IntervalValue(-2, IntervalValue::plus_infinity())).equals(IntervalValue::top()));
-        assert((IntervalValue(-6, -3) << IntervalValue(3, 9)).equals(IntervalValue(-3072, -24)));
-        assert((IntervalValue(-6, 6) << IntervalValue(3, 9)).equals(IntervalValue(-3072, 3072)));
-        assert((IntervalValue(-2, 7) << IntervalValue(IntervalValue::minus_infinity(), -1)).equals(IntervalValue::bottom()));
-        assert((IntervalValue(0) << IntervalValue::top()).equals(IntervalValue(0)));
+        assert((IntegerIntervalProjection(4) << IntegerIntervalProjection::bottom()).equals(IntegerIntervalProjection::bottom()));
+        assert((IntegerIntervalProjection::bottom() << IntegerIntervalProjection(2)).equals(IntegerIntervalProjection::bottom()));
+        assert((IntegerIntervalProjection::top() << IntegerIntervalProjection(0)).equals(IntegerIntervalProjection::top()));
+        assert((IntegerIntervalProjection(4) << IntegerIntervalProjection(2)).equals(IntegerIntervalProjection(16)));
+        assert((IntegerIntervalProjection(3) << IntegerIntervalProjection(2)).equals(IntegerIntervalProjection(12)));
+        assert((IntegerIntervalProjection(-3) << IntegerIntervalProjection(2)).equals(IntegerIntervalProjection(-12)));
+        assert((IntegerIntervalProjection(4) << IntegerIntervalProjection(-2)).equals(IntegerIntervalProjection::bottom()));
+        assert((IntegerIntervalProjection(1, 3) << IntegerIntervalProjection(2)).equals(IntegerIntervalProjection(4, 12)));
+        assert((IntegerIntervalProjection(2, 7) << IntegerIntervalProjection(2)).equals(IntegerIntervalProjection(8, 28)));
+        assert((IntegerIntervalProjection(-3, 3) << IntegerIntervalProjection(2)).equals(IntegerIntervalProjection(-12, 12)));
+        assert((IntegerIntervalProjection(-3, IntegerIntervalProjection::plus_infinity()) << IntegerIntervalProjection(2)).equals(IntegerIntervalProjection(-12, IntegerIntervalProjection::plus_infinity())));
+        assert((IntegerIntervalProjection(IntegerIntervalProjection::minus_infinity(), 3) << IntegerIntervalProjection(2)).equals(IntegerIntervalProjection(IntegerIntervalProjection::minus_infinity(), 12)));
+        assert((IntegerIntervalProjection(1, 3) << IntegerIntervalProjection(1, 2)).equals(IntegerIntervalProjection(2, 12)));
+        assert((IntegerIntervalProjection(-3, 3) << IntegerIntervalProjection(1, 2)).equals(IntegerIntervalProjection(-12, 12)));
+        assert((IntegerIntervalProjection(2, 7) << IntegerIntervalProjection(-2, 3)).equals(IntegerIntervalProjection(2, 56)));
+        assert((IntegerIntervalProjection(-2, 7) << IntegerIntervalProjection(-2, 3)).equals(IntegerIntervalProjection(-16, 56)));
+        assert((IntegerIntervalProjection(IntegerIntervalProjection::minus_infinity(), 7) << IntegerIntervalProjection(-2, 3)).equals(IntegerIntervalProjection(IntegerIntervalProjection::minus_infinity(), 56)));
+        assert((IntegerIntervalProjection(-2, IntegerIntervalProjection::plus_infinity()) << IntegerIntervalProjection(-2, 3)).equals(IntegerIntervalProjection(-16, IntegerIntervalProjection::plus_infinity())));
+        assert((IntegerIntervalProjection(-2, 7) << IntegerIntervalProjection(IntegerIntervalProjection::minus_infinity(), 3)).equals(IntegerIntervalProjection(-16, 56)));
+        assert((IntegerIntervalProjection(-2, 7) << IntegerIntervalProjection(-2, IntegerIntervalProjection::plus_infinity())).equals(IntegerIntervalProjection::top()));
+        assert((IntegerIntervalProjection(-6, -3) << IntegerIntervalProjection(3, 9)).equals(IntegerIntervalProjection(-3072, -24)));
+        assert((IntegerIntervalProjection(-6, 6) << IntegerIntervalProjection(3, 9)).equals(IntegerIntervalProjection(-3072, 3072)));
+        assert((IntegerIntervalProjection(-2, 7) << IntegerIntervalProjection(IntegerIntervalProjection::minus_infinity(), -1)).equals(IntegerIntervalProjection::bottom()));
+        assert((IntegerIntervalProjection(0) << IntegerIntervalProjection::top()).equals(IntegerIntervalProjection(0)));
 
 
         // shr >>
-        assert((IntervalValue(IntervalValue::plus_infinity()) >> IntervalValue(IntervalValue::plus_infinity())).equals(IntervalValue(IntervalValue::plus_infinity())));
-        assert((IntervalValue(IntervalValue::plus_infinity()) >> IntervalValue(2)).equals(IntervalValue(IntervalValue::plus_infinity())));
-        assert((IntervalValue(IntervalValue::minus_infinity()) >> IntervalValue(IntervalValue::plus_infinity())).equals(IntervalValue(IntervalValue::minus_infinity())));
-        assert((IntervalValue(IntervalValue::minus_infinity()) >> IntervalValue(2)).equals(IntervalValue(IntervalValue::minus_infinity())));
-        assert((IntervalValue(2) >> IntervalValue(IntervalValue::plus_infinity())).equals(IntervalValue(0)));
-        assert((IntervalValue(0) >> IntervalValue(IntervalValue::plus_infinity())).equals(IntervalValue(0)));
-        assert((IntervalValue(-2) >> IntervalValue(IntervalValue::plus_infinity())).equals(IntervalValue(-1)));
-        assert((IntervalValue(0) >> IntervalValue(2)).equals(IntervalValue(0)));
-        assert((IntervalValue(15) >> IntervalValue(2)).equals(IntervalValue(3)));
-        assert((IntervalValue(-15) >> IntervalValue(2)).equals(IntervalValue(-4)));
+        assert((IntegerIntervalProjection(IntegerIntervalProjection::plus_infinity()) >> IntegerIntervalProjection(IntegerIntervalProjection::plus_infinity())).equals(IntegerIntervalProjection(IntegerIntervalProjection::plus_infinity())));
+        assert((IntegerIntervalProjection(IntegerIntervalProjection::plus_infinity()) >> IntegerIntervalProjection(2)).equals(IntegerIntervalProjection(IntegerIntervalProjection::plus_infinity())));
+        assert((IntegerIntervalProjection(IntegerIntervalProjection::minus_infinity()) >> IntegerIntervalProjection(IntegerIntervalProjection::plus_infinity())).equals(IntegerIntervalProjection(IntegerIntervalProjection::minus_infinity())));
+        assert((IntegerIntervalProjection(IntegerIntervalProjection::minus_infinity()) >> IntegerIntervalProjection(2)).equals(IntegerIntervalProjection(IntegerIntervalProjection::minus_infinity())));
+        assert((IntegerIntervalProjection(2) >> IntegerIntervalProjection(IntegerIntervalProjection::plus_infinity())).equals(IntegerIntervalProjection(0)));
+        assert((IntegerIntervalProjection(0) >> IntegerIntervalProjection(IntegerIntervalProjection::plus_infinity())).equals(IntegerIntervalProjection(0)));
+        assert((IntegerIntervalProjection(-2) >> IntegerIntervalProjection(IntegerIntervalProjection::plus_infinity())).equals(IntegerIntervalProjection(-1)));
+        assert((IntegerIntervalProjection(0) >> IntegerIntervalProjection(2)).equals(IntegerIntervalProjection(0)));
+        assert((IntegerIntervalProjection(15) >> IntegerIntervalProjection(2)).equals(IntegerIntervalProjection(3)));
+        assert((IntegerIntervalProjection(-15) >> IntegerIntervalProjection(2)).equals(IntegerIntervalProjection(-4)));
 
-        assert((IntervalValue(4) >> IntervalValue::bottom()).equals(IntervalValue::bottom()));
-        assert((IntervalValue::bottom() >> IntervalValue(2)).equals(IntervalValue::bottom()));
-        assert((IntervalValue::top() >> IntervalValue(0)).equals(IntervalValue::top()));
-        assert((IntervalValue(15) >> IntervalValue(2)).equals(IntervalValue(3)));
-        assert((IntervalValue(1) >> IntervalValue(2)).equals(IntervalValue(0)));
-        assert((IntervalValue(-15) >> IntervalValue(2)).equals(IntervalValue(-4)));
-        assert((IntervalValue(4) >> IntervalValue(-2)).equals(IntervalValue::bottom()));
-        assert((IntervalValue(1, 3) >> IntervalValue(2)).equals(IntervalValue(0)));
-        assert((IntervalValue(2, 7) >> IntervalValue(2)).equals(IntervalValue(0, 1)));
-        assert((IntervalValue(-15, 15) >> IntervalValue(2)).equals(IntervalValue(-4, 3)));
-        assert((IntervalValue(-15, IntervalValue::plus_infinity()) >> IntervalValue(2)).equals(IntervalValue(-4, IntervalValue::plus_infinity())));
-        assert((IntervalValue(IntervalValue::minus_infinity(), 15) >> IntervalValue(2)).equals(IntervalValue(IntervalValue::minus_infinity(), 3)));
-        assert((IntervalValue(0, 15) >> IntervalValue(1, 2)).equals(IntervalValue(0, 7)));
-        assert((IntervalValue(-17, 15) >> IntervalValue(1, 2)).equals(IntervalValue(-9, 7)));
-        assert((IntervalValue(2, 7) >> IntervalValue(-2, 3)).equals(IntervalValue(0, 7)));
-        assert((IntervalValue(-2, 7) >> IntervalValue(-2, 3)).equals(IntervalValue(-2, 7)));
-        assert((IntervalValue(IntervalValue::minus_infinity(), 7) >> IntervalValue(-2, 3)).equals(IntervalValue(IntervalValue::minus_infinity(), 7)));
-        assert((IntervalValue(-2, IntervalValue::plus_infinity()) >> IntervalValue(-2, 3)).equals(IntervalValue(-2, IntervalValue::plus_infinity())));
-        assert((IntervalValue(-2, 7) >> IntervalValue(IntervalValue::minus_infinity(), 3)).equals(IntervalValue(-2, 7)));
-        assert((IntervalValue(-2, 7) >> IntervalValue(-2, IntervalValue::plus_infinity())).equals(IntervalValue(-2, 7)));
-        assert((IntervalValue(-6, -3) >> IntervalValue(2, 3)).equals(IntervalValue(-2, -1)));
-        assert((IntervalValue(-6, 6) >> IntervalValue(2, 3)).equals(IntervalValue(-2, 1)));
-        assert((IntervalValue(-2, 7) >> IntervalValue(IntervalValue::minus_infinity(), -1)).equals(IntervalValue::bottom()));
-        assert((IntervalValue(0) >> IntervalValue::top()).equals(IntervalValue(0)));
+        assert((IntegerIntervalProjection(4) >> IntegerIntervalProjection::bottom()).equals(IntegerIntervalProjection::bottom()));
+        assert((IntegerIntervalProjection::bottom() >> IntegerIntervalProjection(2)).equals(IntegerIntervalProjection::bottom()));
+        assert((IntegerIntervalProjection::top() >> IntegerIntervalProjection(0)).equals(IntegerIntervalProjection::top()));
+        assert((IntegerIntervalProjection(15) >> IntegerIntervalProjection(2)).equals(IntegerIntervalProjection(3)));
+        assert((IntegerIntervalProjection(1) >> IntegerIntervalProjection(2)).equals(IntegerIntervalProjection(0)));
+        assert((IntegerIntervalProjection(-15) >> IntegerIntervalProjection(2)).equals(IntegerIntervalProjection(-4)));
+        assert((IntegerIntervalProjection(4) >> IntegerIntervalProjection(-2)).equals(IntegerIntervalProjection::bottom()));
+        assert((IntegerIntervalProjection(1, 3) >> IntegerIntervalProjection(2)).equals(IntegerIntervalProjection(0)));
+        assert((IntegerIntervalProjection(2, 7) >> IntegerIntervalProjection(2)).equals(IntegerIntervalProjection(0, 1)));
+        assert((IntegerIntervalProjection(-15, 15) >> IntegerIntervalProjection(2)).equals(IntegerIntervalProjection(-4, 3)));
+        assert((IntegerIntervalProjection(-15, IntegerIntervalProjection::plus_infinity()) >> IntegerIntervalProjection(2)).equals(IntegerIntervalProjection(-4, IntegerIntervalProjection::plus_infinity())));
+        assert((IntegerIntervalProjection(IntegerIntervalProjection::minus_infinity(), 15) >> IntegerIntervalProjection(2)).equals(IntegerIntervalProjection(IntegerIntervalProjection::minus_infinity(), 3)));
+        assert((IntegerIntervalProjection(0, 15) >> IntegerIntervalProjection(1, 2)).equals(IntegerIntervalProjection(0, 7)));
+        assert((IntegerIntervalProjection(-17, 15) >> IntegerIntervalProjection(1, 2)).equals(IntegerIntervalProjection(-9, 7)));
+        assert((IntegerIntervalProjection(2, 7) >> IntegerIntervalProjection(-2, 3)).equals(IntegerIntervalProjection(0, 7)));
+        assert((IntegerIntervalProjection(-2, 7) >> IntegerIntervalProjection(-2, 3)).equals(IntegerIntervalProjection(-2, 7)));
+        assert((IntegerIntervalProjection(IntegerIntervalProjection::minus_infinity(), 7) >> IntegerIntervalProjection(-2, 3)).equals(IntegerIntervalProjection(IntegerIntervalProjection::minus_infinity(), 7)));
+        assert((IntegerIntervalProjection(-2, IntegerIntervalProjection::plus_infinity()) >> IntegerIntervalProjection(-2, 3)).equals(IntegerIntervalProjection(-2, IntegerIntervalProjection::plus_infinity())));
+        assert((IntegerIntervalProjection(-2, 7) >> IntegerIntervalProjection(IntegerIntervalProjection::minus_infinity(), 3)).equals(IntegerIntervalProjection(-2, 7)));
+        assert((IntegerIntervalProjection(-2, 7) >> IntegerIntervalProjection(-2, IntegerIntervalProjection::plus_infinity())).equals(IntegerIntervalProjection(-2, 7)));
+        assert((IntegerIntervalProjection(-6, -3) >> IntegerIntervalProjection(2, 3)).equals(IntegerIntervalProjection(-2, -1)));
+        assert((IntegerIntervalProjection(-6, 6) >> IntegerIntervalProjection(2, 3)).equals(IntegerIntervalProjection(-2, 1)));
+        assert((IntegerIntervalProjection(-2, 7) >> IntegerIntervalProjection(IntegerIntervalProjection::minus_infinity(), -1)).equals(IntegerIntervalProjection::bottom()));
+        assert((IntegerIntervalProjection(0) >> IntegerIntervalProjection::top()).equals(IntegerIntervalProjection(0)));
 
         // and &
-        assert((IntervalValue(4) & IntervalValue::bottom()).equals(IntervalValue::bottom()));
-        assert((IntervalValue::bottom() & IntervalValue(2)).equals(IntervalValue::bottom()));
-        assert((IntervalValue::top() & IntervalValue(0)).equals(IntervalValue(0)));
-        assert((IntervalValue(4) & IntervalValue(2)).equals(IntervalValue(0)));
-        assert((IntervalValue(3) & IntervalValue(2)).equals(IntervalValue(2)));
-        assert((IntervalValue(-3) & IntervalValue(2)).equals(IntervalValue(0)));
-        assert((IntervalValue(1, 3) & IntervalValue(2)).equals(IntervalValue(0, 2)));
-        assert((IntervalValue(2, 7) & IntervalValue(2)).equals(IntervalValue(0, 2)));
-        assert((IntervalValue(-3, 3) & IntervalValue(2)).equals(IntervalValue(0, 2)));
-        assert((IntervalValue(-3, IntervalValue::plus_infinity()) & IntervalValue(2)).equals(IntervalValue(0, 2)));
-        assert((IntervalValue(IntervalValue::minus_infinity(), 3) & IntervalValue(2)).equals(IntervalValue(0, 2)));
-        assert((IntervalValue(1, 3) & IntervalValue(1, 2)).equals(IntervalValue(0, 2)));
-        assert((IntervalValue(-3, 3) & IntervalValue(1, 2)).equals(IntervalValue(0, 2)));
-        assert((IntervalValue(2, 7) & IntervalValue(-2, 3)).equals(IntervalValue(0, 7)));
-        assert((IntervalValue(-2, 7) & IntervalValue(-2, 3)).equals(IntervalValue::top()));
-        assert((IntervalValue(IntervalValue::minus_infinity(), 7) & IntervalValue(-2, 3)).equals(IntervalValue::top()));
-        assert((IntervalValue(-2, IntervalValue::plus_infinity()) & IntervalValue(-2, 3)).equals(IntervalValue::top()));
-        assert((IntervalValue(-2, 7) & IntervalValue(IntervalValue::minus_infinity(), 3)).equals(IntervalValue::top()));
-        assert((IntervalValue(-2, 7) & IntervalValue(-2, IntervalValue::plus_infinity())).equals(IntervalValue::top()));
-        assert((IntervalValue(-6, -3) & IntervalValue(3, 9)).equals(IntervalValue(0, 9)));
-        assert((IntervalValue(-6, 6) & IntervalValue(3, 9)).equals(IntervalValue(0, 9)));
+        assert((IntegerIntervalProjection(4) & IntegerIntervalProjection::bottom()).equals(IntegerIntervalProjection::bottom()));
+        assert((IntegerIntervalProjection::bottom() & IntegerIntervalProjection(2)).equals(IntegerIntervalProjection::bottom()));
+        assert((IntegerIntervalProjection::top() & IntegerIntervalProjection(0)).equals(IntegerIntervalProjection(0)));
+        assert((IntegerIntervalProjection(4) & IntegerIntervalProjection(2)).equals(IntegerIntervalProjection(0)));
+        assert((IntegerIntervalProjection(3) & IntegerIntervalProjection(2)).equals(IntegerIntervalProjection(2)));
+        assert((IntegerIntervalProjection(-3) & IntegerIntervalProjection(2)).equals(IntegerIntervalProjection(0)));
+        assert((IntegerIntervalProjection(1, 3) & IntegerIntervalProjection(2)).equals(IntegerIntervalProjection(0, 2)));
+        assert((IntegerIntervalProjection(2, 7) & IntegerIntervalProjection(2)).equals(IntegerIntervalProjection(0, 2)));
+        assert((IntegerIntervalProjection(-3, 3) & IntegerIntervalProjection(2)).equals(IntegerIntervalProjection(0, 2)));
+        assert((IntegerIntervalProjection(-3, IntegerIntervalProjection::plus_infinity()) & IntegerIntervalProjection(2)).equals(IntegerIntervalProjection(0, 2)));
+        assert((IntegerIntervalProjection(IntegerIntervalProjection::minus_infinity(), 3) & IntegerIntervalProjection(2)).equals(IntegerIntervalProjection(0, 2)));
+        assert((IntegerIntervalProjection(1, 3) & IntegerIntervalProjection(1, 2)).equals(IntegerIntervalProjection(0, 2)));
+        assert((IntegerIntervalProjection(-3, 3) & IntegerIntervalProjection(1, 2)).equals(IntegerIntervalProjection(0, 2)));
+        assert((IntegerIntervalProjection(2, 7) & IntegerIntervalProjection(-2, 3)).equals(IntegerIntervalProjection(0, 7)));
+        assert((IntegerIntervalProjection(-2, 7) & IntegerIntervalProjection(-2, 3)).equals(IntegerIntervalProjection::top()));
+        assert((IntegerIntervalProjection(IntegerIntervalProjection::minus_infinity(), 7) & IntegerIntervalProjection(-2, 3)).equals(IntegerIntervalProjection::top()));
+        assert((IntegerIntervalProjection(-2, IntegerIntervalProjection::plus_infinity()) & IntegerIntervalProjection(-2, 3)).equals(IntegerIntervalProjection::top()));
+        assert((IntegerIntervalProjection(-2, 7) & IntegerIntervalProjection(IntegerIntervalProjection::minus_infinity(), 3)).equals(IntegerIntervalProjection::top()));
+        assert((IntegerIntervalProjection(-2, 7) & IntegerIntervalProjection(-2, IntegerIntervalProjection::plus_infinity())).equals(IntegerIntervalProjection::top()));
+        assert((IntegerIntervalProjection(-6, -3) & IntegerIntervalProjection(3, 9)).equals(IntegerIntervalProjection(0, 9)));
+        assert((IntegerIntervalProjection(-6, 6) & IntegerIntervalProjection(3, 9)).equals(IntegerIntervalProjection(0, 9)));
 
         // Or |
-        assert((IntervalValue(4) | IntervalValue::bottom()).equals(IntervalValue::bottom()));
-        assert((IntervalValue::bottom() | IntervalValue(2)).equals(IntervalValue::bottom()));
-        assert((IntervalValue::top() | IntervalValue(-1)).equals(IntervalValue::top()));//
-        assert((IntervalValue(-1) | IntervalValue::top()).equals(IntervalValue::top()));//
-        assert((IntervalValue(4) | IntervalValue(2)).equals(IntervalValue(6)));
-        assert((IntervalValue(3) | IntervalValue(2)).equals(IntervalValue(3)));
-        assert((IntervalValue(-3) | IntervalValue(2)).equals(IntervalValue(-1)));
-        assert((IntervalValue(1, 3) | IntervalValue(2)).equals(IntervalValue(0, 3)));
-        assert((IntervalValue(2, 7) | IntervalValue(2)).equals(IntervalValue(0, 7)));
-        assert((IntervalValue(-3, 3) | IntervalValue(2)).equals(IntervalValue::top()));
-        assert((IntervalValue(-3, IntervalValue::plus_infinity()) | IntervalValue(2)).equals(IntervalValue::top()));
-        assert((IntervalValue(IntervalValue::minus_infinity(), 3) | IntervalValue(2)).equals(IntervalValue::top()));
-        assert((IntervalValue(1, 3) | IntervalValue(1, 2)).equals(IntervalValue(0, 3)));
-        assert((IntervalValue(-3, 3) | IntervalValue(1, 2)).equals(IntervalValue::top()));
-        assert((IntervalValue(2, 7) | IntervalValue(-2, 3)).equals(IntervalValue::top()));
-        assert((IntervalValue(-2, 7) | IntervalValue(-2, 3)).equals(IntervalValue::top()));
-        assert((IntervalValue(IntervalValue::minus_infinity(), 7) | IntervalValue(-2, 3)).equals(IntervalValue::top()));
-        assert((IntervalValue(-2, IntervalValue::plus_infinity()) | IntervalValue(-2, 3)).equals(IntervalValue::top()));
-        assert((IntervalValue(-2, 7) | IntervalValue(IntervalValue::minus_infinity(), 3)).equals(IntervalValue::top()));
-        assert((IntervalValue(-2, 7) | IntervalValue(-2, IntervalValue::plus_infinity())).equals(IntervalValue::top()));
-        assert((IntervalValue(-6, -3) | IntervalValue(3, 9)).equals(IntervalValue::top()));
-        assert((IntervalValue(-6, 6) | IntervalValue(3, 9)).equals(IntervalValue::top()));
+        assert((IntegerIntervalProjection(4) | IntegerIntervalProjection::bottom()).equals(IntegerIntervalProjection::bottom()));
+        assert((IntegerIntervalProjection::bottom() | IntegerIntervalProjection(2)).equals(IntegerIntervalProjection::bottom()));
+        assert((IntegerIntervalProjection::top() | IntegerIntervalProjection(-1)).equals(IntegerIntervalProjection::top()));//
+        assert((IntegerIntervalProjection(-1) | IntegerIntervalProjection::top()).equals(IntegerIntervalProjection::top()));//
+        assert((IntegerIntervalProjection(4) | IntegerIntervalProjection(2)).equals(IntegerIntervalProjection(6)));
+        assert((IntegerIntervalProjection(3) | IntegerIntervalProjection(2)).equals(IntegerIntervalProjection(3)));
+        assert((IntegerIntervalProjection(-3) | IntegerIntervalProjection(2)).equals(IntegerIntervalProjection(-1)));
+        assert((IntegerIntervalProjection(1, 3) | IntegerIntervalProjection(2)).equals(IntegerIntervalProjection(0, 3)));
+        assert((IntegerIntervalProjection(2, 7) | IntegerIntervalProjection(2)).equals(IntegerIntervalProjection(0, 7)));
+        assert((IntegerIntervalProjection(-3, 3) | IntegerIntervalProjection(2)).equals(IntegerIntervalProjection::top()));
+        assert((IntegerIntervalProjection(-3, IntegerIntervalProjection::plus_infinity()) | IntegerIntervalProjection(2)).equals(IntegerIntervalProjection::top()));
+        assert((IntegerIntervalProjection(IntegerIntervalProjection::minus_infinity(), 3) | IntegerIntervalProjection(2)).equals(IntegerIntervalProjection::top()));
+        assert((IntegerIntervalProjection(1, 3) | IntegerIntervalProjection(1, 2)).equals(IntegerIntervalProjection(0, 3)));
+        assert((IntegerIntervalProjection(-3, 3) | IntegerIntervalProjection(1, 2)).equals(IntegerIntervalProjection::top()));
+        assert((IntegerIntervalProjection(2, 7) | IntegerIntervalProjection(-2, 3)).equals(IntegerIntervalProjection::top()));
+        assert((IntegerIntervalProjection(-2, 7) | IntegerIntervalProjection(-2, 3)).equals(IntegerIntervalProjection::top()));
+        assert((IntegerIntervalProjection(IntegerIntervalProjection::minus_infinity(), 7) | IntegerIntervalProjection(-2, 3)).equals(IntegerIntervalProjection::top()));
+        assert((IntegerIntervalProjection(-2, IntegerIntervalProjection::plus_infinity()) | IntegerIntervalProjection(-2, 3)).equals(IntegerIntervalProjection::top()));
+        assert((IntegerIntervalProjection(-2, 7) | IntegerIntervalProjection(IntegerIntervalProjection::minus_infinity(), 3)).equals(IntegerIntervalProjection::top()));
+        assert((IntegerIntervalProjection(-2, 7) | IntegerIntervalProjection(-2, IntegerIntervalProjection::plus_infinity())).equals(IntegerIntervalProjection::top()));
+        assert((IntegerIntervalProjection(-6, -3) | IntegerIntervalProjection(3, 9)).equals(IntegerIntervalProjection::top()));
+        assert((IntegerIntervalProjection(-6, 6) | IntegerIntervalProjection(3, 9)).equals(IntegerIntervalProjection::top()));
 
         // Xor ^
-        assert((IntervalValue(4) ^ IntervalValue::bottom()).equals(IntervalValue::bottom()));
-        assert((IntervalValue::bottom() ^ IntervalValue(2)).equals(IntervalValue::bottom()));
-        assert((IntervalValue::top() ^ IntervalValue(-1)).equals(IntervalValue::top()));
-        assert((IntervalValue(-1) ^ IntervalValue::top()).equals(IntervalValue::top()));
-        assert((IntervalValue(4) ^ IntervalValue(2)).equals(IntervalValue(6)));
-        assert((IntervalValue(3) ^ IntervalValue(2)).equals(IntervalValue(1)));
-        assert((IntervalValue(-3) ^ IntervalValue(2)).equals(IntervalValue(-1)));
-        assert((IntervalValue(1, 3) ^ IntervalValue(2)).equals(IntervalValue(0, 3)));
-        assert((IntervalValue(2, 7) ^ IntervalValue(2)).equals(IntervalValue(0, 7)));
-        assert((IntervalValue(-3, 3) ^ IntervalValue(2)).equals(IntervalValue::top()));
-        assert((IntervalValue(-3, IntervalValue::plus_infinity()) ^ IntervalValue(2)).equals(IntervalValue::top()));
-        assert((IntervalValue(IntervalValue::minus_infinity(), 3) ^ IntervalValue(2)).equals(IntervalValue::top()));
-        assert((IntervalValue(1, 3) ^ IntervalValue(1, 2)).equals(IntervalValue(0, 3)));
-        assert((IntervalValue(-3, 3) ^ IntervalValue(1, 2)).equals(IntervalValue::top()));
-        assert((IntervalValue(2, 7) ^ IntervalValue(-2, 3)).equals(IntervalValue::top()));
-        assert((IntervalValue(-2, 7) ^ IntervalValue(-2, 3)).equals(IntervalValue::top()));
-        assert((IntervalValue(IntervalValue::minus_infinity(), 7) ^ IntervalValue(-2, 3)).equals(IntervalValue::top()));
-        assert((IntervalValue(-2, IntervalValue::plus_infinity()) ^ IntervalValue(-2, 3)).equals(IntervalValue::top()));
-        assert((IntervalValue(-2, 7) ^ IntervalValue(IntervalValue::minus_infinity(), 3)).equals(IntervalValue::top()));
-        assert((IntervalValue(-2, 7) ^ IntervalValue(-2, IntervalValue::plus_infinity())).equals(IntervalValue::top()));
-        assert((IntervalValue(-6, -3) ^ IntervalValue(3, 9)).equals(IntervalValue::top()));
-        assert((IntervalValue(-6, 6) ^ IntervalValue(3, 9)).equals(IntervalValue::top()));
+        assert((IntegerIntervalProjection(4) ^ IntegerIntervalProjection::bottom()).equals(IntegerIntervalProjection::bottom()));
+        assert((IntegerIntervalProjection::bottom() ^ IntegerIntervalProjection(2)).equals(IntegerIntervalProjection::bottom()));
+        assert((IntegerIntervalProjection::top() ^ IntegerIntervalProjection(-1)).equals(IntegerIntervalProjection::top()));
+        assert((IntegerIntervalProjection(-1) ^ IntegerIntervalProjection::top()).equals(IntegerIntervalProjection::top()));
+        assert((IntegerIntervalProjection(4) ^ IntegerIntervalProjection(2)).equals(IntegerIntervalProjection(6)));
+        assert((IntegerIntervalProjection(3) ^ IntegerIntervalProjection(2)).equals(IntegerIntervalProjection(1)));
+        assert((IntegerIntervalProjection(-3) ^ IntegerIntervalProjection(2)).equals(IntegerIntervalProjection(-1)));
+        assert((IntegerIntervalProjection(1, 3) ^ IntegerIntervalProjection(2)).equals(IntegerIntervalProjection(0, 3)));
+        assert((IntegerIntervalProjection(2, 7) ^ IntegerIntervalProjection(2)).equals(IntegerIntervalProjection(0, 7)));
+        assert((IntegerIntervalProjection(-3, 3) ^ IntegerIntervalProjection(2)).equals(IntegerIntervalProjection::top()));
+        assert((IntegerIntervalProjection(-3, IntegerIntervalProjection::plus_infinity()) ^ IntegerIntervalProjection(2)).equals(IntegerIntervalProjection::top()));
+        assert((IntegerIntervalProjection(IntegerIntervalProjection::minus_infinity(), 3) ^ IntegerIntervalProjection(2)).equals(IntegerIntervalProjection::top()));
+        assert((IntegerIntervalProjection(1, 3) ^ IntegerIntervalProjection(1, 2)).equals(IntegerIntervalProjection(0, 3)));
+        assert((IntegerIntervalProjection(-3, 3) ^ IntegerIntervalProjection(1, 2)).equals(IntegerIntervalProjection::top()));
+        assert((IntegerIntervalProjection(2, 7) ^ IntegerIntervalProjection(-2, 3)).equals(IntegerIntervalProjection::top()));
+        assert((IntegerIntervalProjection(-2, 7) ^ IntegerIntervalProjection(-2, 3)).equals(IntegerIntervalProjection::top()));
+        assert((IntegerIntervalProjection(IntegerIntervalProjection::minus_infinity(), 7) ^ IntegerIntervalProjection(-2, 3)).equals(IntegerIntervalProjection::top()));
+        assert((IntegerIntervalProjection(-2, IntegerIntervalProjection::plus_infinity()) ^ IntegerIntervalProjection(-2, 3)).equals(IntegerIntervalProjection::top()));
+        assert((IntegerIntervalProjection(-2, 7) ^ IntegerIntervalProjection(IntegerIntervalProjection::minus_infinity(), 3)).equals(IntegerIntervalProjection::top()));
+        assert((IntegerIntervalProjection(-2, 7) ^ IntegerIntervalProjection(-2, IntegerIntervalProjection::plus_infinity())).equals(IntegerIntervalProjection::top()));
+        assert((IntegerIntervalProjection(-6, -3) ^ IntegerIntervalProjection(3, 9)).equals(IntegerIntervalProjection::top()));
+        assert((IntegerIntervalProjection(-6, 6) ^ IntegerIntervalProjection(3, 9)).equals(IntegerIntervalProjection::top()));
     }
 
 };

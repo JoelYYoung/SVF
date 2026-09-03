@@ -30,7 +30,7 @@
 #ifndef Z3_EXAMPLE_RELEXESTATE_H
 #define Z3_EXAMPLE_RELEXESTATE_H
 
-#include "AE/Core/AddressValue.h"
+#include "AE/Core/ScalarProjection.h"
 #include "Util/Z3Expr.h"
 #include "Util/GeneralType.h"
 
@@ -170,7 +170,7 @@ public:
     /// The physical address starts with 0x7f...... + idx
     static inline u32_t getVirtualMemAddress(u32_t idx)
     {
-        return AddressValue::getVirtualMemAddress(idx);
+        return EncodedAddressSet::getVirtualMemAddress(idx);
     }
 
     /// Check bit value of val start with 0x7F000000, filter by 0xFF000000
@@ -178,13 +178,13 @@ public:
     {
         if (val == 0)
             assert(false && "val cannot be 0");
-        return AddressValue::isVirtualMemAddress(val);
+        return EncodedAddressSet::isVirtualMemAddress(val);
     }
 
     /// Return the internal index if idx is an address otherwise return the value of idx
     static inline u32_t getInternalID(u32_t idx)
     {
-        return AddressValue::getInternalID(idx);
+        return EncodedAddressSet::getInternalID(idx);
     }
 
     /// Return int value from an expression if it is a numeral, otherwise return an approximate value

@@ -19,20 +19,20 @@ class VFGNode;
 /// scalar carrier plus sparse definition checkpoints. Persistent ICFG states
 /// carry memory and lifetime values, while transfers materialize scalar
 /// operands only temporarily.
-template <typename NumericalStateT>
+template <typename NumericalDomainT>
 class NativeSemiSparseAbstractInterpretation
-    : public DenseAbstractInterpretation<NumericalStateT>
+    : public DenseAbstractInterpretation<NumericalDomainT>
 {
 public:
-    using Base = DenseAbstractInterpretation<NumericalStateT>;
+    using Base = DenseAbstractInterpretation<NumericalDomainT>;
     using DenseState = typename Base::DenseState;
 
     NativeSemiSparseAbstractInterpretation();
     ~NativeSemiSparseAbstractInterpretation() override = default;
     void runOnModule() override;
-    const AbstractDomain::AbstractState* getScalarAbstractState(
+    const AbstractDomain::AbstractDomain* getScalarAbstractState(
         const FunObjVar* function) const override;
-    const AbstractDomain::AbstractState* getScalarAbstractState(
+    const AbstractDomain::AbstractDomain* getScalarAbstractState(
         const ValVar* value) const override;
 
 protected:
@@ -61,11 +61,11 @@ protected:
         PhaseMetric memoryRefinement;
     };
 
-    AbstractValue getAbsValue(const ValVar* var, const ICFGNode* node) override;
+    ScalarProjection getAbsValue(const ValVar* var, const ICFGNode* node) override;
     using Base::getAbsValue;
     bool hasAbsValue(const ValVar* var, const ICFGNode* node) const override;
     using Base::hasAbsValue;
-    void updateAbsValue(const ValVar* var, const AbstractValue& value,
+    void updateAbsValue(const ValVar* var, const ScalarProjection& value,
                         const ICFGNode* node) override;
     using Base::updateAbsValue;
 
@@ -76,29 +76,29 @@ protected:
     bool mergeStatesFromPredecessors(const ICFGNode* node) override;
     bool isAbstractStateEquivalent(
         const ICFGNode* node,
-        const AbstractDomain::AbstractState& snapshot) const override;
+        const AbstractDomain::AbstractDomain& snapshot) const override;
 
-    std::unique_ptr<AbstractDomain::AbstractState> cloneCycleHeadState(
+    std::unique_ptr<AbstractDomain::AbstractDomain> cloneCycleHeadState(
         const ICFGCycleWTO* cycle) override;
-    bool widenCycleState(const AbstractDomain::AbstractState& previous,
-                         const AbstractDomain::AbstractState& current,
+    bool widenCycleState(const AbstractDomain::AbstractDomain& previous,
+                         const AbstractDomain::AbstractDomain& current,
                          const ICFGCycleWTO* cycle) override;
-    bool narrowCycleState(const AbstractDomain::AbstractState& previous,
-                          const AbstractDomain::AbstractState& current,
+    bool narrowCycleState(const AbstractDomain::AbstractDomain& previous,
+                          const AbstractDomain::AbstractDomain& current,
                           const ICFGCycleWTO* cycle) override;
 
     void assignDomainInterval(const ICFGNode* node, const SVFVar* target,
-                              const IntervalValue& interval) override;
+                              const IntegerIntervalProjection& interval) override;
     void updateDomainOnBinary(const BinaryOPStmt* binary,
-                              const IntervalValue& result) override;
+                              const IntegerIntervalProjection& result) override;
     void updateDomainCopyValue(const ICFGNode* node, const SVFVar* target,
                                const SVFVar* source,
                                bool exactMathematicalCopy) override;
     void materializeValue(DenseState& state, const ValVar* value,
                           const ICFGNode* node) override;
-    AbstractValue loadValue(const ValVar* pointer,
+    ScalarProjection loadValue(const ValVar* pointer,
                             const ICFGNode* node) override;
-    void storeValue(const ValVar* pointer, const AbstractValue& value,
+    void storeValue(const ValVar* pointer, const ScalarProjection& value,
                     const ICFGNode* node) override;
 
     /// Keep only the state facets that should flow along ordinary ICFG
@@ -115,7 +115,7 @@ protected:
     DenseState flowState(const FunObjVar* function, bool bottom = false) const;
     void commitBinaryResult(const BinaryOPStmt* binary,
                             const DenseState& transferState,
-                            const IntervalValue& fallback);
+                            const IntegerIntervalProjection& fallback);
     void commitCopyResult(const SVFVar* target, bool exactMathematicalCopy,
                           const DenseState& transferState);
     void forgetActiveScalarValues(DenseState& state) const;
@@ -136,12 +136,12 @@ protected:
 /// along MemorySSA/SVFG def-use edges; GepObjVar snapshots and lifetime facts
 /// continue to flow along the ICFG because they are not fully represented by
 /// those edges.
-template <typename NumericalStateT>
+template <typename NumericalDomainT>
 class NativeFullSparseAbstractInterpretation
-    : public NativeSemiSparseAbstractInterpretation<NumericalStateT>
+    : public NativeSemiSparseAbstractInterpretation<NumericalDomainT>
 {
 public:
-    using Base = NativeSemiSparseAbstractInterpretation<NumericalStateT>;
+    using Base = NativeSemiSparseAbstractInterpretation<NumericalDomainT>;
     using DenseState = typename Base::DenseState;
 
     NativeFullSparseAbstractInterpretation();
@@ -149,13 +149,13 @@ public:
 
 protected:
     bool mergeStatesFromPredecessors(const ICFGNode* node) override;
-    void storeValue(const ValVar* pointer, const AbstractValue& value,
+    void storeValue(const ValVar* pointer, const ScalarProjection& value,
                     const ICFGNode* node) override;
     void filterPropagatedState(DenseState& state) const override;
     void collectMemoryBranchRefinement(const IntraCFGEdge* edge,
                                        DenseState& state) override;
-    void recordBranchRefinement(NodeID objectId, const IntervalValue& narrowed,
-                                AbstractDomain::AbstractState& state,
+    void recordBranchRefinement(NodeID objectId, const IntegerIntervalProjection& narrowed,
+                                AbstractDomain::AbstractDomain& state,
                                 const ICFGNode* loadNode,
                                 const ICFGNode* successor) override;
 
@@ -168,14 +168,14 @@ private:
                                    const ICFGNode* source);
     void propagateAndApplyMemoryRefinement(const ICFGNode* node);
 
-    Map<const ICFGNode*, Map<NodeID, IntervalValue>> memoryRefinementTrace_;
+    Map<const ICFGNode*, Map<NodeID, IntegerIntervalProjection>> memoryRefinementTrace_;
     std::unique_ptr<SVFGBuilder> svfgBuilder_;
 };
 
 extern template class NativeSemiSparseAbstractInterpretation<
-    AbstractDomain::BoxState>;
+    AbstractDomain::BoxDomain>;
 extern template class NativeFullSparseAbstractInterpretation<
-    AbstractDomain::BoxState>;
+    AbstractDomain::BoxDomain>;
 
 } // namespace SVF
 
