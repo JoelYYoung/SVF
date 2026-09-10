@@ -282,9 +282,6 @@ private:
 
     void updateStateOnBinary(const BinaryOPStmt *binary);
 
-    AddressValue normalizePointerAddresses(u32_t id,
-                                           const AbstractValue& value) const;
-
     IntervalValue comparePointerValues(const CmpStmt *cmp,
                                        const AbstractValue& lhsValue,
                                        const AbstractValue& rhsValue) const;

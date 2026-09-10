@@ -235,13 +235,9 @@ void AbsExtAPI::initExtFunMap()
         const AbstractValue& ptrVal = ae->getAbsValue(callNode->getArgument(0), callNode);
         for (auto addr: ptrVal.getAddrs())
         {
-            if (AbstractState::isBlackHoleObjAddr(addr))
-            {
-            }
-            else
-            {
+            if (!AbstractState::isBlackHoleObjAddr(addr) &&
+                    !AbstractState::isNullMem(addr))
                 as.addToFreedAddrs(addr);
-            }
         }
     };
     // Add all free-related functions to func_map
@@ -455,6 +451,9 @@ IntervalValue AbsExtAPI::getStrlen(const ValVar *strValue, const ICFGNode* node)
     const AbstractValue& ptrVal = ae->getAbsValue(strValue, node);
     for (const auto& addr : ptrVal.getAddrs())
     {
+        // Null has no backing buffer whose size can be inspected.
+        if (AbstractState::isNullMem(addr))
+            continue;
         NodeID objId = as.getIDFromAddr(addr);
         if (svfir->getBaseObject(objId)->isConstantByteSize())
         {

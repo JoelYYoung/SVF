@@ -241,9 +241,9 @@ void AbstractInterpretation::handleGlobalNode()
     // Use the manager's operator[] (auto-creates the entry if absent).
     AbstractState& init = abstractTrace[node];
     init = AbstractState();
-    // TODO: we cannot find right SVFVar for NullPtr, so we use init[NullPtr]
-    // directly. Same for BlkPtr below.
-    init[IRGraph::NullPtr] = AddressValue();
+    // NullPtr has no backing SVFVar. Model it directly as the singleton null
+    // address; BlkPtr is initialized directly below for the same reason.
+    init[IRGraph::NullPtr] = AddressValue(NullMemAddr);
 
     // Global Node, we just need to handle addr, load, store, copy and gep
     for (const SVFStmt *stmt: node->getSVFStmts())
@@ -961,7 +961,8 @@ void AbstractInterpretation::handleSVFStatement(const SVFStmt *stmt)
         auto it = vmap.find(IRGraph::NullPtr);
         (void)it; // Suppress warning of unused variable under release build
         assert(it == vmap.end() ||
-               (!it->second.isInterval() && !it->second.isAddr()));
+               (it->second.isAddr() &&
+                it->second.getAddrs().equals(AddressValue(NullMemAddr))));
     }
 }
 
@@ -1127,32 +1128,6 @@ void AbstractInterpretation::updateStateOnBinary(const BinaryOPStmt *binary)
     updateAbsValue(binary->getRes(), resVal, node);
 }
 
-/// Normalize every pointer operand to one address-set representation. Unknown
-/// operands contain BlackHoleObjAddr; null is the singleton NullMemAddr.
-AddressValue AbstractInterpretation::normalizePointerAddresses(
-    u32_t id, const AbstractValue& value) const
-{
-    // The explicit IR null operand denotes exactly one distinguished address.
-    if (id == IRGraph::NullPtr)
-        return AddressValue(NullMemAddr);
-
-    if (value.isInterval())
-    {
-        // Only the singleton integer zero is definitely null. Any wider or
-        // non-zero interval falls through and is treated as an unknown pointer.
-        const IntervalValue nullValue((s64_t)0, (s64_t)0);
-        if (value.getInterval().equals(nullValue))
-            return AddressValue(NullMemAddr);
-    }
-
-    // Preserve a points-to set already represented in the address domain.
-    if (value.isAddr())
-        return value.getAddrs();
-
-    // No concrete address set can be recovered from any other representation.
-    return AddressValue(BlackHoleObjAddr);
-}
-
 /// Equality is definitely true only for the same known singleton and may be
 /// true whenever the sets intersect or contain an unknown address.
 IntervalValue AbstractInterpretation::comparePointerValues(
@@ -1171,10 +1146,13 @@ IntervalValue AbstractInterpretation::comparePointerValues(
     else
         return IntervalValue((s64_t)0, (s64_t)1);
 
-    const AddressValue lhs =
-        normalizePointerAddresses(cmp->getOpVarID(0), lhsValue);
-    const AddressValue rhs =
-        normalizePointerAddresses(cmp->getOpVarID(1), rhsValue);
+    // A pointer outside the address domain has no known target. Keep both
+    // outcomes instead of interpreting another abstract domain as an address.
+    if (!lhsValue.isAddr() || !rhsValue.isAddr())
+        return IntervalValue((s64_t)0, (s64_t)1);
+
+    const AddressValue lhs = lhsValue.getAddrs();
+    const AddressValue rhs = rhsValue.getAddrs();
 
     // An unknown left address may equal any address on the right.
     if (lhs.contains(BlackHoleObjAddr))

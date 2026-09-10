@@ -324,6 +324,9 @@ AddressValue AbstractInterpretation::getGepObjAddrs(const ValVar* pointer, Inter
         const AbstractValue& addrs = getAbsValue(pointer, node);
         for (const auto& addr : addrs.getAddrs())
         {
+            // Null has no object from which a field address can be derived.
+            if (AbstractState::isNullMem(addr))
+                continue;
             s64_t baseObj = as.getIDFromAddr(addr);
             assert(SVFUtil::isa<ObjVar>(svfir->getSVFVar(baseObj)) && "Fail to get the base object address!");
             NodeID gepObj = svfir->getGepObjVar(baseObj, i);
@@ -341,6 +344,9 @@ AbstractValue AbstractInterpretation::loadValue(const ValVar* pointer, const ICF
     AbstractValue res;
     for (auto addr : ptrVal.getAddrs())
     {
+        // Null has no memory object from which a value can be loaded.
+        if (AbstractState::isNullMem(addr))
+            continue;
         res.join_with(
             getAbsValue(svfir->getSVFVar(as.getIDFromAddr(addr)), node));
     }
@@ -352,7 +358,12 @@ void AbstractInterpretation::storeValue(const ValVar* pointer, const AbstractVal
     const AbstractValue& ptrVal = getAbsValue(pointer, node);
     AbstractState& as = getAbsState(node);
     for (auto addr : ptrVal.getAddrs())
+    {
+        // Null has no memory object that can be updated.
+        if (AbstractState::isNullMem(addr))
+            continue;
         updateAbsValue(svfir->getSVFVar(as.getIDFromAddr(addr)), val, node);
+    }
 }
 
 const SVFType* AbstractInterpretation::getPointeeElement(const ObjVar* var, const ICFGNode* node)
@@ -399,4 +410,3 @@ u32_t AbstractInterpretation::getAllocaInstByteSize(const AddrStmt* addr)
     assert(false && "Addr rhs value is not ObjVar");
     abort();
 }
-
