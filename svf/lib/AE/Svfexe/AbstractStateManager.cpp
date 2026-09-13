@@ -605,9 +605,11 @@ AD::AddressSet AbstractInterpretation::getAddressSet(const ObjVar* var,
     const AD::Variable content = adapter_.contentVariable(*var);
     const AD::AddressSet addresses =
         denseState.addresses().addressSet(content);
-    if (addresses.isTop() &&
-            denseState.lifetimes().statusOf(adapter_.location(*var)) ==
-            AD::Lifetime::Alive)
+    // Original AE reads an unmaterialized memory payload as an uninitialized
+    // empty address value. Genuine unknown pointer stores are kept explicit as
+    // object-top by assignMemoryValue(), so this policy no longer depends on
+    // allocation status in LifetimeDomain.
+    if (addresses.isTop())
         return AD::AddressSet::bottom();
     return addresses;
 }

@@ -33,19 +33,12 @@
 #include <map>
 #include <memory>
 #include <string>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
 namespace SVF::AbstractDomain
 {
-
-enum class Lifetime
-{
-    Bottom,
-    Alive,
-    Freed,
-    MaybeFreed
-};
 
 class LifetimeDomain final : public AbstractDomain
 {
@@ -59,16 +52,16 @@ public:
     }
     std::unique_ptr<AbstractDomain> clone() const override;
 
-    Lifetime statusOf(Location location) const;
     void allocate(Location location);
     void release(Location location);
     bool mayBeFreed(Location location) const;
-    bool mustBeFreed(Location location) const;
 
 private:
-    using Values = std::map<Location, Lifetime>;
-    explicit LifetimeDomain(Lifetime defaultValue)
-        : defaultValue_(defaultValue), values_(std::make_shared<Values>())
+    using LocationIDs = std::unordered_set<std::uint32_t>;
+
+    explicit LifetimeDomain(bool defaultMayBeFreed)
+        : defaultMayBeFreed_(defaultMayBeFreed),
+          exceptions_(emptyLocationIDs())
     {
     }
 
@@ -86,11 +79,17 @@ private:
     bool leqDomain(const AbstractDomain& other) const override;
     std::string domainToString() const override;
 
-    void set(Location location, Lifetime lifetime);
-    Values& writableValues();
+    static std::shared_ptr<LocationIDs> emptyLocationIDs();
+    bool mayBeFreed(std::uint32_t locationID) const;
+    void setMayBeFreed(Location location, bool mayBeFreed);
+    void combineWith(const LifetimeDomain& other, bool join);
+    LocationIDs& writableExceptions();
 
-    Lifetime defaultValue_ = Lifetime::Bottom;
-    std::shared_ptr<Values> values_;
+    /// The set stores values differing from the default. Normal AE states use
+    /// a false default, so only may-freed locations occupy storage. A true
+    /// default represents Top and the same set stores known-safe exceptions.
+    bool defaultMayBeFreed_ = false;
+    std::shared_ptr<LocationIDs> exceptions_;
 };
 
 /// Monotone analysis-wide schema mapping abstract locations to the scalar
@@ -129,7 +128,7 @@ private:
 };
 
 /// Reduced product used by AE: Box tracks numerical facts, AddressDomain tracks
-/// pointer facts, and LifetimeDomain tracks allocation status. Memory contents
+/// pointer facts, and LifetimeDomain tracks may-freed objects. Memory contents
 /// are ordinary abstract variables in Box or AddressDomain, connected to
 /// locations by the shared MemoryLayout.
 class BoxAddressDomain final : public AbstractDomain

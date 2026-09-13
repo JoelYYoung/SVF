@@ -30,101 +30,14 @@
 namespace SVF::AbstractDomain
 {
 
-namespace
-{
-
-template <typename Operation>
-std::map<Location, Lifetime> mergeLifetimeValues(
-    const std::map<Location, Lifetime>& lhs, Lifetime lhsDefault,
-    const std::map<Location, Lifetime>& rhs, Lifetime rhsDefault,
-    Lifetime resultDefault, Operation operation)
-{
-    std::map<Location, Lifetime> result;
-    auto lhsIt = lhs.begin();
-    auto rhsIt = rhs.begin();
-    while (lhsIt != lhs.end() || rhsIt != rhs.end())
-    {
-        Location location;
-        Lifetime lhsValue = lhsDefault;
-        Lifetime rhsValue = rhsDefault;
-        if (rhsIt == rhs.end() ||
-                (lhsIt != lhs.end() && lhsIt->first < rhsIt->first))
-        {
-            location = lhsIt->first;
-            lhsValue = lhsIt->second;
-            ++lhsIt;
-        }
-        else if (lhsIt == lhs.end() || rhsIt->first < lhsIt->first)
-        {
-            location = rhsIt->first;
-            rhsValue = rhsIt->second;
-            ++rhsIt;
-        }
-        else
-        {
-            location = lhsIt->first;
-            lhsValue = lhsIt->second;
-            rhsValue = rhsIt->second;
-            ++lhsIt;
-            ++rhsIt;
-        }
-
-        const Lifetime value = operation(lhsValue, rhsValue);
-        if (value != resultDefault)
-            result.emplace_hint(result.end(), location, value);
-    }
-    return result;
-}
-
-Lifetime joinLifetime(Lifetime lhs, Lifetime rhs)
-{
-    if (lhs == Lifetime::Bottom)
-        return rhs;
-    if (rhs == Lifetime::Bottom || lhs == rhs)
-        return lhs;
-    return Lifetime::MaybeFreed;
-}
-
-Lifetime meetLifetime(Lifetime lhs, Lifetime rhs)
-{
-    if (lhs == Lifetime::MaybeFreed)
-        return rhs;
-    if (rhs == Lifetime::MaybeFreed || lhs == rhs)
-        return lhs;
-    return Lifetime::Bottom;
-}
-
-bool lifetimeIsSubsetOf(Lifetime lhs, Lifetime rhs)
-{
-    return lhs == Lifetime::Bottom || rhs == Lifetime::MaybeFreed || lhs == rhs;
-}
-
-const char* lifetimeToString(Lifetime lifetime)
-{
-    switch (lifetime)
-    {
-    case Lifetime::Bottom:
-        return "bottom";
-    case Lifetime::Alive:
-        return "alive";
-    case Lifetime::Freed:
-        return "freed";
-    case Lifetime::MaybeFreed:
-        return "maybe-freed";
-    }
-    return "invalid";
-}
-
-} // namespace
-
 LifetimeDomain LifetimeDomain::top()
 {
-    return LifetimeDomain(Lifetime::MaybeFreed);
+    return LifetimeDomain(true);
 }
 
 LifetimeDomain LifetimeDomain::bottom()
 {
-    return LifetimeDomain(Lifetime::Bottom);
+    return LifetimeDomain(false);
 }
 
 
@@ -133,34 +46,32 @@ std::unique_ptr<AbstractDomain> LifetimeDomain::clone() const
     return std::make_unique<LifetimeDomain>(*this);
 }
 
-Lifetime LifetimeDomain::statusOf(Location location) const
+std::shared_ptr<LifetimeDomain::LocationIDs>
+LifetimeDomain::emptyLocationIDs()
 {
-    const auto it = values_->find(location);
-    return it == values_->end() ? defaultValue_ : it->second;
+    static const auto empty = std::make_shared<LocationIDs>();
+    return empty;
 }
 
 void LifetimeDomain::allocate(Location location)
 {
-    set(location, Lifetime::Alive);
+    setMayBeFreed(location, false);
 }
 
 void LifetimeDomain::release(Location location)
 {
-    const Lifetime current = statusOf(location);
-    set(location, current == Lifetime::Alive || current == Lifetime::Freed
-        ? Lifetime::Freed
-        : Lifetime::MaybeFreed);
+    setMayBeFreed(location, true);
 }
 
 bool LifetimeDomain::mayBeFreed(Location location) const
 {
-    const Lifetime lifetime = statusOf(location);
-    return lifetime == Lifetime::Freed || lifetime == Lifetime::MaybeFreed;
+    return mayBeFreed(location.id());
 }
 
-bool LifetimeDomain::mustBeFreed(Location location) const
+bool LifetimeDomain::mayBeFreed(std::uint32_t locationID) const
 {
-    return statusOf(location) == Lifetime::Freed;
+    return defaultMayBeFreed_ !=
+           (exceptions_->count(locationID) != 0);
 }
 
 bool LifetimeDomain::hasCompatibleDomain(const AbstractDomain& other) const
@@ -171,8 +82,9 @@ bool LifetimeDomain::hasCompatibleDomain(const AbstractDomain& other) const
 void LifetimeDomain::joinDomain(const AbstractDomain& other)
 {
     const auto& state = static_cast<const LifetimeDomain&>(other);
-    if (defaultValue_ == state.defaultValue_ &&
-            (values_ == state.values_ || *values_ == *state.values_))
+    if (defaultMayBeFreed_ == state.defaultMayBeFreed_ &&
+            (exceptions_ == state.exceptions_ ||
+             *exceptions_ == *state.exceptions_))
         return;
     if (state.isBottomDomain())
         return;
@@ -188,20 +100,15 @@ void LifetimeDomain::joinDomain(const AbstractDomain& other)
         *this = state;
         return;
     }
-    const Lifetime nextDefault =
-        joinLifetime(defaultValue_, state.defaultValue_);
-    Values next = mergeLifetimeValues(
-                      *values_, defaultValue_, *state.values_, state.defaultValue_,
-                      nextDefault, joinLifetime);
-    defaultValue_ = nextDefault;
-    values_ = std::make_shared<Values>(std::move(next));
+    combineWith(state, true);
 }
 
 void LifetimeDomain::meetDomain(const AbstractDomain& other)
 {
     const auto& state = static_cast<const LifetimeDomain&>(other);
-    if (defaultValue_ == state.defaultValue_ &&
-            (values_ == state.values_ || *values_ == *state.values_))
+    if (defaultMayBeFreed_ == state.defaultMayBeFreed_ &&
+            (exceptions_ == state.exceptions_ ||
+             *exceptions_ == *state.exceptions_))
         return;
     if (state.isTopDomain())
         return;
@@ -217,13 +124,7 @@ void LifetimeDomain::meetDomain(const AbstractDomain& other)
         *this = state;
         return;
     }
-    const Lifetime nextDefault =
-        meetLifetime(defaultValue_, state.defaultValue_);
-    Values next = mergeLifetimeValues(
-                      *values_, defaultValue_, *state.values_, state.defaultValue_,
-                      nextDefault, meetLifetime);
-    defaultValue_ = nextDefault;
-    values_ = std::make_shared<Values>(std::move(next));
+    combineWith(state, false);
 }
 
 void LifetimeDomain::widenDomain(const AbstractDomain& next)
@@ -238,48 +139,33 @@ void LifetimeDomain::narrowDomain(const AbstractDomain& next)
 
 bool LifetimeDomain::isBottomDomain() const
 {
-    return defaultValue_ == Lifetime::Bottom && values_->empty();
+    return !defaultMayBeFreed_ && exceptions_->empty();
 }
 
 bool LifetimeDomain::isTopDomain() const
 {
-    return defaultValue_ == Lifetime::MaybeFreed && values_->empty();
+    return defaultMayBeFreed_ && exceptions_->empty();
 }
 
 bool LifetimeDomain::leqDomain(const AbstractDomain& other) const
 {
     const auto& state = static_cast<const LifetimeDomain&>(other);
-    if (defaultValue_ == state.defaultValue_ &&
-            (values_ == state.values_ || *values_ == *state.values_))
+    if (defaultMayBeFreed_ == state.defaultMayBeFreed_ &&
+            (exceptions_ == state.exceptions_ ||
+             *exceptions_ == *state.exceptions_))
         return true;
-    if (!lifetimeIsSubsetOf(defaultValue_, state.defaultValue_))
+    if (defaultMayBeFreed_ && !state.defaultMayBeFreed_)
         return false;
 
-    auto lhsIt = values_->begin();
-    auto rhsIt = state.values_->begin();
-    while (lhsIt != values_->end() || rhsIt != state.values_->end())
+    for (std::uint32_t locationID : *exceptions_)
     {
-        Lifetime lhsValue = defaultValue_;
-        Lifetime rhsValue = state.defaultValue_;
-        if (rhsIt == state.values_->end() ||
-                (lhsIt != values_->end() && lhsIt->first < rhsIt->first))
-        {
-            lhsValue = lhsIt->second;
-            ++lhsIt;
-        }
-        else if (lhsIt == values_->end() || rhsIt->first < lhsIt->first)
-        {
-            rhsValue = rhsIt->second;
-            ++rhsIt;
-        }
-        else
-        {
-            lhsValue = lhsIt->second;
-            rhsValue = rhsIt->second;
-            ++lhsIt;
-            ++rhsIt;
-        }
-        if (!lifetimeIsSubsetOf(lhsValue, rhsValue))
+        if (mayBeFreed(locationID) && !state.mayBeFreed(locationID))
+            return false;
+    }
+    for (std::uint32_t locationID : *state.exceptions_)
+    {
+        if (exceptions_->count(locationID) == 0 &&
+                mayBeFreed(locationID) && !state.mayBeFreed(locationID))
             return false;
     }
     return true;
@@ -287,33 +173,70 @@ bool LifetimeDomain::leqDomain(const AbstractDomain& other) const
 
 std::string LifetimeDomain::domainToString() const
 {
+    std::vector<std::uint32_t> locations(
+        exceptions_->begin(), exceptions_->end());
+    std::sort(locations.begin(), locations.end());
     std::ostringstream output;
-    output << "default=" << lifetimeToString(defaultValue_) << " {";
+    output << "default="
+           << (defaultMayBeFreed_ ? "may-freed" : "not-freed") << " {";
     bool first = true;
-    for (const auto& [location, value] : *values_)
+    for (std::uint32_t locationID : locations)
     {
         if (!first)
             output << ", ";
         first = false;
-        output << location.id() << "=" << lifetimeToString(value);
+        output << locationID << "="
+               << (mayBeFreed(locationID) ? "may-freed" : "not-freed");
     }
     output << "}";
     return output.str();
 }
 
-void LifetimeDomain::set(Location location, Lifetime lifetime)
+void LifetimeDomain::setMayBeFreed(Location location, bool mayBeFreedValue)
 {
-    if (lifetime == defaultValue_)
-        writableValues().erase(location);
+    const bool differsFromDefault =
+        mayBeFreedValue != defaultMayBeFreed_;
+    const bool stored = exceptions_->count(location.id()) != 0;
+    if (differsFromDefault == stored)
+        return;
+    if (differsFromDefault)
+        writableExceptions().insert(location.id());
     else
-        writableValues()[location] = lifetime;
+        writableExceptions().erase(location.id());
 }
 
-LifetimeDomain::Values& LifetimeDomain::writableValues()
+void LifetimeDomain::combineWith(
+    const LifetimeDomain& other, bool join)
 {
-    if (values_.use_count() != 1)
-        values_ = std::make_shared<Values>(*values_);
-    return *values_;
+    const bool nextDefault = join
+                             ? defaultMayBeFreed_ || other.defaultMayBeFreed_
+                             : defaultMayBeFreed_ && other.defaultMayBeFreed_;
+    LocationIDs next;
+    next.reserve(exceptions_->size() + other.exceptions_->size());
+    const auto addIfExceptional = [&](std::uint32_t locationID)
+    {
+        const bool value = join
+                           ? mayBeFreed(locationID) || other.mayBeFreed(locationID)
+                           : mayBeFreed(locationID) && other.mayBeFreed(locationID);
+        if (value != nextDefault)
+            next.insert(locationID);
+    };
+    for (std::uint32_t locationID : *exceptions_)
+        addIfExceptional(locationID);
+    for (std::uint32_t locationID : *other.exceptions_)
+    {
+        if (exceptions_->count(locationID) == 0)
+            addIfExceptional(locationID);
+    }
+    defaultMayBeFreed_ = nextDefault;
+    exceptions_ = std::make_shared<LocationIDs>(std::move(next));
+}
+
+LifetimeDomain::LocationIDs& LifetimeDomain::writableExceptions()
+{
+    if (exceptions_.use_count() != 1)
+        exceptions_ = std::make_shared<LocationIDs>(*exceptions_);
+    return *exceptions_;
 }
 
 Variable MemoryLayout::contentOf(Location location) const
