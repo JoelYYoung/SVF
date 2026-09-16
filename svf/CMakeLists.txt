@@ -1,7 +1,7 @@
 # Build the backend-neutral abstract-domain library as a separate target. None of
 # these sources includes SVF IR or LLVM headers.
 set(ABSTRACT_DOMAIN_CORE_HEADERS
-    ${CMAKE_CURRENT_LIST_DIR}/include/AE/Core/Detail/DimensionLayout.h
+    ${CMAKE_CURRENT_LIST_DIR}/include/AE/Core/DimensionLayout.h
     ${CMAKE_CURRENT_LIST_DIR}/include/AE/Core/OctagonDomain.h
     ${CMAKE_CURRENT_LIST_DIR}/include/AE/Core/ConvexPolyhedraDomain.h
     ${CMAKE_CURRENT_LIST_DIR}/include/AE/Core/AbstractDomain.h

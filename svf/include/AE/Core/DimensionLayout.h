@@ -21,8 +21,8 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef SVF_AE_DETAIL_DIMENSION_LAYOUT_H
-#define SVF_AE_DETAIL_DIMENSION_LAYOUT_H
+#ifndef SVF_AE_DIMENSION_LAYOUT_H
+#define SVF_AE_DIMENSION_LAYOUT_H
 
 #include "AE/Core/Variable.h"
 
@@ -148,4 +148,4 @@ private:
 
 } // namespace SVF::AbstractDomain::detail
 
-#endif // SVF_AE_DETAIL_DIMENSION_LAYOUT_H
+#endif // SVF_AE_DIMENSION_LAYOUT_H

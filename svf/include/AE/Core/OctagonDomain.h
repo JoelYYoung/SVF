@@ -24,7 +24,7 @@
 #ifndef SVF_AE_OCTAGON_DOMAIN_H
 #define SVF_AE_OCTAGON_DOMAIN_H
 
-#include "AE/Core/Detail/DimensionLayout.h"
+#include "AE/Core/DimensionLayout.h"
 #include "AE/Core/Expression.h"
 #include "AE/Core/NumericalDomain.h"
 
