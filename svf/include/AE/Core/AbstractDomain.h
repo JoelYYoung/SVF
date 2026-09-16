@@ -43,7 +43,9 @@ enum class DomainKind
     Address,
     Lifetime,
     Product,
-    Initialization
+    Initialization,
+    Octagon,
+    ConvexPolyhedra
 };
 
 const char* toString(CheckResult result);

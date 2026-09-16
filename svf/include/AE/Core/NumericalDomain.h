@@ -400,7 +400,9 @@ enum class OperationKind
     TopologicalClosure,
     Canonicalization,
     Expand,
-    Fold
+    Fold,
+    GeneratorImport,
+    GeneratorExport
 };
 
 /// APRON-style information about the most recently completed mutating
@@ -450,7 +452,7 @@ public:
     /// Diagnostic sinks are observational and are not serialized.
     RawBuffer serializeRaw() const;
 
-    /// Restore a Box property from serializeRaw().
+    /// Restore a Box, Octagon, or Convex Polyhedra property from serializeRaw().
     /// Malformed, truncated, corrupt, or unsupported data is rejected.
     static std::unique_ptr<NumericalDomain> deserializeRaw(
         const RawBuffer& buffer);

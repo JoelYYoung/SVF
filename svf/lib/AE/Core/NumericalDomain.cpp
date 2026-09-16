@@ -22,6 +22,8 @@
 //===----------------------------------------------------------------------===//
 
 #include "AE/Core/NumericalDomain.h"
+#include "AE/Core/OctagonDomain.h"
+#include "AE/Core/ConvexPolyhedraDomain.h"
 #include "AE/Core/Expression.h"
 
 #include <algorithm>
@@ -664,7 +666,9 @@ constexpr std::uint64_t FnvPrime = 1099511628211ULL;
 
 enum class DomainTag : std::uint8_t
 {
-    Box = 1
+    Box = 1,
+    Octagon = 2,
+    ConvexPolyhedra = 3
 };
 
 std::uint64_t fnv1a(const std::uint8_t* data, std::size_t size)
@@ -892,6 +896,10 @@ DomainTag domainTag(const NumericalDomain& state)
 {
     if (state.isDomain<BoxDomain>())
         return DomainTag::Box;
+    if (state.isDomain<OctagonDomain>())
+        return DomainTag::Octagon;
+    if (state.isDomain<ConvexPolyhedraDomain>())
+        return DomainTag::ConvexPolyhedra;
     throw std::invalid_argument(
         "raw serialization does not support this domain");
 }
@@ -905,6 +913,13 @@ std::uint8_t configurationFlags(const NumericalDomain& state, DomainTag tag)
         const auto& box = static_cast<const BoxDomain&>(state);
         return box.config().integerTightening ? 1U : 0U;
     }
+    case DomainTag::Octagon:
+    {
+        const auto& config = static_cast<const OctagonDomain&>(state).config();
+        return (config.integerTightening ? 1U : 0U) | (config.strongClosure ? 2U : 0U);
+    }
+    case DomainTag::ConvexPolyhedra:
+        return static_cast<const ConvexPolyhedraDomain&>(state).config().integerTightening ? 1U : 0U;
     }
     throw std::logic_error("unknown raw state domain tag");
 }
@@ -949,10 +964,16 @@ void writeConstraints(Writer& writer, const LinearConstraintSet& constraints)
 }
 
 LinearConstraintSet canonicalConstraints(const NumericalDomain& state,
-        DomainTag)
+        DomainTag tag)
 {
-    return state.isBottom() ? LinearConstraintSet{} :
-           state.toConstraints();
+    if (state.isBottom())
+        return {};
+    if (tag == DomainTag::Box)
+        return state.toConstraints();
+    auto copy = state.clone();
+    auto& numerical = static_cast<NumericalDomain&>(*copy);
+    numerical.canonicalize();
+    return numerical.toConstraints();
 }
 
 Rational readRational(Reader& reader)
@@ -1004,6 +1025,10 @@ DomainTag decodeDomainTag(std::uint8_t value)
     {
     case static_cast<std::uint8_t>(DomainTag::Box):
         return DomainTag::Box;
+    case static_cast<std::uint8_t>(DomainTag::Octagon):
+        return DomainTag::Octagon;
+    case static_cast<std::uint8_t>(DomainTag::ConvexPolyhedra):
+        return DomainTag::ConvexPolyhedra;
     default:
         throw std::invalid_argument("raw state has an unknown domain tag");
     }
@@ -1025,6 +1050,25 @@ std::unique_ptr<NumericalDomain> restore(DomainTag tag, std::uint8_t flags,
                           ? BoxDomain::bottom(config)
                           : BoxDomain::fromConstraints(constraints, config);
         return std::make_unique<BoxDomain>(std::move(state));
+    }
+    case DomainTag::Octagon:
+    {
+        if ((flags & ~3U) != 0)
+            throw std::invalid_argument("raw Octagon state has invalid flags");
+        OctagonConfig config;
+        config.integerTightening = (flags & 1U) != 0;
+        config.strongClosure = (flags & 2U) != 0;
+        return std::make_unique<OctagonDomain>(bottom ? OctagonDomain::bottom(config)
+                                               : OctagonDomain::fromConstraints(constraints, config));
+    }
+    case DomainTag::ConvexPolyhedra:
+    {
+        if ((flags & ~1U) != 0)
+            throw std::invalid_argument("raw Polyhedra state has invalid flags");
+        ConvexPolyhedraConfig config;
+        config.integerTightening = (flags & 1U) != 0;
+        return std::make_unique<ConvexPolyhedraDomain>(bottom ? ConvexPolyhedraDomain::bottom(config)
+                : ConvexPolyhedraDomain::fromConstraints(constraints, config));
     }
     }
     throw std::logic_error("unknown raw state domain tag");
@@ -2201,6 +2245,36 @@ void NumericalDomain::recordOperation(OperationKind operation,
 
 std::uint64_t NumericalDomain::hash() const
 {
+    if (isDomain<ConvexPolyhedraDomain>())
+    {
+        // Equivalent polyhedra can have different irredundant equality bases.
+        // Hash their exact unary projection, not a history-dependent H cache.
+        // Losing relational discrimination is an intentional hash collision;
+        // callers must still use isEquivalentTo for equality.
+        const auto& polyhedron = static_cast<const ConvexPolyhedraDomain&>(*this);
+        std::set<Variable> variables;
+        if (!isBottom())
+            for (const auto& constraint : toConstraints())
+                for (const auto& term : constraint.expression().terms())
+                    variables.insert(term.first);
+        LinearConstraintSet unary;
+        for (Variable variable : variables)
+        {
+            const auto value = polyhedron.bound(variable);
+            if (value.lower().isFinite())
+                unary.emplace_back(LinearExpression(variable) - LinearExpression(value.lower().value()),
+                                   value.lower().isStrict() ? ConstraintKind::GreaterThan : ConstraintKind::GreaterEqual);
+            if (value.upper().isFinite())
+                unary.emplace_back(LinearExpression(variable) - LinearExpression(value.upper().value()),
+                                   value.upper().isStrict() ? ConstraintKind::LessThan : ConstraintKind::LessEqual);
+        }
+        Writer writer;
+        writer.writeByte(static_cast<std::uint8_t>(DomainTag::ConvexPolyhedra));
+        writer.writeByte(configurationFlags(*this, DomainTag::ConvexPolyhedra));
+        writer.writeByte(isBottom() ? 1U : 0U);
+        writeConstraints(writer, unary);
+        return readTrailingU64(writer.finish());
+    }
     const RawBuffer raw = serializeRaw();
     return readTrailingU64(raw);
 }
