@@ -24,11 +24,231 @@
 #include "AE/Core/BoxAddressDomain.h"
 
 #include <algorithm>
+#include <iterator>
 #include <sstream>
 #include <stdexcept>
 
 namespace SVF::AbstractDomain
 {
+
+static bool mayBeInitialized(InitializationState state)
+{
+    return (static_cast<unsigned>(state) &
+            static_cast<unsigned>(InitializationState::Initialized)) != 0;
+}
+
+static std::vector<Variable> mergedVariables(
+    const std::vector<Variable>& lhs, const std::vector<Variable>& rhs)
+{
+    std::vector<Variable> result;
+    result.reserve(lhs.size() + rhs.size());
+    std::set_union(lhs.begin(), lhs.end(), rhs.begin(), rhs.end(),
+                   std::back_inserter(result));
+    return result;
+}
+
+Interval BoxAddressDomain::interval(Variable variable) const
+{
+    if (isBottomDomain() || (trackInitialization_ &&
+                             !mayBeInitialized(numericalInitialization_.value(variable))))
+        return Interval::bottom();
+    return numerical_.bound(variable);
+}
+
+AddressSet BoxAddressDomain::addressSet(Variable variable) const
+{
+    if (isBottomDomain() || (trackInitialization_ &&
+                             !mayBeInitialized(addressInitialization_.value(variable))))
+        return AddressSet::bottom();
+    return addresses_.addressSet(variable);
+}
+
+bool BoxAddressDomain::hasValue(Variable variable) const
+{
+    if (isBottomDomain())
+        return false;
+    if (trackInitialization_)
+        return mayBeInitialized(numericalInitialization_.value(variable)) ||
+               mayBeInitialized(addressInitialization_.value(variable));
+    return !numerical_.bound(variable).isTop() ||
+           !addresses_.addressSet(variable).isTop();
+}
+
+void BoxAddressDomain::setInterval(Variable variable, const Interval& value)
+{
+    if (isBottomDomain())
+        return;
+    if (value.isBottom())
+        numerical_.forget(variable);
+    else
+        numerical_.setBound(variable, value);
+    if (trackInitialization_)
+        numericalInitialization_.assign(variable, value.isBottom()
+                                        ? InitializationState::Uninitialized
+                                        : InitializationState::Initialized);
+}
+
+void BoxAddressDomain::setAddressSet(Variable variable, const AddressSet& value)
+{
+    if (isBottomDomain())
+        return;
+    // No payload is needed for an uninitialized facet. Full Top also has no
+    // payload, but its Initialized guard keeps it distinct on reads and joins.
+    if (trackInitialization_ && value.isBottom())
+        addresses_.forget(variable);
+    else
+        addresses_.assign(variable, value);
+    if (trackInitialization_)
+        addressInitialization_.assign(variable, value.isBottom()
+                                      ? InitializationState::Uninitialized
+                                      : InitializationState::Initialized);
+}
+
+void BoxAddressDomain::resetValue(Variable variable)
+{
+    numerical_.forget(variable);
+    addresses_.forget(variable);
+    if (trackInitialization_)
+    {
+        numericalInitialization_.assign(variable, numericalInitialization_.defaultState());
+        addressInitialization_.assign(variable, addressInitialization_.defaultState());
+    }
+}
+
+std::vector<Variable> BoxAddressDomain::initializedVariables() const
+{
+    if (!trackInitialization_)
+        return {};
+    return mergedVariables(numericalInitialization_.nonDefaultVariables(),
+                           addressInitialization_.nonDefaultVariables());
+}
+
+std::vector<Variable> BoxAddressDomain::initializedVariablesBefore(
+    Variable upperBound) const
+{
+    if (!trackInitialization_)
+        return {};
+    return mergedVariables(
+               numericalInitialization_.nonDefaultVariablesBefore(upperBound),
+               addressInitialization_.nonDefaultVariablesBefore(upperBound));
+}
+
+void BoxAddressDomain::combineInitialized(
+    const BoxAddressDomain& other, Combination operation)
+{
+    const bool intersect = operation == Combination::Meet;
+    if (isBottomDomain() || other.isBottomDomain())
+    {
+        if (intersect)
+            numerical_ = BoxDomain::bottom(numerical_.config());
+        else if (isBottomDomain())
+            *this = other;
+        return;
+    }
+    // Initialization-only coordinates have Top payloads on both sides. Their
+    // entire combination is handled by the guard domains; no payload lookup or
+    // materialization is needed. Retain the left payload pages until a value
+    // actually changes, rather than constructing a fresh product per merge.
+    BoxAddressDomain result(*this);
+    if (intersect)
+    {
+        result.numericalInitialization_.meetWith(other.numericalInitialization_);
+        result.addressInitialization_.meetWith(other.addressInitialization_);
+        result.lifetimes_.meetWith(other.lifetimes_);
+    }
+    else
+    {
+        result.numericalInitialization_.joinWith(other.numericalInitialization_);
+        result.addressInitialization_.joinWith(other.addressInitialization_);
+        result.lifetimes_.joinWith(other.lifetimes_);
+    }
+    const auto numbers = mergedVariables(numerical_.constrainedVariables(),
+                                         other.numerical_.constrainedVariables());
+    for (Variable variable : numbers)
+    {
+        if (result.isBottomDomain())
+            break;
+        Interval number = interval(variable);
+        const Interval nextNumber = other.interval(variable);
+        if (intersect)
+            number.meetWith(nextNumber);
+        else
+        {
+            if (operation == Combination::Widen && !number.isBottom() &&
+                    !nextNumber.isBottom())
+                number.widenWith(nextNumber);
+            else
+                number.joinWith(nextNumber);
+        }
+        if (number.isBottom())
+        {
+            // Clear even a latent raw constraint under an inactive guard:
+            // mutable domain access must not make it survive a combination.
+            result.numerical_.forget(variable);
+            if (intersect)
+            {
+                const auto guard = result.numericalInitialization_.value(variable);
+                result.numericalInitialization_.assign(variable,
+                                                       static_cast<InitializationState>(static_cast<unsigned>(guard) & 1U));
+            }
+        }
+        else if (number != numerical_.bound(variable))
+            result.numerical_.setBound(variable, number);
+    }
+    const auto pointers = mergedVariables(addresses_.nonDefaultVariables(),
+                                          other.addresses_.nonDefaultVariables());
+    for (Variable variable : pointers)
+    {
+        if (result.isBottomDomain())
+            break;
+        AddressSet addresses = addressSet(variable);
+        const AddressSet nextAddresses = other.addressSet(variable);
+        if (intersect)
+            addresses.meetWith(nextAddresses);
+        else
+            addresses.joinWith(nextAddresses);
+        if (addresses.isBottom())
+        {
+            result.addresses_.forget(variable);
+            if (intersect)
+            {
+                const auto guard = result.addressInitialization_.value(variable);
+                result.addressInitialization_.assign(variable,
+                                                     static_cast<InitializationState>(static_cast<unsigned>(guard) & 1U));
+            }
+        }
+        else if (addresses != addresses_.addressSet(variable))
+            result.addresses_.assign(variable, std::move(addresses));
+    }
+    *this = std::move(result);
+}
+
+bool BoxAddressDomain::initializedSubsetOf(const BoxAddressDomain& other) const
+{
+    if (numericalInitialization_.isSubsetOf(other.numericalInitialization_) != CheckResult::True ||
+            addressInitialization_.isSubsetOf(other.addressInitialization_) != CheckResult::True ||
+            lifetimes_.isSubsetOf(other.lifetimes_) != CheckResult::True)
+        return false;
+    // Native inclusion is sufficient once guards are included. This restores
+    // shared-page fast paths, without confusing inactive payload Top with an
+    // initialized Top. If native inclusion fails, only right-hand non-Top
+    // constraints can witness a failure of conditional payload inclusion.
+    if (numerical_.isSubsetOf(other.numerical_) != CheckResult::True)
+    {
+        for (Variable variable : other.numerical_.constrainedVariables())
+            if (mayBeInitialized(numericalInitialization_.value(variable)) &&
+                    !numerical_.bound(variable).isSubsetOf(other.numerical_.bound(variable)))
+                return false;
+    }
+    if (addresses_.isSubsetOf(other.addresses_) != CheckResult::True)
+    {
+        for (Variable variable : other.addresses_.nonDefaultVariables())
+            if (mayBeInitialized(addressInitialization_.value(variable)) &&
+                    !addresses_.addressSet(variable).isSubsetOf(other.addresses_.addressSet(variable)))
+                return false;
+    }
+    return true;
+}
 
 LifetimeDomain LifetimeDomain::top()
 {
@@ -260,6 +480,16 @@ void BoxAddressDomain::restoreMissingMemoryFrom(
 {
     if (isBottom() || caller.isBottom())
         return;
+    if (trackInitialization_)
+    {
+        if (!mayBeInitialized(numericalInitialization_.value(content)))
+        {
+            setInterval(content, caller.interval(content));
+            numericalInitialization_.assign(content, caller.numericalInitialization_.value(content));
+        }
+        restoreMissingAddressFrom(caller, content);
+        return;
+    }
     if (numerical_.bound(content).isTop())
     {
         const Interval interval = caller.numerical_.bound(content);
@@ -274,6 +504,15 @@ void BoxAddressDomain::restoreMissingAddressFrom(
 {
     if (isBottom() || caller.isBottom())
         return;
+    if (trackInitialization_)
+    {
+        if (!mayBeInitialized(addressInitialization_.value(content)))
+        {
+            setAddressSet(content, caller.addressSet(content));
+            addressInitialization_.assign(content, caller.addressInitialization_.value(content));
+        }
+        return;
+    }
     if (addresses_.addressSet(content).isTop())
     {
         const AddressSet addresses = caller.addresses_.addressSet(content);

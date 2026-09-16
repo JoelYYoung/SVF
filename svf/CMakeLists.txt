@@ -6,11 +6,13 @@ set(ABSTRACT_DOMAIN_CORE_HEADERS
     ${CMAKE_CURRENT_LIST_DIR}/include/AE/Core/Expression.h
     ${CMAKE_CURRENT_LIST_DIR}/include/AE/Core/NumericalDomain.h
     ${CMAKE_CURRENT_LIST_DIR}/include/AE/Core/AddressDomain.h
+    ${CMAKE_CURRENT_LIST_DIR}/include/AE/Core/InitializationDomain.h
     ${CMAKE_CURRENT_LIST_DIR}/include/AE/Core/BoxAddressDomain.h
 )
 set(ABSTRACT_DOMAIN_CORE_SOURCES
     ${CMAKE_CURRENT_LIST_DIR}/lib/AE/Core/AbstractDomain.cpp
     ${CMAKE_CURRENT_LIST_DIR}/lib/AE/Core/AddressDomain.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/lib/AE/Core/InitializationDomain.cpp
     ${CMAKE_CURRENT_LIST_DIR}/lib/AE/Core/BoxAddressDomain.cpp
     ${CMAKE_CURRENT_LIST_DIR}/lib/AE/Core/Expression.cpp
     ${CMAKE_CURRENT_LIST_DIR}/lib/AE/Core/NumericalDomain.cpp

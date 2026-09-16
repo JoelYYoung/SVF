@@ -435,7 +435,7 @@ void AbsExtAPI::handleExtAPI(const CallICFGNode* call)
                 // SVF call/value-flow edges (commonly the BlackHole summary
                 // object). This matches Original AE's policy and avoids
                 // replacing a useful points-to fact with object-top.
-                if (!ret->isPointer())
+                if (!ret->isPointer() || ae->getAddressSet(ret, call).isBottom())
                     ae->updateInterval(ret, AD::Interval::top(), call);
             }
             return;

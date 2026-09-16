@@ -91,6 +91,18 @@ void AbstractInterpretation::initializeObjectValue(
     denseState.allocate(adapter_.location(*object));
 
     const BaseObjVar* base = PAG::getPAG()->getBaseObject(object->getId());
+    if (base->isStack() || base->isHeap())
+    {
+        // Fresh payload facets are uninitialized, independently of their
+        // physical Box/Address slots (whose missing payload still means Top).
+        denseState.resetValue(adapter_.contentVariable(*object));
+        for (NodeID fieldId : svfir->getAllFieldsObjVars(base->getId()))
+        {
+            const auto* field = SVFUtil::dyn_cast<ObjVar>(svfir->getGNode(fieldId));
+            if (field)
+                denseState.resetValue(adapter_.contentVariable(*field));
+        }
+    }
     if (base->isBlackHoleObj())
     {
         addresses = blackHoleAddressSet();
@@ -298,7 +310,15 @@ void AbstractInterpretation::analyzeFromAllProgEntries()
     while (!entryFunctions.empty())
     {
         const FunObjVar* entryFun = entryFunctions.pop();
-        const ICFGNode* funEntry = icfg->getFunEntryICFGNode(entryFun);
+        const FunEntryICFGNode* funEntry = icfg->getFunEntryICFGNode(entryFun);
+        // Selected roots have no caller transfer to define their arguments.
+        // Inputs carry numerical Top, unlike uninitialized object contents.
+        // Pointer inputs still have no modeled address targets, but their
+        // numerical facet is preserved if subsequently written to memory.
+        for (const SVFVar* argument : funEntry->getFormalParms())
+        {
+            updateInterval(argument, AD::Interval::top(), globalNode);
+        }
         copyAbstractState(globalNode, funEntry);
         handleFunction(funEntry, nullptr);
     }
@@ -429,37 +449,10 @@ static AD::Interval computeCmpConstraint(s32_t predicate, s64_t succ,
     case CmpStmt::ICMP_NE:
     case CmpStmt::FCMP_ONE:
     case CmpStmt::FCMP_UNE:
-        if (!other.isSingleton())
-            return AD::Interval::top();
-        if (result.lower().isFinite() && !result.lower().isStrict() &&
-                result.lower().value() == other.singletonValue())
-        {
-            const bool integerPredicate = predicate == CmpStmt::ICMP_NE;
-            result.meetWith(AD::Interval(
-                                AD::Bound::finite(
-                                    other.singletonValue() +
-                                    (integerPredicate ? AD::Rational(1) :
-                                     AD::Rational()),
-                                    !integerPredicate),
-                                AD::Bound::plusInfinity()));
-        }
-        else if (result.upper().isFinite() && !result.upper().isStrict() &&
-                 result.upper().value() == other.singletonValue())
-        {
-            const bool integerPredicate = predicate == CmpStmt::ICMP_NE;
-            result.meetWith(AD::Interval(
-                                AD::Bound::minusInfinity(),
-                                AD::Bound::finite(
-                                    other.singletonValue() -
-                                    (integerPredicate ? AD::Rational(1) :
-                                     AD::Rational()),
-                                    !integerPredicate)));
-        }
-        else
-            return AD::Interval::top();
-        break;
     case CmpStmt::FCMP_FALSE:
     case CmpStmt::FCMP_TRUE:
+        // Original does not narrow memory on disequality, even when Box
+        // could remove an interval endpoint. Keep that policy in the AE layer.
         return AD::Interval::top();
     case CmpStmt::ICMP_UGT:
     case CmpStmt::ICMP_SGT:
@@ -557,6 +550,11 @@ void AbstractInterpretation::collectBranchRefinement(
                     if (opVal[i].isSingleton())
                     {
                         // Example: in x < 5, operand 5 is not refined.
+                    }
+                    else if (!opVal[other].isSingleton())
+                    {
+                        // Match Original: refine a loaded value only against
+                        // a fixed numerical bound, not another interval.
                     }
                     else if (!load)
                     {
@@ -789,21 +787,8 @@ bool AbstractInterpretation::isExtCall(const CallICFGNode* callNode)
 void AbstractInterpretation::handleExtCall(const CallICFGNode* callNode)
 {
     utils->handleExtAPI(callNode);
-    // An unmodelled fixed-width integer return is not mathematical Top. Its
-    // machine range remains a sound finite fact and, unlike implicit Top, can
-    // be carried as an explicit MemorySSA definition after a store.
-    const RetICFGNode* returnNode = callNode->getRetICFGNode();
-    const SVFVar* actualReturn = returnNode ? returnNode->getActualRet() : nullptr;
-    const ValVar* returnValue = actualReturn
-                                ? SVFUtil::dyn_cast<ValVar>(actualReturn)
-                                : nullptr;
-    if (returnValue && !returnValue->isPointer() &&
-            SVFUtil::isa<SVFIntegerType>(returnValue->getType()))
-    {
-        AD::Interval value = getInterval(returnValue, callNode);
-        value.meetWith(utils->getRangeLimitFromType(returnValue->getType()));
-        updateInterval(returnValue, value, callNode);
-    }
+    // Keep the external model's result, including an initialized Top. The
+    // initialization guard carries that definition without an artificial range.
     for (auto& detector : detectors)
     {
         detector->handleStubFunctions(callNode);
@@ -865,6 +850,7 @@ void AbstractInterpretation::handleFunCall(const CallICFGNode* callNode)
 
     // Indirect call: use Andersen's call graph to get all resolved callees.
     const RetICFGNode* retNode = callNode->getRetICFGNode();
+    bool analyzedCallee = false;
     if (callGraph->hasIndCSCallees(callNode))
     {
         const auto& callees = callGraph->getIndCSCallees(callNode);
@@ -879,9 +865,19 @@ void AbstractInterpretation::handleFunCall(const CallICFGNode* callNode)
         {
             if (callee->isDeclaration())
                 continue;
+            analyzedCallee = true;
             const ICFGNode* calleeEntry = icfg->getFunEntryICFGNode(callee);
             handleFunction(calleeEntry, callNode);
         }
+    }
+    if (!analyzedCallee)
+    {
+        // Original's missing SSA result reads as numerical Top. This is an
+        // unresolved call, not an uninitialized object load (which stays Bottom).
+        const SVFVar* result = retNode->getActualRet();
+        if (result && getInterval(result, callNode).isBottom() &&
+                getAddressSet(result, callNode).isBottom())
+            updateInterval(result, AD::Interval::top(), callNode);
     }
     // Resume return node from caller's state (context-insensitive)
     copyAbstractState(callNode, retNode);
@@ -1178,8 +1174,7 @@ void AbstractInterpretation::updateStateOnCmp(const CmpStmt* cmp)
     AD::Interval rhsInterval = getInterval(cmp->getOpVar(1), node);
     const AD::AddressSet lhsAddresses = getAddressSet(cmp->getOpVar(0), node);
     const AD::AddressSet rhsAddresses = getAddressSet(cmp->getOpVar(1), node);
-    const bool addressComparison =
-        !lhsAddresses.isBottom() || !rhsAddresses.isBottom();
+    const bool addressComparison = cmp->getOpVar(0)->isPointer();
     AD::Interval result =
         AD::Interval::closed(AD::Rational(0), AD::Rational(1));
     const auto boolean = [](bool value)
@@ -1188,6 +1183,15 @@ void AbstractInterpretation::updateStateOnCmp(const CmpStmt* cmp)
     };
 
     const auto predicate = cmp->getPredicate();
+    if (!addressComparison &&
+            (lhsInterval.isBottom() || rhsInterval.isBottom()))
+    {
+        // Original skips this transfer, then reads a never-defined SSA result
+        // as Top. Preserve any existing result on subsequent loop iterations.
+        if (getInterval(cmp->getRes(), node).isBottom())
+            updateInterval(cmp->getRes(), AD::Interval::top(), node);
+        return;
+    }
     if (predicate == CmpStmt::FCMP_FALSE)
         result = boolean(false);
     else if (predicate == CmpStmt::FCMP_TRUE)
@@ -1245,29 +1249,20 @@ void AbstractInterpretation::updateStateOnCmp(const CmpStmt* cmp)
         case CmpStmt::ICMP_SGT:
         case CmpStmt::FCMP_OGT:
         case CmpStmt::FCMP_UGT:
-            if (exact && *lhsAddresses.begin() == *rhsAddresses.begin())
-                result = boolean(false);
-            break;
         case CmpStmt::ICMP_UGE:
         case CmpStmt::ICMP_SGE:
         case CmpStmt::FCMP_OGE:
         case CmpStmt::FCMP_UGE:
-            if (exact && *lhsAddresses.begin() == *rhsAddresses.begin())
-                result = boolean(true);
-            break;
         case CmpStmt::ICMP_ULT:
         case CmpStmt::ICMP_SLT:
         case CmpStmt::FCMP_OLT:
         case CmpStmt::FCMP_ULT:
-            if (exact && *lhsAddresses.begin() == *rhsAddresses.begin())
-                result = boolean(false);
-            break;
         case CmpStmt::ICMP_ULE:
         case CmpStmt::ICMP_SLE:
         case CmpStmt::FCMP_OLE:
         case CmpStmt::FCMP_ULE:
-            if (exact && *lhsAddresses.begin() == *rhsAddresses.begin())
-                result = boolean(true);
+            // Match Original's deliberate lack of pointer-order modelling,
+            // including the same-known-singleton case. Equality is separate.
             break;
         default:
             assert(false && "undefined pointer compare");
@@ -1275,10 +1270,13 @@ void AbstractInterpretation::updateStateOnCmp(const CmpStmt* cmp)
     }
     else
     {
-        if (lhsInterval.isBottom())
-            lhsInterval = AD::Interval::top();
-        if (rhsInterval.isBottom())
-            rhsInterval = AD::Interval::top();
+        // Preserve Original AE's numerical-Top comparison policy here, while
+        // keeping the domain's more precise Boolean operations available.
+        if (lhsInterval.isTop() || rhsInterval.isTop())
+        {
+            updateInterval(cmp->getRes(), AD::Interval::top(), node);
+            return;
+        }
         switch (predicate)
         {
         case CmpStmt::ICMP_EQ:
@@ -1352,50 +1350,27 @@ void AbstractInterpretation::updateStateOnCopy(const CopyStmt* copy)
         if (SVFUtil::isa<SVFIntegerType>(type))
         {
             const AD::Interval value = getInterval(var, node);
-            if (value.isBottom())
-                return value;
+            // Original AE only evaluates zero extension of a numeral; other
+            // inputs (including Bottom) produce numerical Top.
+            if (!value.isSingleton())
+                return AD::Interval::top();
 
             const u32_t bits = type->getByteSize() * 8;
+            if (bits == 64)
+                return value;
             mpz_class modulus = 1;
             mpz_mul_2exp(modulus.get_mpz_t(), modulus.get_mpz_t(), bits);
-            const AD::Rational zero(0);
-            const AD::Rational maximum =
-                AD::Rational::fromRaw(mpq_class(modulus - 1));
-            auto fullRange = [&]()
-            {
-                return AD::Interval::closed(zero, maximum);
-            };
-            if (!value.lower().isFinite() || !value.upper().isFinite() ||
-                    value.lower().isStrict() || value.upper().isStrict() ||
-                    !value.lower().value().isInteger() ||
-                    !value.upper().value().isInteger())
-                return fullRange();
+            if (!value.singletonValue().isInteger())
+                return AD::Interval::closed(
+                           AD::Rational(0),
+                           AD::Rational::fromRaw(mpq_class(modulus - 1)));
 
-            const mpz_class lower =
-                value.lower().value().value().get_num();
-            const mpz_class upper =
-                value.upper().value().value().get_num();
-            if (upper - lower >= modulus)
-                return fullRange();
-
-            mpz_class lowerQuotient;
-            mpz_class upperQuotient;
-            mpz_fdiv_q(lowerQuotient.get_mpz_t(), lower.get_mpz_t(),
+            const mpz_class numeral = value.singletonValue().value().get_num();
+            mpz_class residue;
+            mpz_fdiv_r(residue.get_mpz_t(), numeral.get_mpz_t(),
                        modulus.get_mpz_t());
-            mpz_fdiv_q(upperQuotient.get_mpz_t(), upper.get_mpz_t(),
-                       modulus.get_mpz_t());
-            if (lowerQuotient != upperQuotient)
-                return fullRange();
-
-            mpz_class lowerResidue;
-            mpz_class upperResidue;
-            mpz_fdiv_r(lowerResidue.get_mpz_t(), lower.get_mpz_t(),
-                       modulus.get_mpz_t());
-            mpz_fdiv_r(upperResidue.get_mpz_t(), upper.get_mpz_t(),
-                       modulus.get_mpz_t());
-            return AD::Interval::closed(
-                       AD::Rational::fromRaw(mpq_class(lowerResidue)),
-                       AD::Rational::fromRaw(mpq_class(upperResidue)));
+            return AD::Interval::singleton(
+                       AD::Rational::fromRaw(mpq_class(residue)));
         }
         return AD::Interval::top();
     };
@@ -1499,8 +1474,9 @@ void AbstractInterpretation::updateStateOnCopy(const CopyStmt* copy)
         // Match Original AE's transfer policy: integer-derived addresses do
         // not enter modeled pointer value-flow. AddressSet can express raw
         // addresses, but this interpreter deliberately leaves the address
-        // component empty.
-        updateValue(lhsVar, AD::Interval::bottom(),
+        // component empty. Original's unmaterialized SSA result reads as
+        // numerical Top, which must survive a later store of this value.
+        updateValue(lhsVar, AD::Interval::top(),
                     AD::AddressSet::bottom(), node);
     }
     else if (copy->getCopyKind() == CopyStmt::PTRTOINT)

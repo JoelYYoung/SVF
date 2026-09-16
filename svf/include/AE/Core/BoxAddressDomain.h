@@ -27,6 +27,7 @@
 #include "AE/Core/AbstractDomain.h"
 #include "AE/Core/AddressDomain.h"
 #include "AE/Core/Expression.h"
+#include "AE/Core/InitializationDomain.h"
 #include "AE/Core/NumericalDomain.h"
 
 #include <cstdint>
@@ -134,10 +135,12 @@ private:
 class BoxAddressDomain final : public AbstractDomain
 {
 public:
-    BoxAddressDomain(BoxDomain numerical, MemoryLayout memoryLayout)
+    BoxAddressDomain(BoxDomain numerical, MemoryLayout memoryLayout,
+                     bool trackInitialization = false)
         : numerical_(std::move(numerical)),
           memoryLayout_(std::move(memoryLayout)),
-          addresses_(AddressDomain::top()), lifetimes_(LifetimeDomain::bottom())
+          addresses_(AddressDomain::top()), lifetimes_(LifetimeDomain::bottom()),
+          trackInitialization_(trackInitialization)
     {
     }
 
@@ -187,9 +190,31 @@ public:
         return memoryLayout_;
     }
 
-    /// Restore only facets which are physically absent (semantic Top) from a
-    /// caller frame after a context-insensitive shared callee. Ordinary
-    /// lattice joins keep their total-state semantics.
+    /// AE's legacy value has independently defined numerical/address facets.
+    /// These guards describe facet definedness, not LLVM poison or C lifetime.
+    /// Payload bounds are conditional on the corresponding Initialized case.
+    const InitializationDomain& numericalInitialization() const
+    {
+        return numericalInitialization_;
+    }
+    const InitializationDomain& addressInitialization() const
+    {
+        return addressInitialization_;
+    }
+    Interval interval(Variable variable) const;
+    AddressSet addressSet(Variable variable) const;
+    bool hasValue(Variable variable) const;
+    void setInterval(Variable variable, const Interval& value);
+    void setAddressSet(Variable variable, const AddressSet& value);
+    /// Remove a coordinate from a sparse carrier, including its guards.
+    /// Unlike logical forget, this restores the carrier's initial default.
+    void resetValue(Variable variable);
+    std::vector<Variable> initializedVariables() const;
+    std::vector<Variable> initializedVariablesBefore(Variable upperBound) const;
+
+    /// Restore absent facets from a caller frame after a shared callee.
+    /// With initialization tracking, a defined Top is never treated as absent.
+    /// Untracked clients retain the payload-Top restoration policy.
     void restoreMissingMemoryFrom(const BoxAddressDomain& caller,
                                   Variable content);
     void restoreMissingAddressFrom(const BoxAddressDomain& caller,
@@ -197,14 +222,20 @@ public:
 
     void assignPointer(Variable target, const AddressSet& value)
     {
-        addresses_.assign(target, value);
-        numerical_.forget(target);
+        setAddressSet(target, value);
+        setInterval(target, Interval::bottom());
     }
 
     void assignNumeric(Variable target, const LinearExpression& expression)
     {
         numerical_.assign(target, expression);
-        addresses_.forget(target);
+        if (trackInitialization_)
+        {
+            numericalInitialization_.assign(target, InitializationState::Initialized);
+            setAddressSet(target, AddressSet::bottom());
+        }
+        else
+            addresses_.forget(target);
     }
 
     void assignNumericParallel(const LinearAssignmentList& assignments)
@@ -212,7 +243,13 @@ public:
         numerical_.assignParallel(assignments);
         for (const LinearAssignment& assignment : assignments)
         {
-            addresses_.forget(assignment.target);
+            if (trackInitialization_)
+            {
+                numericalInitialization_.assign(assignment.target, InitializationState::Initialized);
+                setAddressSet(assignment.target, AddressSet::bottom());
+            }
+            else
+                addresses_.forget(assignment.target);
         }
     }
 
@@ -221,25 +258,40 @@ public:
         numerical_.assignParallel(assignments);
         for (const TreeAssignment& assignment : assignments)
         {
-            addresses_.forget(assignment.target);
+            if (trackInitialization_)
+            {
+                numericalInitialization_.assign(assignment.target, InitializationState::Initialized);
+                setAddressSet(assignment.target, AddressSet::bottom());
+            }
+            else
+                addresses_.forget(assignment.target);
         }
     }
 
     void assume(const LinearConstraint& constraint)
     {
+        if (trackInitialization_)
+        {
+            for (const auto& term : constraint.expression().terms())
+            {
+                if (interval(term.first).isBottom())
+                    setInterval(term.first, Interval::top());
+            }
+        }
         numerical_.assume(constraint);
     }
 
     void load(Variable target, Variable pointer)
     {
-        const AddressSet pointees = addresses_.addressSet(pointer);
+        const AddressSet pointees = addressSet(pointer);
         if (pointees.hasUnknownObject() || pointees.isBottom())
         {
-            numerical_.forget(target);
+            setInterval(target, pointees.hasUnknownObject()
+                        ? Interval::top() : Interval::bottom());
             if (pointees.hasUnknownObject())
-                addresses_.forget(target);
+                setAddressSet(target, AddressSet::top());
             else
-                addresses_.assign(target, AddressSet::bottom());
+                setAddressSet(target, AddressSet::bottom());
             return;
         }
 
@@ -251,9 +303,7 @@ public:
                 continue;
             BoxAddressDomain alternative(*this);
             const Variable content = memoryLayout_.contentOf(location);
-            alternative.numerical_.assign(target, LinearExpression(content));
-            alternative.addresses_.assign(
-                target, alternative.addresses_.addressSet(content));
+            alternative.strongStore(target, content);
             if (first)
             {
                 result = std::move(alternative);
@@ -266,8 +316,8 @@ public:
         }
         if (first)
         {
-            numerical_.forget(target);
-            addresses_.forget(target);
+            setInterval(target, Interval::top());
+            setAddressSet(target, AddressSet::top());
         }
         else
         {
@@ -296,7 +346,7 @@ public:
 
     void release(Variable pointer)
     {
-        const AddressSet pointees = addresses_.addressSet(pointer);
+        const AddressSet pointees = addressSet(pointer);
         if (pointees.hasUnknownObject())
         {
             for (const auto& [location, content] : memoryLayout_.cells())
@@ -320,7 +370,8 @@ private:
         const auto* product = other.isDomain<BoxAddressDomain>()
                               ? &static_cast<const BoxAddressDomain&>(other)
                               : nullptr;
-        return product && memoryLayout_ == product->memoryLayout_ &&
+        return product && trackInitialization_ == product->trackInitialization_ &&
+               memoryLayout_ == product->memoryLayout_ &&
                numerical_.config().operationCompatible(
                    product->numerical_.config());
     }
@@ -335,6 +386,11 @@ private:
             *this = product;
             return;
         }
+        if (trackInitialization_)
+        {
+            combineInitialized(product, Combination::Join);
+            return;
+        }
         numerical_.joinWith(product.numerical_);
         addresses_.joinWith(product.addresses_);
         lifetimes_.joinWith(product.lifetimes_);
@@ -343,6 +399,11 @@ private:
     void meetDomain(const AbstractDomain& other) override
     {
         const BoxAddressDomain& product = requireProduct(other);
+        if (trackInitialization_)
+        {
+            combineInitialized(product, Combination::Meet);
+            return;
+        }
         if (product.isTopDomain())
             return;
         if (isTopDomain())
@@ -358,9 +419,16 @@ private:
     void widenDomain(const AbstractDomain& next) override
     {
         const BoxAddressDomain& product = requireProduct(next);
+        if (product.isBottomDomain())
+            return;
         if (isBottomDomain())
         {
             *this = product;
+            return;
+        }
+        if (trackInitialization_)
+        {
+            combineInitialized(product, Combination::Widen);
             return;
         }
         numerical_.widenWith(product.numerical_);
@@ -371,6 +439,11 @@ private:
     void narrowDomain(const AbstractDomain& next) override
     {
         const BoxAddressDomain& product = requireProduct(next);
+        if (trackInitialization_)
+        {
+            combineInitialized(product, Combination::Meet);
+            return;
+        }
         if (isTopDomain())
         {
             *this = product;
@@ -383,7 +456,9 @@ private:
 
     bool isBottomDomain() const override
     {
-        return numerical_.isBottom() || addresses_.isBottom();
+        return numerical_.isBottom() || addresses_.isBottom() ||
+               (trackInitialization_ && (numericalInitialization_.isBottom() ||
+                                         addressInitialization_.isBottom()));
     }
 
     bool isTopDomain() const override
@@ -394,7 +469,9 @@ private:
         // facts impose no release constraint. This is the canonical
         // unconstrained flow state used by dense and sparse AE.
         return numerical_.isTop() && addresses_.isTop() &&
-               lifetimes_.isBottom();
+               lifetimes_.isBottom() &&
+               (!trackInitialization_ || (numericalInitialization_.isTop() &&
+                                          addressInitialization_.isTop()));
     }
 
     bool leqDomain(const AbstractDomain& other) const override
@@ -404,6 +481,8 @@ private:
             return true;
         if (product.isBottomDomain())
             return false;
+        if (trackInitialization_)
+            return initializedSubsetOf(product);
         return numerical_.isSubsetOf(product.numerical_) == CheckResult::True &&
                addresses_.isSubsetOf(product.addresses_) == CheckResult::True &&
                lifetimes_.isSubsetOf(product.lifetimes_) == CheckResult::True;
@@ -413,7 +492,10 @@ private:
     {
         return "numeric=" + numerical_.toString() +
                ", addresses=" + addresses_.toString() +
-               ", lifetimes=" + lifetimes_.toString();
+               ", lifetimes=" + lifetimes_.toString() +
+               (trackInitialization_
+                ? ", numeric-init=" + numericalInitialization_.toString() +
+                ", address-init=" + addressInitialization_.toString() : "");
     }
 
     const BoxAddressDomain& requireProduct(const AbstractDomain& other) const
@@ -424,8 +506,17 @@ private:
 
     void strongStore(Variable content, Variable source)
     {
-        numerical_.assign(content, LinearExpression(source));
-        addresses_.assign(content, addresses_.addressSet(source));
+        const Interval number = interval(source);
+        const AddressSet pointers = addressSet(source);
+        const auto numericGuard = numericalInitialization_.value(source);
+        const auto pointerGuard = addressInitialization_.value(source);
+        setInterval(content, number);
+        setAddressSet(content, pointers);
+        if (trackInitialization_)
+        {
+            numericalInitialization_.assign(content, numericGuard);
+            addressInitialization_.assign(content, pointerGuard);
+        }
     }
 
     void weakStore(Variable content, Variable source)
@@ -439,6 +530,14 @@ private:
     MemoryLayout memoryLayout_;
     AddressDomain addresses_;
     LifetimeDomain lifetimes_;
+    enum class Combination { Join, Meet, Widen };
+    void combineInitialized(const BoxAddressDomain& other, Combination operation);
+    bool initializedSubsetOf(const BoxAddressDomain& other) const;
+    bool trackInitialization_ = false;
+    InitializationDomain numericalInitialization_ =
+        InitializationDomain::uniform(InitializationState::Uninitialized);
+    InitializationDomain addressInitialization_ =
+        InitializationDomain::uniform(InitializationState::Uninitialized);
 };
 
 } // namespace SVF::AbstractDomain

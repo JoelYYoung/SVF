@@ -210,23 +210,14 @@ AD::Interval AbstractInterpretation::getGepByteOffset(const GepStmt* gep)
 AD::AddressSet AbstractInterpretation::getGepObjAddrs(
     const ValVar* pointer, const AD::Interval& offset, const ICFGNode* node)
 {
-    AD::AddressSet bases = getAddressSet(pointer, node);
+    const AD::AddressSet bases = getAddressSet(pointer, node);
     if (offset.isBottom())
         return AD::AddressSet::bottom();
 
-    if (bases.isBottom() && pointer)
-    {
-        for (NodeID objectId :
-                preAnalysis->getPointerAnalysis()->getPts(pointer->getId()))
-        {
-            const auto* object =
-                SVFUtil::dyn_cast<ObjVar>(svfir->getGNode(objectId));
-            const BaseObjVar* base = object
-                                     ? svfir->getBaseObject(object->getId()) : nullptr;
-            if (object && base && !base->isBlackHoleObj())
-                bases.insert(locationOf(object));
-        }
-    }
+    // Empty is AE's no-target policy, not an unknown pointer. Flow-insensitive
+    // points-to information must not resurrect targets killed by a later write.
+    if (bases.isBottom())
+        return AD::AddressSet::bottom();
 
     AD::AddressSet result = bases.hasUnknownObject()
                             ? AD::AddressSet::objectTop()
@@ -327,53 +318,6 @@ u32_t AbstractInterpretation::getAllocaInstByteSize(const AddrStmt* address)
     return static_cast<u32_t>(result);
 }
 
-static AD::ConstraintKind negatePredicate(AD::ConstraintKind kind)
-{
-    switch (kind)
-    {
-    case AD::ConstraintKind::Equal:
-        return AD::ConstraintKind::NotEqual;
-    case AD::ConstraintKind::NotEqual:
-        return AD::ConstraintKind::Equal;
-    case AD::ConstraintKind::LessThan:
-        return AD::ConstraintKind::GreaterEqual;
-    case AD::ConstraintKind::LessEqual:
-        return AD::ConstraintKind::GreaterThan;
-    case AD::ConstraintKind::GreaterThan:
-        return AD::ConstraintKind::LessEqual;
-    case AD::ConstraintKind::GreaterEqual:
-        return AD::ConstraintKind::LessThan;
-    }
-    return kind;
-}
-
-static bool constraintKind(u32_t predicate, AD::ConstraintKind& kind)
-{
-    switch (predicate)
-    {
-    case CmpStmt::ICMP_EQ:
-        kind = AD::ConstraintKind::Equal;
-        return true;
-    case CmpStmt::ICMP_NE:
-        kind = AD::ConstraintKind::NotEqual;
-        return true;
-    case CmpStmt::ICMP_SLT:
-        kind = AD::ConstraintKind::LessThan;
-        return true;
-    case CmpStmt::ICMP_SLE:
-        kind = AD::ConstraintKind::LessEqual;
-        return true;
-    case CmpStmt::ICMP_SGT:
-        kind = AD::ConstraintKind::GreaterThan;
-        return true;
-    case CmpStmt::ICMP_SGE:
-        kind = AD::ConstraintKind::GreaterEqual;
-        return true;
-    default:
-        return false;
-    }
-}
-
 const AbstractDomain::AbstractDomain& AbstractInterpretation::
 getAbstractState(const ICFGNode* node) const
 {
@@ -398,13 +342,13 @@ const ObjVar* AbstractInterpretation::objectAt(AD::Location location) const
 AbstractInterpretation::State AbstractInterpretation::topState()
 const
 {
-    return State(AD::BoxDomain::top(), adapter_.memoryLayout());
+    return State(AD::BoxDomain::top(), adapter_.memoryLayout(), true);
 }
 
 AbstractInterpretation::State AbstractInterpretation::
 bottomState() const
 {
-    return State(AD::BoxDomain::bottom(), adapter_.memoryLayout());
+    return State(AD::BoxDomain::bottom(), adapter_.memoryLayout(), true);
 }
 
 AbstractInterpretation::State& AbstractInterpretation::
@@ -453,18 +397,7 @@ void AbstractInterpretation::assignInterval(State& denseState,
         AD::Variable variable,
         const AD::Interval& interval)
 {
-    // A singleton is an exact affine assignment.  Committing it directly
-    // avoids encoding the same fact as two inequalities and running the
-    // generic constraint-propagation fixpoint.  Constant-heavy global
-    // initializers exercise this path once per aggregate element.
-    if (interval.isSingleton())
-    {
-        denseState.numerical().assign(
-                      variable, AD::LinearExpression(interval.singletonValue()));
-        return;
-    }
-    denseState.numerical().forget(variable);
-    constrainInterval(denseState, variable, interval);
+    denseState.setInterval(variable, interval);
 }
 
 void AbstractInterpretation::constrainInterval(
@@ -472,6 +405,11 @@ void AbstractInterpretation::constrainInterval(
 {
     if (interval.isBottom())
         return;
+
+    // Constraints refine an initialized observation. Keep Top observations
+    // defined even when they need no Box payload slot.
+    if (denseState.interval(variable).isBottom())
+        denseState.setInterval(variable, AD::Interval::top());
 
     AD::LinearConstraintSet constraints;
     AD::LinearExpression expression(variable);
@@ -499,37 +437,34 @@ void AbstractInterpretation::assignValue(State& denseState,
 {
     if (adapter_.isPointer(variable))
     {
-        denseState.numerical().forget(variable);
-        denseState.addresses().assign(variable, addresses);
+        // Pointer-typed unknown SSA values may carry numerical Top in AE.
+        // Preserve it when the value is subsequently stored in an object.
+        assignInterval(denseState, variable, interval);
+        denseState.setAddressSet(variable, addresses);
         return;
     }
 
-    if (interval.isBottom())
-        denseState.numerical().forget(variable);
-    else
-        assignInterval(denseState, variable, interval);
-    denseState.addresses().forget(variable);
+    assignInterval(denseState, variable, interval);
+    denseState.setAddressSet(variable, AD::AddressSet::bottom());
 }
 
 void AbstractInterpretation::assignMemoryValue(
     State& denseState, AD::Variable content,
     const AD::Interval& interval, const AD::AddressSet& addresses)
 {
-    if (interval.isBottom())
-        denseState.numerical().forget(content);
-    else
-        assignInterval(denseState, content, interval);
-    if (addresses.isBottom())
-        denseState.addresses().forget(content);
-    else if (addresses.isTop())
-    {
-        // AE deliberately ignores invalid/raw pointer value-flow. Preserve
-        // every modeled object without materializing the sparse full-Top
-        // default as a separate definedness component.
-        denseState.addresses().assign(content, AD::AddressSet::objectTop());
-    }
-    else
-        denseState.addresses().assign(content, addresses);
+    assignInterval(denseState, content, interval);
+    denseState.setAddressSet(content, addresses);
+}
+
+AD::Variable AbstractInterpretation::memoryVariable(
+    const ObjVar& object, const State& denseState) const
+{
+    // Original's getIDFromAddr redirects freed-object accesses to its
+    // BlackHole memory cell. This is an interpreter policy, not Address Top.
+    if (denseState.lifetimes().mayBeFreed(adapter_.location(object)))
+        return adapter_.contentVariable(*SVFUtil::cast<ObjVar>(
+                                            svfir->getGNode(svfir->getBlackHoleNode())));
+    return adapter_.contentVariable(object);
 }
 
 void AbstractInterpretation::materializeValue(State&, const ValVar*,
@@ -540,8 +475,7 @@ void AbstractInterpretation::materializeValue(State&, const ValVar*,
 void AbstractInterpretation::forgetValue(State& denseState,
         AD::Variable variable) const
 {
-    denseState.numerical().forget(variable);
-    denseState.addresses().forget(variable);
+    denseState.resetValue(variable);
 }
 
 AD::Interval AbstractInterpretation::getInterval(const ValVar* var,
@@ -550,22 +484,25 @@ AD::Interval AbstractInterpretation::getInterval(const ValVar* var,
     AD::Interval constant;
     if (constantInterval(var, constant))
         return constant;
-    if (var->isPointer())
-        return AD::Interval::bottom();
+    // SVFIR also uses its canonical unknown pointer as the numeric source of
+    // nondeterministic external-input stores (STORE_TOP annotations).
+    if (var->getId() == svfir->getBlkPtr() ||
+            SVFUtil::isa<BlackHoleValVar>(var))
+        return AD::Interval::top();
     if (!adapter_.contains(*var))
         return AD::Interval::top();
 
     const State& denseState = ensureState(node);
     const AD::Variable variable = adapter_.variable(*var);
-    return denseState.numerical().bound(variable);
+    return denseState.interval(variable);
 }
 
 AD::Interval AbstractInterpretation::getInterval(const ObjVar* var,
         const ICFGNode* node)
 {
     const State& denseState = ensureState(node);
-    const AD::Variable content = adapter_.contentVariable(*var);
-    return denseState.numerical().bound(content);
+    const AD::Variable content = memoryVariable(*var, denseState);
+    return denseState.interval(content);
 }
 
 AD::Interval AbstractInterpretation::getInterval(const SVFVar* var,
@@ -595,23 +532,15 @@ AD::AddressSet AbstractInterpretation::getAddressSet(const ValVar* var,
         return AD::AddressSet::bottom();
     const State& denseState = ensureState(node);
     const AD::Variable variable = adapter_.variable(*var);
-    return denseState.addresses().addressSet(variable);
+    return denseState.addressSet(variable);
 }
 
 AD::AddressSet AbstractInterpretation::getAddressSet(const ObjVar* var,
         const ICFGNode* node)
 {
     const State& denseState = ensureState(node);
-    const AD::Variable content = adapter_.contentVariable(*var);
-    const AD::AddressSet addresses =
-        denseState.addresses().addressSet(content);
-    // Original AE reads an unmaterialized memory payload as an uninitialized
-    // empty address value. Genuine unknown pointer stores are kept explicit as
-    // object-top by assignMemoryValue(), so this policy no longer depends on
-    // allocation status in LifetimeDomain.
-    if (addresses.isTop())
-        return AD::AddressSet::bottom();
-    return addresses;
+    const AD::Variable content = memoryVariable(*var, denseState);
+    return denseState.addressSet(content);
 }
 
 AD::AddressSet AbstractInterpretation::getAddressSet(const SVFVar* var,
@@ -639,14 +568,10 @@ bool AbstractInterpretation::hasAbsValue(const ObjVar* var,
     const auto stateIterator = stateTrace_.find(node);
     if (stateIterator == stateTrace_.end())
         return false;
-    // Top is the semantic default and has no physical slot. Treat this query
-    // as a materialization test so sparse pulls do not mistake an absent
-    // object for a real incoming definition. Inspect both facets: aggregate
-    // and field ObjVars may hold a pointer even when ObjVar::isPointer() does
-    // not expose the stored value's effective type.
+    // Defined Top is a real incoming definition even without a payload slot.
+    // Inspect both guards because aggregate cells can carry either facet.
     const AD::Variable content = adapter_.contentVariable(*var);
-    return !stateIterator->second.numerical().bound(content).isTop() ||
-           !stateIterator->second.addresses().addressSet(content).isTop();
+    return stateIterator->second.hasValue(content);
 }
 
 bool AbstractInterpretation::hasAbsValue(const SVFVar* var,
@@ -674,8 +599,9 @@ void AbstractInterpretation::updateValue(const ObjVar* var,
         const AD::AddressSet& addresses,
         const ICFGNode* node)
 {
-    assignMemoryValue(ensureState(node), adapter_.contentVariable(*var),
-                      interval, addresses);
+    State& denseState = ensureState(node);
+    assignMemoryValue(denseState, memoryVariable(*var, denseState), interval,
+                      addresses);
 }
 
 AD::Interval AbstractInterpretation::getMemoryInterval(
@@ -778,12 +704,8 @@ void AbstractInterpretation::loadValue(const ValVar* pointer,
     addresses = AD::AddressSet::bottom();
     for (AD::Location location : pointees.locations())
     {
-        if (denseState.lifetimes().mayBeFreed(location))
-        {
-            interval.joinWith(AD::Interval::top());
-            addresses.joinWith(AD::AddressSet::top());
-            continue;
-        }
+        // getInterval/getAddressSet implement Original's freed-cell routing;
+        // lifetime alone must not inject Top into value propagation.
         if (denseState.memoryLayout().contains(location))
         {
             const ObjVar* object = objectAt(location);
@@ -819,12 +741,13 @@ void AbstractInterpretation::storeValue(const ValVar* pointer,
     {
         if (!denseState.memoryLayout().contains(location))
             return;
-        const AD::Variable content =
-            denseState.memoryLayout().contentOf(location);
         const ObjVar* object = objectAt(location);
         if (!object)
             return;
-        if (pointees.isSingleton())
+        const AD::Variable content = memoryVariable(*object, denseState);
+        // Original AE overwrites each enumerated target. This is an
+        // interpreter precision policy, not the domain's weak-store semantics.
+        if (!pointees.hasUnknownObject())
         {
             assignMemoryValue(denseState, content, interval, addresses);
             return;
@@ -878,62 +801,16 @@ void AbstractInterpretation::assumeBranch(const IntraCFGEdge* edge,
         return;
     }
 
-    // The comparison transfer has already abstracted numeric and pointer
-    // predicates to a Boolean interval. Apply that result first so an exact
-    // pointer comparison can make the incompatible branch unreachable.
-    if (const auto* result =
-                SVFUtil::dyn_cast<ValVar>(comparison->getRes()))
-    {
-        if (adapter_.contains(*result))
-        {
-            materializeValue(denseState, result, edge->getSrcNode());
-            denseState.assume(AD::equal(
-                                  AD::LinearExpression(adapter_.variable(*result)),
-                                  AD::LinearExpression(
-                                      AD::Rational(edge->getSuccessorCondValue()))));
-            if (denseState.isBottom())
-                return;
-        }
-    }
-
-    // Pointer relations live in AddressDomain. The Boolean result above is
-    // their complete branch refinement; inventing a numerical relation
-    // between pointer Variables would neither refine addresses nor be sound.
-    if (comparison->getOpVar(0)->getType()->isPointerTy())
+    // Original checks only the Boolean result for feasibility. It neither
+    // refines the comparison's SSA operands nor stores a branch-local Boolean
+    // fact. Memory refinement is handled by collectBranchRefinement instead.
+    AD::Interval result = getInterval(comparison->getRes(), edge->getSrcNode());
+    if (result.isBottom())
         return;
-
-    AD::ConstraintKind kind;
-    if (!constraintKind(comparison->getPredicate(), kind))
-        return;
-    if (edge->getSuccessorCondValue() == 0)
-        kind = negatePredicate(kind);
-
-    auto operand = [&](const SVFVar* variable,
-                       AD::LinearExpression& expression) -> bool
-    {
-        if (const auto* value = SVFUtil::dyn_cast<ValVar>(variable))
-        {
-            AD::Interval constant;
-            if (constantInterval(value, constant) && constant.isSingleton())
-            {
-                expression = AD::LinearExpression(constant.singletonValue());
-                return true;
-            }
-        }
-        const auto* value = SVFUtil::dyn_cast<ValVar>(variable);
-        if (!value || !adapter_.contains(*value))
-            return false;
-        materializeValue(denseState, value, edge->getSrcNode());
-        expression = AD::LinearExpression(adapter_.variable(*value));
-        return true;
-    };
-
-    AD::LinearExpression lhs;
-    AD::LinearExpression rhs;
-    if (!operand(comparison->getOpVar(0), lhs) ||
-            !operand(comparison->getOpVar(1), rhs))
-        return;
-    denseState.assume(AD::LinearConstraint(lhs - rhs, kind));
+    result.meetWith(AD::Interval::singleton(
+                        AD::Rational(edge->getSuccessorCondValue())));
+    if (result.isBottom())
+        denseState = bottomState();
 }
 
 

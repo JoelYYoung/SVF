@@ -42,7 +42,8 @@ enum class DomainKind
     Box,
     Address,
     Lifetime,
-    Product
+    Product,
+    Initialization
 };
 
 const char* toString(CheckResult result);

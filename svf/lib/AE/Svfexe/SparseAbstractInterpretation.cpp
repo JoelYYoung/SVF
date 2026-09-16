@@ -29,6 +29,7 @@
 #include "Util/Options.h"
 
 #include <algorithm>
+#include <iterator>
 #include <optional>
 #include <set>
 
@@ -40,14 +41,22 @@ namespace AD = AbstractDomain;
 namespace
 {
 
-std::set<AD::Variable> nonDefaultVariables(
+std::vector<AD::Variable> nonDefaultVariables(
     const SemiSparseAbstractInterpretation::State& state)
 {
-    std::set<AD::Variable> variables;
-    for (AD::Variable variable : state.numerical().constrainedVariables())
-        variables.insert(variable);
-    for (AD::Variable variable : state.addresses().nonDefaultVariables())
-        variables.insert(variable);
+    // All domain support queries are already sorted and unique. Keep that
+    // order without allocating a tree node for every initialized coordinate.
+    const auto numbers = state.numerical().constrainedVariables();
+    const auto pointers = state.addresses().nonDefaultVariables();
+    std::vector<AD::Variable> payloads;
+    payloads.reserve(numbers.size() + pointers.size());
+    std::set_union(numbers.begin(), numbers.end(), pointers.begin(), pointers.end(),
+                   std::back_inserter(payloads));
+    const auto initialized = state.initializedVariables();
+    std::vector<AD::Variable> variables;
+    variables.reserve(payloads.size() + initialized.size());
+    std::set_union(payloads.begin(), payloads.end(), initialized.begin(), initialized.end(),
+                   std::back_inserter(variables));
     return variables;
 }
 
@@ -62,15 +71,14 @@ SemiSparseAbstractInterpretation::State
 SemiSparseAbstractInterpretation::flowState(bool bottom) const
 {
     return State(bottom ? AD::BoxDomain::bottom() : AD::BoxDomain::top(),
-                 this->adapter_.memoryLayout());
+                 this->adapter_.memoryLayout(), true);
 }
 
 SemiSparseAbstractInterpretation::State&
 SemiSparseAbstractInterpretation::scalarState()
 {
     if (!scalarState_)
-        scalarState_.emplace(AD::BoxDomain::top(),
-                             this->adapter_.memoryLayout());
+        scalarState_.emplace(flowState());
     return *scalarState_;
 }
 
@@ -102,14 +110,15 @@ AD::Interval SemiSparseAbstractInterpretation::getInterval(
                    AD::Rational::fromDouble(floating->getFPValue()));
     if (!value)
         return AD::Interval::top();
-    if (value->isPointer())
-        return AD::Interval::bottom();
+    if (value->getId() == this->svfir->getBlkPtr() ||
+            SVFUtil::isa<BlackHoleValVar>(value))
+        return Base::getInterval(value, node);
     if (!this->adapter_.contains(*value))
         return AD::Interval::top();
 
     const State& scalars = scalarState();
     const AD::Variable variable = this->adapter_.variable(*value);
-    AD::Interval result = scalars.numerical().bound(variable);
+    AD::Interval result = scalars.interval(variable);
     // Conditional-edge refinement is intentionally local to the ICFG state.
     // Read it in addition to the module-wide scalar carrier so transfer
     // functions observe path constraints without copying all SSA values into
@@ -149,7 +158,7 @@ AD::AddressSet SemiSparseAbstractInterpretation::getAddressSet(
         return AD::AddressSet::bottom();
     const State& scalars = scalarState();
     const AD::Variable variable = this->adapter_.variable(*value);
-    return scalars.addresses().addressSet(variable);
+    return scalars.addressSet(variable);
 }
 
 bool SemiSparseAbstractInterpretation::hasAbsValue(
@@ -204,6 +213,8 @@ void SemiSparseAbstractInterpretation::forgetActiveScalarValues(
     for (AD::Variable variable :
             denseState.addresses().nonDefaultVariablesBefore(contentBegin))
         denseState.addresses().forget(variable);
+    for (AD::Variable variable : denseState.initializedVariablesBefore(contentBegin))
+        denseState.resetValue(variable);
 }
 
 void SemiSparseAbstractInterpretation::forgetMemoryValues(
@@ -264,7 +275,7 @@ void SemiSparseAbstractInterpretation::restoreCallerFrameAfterSharedCallee(
         }
         if (!this->adapter_.contains(*actual))
             continue;
-        const AD::AddressSet addresses = caller.addresses().addressSet(
+        const AD::AddressSet addresses = caller.addressSet(
                                              this->adapter_.variable(*actual));
         if (addresses.hasUnknownObject())
         {
@@ -288,13 +299,8 @@ void SemiSparseAbstractInterpretation::restoreCallerFrameAfterSharedCallee(
         else
             denseState.restoreMissingAddressFrom(caller, content);
     };
-    for (AD::Variable content : caller.numerical().constrainedVariables())
+    for (AD::Variable content : nonDefaultVariables(caller))
         restore(content);
-    for (AD::Variable content : caller.addresses().nonDefaultVariables())
-    {
-        if (caller.numerical().bound(content).isTop())
-            restore(content);
-    }
 }
 
 void SemiSparseAbstractInterpretation::applyScalarRefinement(
@@ -307,7 +313,7 @@ void SemiSparseAbstractInterpretation::applyScalarRefinement(
             continue;
         this->constrainInterval(denseState, variable,
                                 checkpoint.numerical().bound(variable));
-        denseState.addresses().forget(variable);
+        denseState.setAddressSet(variable, AD::AddressSet::bottom());
     }
 }
 
@@ -319,13 +325,13 @@ void SemiSparseAbstractInterpretation::materializeValue(
     const AD::Variable variable = this->adapter_.variable(*value);
     if (value->isPointer())
     {
-        denseState.addresses().assign(variable, getAddressSet(value, node));
-        denseState.numerical().forget(variable);
+        denseState.setAddressSet(variable, getAddressSet(value, node));
+        denseState.setInterval(variable, AD::Interval::bottom());
     }
     else
     {
         this->constrainInterval(denseState, variable, getInterval(value, node));
-        denseState.addresses().forget(variable);
+        denseState.setAddressSet(variable, AD::AddressSet::bottom());
     }
 }
 
@@ -397,7 +403,7 @@ bool SemiSparseAbstractInterpretation::mergeStatesFromPredecessors(
         {
             refinement = refinementIterator != refinementTrace_.end()
                          ? refinementIterator->second
-                         : this->topState();
+                         : State(AD::BoxDomain::top(), this->adapter_.memoryLayout());
             if (hasConditional)
                 this->assumeBranch(conditional, *refinement);
             if (refinement->isBottom())
@@ -467,10 +473,9 @@ void SemiSparseAbstractInterpretation::scatterCycleValues(
             continue;
         const AD::Variable variable = this->adapter_.variable(*value);
         updateValue(value,
-                    value->isPointer() ? AD::Interval::bottom()
-                    : cycleState.numerical().bound(variable),
+                    cycleState.interval(variable),
                     value->isPointer()
-                    ? cycleState.addresses().addressSet(variable)
+                    ? cycleState.addressSet(variable)
                     : AD::AddressSet::bottom(),
                     cycle->head()->getICFGNode());
     }
@@ -577,7 +582,24 @@ void FullSparseAbstractInterpretation::recordMemoryDefinition(
                 !this->adapter_.memoryLayout().contains(location))
             return;
         const ObjVar* object = this->objectAt(location);
-        if (!object || Base::hasAbsValue(object, node))
+        if (!object)
+            return;
+        // A freed-target store updated BlackHole's cell, not the original
+        // object named by this MemorySSA edge. Do not invent a definition for
+        // that original object merely because its payload slot is absent.
+        if (this->memoryVariable(*object, this->state(node)) !=
+                this->adapter_.contentVariable(*object))
+        {
+            const auto definitions = memoryDefinitionSupport_.find(node);
+            if (definitions != memoryDefinitionSupport_.end())
+            {
+                definitions->second.erase(this->adapter_.contentVariable(*object));
+                if (definitions->second.empty())
+                    memoryDefinitionSupport_.erase(definitions);
+            }
+            return;
+        }
+        if (Base::hasAbsValue(object, node))
             return;
         memoryDefinitionSupport_[node].insert(
             this->adapter_.memoryLayout().contentOf(location));
@@ -637,6 +659,11 @@ bool FullSparseAbstractInterpretation::mergeStatesFromPredecessors(
     memoryDefinitionSupport_.erase(node);
     if (!Base::mergeStatesFromPredecessors(node))
         return false;
+    // Caller-frame restoration must not create an extra MemorySSA definition
+    // from only one restored facet. Pull these objects from their defining
+    // edges; keep the ordinary ICFG fallback for fields and modeled writes.
+    if (SVFUtil::isa<RetICFGNode>(node))
+        filterPropagatedState(this->ensureState(node));
     // A direct object constraint collected from one incoming branch cannot be
     // applied after another incoming path has joined without that constraint.
     // Inherited constraints below already implement the precise all-preds
@@ -735,8 +762,23 @@ void FullSparseAbstractInterpretation::pullObjectValueFlows(
                         continue;
                     const AD::Variable content =
                         this->adapter_.contentVariable(*object);
-                    if (!Base::hasAbsValue(object, source) &&
-                            !hasMemoryDefinition(source, content))
+                    // Model-side writes have no StoreStmt/SVFG definition.
+                    // Keep their ICFG value, even when both facets are Top.
+                    if (denseMemoryVariables_.count(content))
+                        continue;
+                    const bool hasDefinition = Base::hasAbsValue(object, source) ||
+                                               hasMemoryDefinition(source, content);
+                    // MemorySSA roots a local stack object's initial contents
+                    // at FormalIN, not at its AddrStmt. Decode that initial
+                    // definition using AE's uninitialized-memory policy.
+                    bool initialStackDefinition = false;
+                    if (!hasDefinition && SVFUtil::isa<FormalINSVFGNode>(sourceNode))
+                    {
+                        const BaseObjVar* base = this->svfir->getBaseObject(fieldId);
+                        initialStackDefinition = base->isStack() &&
+                                                 base->getFunction() == source->getFun();
+                    }
+                    if (!hasDefinition && !initialStackDefinition)
                         continue;
 
                     AD::Interval interval = AD::Interval::bottom();
@@ -747,9 +789,12 @@ void FullSparseAbstractInterpretation::pullObjectValueFlows(
                         addresses = Base::getAddressSet(object, node);
                     }
                     interval.joinWith(Base::getInterval(object, source));
-                    addresses.joinWith(Base::getAddressSet(object, source));
+                    addresses.joinWith(hasDefinition
+                                       ? Base::getAddressSet(object, source)
+                                       : AD::AddressSet::bottom());
                     Base::updateValue(object, interval, addresses, node);
-                    if (!Base::hasAbsValue(object, node))
+                    if (!Base::hasAbsValue(object, node) &&
+                            this->memoryVariable(*object, this->state(node)) == content)
                         memoryDefinitionSupport_[node].insert(content);
                     pulledObjects.set(fieldId);
                 }
