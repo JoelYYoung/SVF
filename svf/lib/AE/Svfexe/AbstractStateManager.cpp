@@ -98,8 +98,14 @@ AD::Interval AbstractInterpretation::getGepElementIndex(const GepStmt* gep)
         else
         {
             const AD::Interval value = getInterval(variable, node);
-            lower = finiteEndpoint(value.lower(), 0);
-            upper = finiteEndpoint(value.upper(), Options::MaxFieldLimit());
+            // Original treats an uninitialized index as zero, not as an
+            // unknown range spanning every field. Keep this AE policy apart
+            // from the domain's Top/Bottom and finite-endpoint semantics.
+            if (!value.isBottom())
+            {
+                lower = finiteEndpoint(value.lower(), 0);
+                upper = finiteEndpoint(value.upper(), Options::MaxFieldLimit());
+            }
         }
 
         if (SVFUtil::isa<SVFPointerType>(type))
@@ -434,17 +440,11 @@ void AbstractInterpretation::assignValue(State& denseState,
         const AD::Interval& interval,
         const AD::AddressSet& addresses)
 {
-    if (adapter_.isPointer(variable))
-    {
-        // Pointer-typed unknown SSA values may carry numerical Top in AE.
-        // Preserve it when the value is subsequently stored in an object.
-        assignInterval(denseState, variable, interval);
-        denseState.setAddressSet(variable, addresses);
-        return;
-    }
-
+    // SVF's synthetic extractvalue/extractelement edges can give even an
+    // integer-typed SSA value an address facet. Preserve both facets through
+    // assignment and a later store, just as for pointer-typed unknown values.
     assignInterval(denseState, variable, interval);
-    denseState.setAddressSet(variable, AD::AddressSet::bottom());
+    denseState.setAddressSet(variable, addresses);
 }
 
 void AbstractInterpretation::assignMemoryValue(
@@ -493,6 +493,11 @@ AD::Interval AbstractInterpretation::getInterval(const ValVar* var,
 
     const State& denseState = ensureState(node);
     const AD::Variable variable = adapter_.variable(*var);
+    // Global initializers can refer to a function/global before its AddrStmt.
+    // This is an unresolved symbolic value, not an uninitialized memory load.
+    if ((SVFUtil::isa<FunValVar>(var) || SVFUtil::isa<GlobalValVar>(var)) &&
+            !denseState.hasValue(variable))
+        return AD::Interval::top();
     return denseState.interval(variable);
 }
 
@@ -517,16 +522,12 @@ AD::Interval AbstractInterpretation::getInterval(const SVFVar* var,
 AD::AddressSet AbstractInterpretation::getAddressSet(const ValVar* var,
         const ICFGNode* node)
 {
-    if (!var->isPointer())
-        return AD::AddressSet::bottom();
     if (var->getId() == IRGraph::NullPtr ||
             SVFUtil::isa<ConstNullPtrValVar>(var))
         return AD::AddressSet::singleton(AD::Location::null());
     if (var->getId() == svfir->getBlkPtr() ||
             SVFUtil::isa<BlackHoleValVar>(var))
         return blackHoleAddressSet();
-    if (SVFUtil::isa<DummyValVar>(var))
-        return AD::AddressSet::bottom();
     if (!adapter_.contains(*var))
         return AD::AddressSet::bottom();
     const State& denseState = ensureState(node);

@@ -115,8 +115,20 @@ AD::Interval SemiSparseAbstractInterpretation::getInterval(
     if (!this->adapter_.contains(*value))
         return AD::Interval::top();
 
+    // Synthetic copy helpers have no def-site. Original's sparse reader
+    // resolves them at the global node, where their numerical value is Top,
+    // rather than reading the value written at the generated load's node.
+    // Keep this policy for subsequent generated stores as well as queries.
+    if (SVFUtil::isa<DummyValVar>(value))
+        return AD::Interval::top();
+
     const State& scalars = scalarState();
     const AD::Variable variable = this->adapter_.variable(*value);
+    // A forward reference in a global initializer has not executed its
+    // AddrStmt yet. Match the unresolved-symbol policy of the dense reader.
+    if ((SVFUtil::isa<FunValVar>(value) || SVFUtil::isa<GlobalValVar>(value)) &&
+            !scalars.hasValue(variable))
+        return AD::Interval::top();
     AD::Interval result = scalars.interval(variable);
     // Conditional-edge refinement is intentionally local to the ICFG state.
     // Read it in addition to the module-wide scalar carrier so transfer
@@ -143,8 +155,6 @@ AD::AddressSet SemiSparseAbstractInterpretation::getAddressSet(
     (void)node;
     if (!value)
         return AD::AddressSet::top();
-    if (!value->isPointer())
-        return AD::AddressSet::bottom();
     if (value->getId() == IRGraph::NullPtr ||
             SVFUtil::isa<ConstNullPtrValVar>(value))
         return AD::AddressSet::singleton(AD::Location::null());
@@ -473,9 +483,7 @@ void SemiSparseAbstractInterpretation::scatterCycleValues(
         const AD::Variable variable = this->adapter_.variable(*value);
         updateValue(value,
                     cycleState.interval(variable),
-                    value->isPointer()
-                    ? cycleState.addressSet(variable)
-                    : AD::AddressSet::bottom(),
+                    cycleState.addressSet(variable),
                     cycle->head()->getICFGNode());
     }
 }

@@ -91,10 +91,12 @@ void AbstractInterpretation::initializeObjectValue(
     denseState.allocate(adapter_.location(*object));
 
     const BaseObjVar* base = PAG::getPAG()->getBaseObject(object->getId());
-    if (base->isStack() || base->isHeap())
+    if (base->isStack())
     {
         // Fresh payload facets are uninitialized, independently of their
         // physical Box/Address slots (whose missing payload still means Top).
+        // A heap allocation site can also represent earlier live allocations;
+        // revisiting it must not erase those objects' summarized contents.
         denseState.resetValue(adapter_.contentVariable(*object));
         for (NodeID fieldId : svfir->getAllFieldsObjVars(base->getId()))
         {
