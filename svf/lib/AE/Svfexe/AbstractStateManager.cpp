@@ -43,8 +43,7 @@ bool constantInterval(const ValVar* value, AD::Interval& interval)
     }
     if (const auto* floating = SVFUtil::dyn_cast<ConstFPValVar>(value))
     {
-        interval = AD::Interval::singleton(
-                       AD::Rational::fromDouble(floating->getFPValue()));
+        interval = SVFIRAdapter::floatingConstant(floating->getFPValue());
         return true;
     }
     return false;

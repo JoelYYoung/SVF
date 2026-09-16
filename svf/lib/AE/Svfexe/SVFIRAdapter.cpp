@@ -29,6 +29,7 @@
 #include "Util/Options.h"
 #include "Util/SVFUtil.h"
 
+#include <cmath>
 #include <limits>
 #include <stdexcept>
 #include <string>
@@ -120,6 +121,14 @@ Location nextLocation(std::uint64_t& next)
 }
 
 } // namespace
+
+AbstractDomain::Interval SVFIRAdapter::floatingConstant(double value)
+{
+    if (!std::isfinite(value))
+        return AbstractDomain::Interval::top();
+    return AbstractDomain::Interval::singleton(
+               AbstractDomain::Rational::fromDouble(value));
+}
 
 SVFIRAdapter::SVFIRAdapter(const SVFIR& svfir)
 {

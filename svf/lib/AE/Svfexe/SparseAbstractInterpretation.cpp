@@ -106,8 +106,7 @@ AD::Interval SemiSparseAbstractInterpretation::getInterval(
     if (const auto* integer = SVFUtil::dyn_cast<ConstIntValVar>(value))
         return AD::Interval::singleton(AD::Rational(integer->getSExtValue()));
     if (const auto* floating = SVFUtil::dyn_cast<ConstFPValVar>(value))
-        return AD::Interval::singleton(
-                   AD::Rational::fromDouble(floating->getFPValue()));
+        return SVFIRAdapter::floatingConstant(floating->getFPValue());
     if (!value)
         return AD::Interval::top();
     if (value->getId() == this->svfir->getBlkPtr() ||
