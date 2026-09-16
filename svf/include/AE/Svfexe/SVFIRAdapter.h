@@ -45,6 +45,10 @@ class SVFIRAdapter
 public:
     explicit SVFIRAdapter(const SVFIR& svfir);
 
+    /// SVFIR's double projection can overflow for extended FP constants.
+    /// Such values have no rational singleton; retain an unconstrained number.
+    static AbstractDomain::Interval floatingConstant(double value);
+
     bool contains(const ValVar& value) const;
     bool contains(const ObjVar& object) const;
 
