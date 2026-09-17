@@ -37,6 +37,19 @@ static bool mayBeInitialized(InitializationState state)
             static_cast<unsigned>(InitializationState::Initialized)) != 0;
 }
 
+static bool mayBeUninitialized(InitializationState state)
+{
+    return (static_cast<unsigned>(state) &
+            static_cast<unsigned>(InitializationState::Uninitialized)) != 0;
+}
+
+static InitializationState joinInitialization(InitializationState lhs,
+                                              InitializationState rhs)
+{
+    return static_cast<InitializationState>(static_cast<unsigned>(lhs) |
+                                            static_cast<unsigned>(rhs));
+}
+
 static std::vector<Variable> mergedVariables(
     const std::vector<Variable>& lhs, const std::vector<Variable>& rhs)
 {
@@ -53,6 +66,12 @@ Interval BoxAddressDomain::interval(Variable variable) const
                              !mayBeInitialized(numericalInitialization_.value(variable))))
         return Interval::bottom();
     return numerical_.bound(variable);
+}
+
+bool BoxAddressDomain::numericalMayBeUninitialized(Variable variable) const
+{
+    return trackInitialization_ &&
+           mayBeUninitialized(numericalInitialization_.value(variable));
 }
 
 AddressSet BoxAddressDomain::addressSet(Variable variable) const
@@ -102,6 +121,62 @@ void BoxAddressDomain::setAddressSet(Variable variable, const AddressSet& value)
         addressInitialization_.assign(variable, value.isBottom()
                                       ? InitializationState::Uninitialized
                                       : InitializationState::Initialized);
+}
+
+void BoxAddressDomain::assignValueFrom(Variable target,
+                                       const BoxAddressDomain& sourceState,
+                                       Variable source)
+{
+    if (trackInitialization_ != sourceState.trackInitialization_)
+        throw std::invalid_argument("incompatible initialization tracking");
+
+    const Interval number = sourceState.interval(source);
+    const AddressSet pointers = sourceState.addressSet(source);
+    InitializationState numericGuard = InitializationState::Bottom;
+    InitializationState pointerGuard = InitializationState::Bottom;
+    if (trackInitialization_)
+    {
+        numericGuard = sourceState.numericalInitialization_.value(source);
+        pointerGuard = sourceState.addressInitialization_.value(source);
+    }
+    setInterval(target, number);
+    setAddressSet(target, pointers);
+    if (trackInitialization_)
+    {
+        numericalInitialization_.assign(target, numericGuard);
+        addressInitialization_.assign(target, pointerGuard);
+    }
+}
+
+void BoxAddressDomain::joinValueFrom(Variable target,
+                                     const BoxAddressDomain& sourceState,
+                                     Variable source)
+{
+    if (trackInitialization_ != sourceState.trackInitialization_)
+        throw std::invalid_argument("incompatible initialization tracking");
+
+    Interval number = interval(target);
+    AddressSet pointers = addressSet(target);
+    InitializationState numericGuard = InitializationState::Bottom;
+    InitializationState pointerGuard = InitializationState::Bottom;
+    if (trackInitialization_)
+    {
+        numericGuard = joinInitialization(
+            numericalInitialization_.value(target),
+            sourceState.numericalInitialization_.value(source));
+        pointerGuard = joinInitialization(
+            addressInitialization_.value(target),
+            sourceState.addressInitialization_.value(source));
+    }
+    number.joinWith(sourceState.interval(source));
+    pointers.joinWith(sourceState.addressSet(source));
+    setInterval(target, number);
+    setAddressSet(target, pointers);
+    if (trackInitialization_)
+    {
+        numericalInitialization_.assign(target, numericGuard);
+        addressInitialization_.assign(target, pointerGuard);
+    }
 }
 
 void BoxAddressDomain::resetValue(Variable variable)

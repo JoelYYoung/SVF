@@ -720,7 +720,7 @@ void FullSparseAbstractInterpretation::pullObjectValueFlows(
     const ICFGNode* node)
 {
     NodeBS denseLocalObjects;
-    const State& destination = this->state(node);
+    State& destination = this->ensureState(node);
     for (AD::Variable variable : nonDefaultVariables(destination))
     {
         const ObjVar* object = this->adapter_.contentObject(variable);
@@ -788,18 +788,17 @@ void FullSparseAbstractInterpretation::pullObjectValueFlows(
                     if (!hasDefinition && !initialStackDefinition)
                         continue;
 
-                    AD::Interval interval = AD::Interval::bottom();
-                    AD::AddressSet addresses = AD::AddressSet::bottom();
+                    const State& sourceState = this->state(source);
+                    const AD::Variable destinationContent =
+                        this->memoryVariable(*object, destination);
+                    const AD::Variable sourceContent =
+                        this->memoryVariable(*object, sourceState);
                     if (pulledObjects.test(fieldId))
-                    {
-                        interval = Base::getInterval(object, node);
-                        addresses = Base::getAddressSet(object, node);
-                    }
-                    interval.joinWith(Base::getInterval(object, source));
-                    addresses.joinWith(hasDefinition
-                                       ? Base::getAddressSet(object, source)
-                                       : AD::AddressSet::bottom());
-                    Base::updateValue(object, interval, addresses, node);
+                        destination.joinValueFrom(destinationContent,
+                                                  sourceState, sourceContent);
+                    else
+                        destination.assignValueFrom(destinationContent,
+                                                    sourceState, sourceContent);
                     if (!Base::hasAbsValue(object, node) &&
                             this->memoryVariable(*object, this->state(node)) == content)
                         memoryDefinitionSupport_[node].insert(content);

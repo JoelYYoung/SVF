@@ -201,11 +201,19 @@ public:
     {
         return addressInitialization_;
     }
+    /// Whether the numerical facet includes an uninitialized alternative.
+    bool numericalMayBeUninitialized(Variable variable) const;
     Interval interval(Variable variable) const;
     AddressSet addressSet(Variable variable) const;
     bool hasValue(Variable variable) const;
     void setInterval(Variable variable, const Interval& value);
     void setAddressSet(Variable variable, const AddressSet& value);
+    /// Copy or join one reduced-product coordinate without copying a state.
+    /// Initialization guards are transferred with their conditional payloads.
+    void assignValueFrom(Variable target, const BoxAddressDomain& sourceState,
+                         Variable source);
+    void joinValueFrom(Variable target, const BoxAddressDomain& sourceState,
+                       Variable source);
     /// Remove a coordinate from a sparse carrier, including its guards.
     /// Unlike logical forget, this restores the carrier's initial default.
     void resetValue(Variable variable);
@@ -506,17 +514,7 @@ private:
 
     void strongStore(Variable content, Variable source)
     {
-        const Interval number = interval(source);
-        const AddressSet pointers = addressSet(source);
-        const auto numericGuard = numericalInitialization_.value(source);
-        const auto pointerGuard = addressInitialization_.value(source);
-        setInterval(content, number);
-        setAddressSet(content, pointers);
-        if (trackInitialization_)
-        {
-            numericalInitialization_.assign(content, numericGuard);
-            addressInitialization_.assign(content, pointerGuard);
-        }
+        assignValueFrom(content, *this, source);
     }
 
     void weakStore(Variable content, Variable source)
