@@ -203,6 +203,9 @@ public:
     }
     /// Whether the numerical facet includes an uninitialized alternative.
     bool numericalMayBeUninitialized(Variable variable) const;
+    /// Preserve an uninitialized alternative alongside the current numerical
+    /// payload. The payload remains conditional on the initialized case.
+    void addUninitializedNumericalAlternative(Variable variable);
     Interval interval(Variable variable) const;
     AddressSet addressSet(Variable variable) const;
     bool hasValue(Variable variable) const;

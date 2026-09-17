@@ -144,6 +144,11 @@ public:
     /// reads through the SVFG.
     virtual AbstractDomain::Interval getInterval(const ValVar* var,
             const ICFGNode* node);
+    /// Return the numerical payload conditional on the value being
+    /// initialized. Ordinary reads use getInterval(), which applies AE's
+    /// uninitialized-read policy.
+    virtual AbstractDomain::Interval getDefinedInterval(
+        const ValVar* var, const ICFGNode* node);
     virtual AbstractDomain::Interval getInterval(const ObjVar* var,
             const ICFGNode* node);
     virtual AbstractDomain::Interval getInterval(const SVFVar* var,
@@ -176,6 +181,8 @@ public:
                              const AbstractDomain::Interval& interval,
                              const AbstractDomain::AddressSet& addresses,
                              const ICFGNode* node);
+    virtual void addUninitializedNumericalAlternative(
+        const ValVar* var, const ICFGNode* node);
 
     void updateInterval(const SVFVar* var,
                         const AbstractDomain::Interval& interval,
@@ -231,6 +238,7 @@ public:
     virtual void loadValue(const ValVar* pointer,
                            AbstractDomain::Interval& interval,
                            AbstractDomain::AddressSet& addresses,
+                           bool& numericalMayBeUninitialized,
                            const ICFGNode* node);
     virtual void storeValue(const ValVar* pointer,
                             const AbstractDomain::Interval& interval,

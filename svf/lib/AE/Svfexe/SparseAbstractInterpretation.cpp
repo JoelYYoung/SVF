@@ -103,6 +103,18 @@ void SemiSparseAbstractInterpretation::handleGlobalNode()
 AD::Interval SemiSparseAbstractInterpretation::getInterval(
     const ValVar* value, const ICFGNode* node)
 {
+    const AD::Interval result = getDefinedInterval(value, node);
+    if (!value || !this->adapter_.contains(*value))
+        return result;
+    const State& scalars = scalarState();
+    return scalars.numericalMayBeUninitialized(
+               this->adapter_.variable(*value))
+           ? AD::Interval::top() : result;
+}
+
+AD::Interval SemiSparseAbstractInterpretation::getDefinedInterval(
+    const ValVar* value, const ICFGNode* node)
+{
     if (const auto* integer = SVFUtil::dyn_cast<ConstIntValVar>(value))
         return AD::Interval::singleton(AD::Rational(integer->getSExtValue()));
     if (const auto* floating = SVFUtil::dyn_cast<ConstFPValVar>(value))
@@ -111,7 +123,7 @@ AD::Interval SemiSparseAbstractInterpretation::getInterval(
         return AD::Interval::top();
     if (value->getId() == this->svfir->getBlkPtr() ||
             SVFUtil::isa<BlackHoleValVar>(value))
-        return Base::getInterval(value, node);
+        return Base::getDefinedInterval(value, node);
     if (!this->adapter_.contains(*value))
         return AD::Interval::top();
 
@@ -190,6 +202,15 @@ void SemiSparseAbstractInterpretation::updateValue(
         this->assignValue(scalarState(), this->adapter_.variable(*value),
                           interval, addresses);
     }
+}
+
+void SemiSparseAbstractInterpretation::addUninitializedNumericalAlternative(
+    const ValVar* value, const ICFGNode* node)
+{
+    (void)node;
+    if (value && this->adapter_.contains(*value))
+        scalarState().addUninitializedNumericalAlternative(
+            this->adapter_.variable(*value));
 }
 
 void SemiSparseAbstractInterpretation::copyAbstractState(
@@ -346,9 +367,11 @@ void SemiSparseAbstractInterpretation::materializeValue(
 
 void SemiSparseAbstractInterpretation::loadValue(
     const ValVar* pointer, AD::Interval& interval, AD::AddressSet& addresses,
+    bool& numericalMayBeUninitialized,
     const ICFGNode* node)
 {
-    Base::loadValue(pointer, interval, addresses, node);
+    Base::loadValue(pointer, interval, addresses,
+                    numericalMayBeUninitialized, node);
     if (pointer && this->adapter_.contains(*pointer))
         this->forgetValue(this->ensureState(node),
                           this->adapter_.variable(*pointer));

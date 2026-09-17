@@ -480,6 +480,17 @@ void AbstractInterpretation::forgetValue(State& denseState,
 AD::Interval AbstractInterpretation::getInterval(const ValVar* var,
         const ICFGNode* node)
 {
+    const AD::Interval result = getDefinedInterval(var, node);
+    if (!var || !adapter_.contains(*var))
+        return result;
+    const State& denseState = ensureState(node);
+    return denseState.numericalMayBeUninitialized(adapter_.variable(*var))
+           ? AD::Interval::top() : result;
+}
+
+AD::Interval AbstractInterpretation::getDefinedInterval(const ValVar* var,
+        const ICFGNode* node)
+{
     AD::Interval constant;
     if (constantInterval(var, constant))
         return constant;
@@ -594,6 +605,14 @@ void AbstractInterpretation::updateValue(const ValVar* var,
                     addresses);
 }
 
+void AbstractInterpretation::addUninitializedNumericalAlternative(
+    const ValVar* var, const ICFGNode* node)
+{
+    if (var && adapter_.contains(*var))
+        ensureState(node).addUninitializedNumericalAlternative(
+            adapter_.variable(*var));
+}
+
 void AbstractInterpretation::updateValue(const ObjVar* var,
         const AD::Interval& interval,
         const AD::AddressSet& addresses,
@@ -666,8 +685,10 @@ void AbstractInterpretation::updateValue(const SVFVar* var,
 void AbstractInterpretation::loadValue(const ValVar* pointer,
                                        AD::Interval& interval,
                                        AD::AddressSet& addresses,
+                                       bool& numericalMayBeUninitialized,
                                        const ICFGNode* node)
 {
+    numericalMayBeUninitialized = false;
     if (!adapter_.contains(*pointer))
     {
         interval = AD::Interval::bottom();
@@ -702,7 +723,6 @@ void AbstractInterpretation::loadValue(const ValVar* pointer,
 
     interval = AD::Interval::bottom();
     addresses = AD::AddressSet::bottom();
-    bool mayLoadUninitializedNumber = false;
     for (AD::Location location : pointees.locations())
     {
         // getInterval/getAddressSet implement Original's freed-cell routing;
@@ -713,17 +733,12 @@ void AbstractInterpretation::loadValue(const ValVar* pointer,
             if (!object)
                 continue;
             const AD::Variable content = memoryVariable(*object, denseState);
-            mayLoadUninitializedNumber |=
+            numericalMayBeUninitialized |=
                 denseState.numericalMayBeUninitialized(content);
             interval.joinWith(denseState.interval(content));
             addresses.joinWith(denseState.addressSet(content));
         }
     }
-    // AE deliberately interprets an uninitialized numerical read as unknown.
-    // Bottom is the initialization payload sentinel, so joining payloads alone
-    // would otherwise erase an uninitialized alias alternative.
-    if (mayLoadUninitializedNumber)
-        interval = AD::Interval::top();
 }
 
 void AbstractInterpretation::storeValue(const ValVar* pointer,
