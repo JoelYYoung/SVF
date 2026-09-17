@@ -1037,6 +1037,10 @@ void AbstractInterpretation::updateStateOnSelect(const SelectStmt* select)
 void AbstractInterpretation::updateStateOnPhi(const PhiStmt* phi)
 {
     const ICFGNode* icfgNode = phi->getICFGNode();
+    const FunExitICFGNode* exit = icfgNode->getFun()
+                                  ? icfg->getFunExitICFGNode(icfgNode->getFun())
+                                  : nullptr;
+    const bool isFormalReturn = exit && exit->getFormalRet() == phi->getRes();
     AD::Interval interval = AD::Interval::bottom();
     AD::AddressSet addresses = AD::AddressSet::bottom();
     for (u32_t i = 0; i < phi->getOpVarNum(); i++)
@@ -1058,7 +1062,15 @@ void AbstractInterpretation::updateStateOnPhi(const PhiStmt* phi)
             }
             if (feasible)
             {
-                interval.joinWith(getInterval(phi->getOpVar(i), opICFGNode));
+                // A non-void source function that falls through has undefined
+                // behavior. Clang lowers that path to an uninitialized return
+                // slot; retain its guard for ordinary reads, but do not merge
+                // the undefined alternative into the function's defined
+                // return values.
+                interval.joinWith(
+                    isFormalReturn
+                    ? getDefinedInterval(phi->getOpVar(i), opICFGNode)
+                    : getInterval(phi->getOpVar(i), opICFGNode));
                 addresses.joinWith(getAddressSet(phi->getOpVar(i),
                                                  opICFGNode));
             }
@@ -1092,7 +1104,8 @@ void AbstractInterpretation::updateStateOnCall(const CallPE* callPE)
 void AbstractInterpretation::updateStateOnRet(const RetPE* retPE)
 {
     const ICFGNode* node = retPE->getICFGNode();
-    updateValue(retPE->getLHSVar(), getInterval(retPE->getRHSVar(), node),
+    updateValue(retPE->getLHSVar(),
+                getDefinedInterval(retPE->getRHSVar(), node),
                 getAddressSet(retPE->getRHSVar(), node), node);
 }
 
@@ -1326,9 +1339,12 @@ void AbstractInterpretation::updateStateOnLoad(const LoadStmt* load)
     const ICFGNode* node = load->getICFGNode();
     AD::Interval interval;
     AD::AddressSet addresses;
+    bool numericalMayBeUninitialized = false;
     loadValue(SVFUtil::cast<ValVar>(load->getRHSVar()), interval, addresses,
-              node);
+              numericalMayBeUninitialized, node);
     updateValue(load->getLHSVar(), interval, addresses, node);
+    if (numericalMayBeUninitialized)
+        addUninitializedNumericalAlternative(load->getLHSVar(), node);
 }
 
 void AbstractInterpretation::updateStateOnStore(const StoreStmt* store)

@@ -74,6 +74,16 @@ bool BoxAddressDomain::numericalMayBeUninitialized(Variable variable) const
            mayBeUninitialized(numericalInitialization_.value(variable));
 }
 
+void BoxAddressDomain::addUninitializedNumericalAlternative(Variable variable)
+{
+    if (!trackInitialization_ || isBottomDomain())
+        return;
+    numericalInitialization_.assign(
+        variable,
+        joinInitialization(numericalInitialization_.value(variable),
+                           InitializationState::Uninitialized));
+}
+
 AddressSet BoxAddressDomain::addressSet(Variable variable) const
 {
     if (isBottomDomain() || (trackInitialization_ &&

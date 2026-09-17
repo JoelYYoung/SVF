@@ -55,6 +55,8 @@ protected:
     void handleGlobalNode() override;
     AbstractDomain::Interval getInterval(const ValVar* var,
                                          const ICFGNode* node) override;
+    AbstractDomain::Interval getDefinedInterval(
+        const ValVar* var, const ICFGNode* node) override;
     AbstractDomain::AddressSet getAddressSet(const ValVar* var,
             const ICFGNode* node) override;
     using Base::getAddressSet;
@@ -65,6 +67,8 @@ protected:
                      const AbstractDomain::Interval& interval,
                      const AbstractDomain::AddressSet& addresses,
                      const ICFGNode* node) override;
+    void addUninitializedNumericalAlternative(
+        const ValVar* var, const ICFGNode* node) override;
     using Base::updateValue;
 
     void copyAbstractState(const ICFGNode* source,
@@ -86,6 +90,7 @@ protected:
                           const ICFGNode* node) override;
     void loadValue(const ValVar* pointer, AbstractDomain::Interval& interval,
                    AbstractDomain::AddressSet& addresses,
+                   bool& numericalMayBeUninitialized,
                    const ICFGNode* node) override;
     void storeValue(const ValVar* pointer,
                     const AbstractDomain::Interval& interval,
