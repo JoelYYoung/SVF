@@ -1383,41 +1383,62 @@ Interval remainderIntervals(const Interval& lhs, const Interval& rhs)
         const Rational quotient = truncateTowardZero(*lhsValue / *rhsValue);
         return Interval::singleton(*lhsValue - quotient * *rhsValue);
     }
-    std::optional<Rational> magnitude;
-    if (rhs.lower().isFinite() && rhs.upper().isFinite())
+    struct MagnitudeLimit
     {
-        magnitude = rhs.lower().value().sign() < 0 ? -rhs.lower().value()
-                    : rhs.lower().value();
-        const Rational upperMagnitude = rhs.upper().value().sign() < 0
-                                        ? -rhs.upper().value()
-                                        : rhs.upper().value();
-        if (*magnitude < upperMagnitude)
-            magnitude = upperMagnitude;
-    }
-    if (lhs.lower().isFinite() && lhs.upper().isFinite())
+        Rational value;
+        bool strict;
+    };
+    const auto absoluteLimit =
+        [](const Interval& interval) -> std::optional<MagnitudeLimit> {
+        if (!interval.lower().isFinite() || !interval.upper().isFinite())
+            return std::nullopt;
+        const Rational lower = interval.lower().value().sign() < 0
+                                   ? -interval.lower().value()
+                                   : interval.lower().value();
+        const Rational upper = interval.upper().value().sign() < 0
+                                   ? -interval.upper().value()
+                                   : interval.upper().value();
+        if (lower < upper)
+            return MagnitudeLimit{upper, interval.upper().isStrict()};
+        if (upper < lower)
+            return MagnitudeLimit{lower, interval.lower().isStrict()};
+        return MagnitudeLimit{lower, interval.lower().isStrict() &&
+                                         interval.upper().isStrict()};
+    };
+
+    const std::optional<MagnitudeLimit> divisorLimit = absoluteLimit(rhs);
+    const std::optional<MagnitudeLimit> dividendLimit = absoluteLimit(lhs);
+    std::optional<MagnitudeLimit> magnitude;
+    if (divisorLimit && dividendLimit)
     {
-        Rational lhsMagnitude = lhs.lower().value().sign() < 0
-                                ? -lhs.lower().value()
-                                : lhs.lower().value();
-        const Rational upperMagnitude = lhs.upper().value().sign() < 0
-                                        ? -lhs.upper().value()
-                                        : lhs.upper().value();
-        if (lhsMagnitude < upperMagnitude)
-            lhsMagnitude = upperMagnitude;
-        if (!magnitude || lhsMagnitude < *magnitude)
-            magnitude = lhsMagnitude;
+        // |a % b| is strictly smaller than |b|, but only less than or equal
+        // to |a|.  Retain that distinction when the dividend is the tighter
+        // bound so integer tightening does not discard an attainable value.
+        if (divisorLimit->value <= dividendLimit->value)
+            magnitude = MagnitudeLimit{divisorLimit->value, true};
+        else
+            magnitude = dividendLimit;
     }
+    else if (divisorLimit)
+        magnitude = MagnitudeLimit{divisorLimit->value, true};
+    else if (dividendLimit)
+        magnitude = dividendLimit;
+
     if (!magnitude)
         return Interval::top();
-    if (magnitude->isZero())
-        return Interval::top();
-    Rational lower = -*magnitude;
-    Rational upper = *magnitude;
+    if (magnitude->value.isZero())
+        return Interval::singleton(Rational());
+
+    Rational lower = -magnitude->value;
+    Rational upper = magnitude->value;
     if (lhs.lower().isFinite() && lhs.lower().value().sign() >= 0)
         lower = Rational();
     if (lhs.upper().isFinite() && lhs.upper().value().sign() <= 0)
         upper = Rational();
-    return Interval(Bound::finite(lower, true), Bound::finite(upper, true));
+    const bool lowerStrict = !lower.isZero() && magnitude->strict;
+    const bool upperStrict = !upper.isZero() && magnitude->strict;
+    return Interval(Bound::finite(lower, lowerStrict),
+                    Bound::finite(upper, upperStrict));
 }
 
 Interval squareRootInterval(const Interval& operand, const NumericType& type,

@@ -702,6 +702,7 @@ void AbstractInterpretation::loadValue(const ValVar* pointer,
 
     interval = AD::Interval::bottom();
     addresses = AD::AddressSet::bottom();
+    bool mayLoadUninitializedNumber = false;
     for (AD::Location location : pointees.locations())
     {
         // getInterval/getAddressSet implement Original's freed-cell routing;
@@ -711,10 +712,18 @@ void AbstractInterpretation::loadValue(const ValVar* pointer,
             const ObjVar* object = objectAt(location);
             if (!object)
                 continue;
-            interval.joinWith(getInterval(object, node));
-            addresses.joinWith(getAddressSet(object, node));
+            const AD::Variable content = memoryVariable(*object, denseState);
+            mayLoadUninitializedNumber |=
+                denseState.numericalMayBeUninitialized(content);
+            interval.joinWith(denseState.interval(content));
+            addresses.joinWith(denseState.addressSet(content));
         }
     }
+    // AE deliberately interprets an uninitialized numerical read as unknown.
+    // Bottom is the initialization payload sentinel, so joining payloads alone
+    // would otherwise erase an uninitialized alias alternative.
+    if (mayLoadUninitializedNumber)
+        interval = AD::Interval::top();
 }
 
 void AbstractInterpretation::storeValue(const ValVar* pointer,
