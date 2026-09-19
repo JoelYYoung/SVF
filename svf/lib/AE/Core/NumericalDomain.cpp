@@ -2527,6 +2527,7 @@ BoxStorageSnapshot BoxDomain::storageSnapshot() const
     snapshot.bottom = bottom_;
     snapshot.directoryEntries = boundPages_.size();
     snapshot.directoryCapacity = boundPages_.capacity();
+    snapshot.slotsPerPage = BoundsPerPage;
     snapshot.directoryAllocatedBytes =
         boundPages_.capacity() * sizeof(BoundPageEntry);
     snapshot.pageShallowBytes = boundPages_.size() * sizeof(BoundPage);
@@ -2535,6 +2536,7 @@ BoxStorageSnapshot BoxDomain::storageSnapshot() const
     {
         std::ostringstream content;
         std::size_t occupied = 0;
+        std::size_t rationalUsedLimbBytes = 0;
         for (std::size_t offset = 0; offset < BoundsPerPage; ++offset)
         {
             const std::optional<BoundSlot>& slot = entry.page->bounds[offset];
@@ -2553,9 +2555,8 @@ BoxStorageSnapshot BoxDomain::storageSnapshot() const
                                                 mpz_size(mpq_denref(value))) *
                        sizeof(mp_limb_t);
             };
-            snapshot.rationalUsedLimbBytes +=
-                usedLimbBytes(slot->interval.lower()) +
-                usedLimbBytes(slot->interval.upper());
+            rationalUsedLimbBytes += usedLimbBytes(slot->interval.lower()) +
+                                     usedLimbBytes(slot->interval.upper());
             content << offset << "=v" << slot->variable.id() << ':'
                     << static_cast<unsigned>(type.kind) << ':'
                     << type.floatFormat.exponentBits << ':'
@@ -2563,13 +2564,14 @@ BoxStorageSnapshot BoxDomain::storageSnapshot() const
                     << slot->interval.toString() << ';';
         }
         std::string canonicalContent = content.str();
+        snapshot.rationalUsedLimbBytes += rationalUsedLimbBytes;
         snapshot.occupiedIndexShallowBytes += occupied * sizeof(Variable);
         snapshot.occupiedIntervalShallowBytes += occupied * sizeof(Interval);
         snapshot.canonicalContentBytes += canonicalContent.size();
         snapshot.pages.push_back(
             {entry.page->storageId, entry.page->parentStorageId, entry.index,
              static_cast<std::size_t>(entry.page.use_count()), occupied,
-             std::move(canonicalContent)});
+             rationalUsedLimbBytes, std::move(canonicalContent)});
     }
     return snapshot;
 }

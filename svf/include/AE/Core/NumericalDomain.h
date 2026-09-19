@@ -568,7 +568,8 @@ enum class BoxStorageEventKind
     PageWriteUnique,
     PageEraseUnique,
     JoinSharedPage,
-    JoinMaterializedPage
+    JoinMaterializedPage,
+    Count
 };
 
 struct BoxStorageEvent
@@ -588,6 +589,7 @@ struct BoxStoragePageSnapshot
     std::size_t pageIndex = 0;
     std::size_t referenceCount = 0;
     std::size_t occupiedSlots = 0;
+    std::size_t rationalUsedLimbBytes = 0;
     std::string canonicalContent;
 };
 
@@ -596,6 +598,7 @@ struct BoxStorageSnapshot
     bool bottom = false;
     std::size_t directoryEntries = 0;
     std::size_t directoryCapacity = 0;
+    std::size_t slotsPerPage = 0;
     std::size_t directoryAllocatedBytes = 0;
     std::size_t pageShallowBytes = 0;
     std::size_t occupiedIndexShallowBytes = 0;
