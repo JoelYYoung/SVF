@@ -63,6 +63,58 @@ void collectStorageEvent(const BoxStorageEvent &event)
         storageEvents.livePages.erase(event.pageId);
 }
 
+constexpr std::size_t DirectoryChunkEntries = 8;
+
+void combineHash(std::size_t &seed, std::size_t value)
+{
+    seed ^= value + 0x9e3779b9U + (seed << 6U) + (seed >> 2U);
+}
+
+struct DirectoryToken
+{
+    std::size_t pageIndex = 0;
+    std::uint64_t contentClass = 0;
+
+    bool operator==(const DirectoryToken &other) const
+    {
+        return pageIndex == other.pageIndex &&
+               contentClass == other.contentClass;
+    }
+};
+
+struct DirectoryTokenHash
+{
+    std::size_t operator()(const DirectoryToken &token) const
+    {
+        std::size_t seed = std::hash<std::size_t> {}(token.pageIndex);
+        combineHash(seed, std::hash<std::uint64_t> {}(token.contentClass));
+        return seed;
+    }
+};
+
+struct DirectoryContent
+{
+    bool bottom = false;
+    std::vector<DirectoryToken> entries;
+
+    bool operator==(const DirectoryContent &other) const
+    {
+        return bottom == other.bottom && entries == other.entries;
+    }
+};
+
+struct DirectoryContentHash
+{
+    std::size_t operator()(const DirectoryContent &directory) const
+    {
+        std::size_t seed = std::hash<bool> {}(directory.bottom);
+        const DirectoryTokenHash tokenHash;
+        for (const DirectoryToken &token : directory.entries)
+            combineHash(seed, tokenHash(token));
+        return seed;
+    }
+};
+
 struct CarrierStorage
 {
     std::size_t states = 0;
@@ -71,7 +123,15 @@ struct CarrierStorage
     std::size_t directoryAllocatedBytes = 0;
     std::size_t pageObjectBytes = 0;
     std::size_t slotsPerPage = 0;
+    std::size_t logicalDirectoryChunks = 0;
     std::unordered_map<std::uint64_t, BoxStoragePageSnapshot> pages;
+    std::unordered_map<std::string, std::uint64_t> pageContentClasses;
+    std::unordered_set<DirectoryToken, DirectoryTokenHash>
+    directoryEntryClasses;
+    std::unordered_set<DirectoryContent, DirectoryContentHash>
+    directoryContents;
+    std::unordered_set<DirectoryContent, DirectoryContentHash>
+    directoryChunkContents;
 
     void add(const BoxDomain &box)
     {
@@ -86,20 +146,45 @@ struct CarrierStorage
             throw std::runtime_error("inconsistent Box page width");
         if (!snapshot.pages.empty())
             pageObjectBytes = snapshot.pageShallowBytes / snapshot.pages.size();
+
+        DirectoryContent directory;
+        directory.bottom = snapshot.bottom;
+        directory.entries.reserve(snapshot.pages.size());
+        DirectoryContent chunk;
+        chunk.entries.reserve(DirectoryChunkEntries);
         for (const BoxStoragePageSnapshot &page : snapshot.pages)
+        {
+            const auto content = pageContentClasses.emplace(
+                                     page.canonicalContent, pageContentClasses.size() + 1);
+            const DirectoryToken token{page.pageIndex, content.first->second};
+            directory.entries.push_back(token);
+            directoryEntryClasses.insert(token);
+            chunk.entries.push_back(token);
+            if (chunk.entries.size() == DirectoryChunkEntries)
+            {
+                ++logicalDirectoryChunks;
+                directoryChunkContents.insert(std::move(chunk));
+                chunk = DirectoryContent{};
+                chunk.entries.reserve(DirectoryChunkEntries);
+            }
             pages.emplace(page.pageId, page);
+        }
+        if (!chunk.entries.empty())
+        {
+            ++logicalDirectoryChunks;
+            directoryChunkContents.insert(std::move(chunk));
+        }
+        directoryContents.insert(std::move(directory));
     }
 
     void print(const char *role) const
     {
-        std::unordered_set<std::string> contents;
         std::size_t occupied = 0;
         std::size_t rationalBytes = 0;
         std::size_t maxReferences = 0;
         for (const auto &entry : pages)
         {
             const BoxStoragePageSnapshot &page = entry.second;
-            contents.insert(page.canonicalContent);
             occupied += page.occupiedSlots;
             rationalBytes += page.rationalUsedLimbBytes;
             maxReferences = std::max(maxReferences, page.referenceCount);
@@ -110,12 +195,15 @@ struct CarrierStorage
                 << " bottom_states=" << bottomStates
                 << " logical_page_refs=" << logicalPageReferences
                 << " unique_pages=" << uniquePages
-                << " content_classes=" << contents.size() << " cow_saved_refs="
+                << " content_classes=" << pageContentClasses.size()
+                << " cow_saved_refs="
                 << (logicalPageReferences >= uniquePages
                     ? logicalPageReferences - uniquePages
                     : 0)
                 << " duplicate_physical_pages="
-                << (uniquePages >= contents.size() ? uniquePages - contents.size() : 0)
+                << (uniquePages >= pageContentClasses.size()
+                    ? uniquePages - pageContentClasses.size()
+                    : 0)
                 << " occupied_slots=" << occupied
                 << " empty_slots=" << uniquePages * slotsPerPage - occupied
                 << " max_reference_count=" << maxReferences
@@ -123,7 +211,23 @@ struct CarrierStorage
                 << " unique_page_shallow_bytes=" << uniquePages * pageObjectBytes
                 << " unique_index_shallow_bytes=" << occupied * sizeof(Variable)
                 << " unique_interval_shallow_bytes=" << occupied * sizeof(Interval)
-                << " unique_rational_used_limb_bytes=" << rationalBytes << '\n';
+                << " unique_rational_used_limb_bytes=" << rationalBytes
+                << " directory_content_classes=" << directoryContents.size()
+                << " duplicate_state_directories="
+                << (states >= directoryContents.size()
+                    ? states - directoryContents.size()
+                    : 0)
+                << " unique_directory_entry_classes="
+                << directoryEntryClasses.size()
+                << " directory_chunk_entries=" << DirectoryChunkEntries
+                << " logical_directory_chunks=" << logicalDirectoryChunks
+                << " directory_chunk_classes="
+                << directoryChunkContents.size()
+                << " reusable_directory_chunks="
+                << (logicalDirectoryChunks >= directoryChunkContents.size()
+                    ? logicalDirectoryChunks - directoryChunkContents.size()
+                    : 0)
+                << '\n';
     }
 };
 
