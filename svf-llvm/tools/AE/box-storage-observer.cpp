@@ -227,57 +227,60 @@ int main(int argc, char **argv)
             << " retained_snapshot_pages=" << retainedPages.size() << '\n';
 #endif
 
-    for (auto it = pag->getICFG()->begin(); it != pag->getICFG()->end(); ++it)
+    if (!std::getenv("BOX_STORAGE_CENSUS_ONLY"))
     {
-        const auto *node = it->second;
-        if (!ae.hasAbsState(node))
-            continue;
-        for (const auto *stmt : node->getSVFStmts())
+        for (auto it = pag->getICFG()->begin(); it != pag->getICFG()->end(); ++it)
         {
-            const SVFVar *value = nullptr;
-            const char *operation = nullptr;
-            std::string source;
-            if (const auto *load = SVFUtil::dyn_cast<LoadStmt>(stmt))
-            {
-                value = load->getLHSVar();
-                source = load->getRHSVar()->getValueName();
-                operation = "LOAD";
-            }
-            else if (const auto *binary = SVFUtil::dyn_cast<BinaryOPStmt>(stmt))
-            {
-                value = binary->getRes();
-                operation = "BINARY";
-            }
-            if (!value)
+            const auto *node = it->second;
+            if (!ae.hasAbsState(node))
                 continue;
-            SVFUtil::outs() << "AUDIT " << operation << " node=" << node->getId()
-                            << " source=" << source
-                            << " pointer=" << value->isPointer();
-            if (value->isPointer())
+            for (const auto *stmt : node->getSVFStmts())
             {
+                const SVFVar *value = nullptr;
+                const char *operation = nullptr;
+                std::string source;
+                if (const auto *load = SVFUtil::dyn_cast<LoadStmt>(stmt))
+                {
+                    value = load->getLHSVar();
+                    source = load->getRHSVar()->getValueName();
+                    operation = "LOAD";
+                }
+                else if (const auto *binary = SVFUtil::dyn_cast<BinaryOPStmt>(stmt))
+                {
+                    value = binary->getRes();
+                    operation = "BINARY";
+                }
+                if (!value)
+                    continue;
+                SVFUtil::outs() << "AUDIT " << operation << " node=" << node->getId()
+                                << " source=" << source
+                                << " pointer=" << value->isPointer();
+                if (value->isPointer())
+                {
 #if AUDIT_BOX
-                const auto addresses = ae.getAddressSet(value, node);
-                SVFUtil::outs() << " empty=" << addresses.isBottom()
-                                << " top=" << addresses.isTop()
-                                << " addresses=" << addresses.toString();
+                    const auto addresses = ae.getAddressSet(value, node);
+                    SVFUtil::outs() << " empty=" << addresses.isBottom()
+                                    << " top=" << addresses.isTop()
+                                    << " addresses=" << addresses.toString();
 #else
-                const auto addresses = ae.getAbsValue(value, node).getAddrs();
-                SVFUtil::outs() << " empty=" << addresses.isBottom()
-                                << " count=" << addresses.size();
+                    const auto addresses = ae.getAbsValue(value, node).getAddrs();
+                    SVFUtil::outs() << " empty=" << addresses.isBottom()
+                                    << " count=" << addresses.size();
 #endif
-            }
-            else
-            {
+                }
+                else
+                {
 #if AUDIT_BOX
-                const auto interval = ae.getInterval(value, node);
+                    const auto interval = ae.getInterval(value, node);
 #else
-                const auto interval = ae.getAbsValue(value, node).getInterval();
+                    const auto interval = ae.getAbsValue(value, node).getInterval();
 #endif
-                SVFUtil::outs() << " top=" << interval.isTop()
-                                << " bottom=" << interval.isBottom()
-                                << " interval=" << interval.toString();
+                    SVFUtil::outs() << " top=" << interval.isTop()
+                                    << " bottom=" << interval.isBottom()
+                                    << " interval=" << interval.toString();
+                }
+                SVFUtil::outs() << '\n';
             }
-            SVFUtil::outs() << '\n';
         }
     }
 
@@ -334,4 +337,3 @@ int main(int argc, char **argv)
 #endif
     return 0;
 }
-
