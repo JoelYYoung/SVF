@@ -570,6 +570,7 @@ enum class BoxStorageEventKind
     JoinSharedPage,
     JoinMaterializedPage,
     DirectoryDetach,
+    DirectoryChunkDetach,
     Count
 };
 
@@ -595,6 +596,14 @@ struct BoxStoragePageSnapshot
     std::string canonicalContent;
 };
 
+struct BoxStorageDirectoryChunkSnapshot
+{
+    std::uintptr_t chunkId = 0;
+    std::size_t referenceCount = 0;
+    std::size_t shallowBytes = 0;
+    std::size_t pageEntries = 0;
+};
+
 struct BoxStorageSnapshot
 {
     bool bottom = false;
@@ -604,11 +613,13 @@ struct BoxStorageSnapshot
     std::size_t directoryCapacity = 0;
     std::size_t slotsPerPage = 0;
     std::size_t directoryAllocatedBytes = 0;
+    std::size_t directoryRootAllocatedBytes = 0;
     std::size_t pageShallowBytes = 0;
     std::size_t occupiedIndexShallowBytes = 0;
     std::size_t occupiedIntervalShallowBytes = 0;
     std::size_t rationalUsedLimbBytes = 0;
     std::size_t canonicalContentBytes = 0;
+    std::vector<BoxStorageDirectoryChunkSnapshot> directoryChunks;
     std::vector<BoxStoragePageSnapshot> pages;
 };
 
@@ -688,6 +699,7 @@ public:
 
 private:
     static constexpr std::size_t BoundsPerPage = 8;
+    static constexpr std::size_t DirectoryPagesPerChunk = 8;
 
     struct BoundSlot
     {
@@ -720,8 +732,21 @@ private:
         std::shared_ptr<BoundPage> page;
     };
 
-    using BoundPageDirectory = std::vector<BoundPageEntry>;
+    struct BoundPageDirectoryChunk
+    {
+        std::array<std::shared_ptr<BoundPage>, DirectoryPagesPerChunk> pages;
+    };
+
+    struct BoundPageDirectoryEntry
+    {
+        std::size_t index;
+        std::shared_ptr<BoundPageDirectoryChunk> chunk;
+    };
+
+    using BoundPageDirectory = std::vector<BoundPageDirectoryEntry>;
     static std::shared_ptr<BoundPageDirectory> emptyPageDirectory();
+    static std::shared_ptr<BoundPageDirectory> makePageDirectory(
+        const std::vector<BoundPageEntry>& pages);
     BoxDomain(BoxSemanticConfig config, bool bottom);
 
     const void* dynamicTypeToken() const noexcept override
@@ -741,6 +766,7 @@ private:
     const BoxDomain& requireBox(const AbstractDomain& other) const;
     const BoundPageDirectory& pageDirectory() const noexcept;
     BoundPageDirectory& writablePageDirectory();
+    std::vector<BoundPageEntry> pageEntries() const;
     const Interval& boundAt(Variable variable) const;
     BoundPage& writablePage(std::size_t pageIndex);
 #ifdef SVF_BOX_STORAGE_TELEMETRY
@@ -751,6 +777,7 @@ private:
                                  const BoundPage& page,
                                  std::uint64_t parentPageId = 0) noexcept;
     static void emitDirectoryDetach(std::size_t directoryEntries) noexcept;
+    static void emitDirectoryChunkDetach(std::size_t pageEntries) noexcept;
     static std::size_t occupiedSlots(const BoundPage& page) noexcept;
 #endif
     void eraseBound(Variable variable);
@@ -764,9 +791,9 @@ private:
     void report(OperationKind operation, ApproximationKind approximation,
                 std::string reason, bool best = true) const;
     BoxSemanticConfig config_;
-    /// Missing pages and empty slots denote top. Property copies share the
-    /// sorted directory and its pages. A write detaches the directory first,
-    /// then detaches only the affected page when another snapshot retains it.
+    /// Missing chunks, pages, and slots denote top. Property copies share the
+    /// sorted root, fixed-width directory chunks, and pages. A write detaches
+    /// only the root, affected chunk, and affected page that remain shared.
     std::shared_ptr<BoundPageDirectory> boundPages_;
     bool bottom_ = false;
 };
