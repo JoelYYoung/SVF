@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -u -o pipefail
 
-if [[ $# -ne 6 ]]; then
-    echo "usage: $0 STUDY_ROOT PROFILE BENCHMARK MODE BITCODE CAP_SECONDS" >&2
+if [[ $# -lt 6 || $# -gt 7 ]]; then
+    echo "usage: $0 STUDY_ROOT PROFILE BENCHMARK MODE BITCODE CAP_SECONDS [RESULT_SET]" >&2
     exit 2
 fi
 
@@ -12,6 +12,12 @@ benchmark=$3
 mode=$4
 bitcode=$5
 cap_seconds=$6
+result_set=${7:-$profile}
+
+if [[ ! "$result_set" =~ ^[a-zA-Z0-9._-]+$ ]]; then
+    echo "result set must be a single safe path component" >&2
+    exit 2
+fi
 
 case "$profile" in
     coverage)
@@ -35,7 +41,7 @@ for path in "$executable" "$extapi" "$bitcode"; do
     fi
 done
 
-output="$study/results/$profile/$mode/$benchmark"
+output="$study/results/$result_set/$mode/$benchmark"
 mkdir -p "$output"
 if [[ -e "$output/finished" ]]; then
     echo "result already finished: $output" >&2
