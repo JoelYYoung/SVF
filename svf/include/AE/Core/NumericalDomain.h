@@ -599,6 +599,7 @@ struct BoxStoragePageSnapshot
 struct BoxStorageDirectoryChunkSnapshot
 {
     std::uintptr_t chunkId = 0;
+    std::size_t chunkIndex = 0;
     std::size_t referenceCount = 0;
     std::size_t shallowBytes = 0;
     std::size_t pageEntries = 0;

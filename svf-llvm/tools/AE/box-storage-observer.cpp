@@ -165,11 +165,13 @@ struct CarrierStorage
     std::size_t pageObjectBytes = 0;
     std::size_t slotsPerPage = 0;
     std::size_t logicalDirectoryChunks = 0;
+    std::size_t logicalPhysicalDirectoryChunks = 0;
     std::size_t uniqueDirectoryContentEntries = 0;
     std::size_t uniqueDirectoryChunkEntries = 0;
     std::unordered_map<std::uint64_t, BoxStoragePageSnapshot> pages;
     std::unordered_map<std::uintptr_t, std::size_t> directories;
-    std::unordered_map<std::uintptr_t, std::size_t> directoryChunks;
+    std::unordered_map<std::uintptr_t, BoxStorageDirectoryChunkSnapshot>
+    physicalDirectoryChunks;
     std::unordered_map<std::string, std::uint64_t> pageContentClasses;
     std::unordered_set<DirectoryToken, DirectoryTokenHash>
     directoryEntryClasses;
@@ -187,9 +189,10 @@ struct CarrierStorage
         directoryAllocatedBytes += snapshot.directoryAllocatedBytes;
         directories.emplace(snapshot.directoryId,
                             snapshot.directoryRootAllocatedBytes);
+        logicalPhysicalDirectoryChunks += snapshot.directoryChunks.size();
         for (const BoxStorageDirectoryChunkSnapshot &chunk :
                 snapshot.directoryChunks)
-            directoryChunks.emplace(chunk.chunkId, chunk.shallowBytes);
+            physicalDirectoryChunks.emplace(chunk.chunkId, chunk);
         if (slotsPerPage == 0)
             slotsPerPage = snapshot.slotsPerPage;
         else if (slotsPerPage != snapshot.slotsPerPage)
@@ -243,10 +246,14 @@ struct CarrierStorage
         std::size_t rationalBytes = 0;
         std::size_t maxReferences = 0;
         std::size_t uniqueDirectoryAllocatedBytes = 0;
+        std::size_t uniqueDirectoryChunkPageEntries = 0;
         for (const auto& directory : directories)
             uniqueDirectoryAllocatedBytes += directory.second;
-        for (const auto& chunk : directoryChunks)
-            uniqueDirectoryAllocatedBytes += chunk.second;
+        for (const auto& entry : physicalDirectoryChunks)
+        {
+            uniqueDirectoryAllocatedBytes += entry.second.shallowBytes;
+            uniqueDirectoryChunkPageEntries += entry.second.pageEntries;
+        }
         for (const auto &entry : pages)
         {
             const BoxStoragePageSnapshot &page = entry.second;
@@ -294,7 +301,18 @@ struct CarrierStorage
                 << " max_reference_count=" << maxReferences
                 << " directory_allocated_bytes=" << directoryAllocatedBytes
                 << " unique_directories=" << directories.size()
-                << " unique_directory_chunks=" << directoryChunks.size()
+                << " logical_physical_directory_chunks="
+                << logicalPhysicalDirectoryChunks
+                << " logical_physical_directory_chunk_empty_slots="
+                << logicalPhysicalDirectoryChunks * DirectoryChunkEntries -
+                   logicalPageReferences
+                << " unique_directory_chunks="
+                << physicalDirectoryChunks.size()
+                << " unique_directory_chunk_page_entries="
+                << uniqueDirectoryChunkPageEntries
+                << " unique_directory_chunk_empty_slots="
+                << physicalDirectoryChunks.size() * DirectoryChunkEntries -
+                   uniqueDirectoryChunkPageEntries
                 << " unique_directory_allocated_bytes="
                 << uniqueDirectoryAllocatedBytes
                 << " unique_page_shallow_bytes=" << uniquePages * pageObjectBytes

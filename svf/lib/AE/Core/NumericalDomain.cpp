@@ -2627,6 +2627,7 @@ BoxStorageSnapshot BoxDomain::storageSnapshot() const
                           [](const auto& page) { return page != nullptr; }));
         snapshot.directoryChunks.push_back(
             {reinterpret_cast<std::uintptr_t>(entry.chunk.get()),
+             entry.index,
              static_cast<std::size_t>(entry.chunk.use_count()),
              sizeof(BoundPageDirectoryChunk),
              pageEntries});
