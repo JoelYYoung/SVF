@@ -121,6 +121,27 @@ int main(int argc, char** argv)
                    std::to_string(field->getConstantFieldIdx());
         return "B:" + valueIdentity(object);
     };
+    const auto addAddressTarget = [&](NodeID id, bool& unknown,
+                                      std::set<std::string>& targets)
+    {
+        if (id == 0)
+        {
+            targets.insert("null");
+            return;
+        }
+        const auto* object = SVFUtil::dyn_cast<ObjVar>(pag->getSVFVar(id));
+        const BaseObjVar* base = object
+                                ? pag->getBaseObject(object->getId()) : nullptr;
+        // BlackHole is SVF's summary for an unknown modeled object, not a
+        // distinct concrete allocation. Canonicalize both implementations to
+        // the same semantic component instead of comparing synthetic IDs.
+        if (base && base->isBlackHoleObj())
+        {
+            unknown = true;
+            return;
+        }
+        targets.insert(objectKey(id));
+    };
     const auto nodeIdentity = [&](const ICFGNode* node)
     {
         std::string key = std::to_string(node->getNodeKind()) + ':';
@@ -203,10 +224,17 @@ int main(int argc, char** argv)
                 const auto addresses = ae.getAddressSet(value, node);
                 unknown = addresses.hasUnknownObject(); raw = addresses.mayContainRawAddress();
                 for (auto location : addresses)
-                    targets.insert(objectKey(location.isNull() ? 0 : ae.objectAt(location)->getId()));
+                {
+                    const auto* object = location.isNull()
+                                         ? nullptr : ae.objectAt(location);
+                    addAddressTarget(object ? object->getId() : 0,
+                                     unknown, targets);
+                }
 #else
                 const auto addresses = ae.getAbsValue(value, node).getAddrs();
-                for (auto address : addresses) targets.insert(objectKey(address & FlippedAddressMask));
+                for (auto address : addresses)
+                    addAddressTarget(address & FlippedAddressMask,
+                                     unknown, targets);
 #endif
                 SVFUtil::outs() << "VALUE\t" << nodeKey << '\t' << key
                     << '\t' << (object ? "memory-address" : "pointer")
