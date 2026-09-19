@@ -43,6 +43,7 @@ struct StorageEvents
         counts{};
     std::unordered_set<std::uint64_t> livePages;
     std::size_t peakLivePages = 0;
+    std::size_t directoryEntriesCopied = 0;
 } storageEvents;
 
 std::size_t eventIndex(BoxStorageEventKind kind)
@@ -63,6 +64,8 @@ void collectStorageEvent(const BoxStorageEvent &event)
     }
     else if (event.kind == BoxStorageEventKind::PageRelease)
         storageEvents.livePages.erase(event.pageId);
+    else if (event.kind == BoxStorageEventKind::DirectoryDetach)
+        storageEvents.directoryEntriesCopied += event.directoryEntries;
 }
 
 constexpr std::size_t DirectoryChunkEntries = 8;
@@ -162,6 +165,7 @@ struct CarrierStorage
     std::size_t uniqueDirectoryContentEntries = 0;
     std::size_t uniqueDirectoryChunkEntries = 0;
     std::unordered_map<std::uint64_t, BoxStoragePageSnapshot> pages;
+    std::unordered_map<std::uintptr_t, std::size_t> directories;
     std::unordered_map<std::string, std::uint64_t> pageContentClasses;
     std::unordered_set<DirectoryToken, DirectoryTokenHash>
     directoryEntryClasses;
@@ -177,6 +181,8 @@ struct CarrierStorage
         bottomStates += snapshot.bottom;
         logicalPageReferences += snapshot.pages.size();
         directoryAllocatedBytes += snapshot.directoryAllocatedBytes;
+        directories.emplace(snapshot.directoryId,
+                            snapshot.directoryAllocatedBytes);
         if (slotsPerPage == 0)
             slotsPerPage = snapshot.slotsPerPage;
         else if (slotsPerPage != snapshot.slotsPerPage)
@@ -229,6 +235,9 @@ struct CarrierStorage
         std::size_t occupied = 0;
         std::size_t rationalBytes = 0;
         std::size_t maxReferences = 0;
+        std::size_t uniqueDirectoryAllocatedBytes = 0;
+        for (const auto& directory : directories)
+            uniqueDirectoryAllocatedBytes += directory.second;
         for (const auto &entry : pages)
         {
             const BoxStoragePageSnapshot &page = entry.second;
@@ -275,6 +284,9 @@ struct CarrierStorage
                 << " empty_slots=" << uniquePages * slotsPerPage - occupied
                 << " max_reference_count=" << maxReferences
                 << " directory_allocated_bytes=" << directoryAllocatedBytes
+                << " unique_directories=" << directories.size()
+                << " unique_directory_allocated_bytes="
+                << uniqueDirectoryAllocatedBytes
                 << " unique_page_shallow_bytes=" << uniquePages * pageObjectBytes
                 << " unique_index_shallow_bytes=" << occupied * sizeof(Variable)
                 << " unique_interval_shallow_bytes=" << occupied * sizeof(Interval)
@@ -399,6 +411,10 @@ int main(int argc, char **argv)
             << " join_materialized="
             << storageEvents
             .counts[eventIndex(BoxStorageEventKind::JoinMaterializedPage)]
+            << " directory_detach="
+            << storageEvents.counts[eventIndex(BoxStorageEventKind::DirectoryDetach)]
+            << " directory_entries_copied="
+            << storageEvents.directoryEntriesCopied
             << " live_pages=" << storageEvents.livePages.size()
             << " peak_live_pages=" << storageEvents.peakLivePages
             << " retained_snapshot_pages=" << retainedPages.size() << '\n';
