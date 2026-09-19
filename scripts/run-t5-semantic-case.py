@@ -237,12 +237,11 @@ def main():
     }
     result_file = output / "result.json"
     result_file.write_text(json.dumps(result, indent=2) + "\n")
+    (output / "storage-finished").touch()
     if not all(candidate_repeat_stable.values()):
         raise RuntimeError("candidate semantic projection was not repeat-stable")
     if whole_chunk:
         raise RuntimeError("whole and chunk storage candidates differ")
-    if disallowed:
-        raise RuntimeError("Original+PR1887 has an unclassified semantic difference")
     (output / "finished").touch()
     print(
         "T5_SEMANTIC_RESULT",
@@ -259,6 +258,8 @@ def main():
         (str(len(upstream_pr1887)) if upstream_pr1887 is not None else "NA"),
         f"result_sha256={digest(result_file)}",
     )
+    if disallowed:
+        raise RuntimeError("Original+PR1887 has an unclassified semantic difference")
 
 
 if __name__ == "__main__":
