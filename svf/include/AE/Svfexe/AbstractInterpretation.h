@@ -261,14 +261,6 @@ protected:
     /// matches the pointer-analysis value-flow contract while AddressSet still
     /// supports object-top for clients that require arbitrary modeled objects.
     AbstractDomain::AddressSet blackHoleAddressSet() const;
-    /// Reduce a scalar address value with Andersen's flow-insensitive
-    /// points-to result. Both operands over-approximate the same concrete
-    /// pointer, so their intersection removes impossible GEP targets without
-    /// changing the transfer semantics. Null/raw/unknown components remain
-    /// governed by AddressSet because Andersen does not model all of them.
-    AbstractDomain::AddressSet reduceScalarAddresses(
-        const ValVar* value,
-        const AbstractDomain::AddressSet& addresses) const;
     // ---- Cycle helpers implemented by Box-backed execution modes ----
     // The dense versions write only to trace[cycle_head].  The semi-sparse
     // subclass adds def-site scatter on top for body ValVars.

@@ -200,7 +200,7 @@ void SemiSparseAbstractInterpretation::updateValue(
     if (value && this->adapter_.contains(*value))
     {
         this->assignValue(scalarState(), this->adapter_.variable(*value),
-                          interval, reduceScalarAddresses(value, addresses));
+                          interval, addresses);
     }
 }
 

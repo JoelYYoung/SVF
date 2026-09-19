@@ -602,36 +602,7 @@ void AbstractInterpretation::updateValue(const ValVar* var,
 {
     if (adapter_.contains(*var))
         assignValue(ensureState(node), adapter_.variable(*var), interval,
-                    reduceScalarAddresses(var, addresses));
-}
-
-AD::AddressSet AbstractInterpretation::reduceScalarAddresses(
-    const ValVar* value, const AD::AddressSet& addresses) const
-{
-    if (!value || !value->isPointer() || addresses.isBottom() ||
-            addresses.hasUnknownObject())
-        return addresses;
-
-    const PointsTo& pointsTo =
-        preAnalysis->getPointerAnalysis()->getPts(value->getId());
-    if (pointsTo.empty())
-        return addresses;
-
-    AD::AddressSet reduced = AD::AddressSet::bottom();
-    if (addresses.mayContainRawAddress())
-        reduced.joinWith(AD::AddressSet::rawTop());
-    for (AD::Location location : addresses.locations())
-    {
-        if (location.isNull())
-        {
-            reduced.insert(location);
-            continue;
-        }
-        const ObjVar* object = objectAt(location);
-        if (object && pointsTo.test(object->getId()))
-            reduced.insert(location);
-    }
-    return reduced;
+                    addresses);
 }
 
 void AbstractInterpretation::addUninitializedNumericalAlternative(
