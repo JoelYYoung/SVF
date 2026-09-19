@@ -28,6 +28,9 @@
 
 #include <algorithm>
 #include <array>
+#ifdef SVF_BOX_STORAGE_TELEMETRY
+#    include <atomic>
+#endif
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -43,6 +46,15 @@
 
 namespace SVF::AbstractDomain
 {
+
+#ifdef SVF_BOX_STORAGE_TELEMETRY
+namespace
+{
+std::atomic<BoxStorageEventSink> boxStorageEventSink{nullptr};
+std::atomic<std::uint64_t> nextBoxStoragePageId{1};
+std::atomic<std::uint64_t> nextBoxStorageSequence{1};
+} // namespace
+#endif
 
 Integer::Integer() : value_(0) {}
 
@@ -2452,6 +2464,117 @@ BoxDomain::BoxDomain(const BoxDomain& other)
 {
 }
 
+#ifdef SVF_BOX_STORAGE_TELEMETRY
+BoxDomain::BoundPage::~BoundPage()
+{
+    if (storageId != 0)
+        BoxDomain::emitStorageEvent(BoxStorageEventKind::PageRelease, *this,
+                                    parentStorageId);
+}
+
+void BoxDomain::setStorageEventSink(BoxStorageEventSink sink) noexcept
+{
+    boxStorageEventSink.store(sink, std::memory_order_release);
+}
+
+std::size_t BoxDomain::occupiedSlots(const BoundPage& page) noexcept
+{
+    return static_cast<std::size_t>(
+        std::count_if(page.bounds.begin(), page.bounds.end(),
+                      [](const auto& slot) { return slot.has_value(); }));
+}
+
+void BoxDomain::emitStorageEvent(BoxStorageEventKind kind,
+                                 const BoundPage& page,
+                                 std::uint64_t parentPageId) noexcept
+{
+    const BoxStorageEventSink sink =
+        boxStorageEventSink.load(std::memory_order_acquire);
+    if (!sink)
+        return;
+    sink({kind, nextBoxStorageSequence.fetch_add(1, std::memory_order_relaxed),
+          page.storageId, parentPageId, page.storageIndex,
+          occupiedSlots(page)});
+}
+
+std::shared_ptr<BoxDomain::BoundPage> BoxDomain::allocatePage(
+    std::size_t pageIndex)
+{
+    auto page = std::make_shared<BoundPage>();
+    page->storageId =
+        nextBoxStoragePageId.fetch_add(1, std::memory_order_relaxed);
+    page->storageIndex = pageIndex;
+    emitStorageEvent(BoxStorageEventKind::PageAllocate, *page);
+    return page;
+}
+
+std::shared_ptr<BoxDomain::BoundPage> BoxDomain::clonePage(
+    const BoundPage& source, BoxStorageEventKind reason)
+{
+    auto page = std::make_shared<BoundPage>();
+    page->bounds = source.bounds;
+    page->storageId =
+        nextBoxStoragePageId.fetch_add(1, std::memory_order_relaxed);
+    page->parentStorageId = source.storageId;
+    page->storageIndex = source.storageIndex;
+    emitStorageEvent(reason, *page, source.storageId);
+    return page;
+}
+
+BoxStorageSnapshot BoxDomain::storageSnapshot() const
+{
+    BoxStorageSnapshot snapshot;
+    snapshot.bottom = bottom_;
+    snapshot.directoryEntries = boundPages_.size();
+    snapshot.directoryCapacity = boundPages_.capacity();
+    snapshot.directoryAllocatedBytes =
+        boundPages_.capacity() * sizeof(BoundPageEntry);
+    snapshot.pageShallowBytes = boundPages_.size() * sizeof(BoundPage);
+    snapshot.pages.reserve(boundPages_.size());
+    for (const BoundPageEntry& entry : boundPages_)
+    {
+        std::ostringstream content;
+        std::size_t occupied = 0;
+        for (std::size_t offset = 0; offset < BoundsPerPage; ++offset)
+        {
+            const std::optional<BoundSlot>& slot = entry.page->bounds[offset];
+            if (!slot)
+            {
+                content << offset << "=_;";
+                continue;
+            }
+            ++occupied;
+            const NumericType& type = slot->variable.type();
+            const auto usedLimbBytes = [](const Bound& bound) {
+                if (!bound.isFinite())
+                    return std::size_t{0};
+                const mpq_srcptr value = bound.value().value().get_mpq_t();
+                return static_cast<std::size_t>(mpz_size(mpq_numref(value)) +
+                                                mpz_size(mpq_denref(value))) *
+                       sizeof(mp_limb_t);
+            };
+            snapshot.rationalUsedLimbBytes +=
+                usedLimbBytes(slot->interval.lower()) +
+                usedLimbBytes(slot->interval.upper());
+            content << offset << "=v" << slot->variable.id() << ':'
+                    << static_cast<unsigned>(type.kind) << ':'
+                    << type.floatFormat.exponentBits << ':'
+                    << type.floatFormat.significandBits << ':'
+                    << slot->interval.toString() << ';';
+        }
+        std::string canonicalContent = content.str();
+        snapshot.occupiedIndexShallowBytes += occupied * sizeof(Variable);
+        snapshot.occupiedIntervalShallowBytes += occupied * sizeof(Interval);
+        snapshot.canonicalContentBytes += canonicalContent.size();
+        snapshot.pages.push_back(
+            {entry.page->storageId, entry.page->parentStorageId, entry.index,
+             static_cast<std::size_t>(entry.page.use_count()), occupied,
+             std::move(canonicalContent)});
+    }
+    return snapshot;
+}
+#endif
+
 BoxDomain BoxDomain::top(const BoxSemanticConfig& config)
 {
     BoxDomain result(config, false);
@@ -3020,11 +3143,19 @@ void BoxDomain::joinDomain(const AbstractDomain& other)
         if (entry.page == otherPage->page)
         {
             // COW identity proves every slot is equal without inspecting it.
+#ifdef SVF_BOX_STORAGE_TELEMETRY
+            emitStorageEvent(BoxStorageEventKind::JoinSharedPage, *entry.page);
+#endif
             joinedPages.push_back(entry);
             continue;
         }
 
+#ifdef SVF_BOX_STORAGE_TELEMETRY
+        auto joined =
+            clonePage(*entry.page, BoxStorageEventKind::JoinMaterializedPage);
+#else
         auto joined = std::make_shared<BoundPage>(*entry.page);
+#endif
         for (std::size_t slot = 0; slot < BoundsPerPage; ++slot)
         {
             std::optional<BoundSlot>& left = joined->bounds[slot];
@@ -3209,10 +3340,20 @@ BoxDomain::BoundPage& BoxDomain::writablePage(std::size_t pageIndex)
         return entry.index < index;
     });
     if (iterator == boundPages_.end() || iterator->index != pageIndex)
+#ifdef SVF_BOX_STORAGE_TELEMETRY
+        iterator =
+            boundPages_.insert(iterator, {pageIndex, allocatePage(pageIndex)});
+    else if (iterator->page.use_count() != 1)
+        iterator->page =
+            clonePage(*iterator->page, BoxStorageEventKind::PageDetach);
+    else
+        emitStorageEvent(BoxStorageEventKind::PageWriteUnique, *iterator->page);
+#else
         iterator = boundPages_.insert(
                        iterator, {pageIndex, std::make_shared<BoundPage>()});
     else if (iterator->page.use_count() != 1)
         iterator->page = std::make_shared<BoundPage>(*iterator->page);
+#endif
     return *iterator->page;
 }
 
@@ -3240,7 +3381,14 @@ void BoxDomain::eraseBound(Variable variable)
         return entry.index < index;
     });
     if (iterator->page.use_count() != 1)
+#ifdef SVF_BOX_STORAGE_TELEMETRY
+        iterator->page =
+            clonePage(*iterator->page, BoxStorageEventKind::PageDetach);
+    else
+        emitStorageEvent(BoxStorageEventKind::PageEraseUnique, *iterator->page);
+#else
         iterator->page = std::make_shared<BoundPage>(*iterator->page);
+#endif
     iterator->page->bounds[offset].reset();
     if (pageIsEmpty(*iterator->page))
         boundPages_.erase(iterator);

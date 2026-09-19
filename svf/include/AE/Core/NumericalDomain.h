@@ -559,6 +559,55 @@ struct BoxSemanticConfig
     }
 };
 
+#ifdef SVF_BOX_STORAGE_TELEMETRY
+enum class BoxStorageEventKind
+{
+    PageAllocate,
+    PageDetach,
+    PageRelease,
+    PageWriteUnique,
+    PageEraseUnique,
+    JoinSharedPage,
+    JoinMaterializedPage
+};
+
+struct BoxStorageEvent
+{
+    BoxStorageEventKind kind = BoxStorageEventKind::PageAllocate;
+    std::uint64_t sequence = 0;
+    std::uint64_t pageId = 0;
+    std::uint64_t parentPageId = 0;
+    std::size_t pageIndex = 0;
+    std::size_t occupiedSlots = 0;
+};
+
+struct BoxStoragePageSnapshot
+{
+    std::uint64_t pageId = 0;
+    std::uint64_t parentPageId = 0;
+    std::size_t pageIndex = 0;
+    std::size_t referenceCount = 0;
+    std::size_t occupiedSlots = 0;
+    std::string canonicalContent;
+};
+
+struct BoxStorageSnapshot
+{
+    bool bottom = false;
+    std::size_t directoryEntries = 0;
+    std::size_t directoryCapacity = 0;
+    std::size_t directoryAllocatedBytes = 0;
+    std::size_t pageShallowBytes = 0;
+    std::size_t occupiedIndexShallowBytes = 0;
+    std::size_t occupiedIntervalShallowBytes = 0;
+    std::size_t rationalUsedLimbBytes = 0;
+    std::size_t canonicalContentBytes = 0;
+    std::vector<BoxStoragePageSnapshot> pages;
+};
+
+using BoxStorageEventSink = void (*)(const BoxStorageEvent&);
+#endif
+
 /// Non-relational numerical property with finite non-Top support over stable
 /// typed Variables. Variable IDs are the global sparse page coordinates.
 class BoxDomain final : public NumericalDomain
@@ -617,6 +666,13 @@ public:
     void close() override;
     void canonicalize() override;
 
+#ifdef SVF_BOX_STORAGE_TELEMETRY
+    /// Installs a process-wide diagnostic sink. The caller owns the sink and
+    /// must keep it valid until replacing it with nullptr.
+    static void setStorageEventSink(BoxStorageEventSink sink) noexcept;
+    BoxStorageSnapshot storageSnapshot() const;
+#endif
+
     BoxDomain join(const BoxDomain& other) const;
     BoxDomain meet(const BoxDomain& other) const;
     BoxDomain widen(const BoxDomain& next) const;
@@ -640,6 +696,15 @@ private:
     struct BoundPage
     {
         std::array<std::optional<BoundSlot>, BoundsPerPage> bounds;
+#ifdef SVF_BOX_STORAGE_TELEMETRY
+        BoundPage() = default;
+        BoundPage(const BoundPage&) = delete;
+        BoundPage& operator=(const BoundPage&) = delete;
+        std::uint64_t storageId = 0;
+        std::uint64_t parentStorageId = 0;
+        std::size_t storageIndex = 0;
+        ~BoundPage();
+#endif
     };
 
     struct BoundPageEntry
@@ -668,6 +733,15 @@ private:
     const BoxDomain& requireBox(const AbstractDomain& other) const;
     const Interval& boundAt(Variable variable) const;
     BoundPage& writablePage(std::size_t pageIndex);
+#ifdef SVF_BOX_STORAGE_TELEMETRY
+    static std::shared_ptr<BoundPage> allocatePage(std::size_t pageIndex);
+    static std::shared_ptr<BoundPage> clonePage(const BoundPage& source,
+                                                BoxStorageEventKind reason);
+    static void emitStorageEvent(BoxStorageEventKind kind,
+                                 const BoundPage& page,
+                                 std::uint64_t parentPageId = 0) noexcept;
+    static std::size_t occupiedSlots(const BoundPage& page) noexcept;
+#endif
     void eraseBound(Variable variable);
     static bool pageIsEmpty(const BoundPage& page);
     std::vector<Variable> boundedVariables() const;
