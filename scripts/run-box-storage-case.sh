@@ -28,8 +28,16 @@ case "$profile" in
         executable="$study/build-box-on/bin/box-storage-observer"
         extapi="$study/build-box-on/lib/extapi.bc"
         ;;
+    directory-cow)
+        executable="$study/build-directory-cow-off/bin/ae"
+        extapi="$study/build-directory-cow-off/lib/extapi.bc"
+        ;;
+    directory-cow-telemetry)
+        executable="$study/build-directory-cow-on/bin/box-storage-observer"
+        extapi="$study/build-directory-cow-on/lib/extapi.bc"
+        ;;
     *)
-        echo "profile must be coverage or telemetry" >&2
+        echo "unknown storage experiment profile: $profile" >&2
         exit 2
         ;;
 esac
@@ -62,7 +70,7 @@ sha256sum "$executable" "$extapi" "$bitcode" > "$output/SHA256SUMS"
 git -C "$study/box-source" rev-parse HEAD > "$output/source-commit.txt"
 
 started=$(date --iso-8601=seconds)
-if [[ "$profile" == telemetry ]]; then
+if [[ "$profile" == telemetry || "$profile" == directory-cow-telemetry ]]; then
     BOX_STORAGE_CENSUS_ONLY=1 /usr/bin/time -v -o "$output/time.txt" \
         timeout --signal=TERM "$cap_seconds" "${command[@]}" \
         > "$output/analysis.log" 2>&1
