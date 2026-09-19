@@ -129,11 +129,12 @@ def main():
     parser.add_argument("--input-sha256", required=True)
     parser.add_argument("--cap-seconds", type=int, required=True)
     parser.add_argument("--result-set", required=True)
+    parser.add_argument("--observer-bundle", default="t5-observers-v6")
     args = parser.parse_args()
 
     study = Path(args.study)
     bitcode = Path(args.bitcode)
-    observers = study / "t5-observers-v2"
+    observers = study / args.observer_bundle
     extapi = study / "build-original/lib/extapi.bc"
     output = study / "results" / args.result_set / args.program
     if output.exists():
