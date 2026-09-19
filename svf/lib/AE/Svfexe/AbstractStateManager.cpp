@@ -629,39 +629,7 @@ AD::AddressSet AbstractInterpretation::reduceScalarAddresses(
         }
         const ObjVar* object = objectAt(location);
         if (object && pointsTo.test(object->getId()))
-        {
             reduced.insert(location);
-            continue;
-        }
-
-        // SVF may keep field zero separate from its base object when
-        // FirstFieldEqBase is disabled, although both denote the same
-        // concrete address. Canonicalize this one representation mismatch
-        // instead of turning a valid pointer into the empty set.
-        const auto* field = SVFUtil::dyn_cast<GepObjVar>(object);
-        if (field && field->getConstantFieldIdx() == 0 &&
-                pointsTo.test(field->getBaseNode()))
-        {
-            const auto* base = SVFUtil::dyn_cast<ObjVar>(
-                                   svfir->getSVFVar(field->getBaseNode()));
-            if (base)
-                reduced.insert(locationOf(base));
-            continue;
-        }
-        const auto* base = SVFUtil::dyn_cast<BaseObjVar>(object);
-        if (!base)
-            continue;
-        for (NodeID targetId : pointsTo)
-        {
-            const auto* target = SVFUtil::dyn_cast<GepObjVar>(
-                                     svfir->getSVFVar(targetId));
-            if (target && target->getBaseNode() == base->getId() &&
-                    target->getConstantFieldIdx() == 0)
-            {
-                reduced.insert(locationOf(target));
-                break;
-            }
-        }
     }
     return reduced;
 }
