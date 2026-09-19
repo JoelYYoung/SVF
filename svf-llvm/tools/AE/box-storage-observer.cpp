@@ -21,6 +21,8 @@
 #include <string_view>
 #ifdef SVF_BOX_STORAGE_TELEMETRY
 #include <array>
+#include <iterator>
+#include <limits>
 #include <unordered_map>
 #include <unordered_set>
 #endif
@@ -115,6 +117,39 @@ struct DirectoryContentHash
     }
 };
 
+std::size_t directoryEditDistance(const DirectoryContent &left,
+                                  const DirectoryContent &right)
+{
+    std::size_t distance = left.bottom == right.bottom ? 0 : 1;
+    auto leftEntry = left.entries.begin();
+    auto rightEntry = right.entries.begin();
+    while (leftEntry != left.entries.end() &&
+            rightEntry != right.entries.end())
+    {
+        if (leftEntry->pageIndex < rightEntry->pageIndex)
+        {
+            ++distance;
+            ++leftEntry;
+        }
+        else if (rightEntry->pageIndex < leftEntry->pageIndex)
+        {
+            ++distance;
+            ++rightEntry;
+        }
+        else
+        {
+            distance += leftEntry->contentClass != rightEntry->contentClass;
+            ++leftEntry;
+            ++rightEntry;
+        }
+    }
+    distance += static_cast<std::size_t>(
+                    std::distance(leftEntry, left.entries.end()));
+    distance += static_cast<std::size_t>(
+                    std::distance(rightEntry, right.entries.end()));
+    return distance;
+}
+
 struct CarrierStorage
 {
     std::size_t states = 0;
@@ -124,6 +159,8 @@ struct CarrierStorage
     std::size_t pageObjectBytes = 0;
     std::size_t slotsPerPage = 0;
     std::size_t logicalDirectoryChunks = 0;
+    std::size_t uniqueDirectoryContentEntries = 0;
+    std::size_t uniqueDirectoryChunkEntries = 0;
     std::unordered_map<std::uint64_t, BoxStoragePageSnapshot> pages;
     std::unordered_map<std::string, std::uint64_t> pageContentClasses;
     std::unordered_set<DirectoryToken, DirectoryTokenHash>
@@ -163,7 +200,11 @@ struct CarrierStorage
             if (chunk.entries.size() == DirectoryChunkEntries)
             {
                 ++logicalDirectoryChunks;
-                directoryChunkContents.insert(std::move(chunk));
+                const std::size_t chunkEntries = chunk.entries.size();
+                const auto inserted =
+                    directoryChunkContents.insert(std::move(chunk));
+                if (inserted.second)
+                    uniqueDirectoryChunkEntries += chunkEntries;
                 chunk = DirectoryContent{};
                 chunk.entries.reserve(DirectoryChunkEntries);
             }
@@ -172,9 +213,15 @@ struct CarrierStorage
         if (!chunk.entries.empty())
         {
             ++logicalDirectoryChunks;
-            directoryChunkContents.insert(std::move(chunk));
+            const std::size_t chunkEntries = chunk.entries.size();
+            const auto inserted = directoryChunkContents.insert(std::move(chunk));
+            if (inserted.second)
+                uniqueDirectoryChunkEntries += chunkEntries;
         }
-        directoryContents.insert(std::move(directory));
+        const std::size_t directoryEntries = directory.entries.size();
+        const auto inserted = directoryContents.insert(std::move(directory));
+        if (inserted.second)
+            uniqueDirectoryContentEntries += directoryEntries;
     }
 
     void print(const char *role) const
@@ -190,6 +237,26 @@ struct CarrierStorage
             maxReferences = std::max(maxReferences, page.referenceCount);
         }
         const std::size_t uniquePages = pages.size();
+        std::size_t nearestEditSum = 0;
+        std::size_t nearestEditMax = 0;
+        if (directoryContents.size() > 1)
+        {
+            for (auto left = directoryContents.begin();
+                    left != directoryContents.end(); ++left)
+            {
+                std::size_t nearest = std::numeric_limits<std::size_t>::max();
+                for (auto right = directoryContents.begin();
+                        right != directoryContents.end(); ++right)
+                {
+                    if (left == right)
+                        continue;
+                    nearest = std::min(
+                                  nearest, directoryEditDistance(*left, *right));
+                }
+                nearestEditSum += nearest;
+                nearestEditMax = std::max(nearestEditMax, nearest);
+            }
+        }
         SVFUtil::outs()
                 << "BOX_STORAGE_CARRIER role=" << role << " states=" << states
                 << " bottom_states=" << bottomStates
@@ -219,14 +286,20 @@ struct CarrierStorage
                     : 0)
                 << " unique_directory_entry_classes="
                 << directoryEntryClasses.size()
+                << " unique_directory_content_entries="
+                << uniqueDirectoryContentEntries
                 << " directory_chunk_entries=" << DirectoryChunkEntries
                 << " logical_directory_chunks=" << logicalDirectoryChunks
                 << " directory_chunk_classes="
                 << directoryChunkContents.size()
+                << " unique_directory_chunk_entries="
+                << uniqueDirectoryChunkEntries
                 << " reusable_directory_chunks="
                 << (logicalDirectoryChunks >= directoryChunkContents.size()
                     ? logicalDirectoryChunks - directoryChunkContents.size()
                     : 0)
+                << " nearest_directory_edit_sum=" << nearestEditSum
+                << " nearest_directory_edit_max=" << nearestEditMax
                 << '\n';
     }
 };
