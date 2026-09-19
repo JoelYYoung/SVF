@@ -33,6 +33,9 @@ set(ALL_TOOLS
     svf-ex
     wpa
 )
+if(SVF_BUILD_BOX_STORAGE_OBSERVER)
+  list(APPEND ALL_TOOLS box-storage-observer)
+endif()
 
 foreach(_tool IN LISTS ALL_TOOLS)
   # Link the SvfLLVM library against SVF's core & LLVM libraries
