@@ -36,6 +36,9 @@ set(ALL_TOOLS
 if(SVF_BUILD_BOX_STORAGE_OBSERVER)
   list(APPEND ALL_TOOLS box-storage-observer)
 endif()
+if(SVF_BUILD_BOX_PAGE_TESTS)
+  list(APPEND ALL_TOOLS box-page-semantic-observer)
+endif()
 
 foreach(_tool IN LISTS ALL_TOOLS)
   # Link the SvfLLVM library against SVF's core & LLVM libraries
