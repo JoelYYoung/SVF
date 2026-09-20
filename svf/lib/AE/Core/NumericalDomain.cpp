@@ -2712,6 +2712,9 @@ std::shared_ptr<BoxDomain::BoundPageDirectory> BoxDomain::makePageDirectory(
 {
     if (pages.empty())
         return emptyPageDirectory();
+#ifdef SVF_BOX_WHOLE_DIRECTORY
+    return std::make_shared<BoundPageDirectory>(pages);
+#else
     auto directory = std::make_shared<BoundPageDirectory>();
     directory->reserve((pages.size() + DirectoryPagesPerChunk - 1) /
                        DirectoryPagesPerChunk);
@@ -2725,10 +2728,14 @@ std::shared_ptr<BoxDomain::BoundPageDirectory> BoxDomain::makePageDirectory(
             page.page;
     }
     return directory;
+#endif
 }
 
 std::vector<BoxDomain::BoundPageEntry> BoxDomain::pageEntries() const
 {
+#ifdef SVF_BOX_WHOLE_DIRECTORY
+    return pageDirectory();
+#else
     std::vector<BoundPageEntry> pages;
     for (const BoundPageDirectoryEntry& entry : pageDirectory())
     {
@@ -2740,6 +2747,7 @@ std::vector<BoxDomain::BoundPageEntry> BoxDomain::pageEntries() const
         }
     }
     return pages;
+#endif
 }
 
 #ifdef SVF_BOX_STORAGE_TELEMETRY
@@ -2851,9 +2859,14 @@ BoxStorageSnapshot BoxDomain::storageSnapshot() const
     snapshot.directoryId = reinterpret_cast<std::uintptr_t>(boundPages_.get());
     snapshot.directoryReferenceCount = boundPages_.use_count();
     snapshot.directoryEntries = pages.size();
+    snapshot.slotsPerPage = BoundsPerPage;
+#ifdef SVF_BOX_WHOLE_DIRECTORY
+    snapshot.directoryCapacity = directory.capacity();
+    snapshot.directoryRootAllocatedBytes = directory.capacity() * sizeof(BoundPageEntry);
+    snapshot.directoryAllocatedBytes = snapshot.directoryRootAllocatedBytes;
+#else
     snapshot.directoryCapacity =
         directory.capacity() * DirectoryPagesPerChunk;
-    snapshot.slotsPerPage = BoundsPerPage;
     snapshot.directoryRootAllocatedBytes =
         directory.capacity() * sizeof(BoundPageDirectoryEntry);
     snapshot.directoryAllocatedBytes = snapshot.directoryRootAllocatedBytes +
@@ -2872,6 +2885,7 @@ BoxStorageSnapshot BoxDomain::storageSnapshot() const
              sizeof(BoundPageDirectoryChunk),
              pageEntries});
     }
+#endif
     snapshot.pageShallowBytes = pages.size() * sizeof(BoundPage);
     snapshot.pages.reserve(pages.size());
     for (const BoundPageEntry& entry : pages)
@@ -2926,12 +2940,22 @@ BoxStorageSnapshot BoxDomain::storageSnapshot() const
 
 const char* BoxDomain::storageRepresentation() noexcept
 {
+#ifdef SVF_BOX_WHOLE_DIRECTORY
+#ifdef SVF_BOX_ADAPTIVE_PAGES
+    return "whole/adaptive8";
+#elif defined(SVF_BOX_PACKED_PAGES)
+    return "whole/packed8";
+#else
+    return "whole/inline8";
+#endif
+#else
 #ifdef SVF_BOX_ADAPTIVE_PAGES
     return "chunk8/adaptive8";
 #elif defined(SVF_BOX_PACKED_PAGES)
     return "chunk8/packed8";
 #else
     return "chunk8/inline8";
+#endif
 #endif
 }
 
@@ -3704,6 +3728,17 @@ const Interval& BoxDomain::boundAt(Variable variable) const
 {
     static const Interval top = Interval::top();
     const std::size_t pageIndex = variable.id() / BoundsPerPage;
+#ifdef SVF_BOX_WHOLE_DIRECTORY
+    const auto& directory = pageDirectory();
+    const auto iterator = std::lower_bound(directory.begin(), directory.end(), pageIndex,
+                                           [](const BoundPageEntry& entry, std::size_t index)
+    {
+        return entry.index < index;
+    });
+    if (iterator == directory.end() || iterator->index != pageIndex)
+        return top;
+    const auto& page = iterator->page;
+#else
     const std::size_t chunkIndex = pageIndex / DirectoryPagesPerChunk;
     const BoundPageDirectory& directory = pageDirectory();
     const auto iterator =
@@ -3719,6 +3754,7 @@ const Interval& BoxDomain::boundAt(Variable variable) const
         iterator->chunk->pages[pageIndex % DirectoryPagesPerChunk];
     if (!page)
         return top;
+#endif
     const auto* slot = page->bounds.find(variable.id() % BoundsPerPage);
     if (!slot)
         return top;
@@ -3730,6 +3766,17 @@ const Interval& BoxDomain::boundAt(Variable variable) const
 
 BoxDomain::BoundPage& BoxDomain::writablePage(std::size_t pageIndex)
 {
+#ifdef SVF_BOX_WHOLE_DIRECTORY
+    auto& directory = writablePageDirectory();
+    auto iterator = std::lower_bound(directory.begin(), directory.end(), pageIndex,
+                                     [](const BoundPageEntry& entry, std::size_t index)
+    {
+        return entry.index < index;
+    });
+    if (iterator == directory.end() || iterator->index != pageIndex)
+        iterator = directory.insert(iterator, {pageIndex, nullptr});
+    auto& page = iterator->page;
+#else
     const std::size_t chunkIndex = pageIndex / DirectoryPagesPerChunk;
     BoundPageDirectory& directory = writablePageDirectory();
     auto iterator =
@@ -3753,6 +3800,7 @@ BoxDomain::BoundPage& BoxDomain::writablePage(std::size_t pageIndex)
     }
     std::shared_ptr<BoundPage>& page =
         iterator->chunk->pages[pageIndex % DirectoryPagesPerChunk];
+#endif
 #ifdef SVF_BOX_PAGE_INTERNING
     const bool frozen = page && page->internedScope != 0;
     if (frozen && page.use_count() == 1 && PagePool::active_)
@@ -3784,6 +3832,17 @@ BoxDomain::BoundPage& BoxDomain::writablePage(std::size_t pageIndex)
 void BoxDomain::eraseBound(Variable variable)
 {
     const std::size_t pageIndex = variable.id() / BoundsPerPage;
+#ifdef SVF_BOX_WHOLE_DIRECTORY
+    const auto& currentDirectory = pageDirectory();
+    const auto existing = std::lower_bound(currentDirectory.begin(), currentDirectory.end(), pageIndex,
+                                           [](const BoundPageEntry& entry, std::size_t index)
+    {
+        return entry.index < index;
+    });
+    if (existing == currentDirectory.end() || existing->index != pageIndex)
+        return;
+    const auto& existingPage = existing->page;
+#else
     const std::size_t chunkIndex = pageIndex / DirectoryPagesPerChunk;
     const std::size_t pageOffset = pageIndex % DirectoryPagesPerChunk;
     const BoundPageDirectory& currentDirectory = pageDirectory();
@@ -3801,6 +3860,7 @@ void BoxDomain::eraseBound(Variable variable)
         existing->chunk->pages[pageOffset];
     if (!existingPage)
         return;
+#endif
     const std::size_t offset = variable.id() % BoundsPerPage;
     if (!existingPage->bounds.find(offset))
         return;
@@ -3808,6 +3868,14 @@ void BoxDomain::eraseBound(Variable variable)
         throw std::invalid_argument(
             "Variable ID was reused with a different numeric type");
     BoundPageDirectory& directory = writablePageDirectory();
+#ifdef SVF_BOX_WHOLE_DIRECTORY
+    auto iterator = std::lower_bound(directory.begin(), directory.end(), pageIndex,
+                                     [](const BoundPageEntry& entry, std::size_t index)
+    {
+        return entry.index < index;
+    });
+    auto& page = iterator->page;
+#else
     auto iterator =
         std::lower_bound(directory.begin(), directory.end(), chunkIndex,
                          [](const BoundPageDirectoryEntry& entry,
@@ -3824,6 +3892,7 @@ void BoxDomain::eraseBound(Variable variable)
             std::make_shared<BoundPageDirectoryChunk>(*iterator->chunk);
     }
     std::shared_ptr<BoundPage>& page = iterator->chunk->pages[pageOffset];
+#endif
 #ifdef SVF_BOX_PAGE_INTERNING
     const bool frozen = page->internedScope != 0;
     if (frozen && page.use_count() == 1 && PagePool::active_)
@@ -3845,12 +3914,17 @@ void BoxDomain::eraseBound(Variable variable)
     page->internedScope = 0;
 #endif
     page->bounds.erase(offset);
+#ifdef SVF_BOX_WHOLE_DIRECTORY
+    if (pageIsEmpty(*page))
+        directory.erase(iterator);
+#else
     if (pageIsEmpty(*page))
         page.reset();
     if (std::none_of(iterator->chunk->pages.begin(),
                      iterator->chunk->pages.end(),
                      [](const auto& candidate) { return candidate != nullptr; }))
         directory.erase(iterator);
+#endif
 }
 
 bool BoxDomain::pageIsEmpty(const BoundPage& page)
@@ -3861,6 +3935,12 @@ bool BoxDomain::pageIsEmpty(const BoundPage& page)
 std::vector<Variable> BoxDomain::boundedVariables() const
 {
     std::vector<Variable> variables;
+#ifdef SVF_BOX_WHOLE_DIRECTORY
+    for (const BoundPageEntry& entry : pageDirectory())
+    {
+        const auto& page = entry.page;
+        {
+#else
     for (const BoundPageDirectoryEntry& directoryEntry : pageDirectory())
     {
         for (const std::shared_ptr<BoundPage>& page :
@@ -3868,6 +3948,7 @@ std::vector<Variable> BoxDomain::boundedVariables() const
         {
             if (!page)
                 continue;
+#endif
             for (std::size_t offset = 0; offset < BoundsPerPage; ++offset)
             {
                 const BoundSlot* slot = page->bounds.find(offset);
@@ -3883,6 +3964,14 @@ std::vector<Variable> BoxDomain::boundedVariablesBefore(
     std::uint32_t upperBound) const
 {
     std::vector<Variable> variables;
+#ifdef SVF_BOX_WHOLE_DIRECTORY
+    for (const BoundPageEntry& entry : pageDirectory())
+    {
+        if (entry.index * BoundsPerPage >= upperBound)
+            break;
+        const auto& page = entry.page;
+        {
+#else
     for (const BoundPageDirectoryEntry& directoryEntry : pageDirectory())
     {
         if (directoryEntry.index * DirectoryPagesPerChunk * BoundsPerPage >=
@@ -3893,6 +3982,7 @@ std::vector<Variable> BoxDomain::boundedVariablesBefore(
         {
             if (!page)
                 continue;
+#endif
             for (std::size_t offset = 0; offset < BoundsPerPage; ++offset)
             {
                 const BoundSlot* slot = page->bounds.find(offset);

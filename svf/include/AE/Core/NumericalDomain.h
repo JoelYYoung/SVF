@@ -1030,6 +1030,9 @@ private:
         std::shared_ptr<BoundPage> page;
     };
 
+#ifdef SVF_BOX_WHOLE_DIRECTORY
+    using BoundPageDirectory = std::vector<BoundPageEntry>;
+#else
     struct BoundPageDirectoryChunk
     {
         std::array<std::shared_ptr<BoundPage>, DirectoryPagesPerChunk> pages;
@@ -1042,6 +1045,7 @@ private:
     };
 
     using BoundPageDirectory = std::vector<BoundPageDirectoryEntry>;
+#endif
     static std::shared_ptr<BoundPageDirectory> emptyPageDirectory();
     static std::shared_ptr<BoundPageDirectory> makePageDirectory(
         const std::vector<BoundPageEntry>& pages);

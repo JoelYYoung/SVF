@@ -369,6 +369,44 @@ void phaseWorkload(const std::string& phase, unsigned occupancy, unsigned rounds
 }
 
 #ifdef SVF_BOX_STORAGE_TELEMETRY
+void directoryContract()
+{
+    BoxDomain seed = BoxDomain::top();
+    for (unsigned page = 0; page < 17; ++page)
+        seed.assign(Variable(page * 8), LinearExpression(Rational(page)));
+    const auto before = seed.storageSnapshot();
+    BoxDomain copy = seed;
+    check(copy.storageSnapshot().directoryId == before.directoryId,
+          "copy did not share directory");
+    copy.assign(Variable(8), LinearExpression(Rational(90)));
+    const auto after = copy.storageSnapshot();
+    check(after.directoryId != before.directoryId && after.pages.size() == 17,
+          "write did not detach directory");
+    for (unsigned page = 0; page < 17; ++page)
+        check((before.pages[page].pageId == after.pages[page].pageId) == (page != 1),
+              "directory detach changed unrelated page ownership");
+#ifdef SVF_BOX_WHOLE_DIRECTORY
+    check(std::string(BoxDomain::storageRepresentation()).find("whole/") == 0 &&
+          before.directoryChunks.empty() && after.directoryChunks.empty() &&
+          before.directoryAllocatedBytes == before.directoryRootAllocatedBytes,
+          "whole control is not a flat directory");
+#else
+    check(before.directoryChunks.size() == 3 && after.directoryChunks.size() == 3,
+          "chunk control has wrong physical shape");
+    for (unsigned chunk = 0; chunk < 3; ++chunk)
+        check((before.directoryChunks[chunk].chunkId == after.directoryChunks[chunk].chunkId) == (chunk != 0),
+              "write detached wrong directory chunks");
+#endif
+    copy.forget(Variable(8));
+    copy.assign(Variable(8), LinearExpression(Rational(1)));
+    check(copy.isEquivalentTo(seed) == CheckResult::True &&
+          copy.serializeRaw() == seed.serializeRaw(), "directory erase/reinsert changed semantics");
+    // A missing slot in an existing page must not change the old snapshot.
+    copy.assign(Variable(12), LinearExpression(Rational(12)));
+    check(seed.bound(Variable(12)).isTop(), "directory mutation changed old snapshot");
+    std::cout << "directory_contract=pass root_cow=checked physical_shape=checked\n";
+}
+
 std::vector<BoxStorageWorkEvent> slotWork;
 
 void collectSlotWork(const BoxStorageWorkEvent& event)
@@ -660,6 +698,7 @@ int main(int argc, char** argv)
         contract();
 #ifdef SVF_BOX_STORAGE_TELEMETRY
         storageWorkContract();
+        directoryContract();
 #endif
 #ifdef SVF_BOX_ADAPTIVE_PAGES
         adaptiveContract();
