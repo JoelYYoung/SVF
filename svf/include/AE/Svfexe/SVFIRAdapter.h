@@ -45,6 +45,9 @@ class SVFIRAdapter
 public:
     explicit SVFIRAdapter(const SVFIR& svfir);
 
+    /// Experimental registration-time policy; logical locations never change.
+    static const char* contentLayout() noexcept;
+
     /// SVFIR's double projection can overflow for extended FP constants.
     /// Such values have no rational singleton; retain an unconstrained number.
     static AbstractDomain::Interval floatingConstant(double value);

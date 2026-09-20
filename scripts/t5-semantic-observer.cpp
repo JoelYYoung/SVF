@@ -19,19 +19,121 @@
 #include <llvm/IR/Instructions.h>
 #include <map>
 #include <set>
+#include <stdexcept>
 #include <string_view>
 #include <vector>
 
 using namespace SVF;
 using namespace SVFUtil;
 
+#if AUDIT_BOX
+static void adapterContract(SVFIR& pag)
+{
+    const auto check = [](bool valid, const char* message)
+    {
+        if (!valid) throw std::runtime_error(message);
+    };
+    const auto addObject = [&]()
+    {
+        auto* object = const_cast<BaseObjVar*>(
+                           pag.getBaseObjVar(pag.addDummyObjNode(SVFType::getSVFInt8Type())));
+        object->setNumOfElements(4);
+        object->setFieldSensitive();
+        return object;
+    };
+    std::vector<BaseObjVar*> arrays;
+    for (auto it = pag.begin(); it != pag.end(); ++it)
+        if (auto* object = dyn_cast<StackObjVar>(it->second))
+            if (!object->isPointer() && object->getType()->isArrayTy() &&
+                    object->getFunction() && object->getFunction()->getName() == "main")
+            {
+                object->setFieldSensitive();
+                arrays.push_back(object);
+            }
+    check(arrays.size() == 2, "contract requires two numerical array objects");
+    const auto* a = arrays[0];
+    const auto* b = arrays[1];
+    const auto addField = [&](const BaseObjVar* base, APOffset offset)
+    {
+        const NodeID id = pag.getGepObjVar(base, offset);
+        return pag.getGepObjVar(id);
+    };
+    const auto* a2 = addField(a, 2);
+    addField(b, 1);
+    const auto* a1 = addField(a, 1);
+    SVFIRAdapter adapter(pag);
+    const auto first = adapter.firstObjectContentVariable().id();
+    std::uint32_t nextLocation = 1;
+    std::set<std::uint32_t> ids;
+    std::map<const ObjVar*, AbstractDomain::Variable> saved;
+    for (bool pointers :
+            {
+                false, true
+            })
+        for (auto it = pag.begin(); it != pag.end(); ++it)
+            if (const auto* object = dyn_cast<ObjVar>(it->second))
+            {
+                if (object->isPointer() != pointers) continue;
+                const auto location = adapter.location(*object);
+                const auto content = adapter.contentVariable(*object);
+                check(location.id() == nextLocation++, "location order changed");
+                check(&adapter.object(location) == object, "location reverse mapping");
+                check(adapter.contentObject(content) == object, "content reverse mapping");
+                check(adapter.memoryLayout().contentOf(location) == content, "memory layout mapping");
+                check(content.id() >= first && ids.insert(content.id()).second, "content ID collision");
+                saved.emplace(object, content);
+            }
+    check(!ids.empty() && *ids.rbegin() - first + 1 == ids.size(), "content ID gaps");
+    for (auto it = pag.begin(); it != pag.end(); ++it)
+        if (const auto* value = dyn_cast<ValVar>(it->second))
+            if (adapter.contains(*value))
+            {
+                const auto variable = adapter.variable(*value);
+                check(variable.id() < first && adapter.value(variable) == value, "scalar prefix changed");
+            }
+    if (std::string_view(SVFIRAdapter::contentLayout()) == "function-base")
+    {
+        const auto firstField = adapter.contentVariable(*a).id() + 1;
+        check(std::set<std::uint32_t> {adapter.contentVariable(*a1).id(),
+                                      adapter.contentVariable(*a2).id()} ==
+              std::set<std::uint32_t> {firstField, firstField + 1},
+              "interleaved base fields not grouped");
+    }
+    const auto oldLayout = adapter.memoryLayout();
+    const auto* late = addObject();
+    check(!adapter.contains(*late), "late object already registered");
+    const auto lateContent = adapter.contentVariable(*late);
+    const auto lateLocation = adapter.location(*late);
+    check(lateContent.id() == *ids.rbegin() + 1, "late content did not append");
+    check(lateLocation.id() == nextLocation, "late location did not append");
+    check(adapter.contentObject(lateContent) == late &&
+          adapter.memoryLayout().contentOf(lateLocation) == lateContent, "late reverse mapping");
+    for (const auto& entry : saved)
+    {
+        check(adapter.contentVariable(*entry.first) == entry.second, "late registration renumbered content");
+        check(oldLayout.contentOf(adapter.location(*entry.first)) == entry.second,
+              "late registration changed an existing layout binding");
+    }
+    SVFUtil::outs() << "ADAPTER_CONTRACT passed " << SVFIRAdapter::contentLayout() << '\n';
+}
+#endif
+
 int main(int argc, char** argv)
 {
 #ifdef SVF_BOX_PAGE_IDENTITY
     SVFUtil::outs() << "BOX_REPRESENTATION "
-                   << SVF::AbstractDomain::BoxDomain::storageRepresentation() << '\n';
+                    << SVF::AbstractDomain::BoxDomain::storageRepresentation() << '\n';
+    SVFUtil::outs() << "BOX_CONTENT_LAYOUT " << SVFIRAdapter::contentLayout() << '\n';
 #endif
     std::vector<char*> arguments(argv, argv + argc);
+#if AUDIT_BOX
+    const auto contract = std::find_if(arguments.begin(), arguments.end(), [](const char* value)
+    {
+        return std::string_view(value) == "--adapter-contract";
+    });
+    const bool checkAdapter = contract != arguments.end();
+    if (checkAdapter) arguments.erase(contract);
+#endif
     arguments.reserve(static_cast<std::size_t>(argc) + 3);
     const auto hasOption = [&](std::string_view option)
     {
@@ -64,6 +166,14 @@ int main(int argc, char** argv)
     LLVMModuleSet::getLLVMModuleSet()->buildSVFModule(modules);
     SVFIRBuilder builder;
     SVFIR* pag = builder.build();
+#if AUDIT_BOX
+    if (checkAdapter)
+    {
+        adapterContract(*pag);
+        LLVMModuleSet::releaseLLVMModuleSet();
+        return 0;
+    }
+#endif
     AndersenWaveDiff* ander = AndersenWaveDiff::createAndersenWaveDiff(pag);
     builder.updateCallGraph(ander->getCallGraph());
 

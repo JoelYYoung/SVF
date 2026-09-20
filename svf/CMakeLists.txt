@@ -61,6 +61,9 @@ install(
 
 # Define the core SVF library.
 add_library(SvfCore)
+if(SVF_BOX_GROUP_CONTENTS)
+  target_compile_definitions(SvfCore PRIVATE SVF_BOX_GROUP_CONTENTS)
+endif()
 
 # Inherit compiler & linker options by publically linking against the interface library
 target_link_libraries(SvfCore PUBLIC SvfFlags)

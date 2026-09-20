@@ -29,10 +29,12 @@
 #include "Util/Options.h"
 #include "Util/SVFUtil.h"
 
+#include <algorithm>
 #include <cmath>
 #include <limits>
 #include <stdexcept>
 #include <string>
+#include <tuple>
 #include <utility>
 
 namespace SVF
@@ -183,8 +185,48 @@ SVFIRAdapter::SVFIRAdapter(const SVFIR& svfir)
         throw std::overflow_error("too many abstract-domain scalar variables");
     firstObjectContentVariableId_ =
         static_cast<std::uint32_t>(nextVariableId_);
+#ifdef SVF_BOX_GROUP_CONTENTS
+    // Choose content coordinates before registering locations. Reordering
+    // registerObject itself would also renumber addresses and confound a
+    // numerical-storage experiment. There is no extra per-access mapping.
+    std::vector<const ObjVar*> grouped;
+    for (auto iterator = svfir.begin(); iterator != svfir.end(); ++iterator)
+        if (const auto* object = SVFUtil::dyn_cast<ObjVar>(iterator->second))
+            if (!object->isPointer())
+                grouped.push_back(object);
+    const auto key = [](const ObjVar* object)
+    {
+        const auto* gep = SVFUtil::dyn_cast<GepObjVar>(object);
+        const ObjVar* base = gep ? gep->getBaseObj() : object;
+        const auto* function = base->getFunction();
+        return std::make_tuple(function ? function->getId() : 0,
+                               base->getId(), object->getId());
+    };
+    std::sort(grouped.begin(), grouped.end(),
+              [&](const ObjVar* left, const ObjVar* right)
+    {
+        return key(left) < key(right);
+    });
+    for (const ObjVar* object : grouped)
+    {
+        const Variable content =
+            nextVariable(nextVariableId_, contentNumericType(*object));
+        contentVariables_.emplace(object, content);
+        contentObjectsByVariableId_.resize(content.id() + 1);
+        contentObjectsByVariableId_[content.id()] = object;
+    }
+#endif
     addObjectContents(false);
     addObjectContents(true);
+}
+
+const char* SVFIRAdapter::contentLayout() noexcept
+{
+#ifdef SVF_BOX_GROUP_CONTENTS
+    return "function-base";
+#else
+    return "registration";
+#endif
 }
 
 void SVFIRAdapter::registerObject(const ObjVar& object) const
@@ -194,11 +236,15 @@ void SVFIRAdapter::registerObject(const ObjVar& object) const
 
     const Location location = nextLocation(nextLocationId_);
     const Variable content =
+#ifdef SVF_BOX_GROUP_CONTENTS
+        contentVariables_.count(&object) ? contentVariables_.at(&object) :
+#endif
         nextVariable(nextVariableId_, contentNumericType(object));
     locations_.emplace(&object, location);
     objects_.emplace(location, &object);
     contentVariables_.emplace(&object, content);
-    contentObjectsByVariableId_.resize(content.id() + 1);
+    if (contentObjectsByVariableId_.size() <= content.id())
+        contentObjectsByVariableId_.resize(content.id() + 1);
     contentObjectsByVariableId_[content.id()] = &object;
     memoryLayout_.extend(location, content);
 }

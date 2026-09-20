@@ -100,6 +100,7 @@ option(SVF_ENABLE_EXCEPTIONS "Adds -fno-exceptions to disable exception handling
 option(SVF_BOX_STORAGE_TELEMETRY "Build experimental Box physical-storage telemetry" OFF)
 option(SVF_BOX_PACKED_PAGES "Build experimental bitmap-ranked packed Box pages" OFF)
 option(SVF_BOX_ADAPTIVE_PAGES "Build experimental density-adaptive Box pages" OFF)
+option(SVF_BOX_GROUP_CONTENTS "Group numerical object contents by function and base object" OFF)
 if(SVF_BOX_PACKED_PAGES AND SVF_BOX_ADAPTIVE_PAGES)
   message(FATAL_ERROR "Choose either fixed packed or adaptive Box pages")
 endif()
