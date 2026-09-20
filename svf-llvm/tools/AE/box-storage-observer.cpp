@@ -62,6 +62,50 @@ struct StorageEvents
     std::size_t directoryChunkEntriesCopied = 0;
 } storageEvents;
 
+struct StorageWork
+{
+    std::uint64_t count = 0;
+    std::uint64_t direct = 0;
+    std::uint64_t occupied = 0;
+    std::uint64_t copied = 0;
+    std::uint64_t relocated = 0;
+    std::uint64_t allocated = 0;
+    std::size_t peakOverlap = 0;
+};
+std::array<StorageWork, static_cast<std::size_t>(BoxStorageWorkKind::Count)> storageWork;
+
+void collectStorageWork(const BoxStorageWorkEvent &event)
+{
+    auto &work = storageWork[static_cast<std::size_t>(event.kind)];
+    ++work.count;
+    work.direct += event.directIndexed;
+    work.occupied += event.occupiedSlots;
+    work.copied += event.copiedSlots;
+    work.relocated += event.relocatedSlots;
+    work.allocated += event.allocatedSlotBytes;
+    work.peakOverlap = std::max(work.peakOverlap, event.overlappingSlotBytes);
+}
+
+void printStorageWork()
+{
+    const std::array<const char *, 8> names{{
+            "clone", "grow", "shrink", "promote", "demote", "insert", "update", "erase"
+        }};
+    static_assert(names.size() == static_cast<std::size_t>(BoxStorageWorkKind::Count),
+                  "update physical work names");
+    for (std::size_t index = 0; index < names.size(); ++index)
+    {
+        const auto &work = storageWork[index];
+        SVFUtil::outs() << "BOX_STORAGE_WORK kind=" << names[index]
+                        << " count=" << work.count << " direct=" << work.direct
+                        << " occupied_slots=" << work.occupied
+                        << " copied_slots=" << work.copied
+                        << " relocated_slots=" << work.relocated
+                        << " allocated_slot_bytes=" << work.allocated
+                        << " peak_operation_overlap_slot_bytes=" << work.peakOverlap << '\n';
+    }
+}
+
 std::size_t eventIndex(BoxStorageEventKind kind)
 {
     return static_cast<std::size_t>(kind);
@@ -422,10 +466,12 @@ int main(int argc, char **argv)
 {
 #ifdef SVF_BOX_STORAGE_TELEMETRY
     BoxDomain::setStorageEventSink(collectStorageEvent);
+    BoxDomain::setStorageWorkSink(collectStorageWork);
     if (argc == 2 && std::string_view(argv[1]) == "--storage-occupancy-self-test")
     {
         testStorageOccupancy();
         BoxDomain::setStorageEventSink(nullptr);
+        BoxDomain::setStorageWorkSink(nullptr);
         return 0;
     }
 #endif
@@ -534,6 +580,7 @@ int main(int argc, char **argv)
                   eventNames.size(), "update occupancy event names");
     for (std::size_t index = 0; index < eventNames.size(); ++index)
         printOccupancy("event", eventNames[index], storageEvents.occupancy[index]);
+    printStorageWork();
 #endif
 
     if (!std::getenv("BOX_STORAGE_CENSUS_ONLY"))
@@ -643,6 +690,7 @@ int main(int argc, char **argv)
     LLVMModuleSet::releaseLLVMModuleSet();
 #ifdef SVF_BOX_STORAGE_TELEMETRY
     BoxDomain::setStorageEventSink(nullptr);
+    BoxDomain::setStorageWorkSink(nullptr);
 #endif
     return 0;
 }

@@ -368,6 +368,89 @@ void phaseWorkload(const std::string& phase, unsigned occupancy, unsigned rounds
               << " seconds=" << elapsed << " semantic_digest=" << digest << '\n';
 }
 
+#ifdef SVF_BOX_STORAGE_TELEMETRY
+std::vector<BoxStorageWorkEvent> slotWork;
+
+void collectSlotWork(const BoxStorageWorkEvent& event)
+{
+    slotWork.push_back(event);
+}
+
+void storageWorkContract()
+{
+    const auto count = [](BoxStorageWorkKind kind)
+    {
+        return std::count_if(slotWork.begin(), slotWork.end(),
+                             [kind](const auto& event)
+        {
+            return event.kind == kind;
+        });
+    };
+    for (unsigned used = 1; used <= 8; ++used)
+    {
+        BoxDomain seed = BoxDomain::top();
+        for (unsigned slot = 0; slot < used; ++slot)
+            seed.assign(Variable(slot), LinearExpression(Rational(slot)));
+        BoxDomain copy = seed;
+        slotWork.clear();
+        BoxDomain::setStorageWorkSink(collectSlotWork);
+        copy.assign(Variable(0), LinearExpression(Rational(100)));
+        BoxDomain::setStorageWorkSink(nullptr);
+        check(count(BoxStorageWorkKind::Clone) == 1, "work clone count");
+        const auto clone = std::find_if(slotWork.begin(), slotWork.end(),
+                                        [](const auto& event)
+        {
+            return event.kind == BoxStorageWorkKind::Clone;
+        });
+        auto copied = used;
+#ifdef SVF_BOX_ADAPTIVE_PAGES
+        if (used >= 6) copied = 8; // Direct-vector placeholders are copied too.
+#endif
+        check(clone->occupiedSlots == used && clone->copiedSlots == copied &&
+              clone->allocatedSlotBytes > 0 &&
+              clone->overlappingSlotBytes >= 2 * clone->allocatedSlotBytes,
+              "work clone slots/bytes");
+        check(seed.bound(Variable(0)) == Interval::singleton(Rational(0)),
+              "work telemetry changed seed");
+    }
+    BoxDomain box = BoxDomain::top();
+    slotWork.clear();
+    BoxDomain::setStorageWorkSink(collectSlotWork);
+    for (unsigned slot = 6; slot > 0; --slot)
+        box.assign(Variable(slot - 1), LinearExpression(Rational(slot)));
+    for (unsigned slot = 2; slot < 6; ++slot)
+        box.forget(Variable(slot));
+    BoxDomain::setStorageWorkSink(nullptr);
+    check(count(BoxStorageWorkKind::Insert) == 6 &&
+          count(BoxStorageWorkKind::Update) == 6 &&
+          count(BoxStorageWorkKind::Erase) == 4, "work mutation boundary");
+#ifdef SVF_BOX_ADAPTIVE_PAGES
+    check(count(BoxStorageWorkKind::Promote) == 1 &&
+          count(BoxStorageWorkKind::Demote) == 1 &&
+          count(BoxStorageWorkKind::Shrink) == 0, "work format transitions");
+#else
+    check(count(BoxStorageWorkKind::Promote) == 0 &&
+          count(BoxStorageWorkKind::Demote) == 0, "work fixed layout transitions");
+#endif
+#if defined(SVF_BOX_PACKED_PAGES) || defined(SVF_BOX_ADAPTIVE_PAGES)
+    check(count(BoxStorageWorkKind::Grow) == 4, "work geometric growth");
+#ifdef SVF_BOX_PACKED_PAGES
+    check(count(BoxStorageWorkKind::Shrink) == 1, "work packed shrink");
+#endif
+    std::size_t shifted = 0;
+    for (const auto& event : slotWork)
+        if (event.kind == BoxStorageWorkKind::Insert)
+            shifted += event.relocatedSlots;
+    check(shifted == 15, "work insert shifts");
+#else
+    check(count(BoxStorageWorkKind::Grow) == 0 &&
+          count(BoxStorageWorkKind::Shrink) == 0, "work inline allocation");
+#endif
+    slotWork.clear();
+    std::cout << "storage_work_contract=pass densities=8 transitions=checked\n";
+}
+#endif
+
 #ifdef SVF_BOX_ADAPTIVE_PAGES
 void adaptiveContract()
 {
@@ -470,6 +553,9 @@ int main(int argc, char** argv)
     else
     {
         contract();
+#ifdef SVF_BOX_STORAGE_TELEMETRY
+        storageWorkContract();
+#endif
 #ifdef SVF_BOX_ADAPTIVE_PAGES
         adaptiveContract();
 #endif

@@ -19,6 +19,7 @@ def parse_storage(text):
     carriers = {}
     events = None
     occupancy = {}
+    work = {}
     for line in text.splitlines():
         if line.startswith("BOX_STORAGE_CARRIER "):
             values = dict(item.split("=", 1) for item in line.split()[1:])
@@ -31,6 +32,15 @@ def parse_storage(text):
                 raise ValueError("duplicate event record")
             events = {key: int(value) for key, value in
                       (item.split("=", 1) for item in line.split()[1:])}
+        elif line.startswith("BOX_STORAGE_WORK "):
+            fields = [item.split("=", 1) for item in line.split()[1:]]
+            values = dict(fields)
+            if len(values) != len(fields):
+                raise ValueError("duplicate work field")
+            kind = values.pop("kind")
+            if kind in work:
+                raise ValueError("duplicate work record")
+            work[kind] = {key: int(value) for key, value in values.items()}
         elif line.startswith("BOX_STORAGE_OCCUPANCY "):
             fields = [item.split("=", 1) for item in line.split()[1:]]
             values = dict(fields)
@@ -72,10 +82,32 @@ def parse_storage(text):
                     sum(used * count for used, count in bins.items()) != carrier["occupied_slots"]):
                 raise ValueError("occupancy retained total mismatch")
         result["occupancy"] = occupancy
+    if work:
+        expected = {"clone", "grow", "shrink", "promote", "demote", "insert", "update", "erase"}
+        fields = {"count", "direct", "occupied_slots", "copied_slots", "relocated_slots",
+                  "allocated_slot_bytes", "peak_operation_overlap_slot_bytes"}
+        if set(work) != expected:
+            raise ValueError("incomplete work records")
+        for kind, row in work.items():
+            if set(row) != fields or any(v < 0 for v in row.values()):
+                raise ValueError("invalid work fields")
+            if (row["direct"] > row["count"] or
+                    any(row[key] > 8 * row["count"] for key in
+                        ("occupied_slots", "copied_slots", "relocated_slots")) or
+                    (row["count"] == 0 and any(row.values()))):
+                raise ValueError("inconsistent work counts")
+            if kind in ("insert", "update", "erase") and row["allocated_slot_bytes"]:
+                raise ValueError("mutation allocation must use separate work record")
+        if work["clone"]["count"] != events["detach"] + events["join_materialized"]:
+            raise ValueError("clone work/event mismatch")
+        if (work["promote"]["direct"] != work["promote"]["count"] or
+                any(work[k]["direct"] for k in ("grow", "shrink", "demote"))):
+            raise ValueError("work format mismatch")
+        result["work"] = work
     return result
 
 
-def fingerprint(build, layout):
+def fingerprint(build, layout, canonical=False):
     identity = subprocess.check_output(
         [str(build / "bin/box-page-contract"), "--identity"], text=True).strip()
     if identity != f"representation=chunk8/{layout}8":
@@ -89,8 +121,18 @@ def fingerprint(build, layout):
     paths = [executable, build / "bin/box-page-contract", core,
              build / "lib/libSvfCore.so.3.4", build / "lib/libSvfLLVM.so.3.4",
              build / "CMakeCache.txt"]
-    return {"identity": identity, "files": {str(p): digest(p) for p in paths},
-            "ldd": re.sub(r"\(0x[0-9a-fA-F]+\)", "(address)", linkage)}
+    result = {"identity": identity,
+              "ldd": re.sub(r"\(0x[0-9a-fA-F]+\)", "(address)", linkage)}
+    if canonical:
+        observer = build / "bin/box-page-semantic-observer"
+        paths.append(observer)
+        link = subprocess.check_output(["ldd", str(observer)], text=True)
+        loaded = re.search(r"libAbstractDomainCore\S* => (\S+)", link)
+        if not loaded or Path(loaded[1]).resolve() != core.resolve():
+            raise ValueError("canonical observer library override")
+        result["canonical_ldd"] = re.sub(r"\(0x[0-9a-fA-F]+\)", "(address)", link)
+    result["files"] = {str(p): digest(p) for p in paths}
+    return result
 
 
 def main():
@@ -98,13 +140,18 @@ def main():
     parser.add_argument("--study", type=Path, required=True)
     parser.add_argument("--program", required=True)
     parser.add_argument("--mode", choices=("semi-sparse", "sparse"), required=True)
-    parser.add_argument("--first", choices=("inline", "packed"), default="inline")
+    parser.add_argument("--candidate", choices=("packed", "adaptive"), default="packed")
+    parser.add_argument("--first", choices=("inline", "packed", "adaptive"), default="inline")
     parser.add_argument("--cap-seconds", type=int, required=True)
     parser.add_argument("--build-suffix", default="census-v1")
     parser.add_argument("--result-set", default="page-layout-census-v1")
     parser.add_argument("--require-occupancy", action="store_true")
+    parser.add_argument("--require-work", action="store_true")
     args = parser.parse_args()
-    gate_path = args.study / "results/page-layout-semantic-v1" / args.mode / args.program / "result.json"
+    if args.first not in ("inline", args.candidate):
+        parser.error("first must be inline or the selected candidate")
+    gate_set = "page-adaptive-semantic-v1" if args.candidate == "adaptive" else "page-layout-semantic-v1"
+    gate_path = args.study / "results" / gate_set / args.mode / args.program / "result.json"
     gate = json.loads(gate_path.read_text())
     if not gate["passed"] or gate["mode"] != args.mode or gate["program"] != args.program:
         raise ValueError("census requires successful matching semantic gate")
@@ -118,11 +165,15 @@ def main():
     output.mkdir(parents=True, exist_ok=False)
     helper = args.study / "page-runner-v1/scripts/run-t5-storage-performance-case.py"
     run_variant = runpy.run_path(str(helper))["run_variant"]
+    canonical_helper = Path(__file__).with_name("run-t5-semantic-case.py")
+    semantic_run = runpy.run_path(str(canonical_helper))["run_variant"]
     state = {"passed": False, "program": args.program, "mode": args.mode,
              "host": platform.node(), "runs": [], "timing_class": "instrumented-census",
              "runner_sha256": digest(__file__), "helper_sha256": digest(helper),
              "gate_sha256": digest(gate_path), "cap_seconds": args.cap_seconds,
-             "scope": "retained physical pages; peak page count, not peak byte census"}
+             "candidate": args.candidate, "canonical_runs": [],
+             "canonical_helper_sha256": digest(canonical_helper),
+             "scope": "retained physical pages plus whole-run slot work; no publication/lifetime census or phase timing"}
 
     def save():
         (output / "result.json").write_text(json.dumps(state, indent=2) + "\n")
@@ -130,11 +181,21 @@ def main():
     try:
         os.environ.pop("BOX_STORAGE_CENSUS_ONLY", None)
         os.environ.pop("AUDIT_MEMORY_POLICY", None)
-        order = [args.first, "packed" if args.first == "inline" else "inline"]
+        order = [args.first, args.candidate if args.first == "inline" else "inline"]
         audits = []
         for layout in order:
             build = args.study / f"build-page-{layout}-{args.build_suffix}"
-            before = fingerprint(build, layout)
+            before = fingerprint(build, layout, args.require_work)
+            if args.require_work:
+                _, canonical = semantic_run(build / "bin/box-page-semantic-observer", extapi,
+                                             bitcode, args.cap_seconds, output / (layout + "-canonical"), args.mode)
+                canonical["layout"] = layout
+                state["canonical_runs"].append(canonical)
+                save()
+                if not canonical["completed"] or any(
+                        canonical[key] != old[key] for old in gate["runs"] for key in
+                        ("projection_sha256", "counts", "function_coverage_percent", "icfg_node_trace")):
+                    raise ValueError("work diagnostic canonical gate mismatch")
             record = run_variant(build / "bin/box-storage-observer", extapi,
                                  bitcode, args.cap_seconds, output / layout, args.mode)
             record.update(layout=layout, fingerprint=before)
@@ -149,13 +210,15 @@ def main():
             save()
             if args.require_occupancy and "occupancy" not in record:
                 raise ValueError("missing required occupancy histograms")
+            if args.require_work and ("work" not in record or "occupancy" not in record):
+                raise ValueError("missing required physical work records")
             if not audit:
                 raise ValueError("empty value audit")
             audits.append(audit)
             for key in ("function_coverage_percent", "icfg_node_trace"):
                 if [record[key]] != gate["runs"][0][key]:
                     raise ValueError(f"telemetry workload differs: {key}")
-            if fingerprint(build, layout) != before:
+            if fingerprint(build, layout, args.require_work) != before:
                 raise ValueError("census binary changed during run")
         if audits[0] != audits[1]:
             raise ValueError("census load/binary value projections differ")
@@ -170,6 +233,10 @@ def main():
             raise ValueError("unexpected COW event difference")
         if state["runs"][0].get("occupancy") != state["runs"][1].get("occupancy"):
             raise ValueError("unexpected occupancy distribution difference")
+        if args.require_work:
+            for kind in ("insert", "update", "erase"):
+                if state["runs"][0]["work"][kind]["count"] != state["runs"][1]["work"][kind]["count"]:
+                    raise ValueError("unexpected mutation work count difference")
         state["passed"] = True
     except Exception as error:
         state["error"] = str(error)

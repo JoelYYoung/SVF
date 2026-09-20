@@ -627,6 +627,28 @@ struct BoxStorageSnapshot
 };
 
 using BoxStorageEventSink = void (*)(const BoxStorageEvent&);
+
+/// Successful physical slot operations, not logical AE statements. Counts
+/// include temporary carriers. Byte counts exclude GMP limbs and allocators.
+enum class BoxStorageWorkKind
+{
+    Clone, Grow, Shrink, Promote, Demote, Insert, Update, Erase, Count
+};
+
+struct BoxStorageWorkEvent
+{
+    BoxStorageWorkKind kind;
+    std::size_t occupiedSlots;
+    std::size_t copiedSlots;
+    /// Slots relocated by reserve/insert/erase; not a promise of C++ move
+    /// rather than copy construction by the standard library.
+    std::size_t relocatedSlots;
+    std::size_t allocatedSlotBytes;
+    std::size_t overlappingSlotBytes;
+    bool directIndexed;
+};
+
+using BoxStorageWorkSink = void (*)(const BoxStorageWorkEvent&);
 #endif
 
 /// Non-relational numerical property with finite non-Top support over stable
@@ -693,6 +715,7 @@ public:
     /// Installs a process-wide diagnostic sink. The caller owns the sink and
     /// must keep it valid until replacing it with nullptr.
     static void setStorageEventSink(BoxStorageEventSink sink) noexcept;
+    static void setStorageWorkSink(BoxStorageWorkSink sink) noexcept;
     BoxStorageSnapshot storageSnapshot() const;
 #endif
 
@@ -734,6 +757,10 @@ private:
 
             void repack(bool nextDirect)
             {
+#ifdef SVF_BOX_STORAGE_TELEMETRY
+                const auto beforeBytes = allocatedBytes();
+                const auto copied = size();
+#endif
                 std::vector<BoundSlot> next;
                 next.reserve(nextDirect ? BoundsPerPage : size());
                 for (std::size_t offset = 0; offset < BoundsPerPage; ++offset)
@@ -745,6 +772,13 @@ private:
                 }
                 values.swap(next);
                 direct = nextDirect;
+#ifdef SVF_BOX_STORAGE_TELEMETRY
+                BoxDomain::emitStorageWork({nextDirect ? BoxStorageWorkKind::Promote :
+                                            BoxStorageWorkKind::Demote,
+                                            size(), copied, 0, allocatedBytes(),
+                                            beforeBytes + allocatedBytes(), direct
+                                           });
+#endif
             }
 #endif
 
@@ -774,14 +808,27 @@ private:
 #ifdef SVF_BOX_ADAPTIVE_PAGES
                 if (direct)
                 {
+#ifdef SVF_BOX_STORAGE_TELEMETRY
+                    const bool existed = mask & (1u << offset);
+#endif
                     values[offset] = std::move(value);
                     mask |= 1u << offset;
+#ifdef SVF_BOX_STORAGE_TELEMETRY
+                    BoxDomain::emitStorageWork({existed ? BoxStorageWorkKind::Update :
+                                                BoxStorageWorkKind::Insert, size(), 0, 0, 0, 0, true
+                                               });
+#endif
                     return;
                 }
 #endif
                 const auto index = rank(offset);
                 if (mask & (1u << offset))
+                {
                     values[index] = std::move(value);
+#ifdef SVF_BOX_STORAGE_TELEMETRY
+                    BoxDomain::emitStorageWork({BoxStorageWorkKind::Update, size(), 0, 0, 0, 0, false});
+#endif
+                }
                 else
                 {
                     if (values.size() == values.capacity())
@@ -789,9 +836,20 @@ private:
                         const auto capacity = values.capacity();
                         values.reserve(capacity == 0 ? 1 :
                                        capacity * 2 < BoundsPerPage ? capacity * 2 : BoundsPerPage);
+#ifdef SVF_BOX_STORAGE_TELEMETRY
+                        BoxDomain::emitStorageWork({BoxStorageWorkKind::Grow, size(), 0,
+                                                    size(), allocatedBytes(),
+                                                    capacity * sizeof(BoundSlot) + allocatedBytes(), false
+                                                   });
+#endif
                     }
                     values.insert(values.begin() + index, std::move(value));
                     mask |= 1u << offset;
+#ifdef SVF_BOX_STORAGE_TELEMETRY
+                    BoxDomain::emitStorageWork({BoxStorageWorkKind::Insert, size(), 0,
+                                                size() - index - 1, 0, 0, false
+                                               });
+#endif
                 }
 #ifdef SVF_BOX_ADAPTIVE_PAGES
                 if (values.size() >= 6)
@@ -807,17 +865,36 @@ private:
                 {
                     values[offset] = {Variable(0), Interval::top()};
                     mask &= ~(1u << offset);
+#ifdef SVF_BOX_STORAGE_TELEMETRY
+                    BoxDomain::emitStorageWork({BoxStorageWorkKind::Erase, size(), 0, 0, 0, 0, true});
+#endif
                     if (size() <= 2)
                         repack(false);
                     return;
                 }
 #endif
-                values.erase(values.begin() + rank(offset));
+                const auto index = rank(offset);
+                values.erase(values.begin() + index);
                 mask &= ~(1u << offset);
+#ifdef SVF_BOX_STORAGE_TELEMETRY
+                BoxDomain::emitStorageWork({BoxStorageWorkKind::Erase, size(), 0,
+                                            size() - index, 0, 0, false
+                                           });
+#endif
                 // Hysteresis avoids allocating on every erase/reinsert pair.
                 // A COW clone also copies only live slots, not spare capacity.
                 if (values.size() * 4 <= values.capacity())
+                {
+#ifdef SVF_BOX_STORAGE_TELEMETRY
+                    const auto beforeBytes = allocatedBytes();
+#endif
                     std::vector<BoundSlot>(values).swap(values);
+#ifdef SVF_BOX_STORAGE_TELEMETRY
+                    BoxDomain::emitStorageWork({BoxStorageWorkKind::Shrink, size(), size(),
+                                                0, allocatedBytes(), beforeBytes + allocatedBytes(), false
+                                               });
+#endif
+                }
             }
             std::size_t size() const
             {
@@ -857,11 +934,26 @@ private:
             }
             void set(std::size_t offset, BoundSlot value)
             {
+#ifdef SVF_BOX_STORAGE_TELEMETRY
+                const bool existed = values[offset].has_value();
+#endif
                 values[offset] = std::move(value);
+#ifdef SVF_BOX_STORAGE_TELEMETRY
+                BoxDomain::emitStorageWork({existed ? BoxStorageWorkKind::Update :
+                                            BoxStorageWorkKind::Insert, size(), 0, 0, 0, 0, true
+                                           });
+#endif
             }
             void erase(std::size_t offset)
             {
+#ifdef SVF_BOX_STORAGE_TELEMETRY
+                const bool existed = values[offset].has_value();
+#endif
                 values[offset].reset();
+#ifdef SVF_BOX_STORAGE_TELEMETRY
+                if (existed)
+                    BoxDomain::emitStorageWork({BoxStorageWorkKind::Erase, size(), 0, 0, 0, 0, true});
+#endif
             }
             std::size_t size() const
             {
@@ -948,6 +1040,7 @@ private:
                                  std::uint64_t parentPageId = 0) noexcept;
     static void emitDirectoryDetach(std::size_t directoryEntries) noexcept;
     static void emitDirectoryChunkDetach(std::size_t pageEntries) noexcept;
+    static void emitStorageWork(const BoxStorageWorkEvent& event) noexcept;
     static std::size_t occupiedSlots(const BoundPage& page) noexcept;
 #endif
     void eraseBound(Variable variable);

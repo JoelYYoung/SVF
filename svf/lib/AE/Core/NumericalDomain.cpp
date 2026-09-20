@@ -51,6 +51,7 @@ namespace SVF::AbstractDomain
 namespace
 {
 std::atomic<BoxStorageEventSink> boxStorageEventSink{nullptr};
+std::atomic<BoxStorageWorkSink> boxStorageWorkSink{nullptr};
 std::atomic<std::uint64_t> nextBoxStoragePageId{1};
 std::atomic<std::uint64_t> nextBoxStorageSequence{1};
 } // namespace
@@ -2536,6 +2537,17 @@ void BoxDomain::setStorageEventSink(BoxStorageEventSink sink) noexcept
     boxStorageEventSink.store(sink, std::memory_order_release);
 }
 
+void BoxDomain::setStorageWorkSink(BoxStorageWorkSink sink) noexcept
+{
+    boxStorageWorkSink.store(sink, std::memory_order_release);
+}
+
+void BoxDomain::emitStorageWork(const BoxStorageWorkEvent& event) noexcept
+{
+    if (const auto sink = boxStorageWorkSink.load(std::memory_order_acquire))
+        sink(event);
+}
+
 std::size_t BoxDomain::occupiedSlots(const BoundPage& page) noexcept
 {
     return page.bounds.size();
@@ -2597,6 +2609,18 @@ std::shared_ptr<BoxDomain::BoundPage> BoxDomain::clonePage(
     page->parentStorageId = source.storageId;
     page->storageIndex = source.storageIndex;
     emitStorageEvent(reason, *page, source.storageId);
+#if defined(SVF_BOX_PACKED_PAGES) || defined(SVF_BOX_ADAPTIVE_PAGES)
+    const auto copied = source.bounds.values.size();
+    const auto allocated = page->bounds.allocatedBytes();
+    const auto overlap = allocated + source.bounds.allocatedBytes();
+#else
+    const auto copied = source.bounds.size();
+    const auto allocated = sizeof(page->bounds.values);
+    const auto overlap = allocated + sizeof(source.bounds.values);
+#endif
+    emitStorageWork({BoxStorageWorkKind::Clone, source.bounds.size(), copied, 0,
+                     allocated, overlap, source.bounds.directIndexed()
+                    });
     return page;
 }
 
