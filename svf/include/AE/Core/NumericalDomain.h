@@ -595,6 +595,7 @@ struct BoxStoragePageSnapshot
     std::size_t rationalUsedLimbBytes = 0;
     std::string canonicalContent;
     std::size_t shallowBytes = 0;
+    bool directIndexedSlots = false;
 };
 
 struct BoxStorageDirectoryChunkSnapshot
@@ -722,9 +723,39 @@ private:
         /// construct only present slots; vector capacity is included in census.
         struct Slots
         {
-#ifdef SVF_BOX_PACKED_PAGES
+#if defined(SVF_BOX_PACKED_PAGES) || defined(SVF_BOX_ADAPTIVE_PAGES)
             std::vector<BoundSlot> values;
             unsigned mask = 0;
+#ifdef SVF_BOX_ADAPTIVE_PAGES
+            // Density-only control: promote at 6/8, demote at 2/8. Fixed
+            // thresholds deliberately leave a wide hysteresis band. No program
+            // identity or future trace informs this experimental policy.
+            bool direct = false;
+
+            void repack(bool nextDirect)
+            {
+                std::vector<BoundSlot> next;
+                next.reserve(nextDirect ? BoundsPerPage : size());
+                for (std::size_t offset = 0; offset < BoundsPerPage; ++offset)
+                {
+                    if (const BoundSlot* slot = find(offset))
+                        next.push_back(*slot);
+                    else if (nextDirect)
+                        next.push_back({Variable(0), Interval::top()});
+                }
+                values.swap(next);
+                direct = nextDirect;
+            }
+#endif
+
+            bool directIndexed() const
+            {
+#ifdef SVF_BOX_ADAPTIVE_PAGES
+                return direct;
+#else
+                return false;
+#endif
+            }
 
             std::size_t rank(std::size_t offset) const
             {
@@ -735,10 +766,19 @@ private:
             }
             const BoundSlot* find(std::size_t offset) const
             {
-                return mask & (1u << offset) ? &values[rank(offset)] : nullptr;
+                return mask & (1u << offset) ?
+                       &values[directIndexed() ? offset : rank(offset)] : nullptr;
             }
             void set(std::size_t offset, BoundSlot value)
             {
+#ifdef SVF_BOX_ADAPTIVE_PAGES
+                if (direct)
+                {
+                    values[offset] = std::move(value);
+                    mask |= 1u << offset;
+                    return;
+                }
+#endif
                 const auto index = rank(offset);
                 if (mask & (1u << offset))
                     values[index] = std::move(value);
@@ -753,11 +793,25 @@ private:
                     values.insert(values.begin() + index, std::move(value));
                     mask |= 1u << offset;
                 }
+#ifdef SVF_BOX_ADAPTIVE_PAGES
+                if (values.size() >= 6)
+                    repack(true);
+#endif
             }
             void erase(std::size_t offset)
             {
                 if (!(mask & (1u << offset)))
                     return;
+#ifdef SVF_BOX_ADAPTIVE_PAGES
+                if (direct)
+                {
+                    values[offset] = {Variable(0), Interval::top()};
+                    mask &= ~(1u << offset);
+                    if (size() <= 2)
+                        repack(false);
+                    return;
+                }
+#endif
                 values.erase(values.begin() + rank(offset));
                 mask &= ~(1u << offset);
                 // Hysteresis avoids allocating on every erase/reinsert pair.
@@ -767,7 +821,7 @@ private:
             }
             std::size_t size() const
             {
-                return values.size();
+                return directIndexed() ? rank(BoundsPerPage) : values.size();
             }
             std::size_t allocatedBytes() const
             {
@@ -775,10 +829,27 @@ private:
             }
             bool operator!=(const Slots& other) const
             {
+#ifdef SVF_BOX_ADAPTIVE_PAGES
+                if (mask != other.mask)
+                    return true;
+                // Hysteresis permits equal contents in different layouts.
+                // Empty direct slots contain placeholders, never constraints.
+                for (std::size_t offset = 0; offset < BoundsPerPage; ++offset)
+                    if ((mask & (1u << offset)) &&
+                            !(*find(offset) == *other.find(offset)))
+                        return true;
+                return false;
+#else
                 return mask != other.mask || values != other.values;
+#endif
             }
 #else
             std::array<std::optional<BoundSlot>, BoundsPerPage> values;
+
+            bool directIndexed() const
+            {
+                return true;
+            }
 
             const BoundSlot* find(std::size_t offset) const
             {

@@ -2675,7 +2675,8 @@ BoxStorageSnapshot BoxDomain::storageSnapshot() const
             entry.page->storageId, entry.page->parentStorageId, entry.index,
             static_cast<std::size_t>(entry.page.use_count()), occupied,
             rationalUsedLimbBytes, std::move(canonicalContent),
-            sizeof(BoundPage) + entry.page->bounds.allocatedBytes()});
+            sizeof(BoundPage) + entry.page->bounds.allocatedBytes(),
+            entry.page->bounds.directIndexed()});
     }
     return snapshot;
 }
@@ -2683,7 +2684,9 @@ BoxStorageSnapshot BoxDomain::storageSnapshot() const
 
 const char* BoxDomain::storageRepresentation() noexcept
 {
-#ifdef SVF_BOX_PACKED_PAGES
+#ifdef SVF_BOX_ADAPTIVE_PAGES
+    return "chunk8/adaptive8";
+#elif defined(SVF_BOX_PACKED_PAGES)
     return "chunk8/packed8";
 #else
     return "chunk8/inline8";

@@ -239,7 +239,7 @@ void contract()
     std::cout << "contract=pass masks=256 mask_pairs=65536 random_steps=2000\n";
 }
 
-void workload(unsigned occupancy, unsigned rounds)
+void workload(unsigned occupancy, unsigned rounds, bool churn = false)
 {
     check(occupancy >= 1 && occupancy <= 8 && rounds > 0, "invalid workload");
     constexpr unsigned pageCount = 512;
@@ -259,6 +259,15 @@ void workload(unsigned occupancy, unsigned rounds)
         {
             live[destination].forget(variable);
             live[destination].assign(variable, LinearExpression(Rational(round % 53)));
+        }
+        if (churn)
+        {
+            const auto base = variable.id() / 8 * 8;
+            for (unsigned offset = 1; offset < occupancy; ++offset)
+                live[destination].forget(Variable(base + offset));
+            for (unsigned offset = 1; offset < occupancy; ++offset)
+                live[destination].assign(Variable(base + offset),
+                                         LinearExpression(Rational(offset)));
         }
         if (round % 11 == 0)
             live[destination].joinWith(live[(round + 3) % live.size()]);
@@ -281,6 +290,94 @@ void workload(unsigned occupancy, unsigned rounds)
 #endif
     std::cout << '\n';
 }
+
+#ifdef SVF_BOX_ADAPTIVE_PAGES
+void adaptiveContract()
+{
+    std::vector<Variable> variables;
+    for (unsigned slot = 0; slot < 8; ++slot)
+        variables.emplace_back(slot);
+    const auto fill = [](BoxDomain& box, unsigned count)
+    {
+        for (unsigned slot = 0; slot < count; ++slot)
+            box.assign(Variable(slot), LinearExpression(Rational(slot)));
+    };
+    const auto checkLayout = [](const BoxDomain& box, bool direct)
+    {
+#ifdef SVF_BOX_STORAGE_TELEMETRY
+        const auto snapshot = box.storageSnapshot();
+        check(snapshot.pages.size() == 1 &&
+              snapshot.pages.front().directIndexedSlots == direct,
+              "adaptive page hysteresis mismatch");
+#else
+        (void)box;
+        (void)direct;
+#endif
+    };
+    BoxDomain packed = BoxDomain::top();
+    fill(packed, 3);
+    BoxDomain direct = BoxDomain::top();
+    fill(direct, 8);
+    for (unsigned slot = 3; slot < 8; ++slot)
+        direct.forget(Variable(slot));
+    checkLayout(packed, false);
+    checkLayout(direct, true);
+    check(packed.isEquivalentTo(direct) == CheckResult::True &&
+          packed.hash() == direct.hash() && packed.serializeRaw() == direct.serializeRaw(),
+          "equal contents depend on physical layout");
+    Reference expected;
+    for (unsigned slot = 0; slot < 3; ++slot)
+        expected.values.emplace(Variable(slot), Interval::singleton(Rational(slot)));
+    for (unsigned operation = 0; operation < 4; ++operation)
+        for (bool reverse :
+                {
+                    false, true
+                })
+        {
+            BoxDomain result = reverse ? direct : packed;
+            Reference reference = expected;
+            combine(result, reference, reverse ? packed : direct, expected,
+                    operation, variables);
+            verify(result, reference, variables);
+        }
+    const BoxDomain oldPacked = packed;
+    const BoxDomain oldDirect = direct;
+    // Churn inside the hysteresis band must preserve the current layout.
+    for (unsigned round = 0; round < 128; ++round)
+    {
+        fill(packed, 5);
+        fill(direct, 5);
+        checkLayout(packed, false);
+        checkLayout(direct, true);
+        packed.forget(Variable(4));
+        direct.forget(Variable(4));
+        checkLayout(packed, false);
+        checkLayout(direct, true);
+        verify(oldPacked, expected, variables);
+        verify(oldDirect, expected, variables);
+    }
+    fill(packed, 6);
+    checkLayout(packed, true);
+    for (unsigned slot = 2; slot < 8; ++slot)
+        packed.forget(Variable(slot));
+    checkLayout(packed, false);
+    packed.forget(Variable(0));
+    packed.forget(Variable(1));
+    check(packed.isTop(), "empty adaptive page not removed");
+    for (unsigned round = 0; round < 64; ++round)
+    {
+        fill(packed, 6);
+        const BoxDomain snapshot = packed;
+        for (unsigned slot = 2; slot < 6; ++slot)
+            packed.forget(Variable(slot));
+        checkLayout(packed, false);
+        checkLayout(snapshot, true);
+        check(snapshot.bound(Variable(5)) == Interval::singleton(Rational(5)) &&
+              packed.bound(Variable(5)).isTop(), "conversion changed old snapshot");
+    }
+    std::cout << "adaptive_contract=pass cross_layout_ops=8 hysteresis_rounds=128 conversion_cycles=64\n";
+}
+#endif
 }
 
 int main(int argc, char** argv)
@@ -289,5 +386,13 @@ int main(int argc, char** argv)
     if (argc == 2 && std::string(argv[1]) == "--identity") return 0;
     if (argc == 4 && std::string(argv[1]) == "--bench")
         workload(std::stoul(argv[2]), std::stoul(argv[3]));
-    else contract();
+    else if (argc == 4 && std::string(argv[1]) == "--churn")
+        workload(std::stoul(argv[2]), std::stoul(argv[3]), true);
+    else
+    {
+        contract();
+#ifdef SVF_BOX_ADAPTIVE_PAGES
+        adaptiveContract();
+#endif
+    }
 }

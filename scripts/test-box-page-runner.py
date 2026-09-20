@@ -48,6 +48,13 @@ class IdentityGate(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "unexpected core library"):
                 RUNNER["fingerprint"](self.build, "inline")
 
+    def test_adaptive_identity_is_distinct(self):
+        with patch("subprocess.check_output", side_effect=self.commands(identity="adaptive")):
+            fingerprint = RUNNER["fingerprint"](self.build, "adaptive")
+            self.assertEqual(fingerprint["identity"], "representation=chunk8/adaptive8")
+            with self.assertRaisesRegex(RuntimeError, "wrong runtime layout"):
+                RUNNER["fingerprint"](self.build, "packed")
+
 
 if __name__ == "__main__":
     unittest.main()

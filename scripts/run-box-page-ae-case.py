@@ -52,9 +52,13 @@ def main():
     parser.add_argument("--phase", choices=("semantic", "performance"), required=True)
     parser.add_argument("--result-set", required=True)
     parser.add_argument("--semantic-result", type=Path)
-    parser.add_argument("--first", choices=("inline", "packed"), default="inline")
+    parser.add_argument("--candidate", choices=("packed", "adaptive"), default="packed")
+    parser.add_argument("--first", choices=("inline", "packed", "adaptive"), default="inline")
     args = parser.parse_args()
-    builds = {layout: args.study / f"build-page-{layout}-v1" for layout in ("inline", "packed")}
+    layouts = ("inline", args.candidate)
+    if args.first not in layouts:
+        parser.error("--first must be inline or the selected candidate")
+    builds = {layout: args.study / f"build-page-{layout}-v1" for layout in layouts}
     output = args.study / "results" / args.result_set / args.mode / args.program
     output.mkdir(parents=True, exist_ok=False)
     extapi = args.study / "build-original/lib/extapi.bc"
@@ -81,7 +85,7 @@ def main():
             raise RuntimeError("the two representations resolved to identical core binaries")
         state["manifest"] = manifest
         save()
-        order = (args.first, "packed" if args.first == "inline" else "inline")
+        order = (args.first, args.candidate if args.first == "inline" else "inline")
         if args.phase == "semantic":
             projections = []
             for repeat in range(2):
