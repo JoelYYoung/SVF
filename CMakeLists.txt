@@ -98,6 +98,8 @@ option(SVF_ENABLE_ASSERTIONS "Always enable debugging assertions, also if the bu
 option(SVF_ENABLE_RTTI "Adds -fno-rtti to disable runtime type information (RTTI)" ON)
 option(SVF_ENABLE_EXCEPTIONS "Adds -fno-exceptions to disable exception handling" ON)
 option(SVF_BOX_STORAGE_TELEMETRY "Build experimental Box physical-storage telemetry" OFF)
+option(SVF_BOX_PACKED_PAGES "Build experimental bitmap-ranked packed Box pages" OFF)
+option(SVF_BUILD_BOX_PAGE_TESTS "Build experimental Box page contract and workload tests" OFF)
 option(SVF_BUILD_BOX_STORAGE_OBSERVER "Build the experimental Box storage observer" OFF)
 if(SVF_BOX_STORAGE_TELEMETRY)
   add_compile_definitions(SVF_BOX_STORAGE_TELEMETRY)
@@ -340,6 +342,11 @@ endif()
 
 add_subdirectory(svf)
 add_subdirectory(svf-llvm)
+if(SVF_BUILD_BOX_PAGE_TESTS)
+  add_executable(box-page-contract scripts/box-page-contract.cpp)
+  target_link_libraries(box-page-contract PRIVATE AbstractDomainCore)
+  add_test(NAME box-page-contract COMMAND box-page-contract)
+endif()
 
 # =================================================================================
 # SVF build configuration handling (post linking LLVM)

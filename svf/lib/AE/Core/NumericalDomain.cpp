@@ -2538,9 +2538,7 @@ void BoxDomain::setStorageEventSink(BoxStorageEventSink sink) noexcept
 
 std::size_t BoxDomain::occupiedSlots(const BoundPage& page) noexcept
 {
-    return static_cast<std::size_t>(
-        std::count_if(page.bounds.begin(), page.bounds.end(),
-                      [](const auto& slot) { return slot.has_value(); }));
+    return page.bounds.size();
 }
 
 void BoxDomain::emitStorageEvent(BoxStorageEventKind kind,
@@ -2636,12 +2634,13 @@ BoxStorageSnapshot BoxDomain::storageSnapshot() const
     snapshot.pages.reserve(pages.size());
     for (const BoundPageEntry& entry : pages)
     {
+        snapshot.pageShallowBytes += entry.page->bounds.allocatedBytes();
         std::ostringstream content;
         std::size_t occupied = 0;
         std::size_t rationalUsedLimbBytes = 0;
         for (std::size_t offset = 0; offset < BoundsPerPage; ++offset)
         {
-            const std::optional<BoundSlot>& slot = entry.page->bounds[offset];
+            const BoundSlot* slot = entry.page->bounds.find(offset);
             if (!slot)
             {
                 content << offset << "=_;";
@@ -2649,7 +2648,8 @@ BoxStorageSnapshot BoxDomain::storageSnapshot() const
             }
             ++occupied;
             const NumericType& type = slot->variable.type();
-            const auto usedLimbBytes = [](const Bound& bound) {
+            const auto usedLimbBytes = [](const Bound& bound)
+            {
                 if (!bound.isFinite())
                     return std::size_t{0};
                 const mpq_srcptr value = bound.value().value().get_mpq_t();
@@ -2671,13 +2671,24 @@ BoxStorageSnapshot BoxDomain::storageSnapshot() const
         snapshot.occupiedIntervalShallowBytes += occupied * sizeof(Interval);
         snapshot.canonicalContentBytes += canonicalContent.size();
         snapshot.pages.push_back(
-            {entry.page->storageId, entry.page->parentStorageId, entry.index,
-             static_cast<std::size_t>(entry.page.use_count()), occupied,
-             rationalUsedLimbBytes, std::move(canonicalContent)});
+        {
+            entry.page->storageId, entry.page->parentStorageId, entry.index,
+            static_cast<std::size_t>(entry.page.use_count()), occupied,
+            rationalUsedLimbBytes, std::move(canonicalContent),
+            sizeof(BoundPage) + entry.page->bounds.allocatedBytes()});
     }
     return snapshot;
 }
 #endif
+
+const char* BoxDomain::storageRepresentation() noexcept
+{
+#ifdef SVF_BOX_PACKED_PAGES
+    return "chunk8/packed8";
+#else
+    return "chunk8/inline8";
+#endif
+}
 
 BoxDomain BoxDomain::top(const BoxSemanticConfig& config)
 {
@@ -3271,20 +3282,19 @@ void BoxDomain::joinDomain(const AbstractDomain& other)
 #endif
         for (std::size_t slot = 0; slot < BoundsPerPage; ++slot)
         {
-            std::optional<BoundSlot>& left = joined->bounds[slot];
-            const std::optional<BoundSlot>& right =
-                otherPage->page->bounds[slot];
+            BoundSlot* left = joined->bounds.find(slot);
+            const BoundSlot* right = otherPage->page->bounds.find(slot);
             if (!left)
                 continue;
             if (!right || left->variable != right->variable)
             {
-                left.reset();
+                joined->bounds.erase(slot);
                 continue;
             }
             left->interval =
                 joinIntervals(left->interval, right->interval);
             if (left->interval.isTop())
-                left.reset();
+                joined->bounds.erase(slot);
         }
         if (!pageIsEmpty(*joined))
             joinedPages.push_back({entry.index, std::move(joined)});
@@ -3409,8 +3419,8 @@ void BoxDomain::canonicalize(Variable variable)
         eraseBound(variable);
     else
         writablePage(variable.id() / BoundsPerPage)
-        .bounds[variable.id() % BoundsPerPage] =
-            BoundSlot{variable, std::move(interval)};
+        .bounds.set(variable.id() % BoundsPerPage,
+                    BoundSlot{variable, std::move(interval)});
 }
 
 void BoxDomain::setBound(Variable variable, Interval interval)
@@ -3422,8 +3432,8 @@ void BoxDomain::setBound(Variable variable, Interval interval)
         eraseBound(variable);
     else
         writablePage(variable.id() / BoundsPerPage)
-        .bounds[variable.id() % BoundsPerPage] =
-            BoundSlot{variable, std::move(interval)};
+        .bounds.set(variable.id() % BoundsPerPage,
+                    BoundSlot{variable, std::move(interval)});
     canonicalize(variable);
 }
 
@@ -3446,7 +3456,7 @@ const Interval& BoxDomain::boundAt(Variable variable) const
         iterator->chunk->pages[pageIndex % DirectoryPagesPerChunk];
     if (!page)
         return top;
-    const auto& slot = page->bounds[variable.id() % BoundsPerPage];
+    const auto* slot = page->bounds.find(variable.id() % BoundsPerPage);
     if (!slot)
         return top;
     if (slot->variable != variable)
@@ -3517,9 +3527,9 @@ void BoxDomain::eraseBound(Variable variable)
     if (!existingPage)
         return;
     const std::size_t offset = variable.id() % BoundsPerPage;
-    if (!existingPage->bounds[offset])
+    if (!existingPage->bounds.find(offset))
         return;
-    if (existingPage->bounds[offset]->variable != variable)
+    if (existingPage->bounds.find(offset)->variable != variable)
         throw std::invalid_argument(
             "Variable ID was reused with a different numeric type");
     BoundPageDirectory& directory = writablePageDirectory();
@@ -3547,7 +3557,7 @@ void BoxDomain::eraseBound(Variable variable)
 #else
         page = std::make_shared<BoundPage>(*page);
 #endif
-    page->bounds[offset].reset();
+    page->bounds.erase(offset);
     if (pageIsEmpty(*page))
         page.reset();
     if (std::none_of(iterator->chunk->pages.begin(),
@@ -3558,11 +3568,7 @@ void BoxDomain::eraseBound(Variable variable)
 
 bool BoxDomain::pageIsEmpty(const BoundPage& page)
 {
-    return std::none_of(page.bounds.begin(), page.bounds.end(),
-                        [](const auto& bound)
-    {
-        return bound.has_value();
-    });
+    return page.bounds.size() == 0;
 }
 
 std::vector<Variable> BoxDomain::boundedVariables() const
@@ -3575,8 +3581,9 @@ std::vector<Variable> BoxDomain::boundedVariables() const
         {
             if (!page)
                 continue;
-            for (const std::optional<BoundSlot>& slot : page->bounds)
+            for (std::size_t offset = 0; offset < BoundsPerPage; ++offset)
             {
+                const BoundSlot* slot = page->bounds.find(offset);
                 if (slot)
                     variables.push_back(slot->variable);
             }
@@ -3599,8 +3606,9 @@ std::vector<Variable> BoxDomain::boundedVariablesBefore(
         {
             if (!page)
                 continue;
-            for (const std::optional<BoundSlot>& slot : page->bounds)
+            for (std::size_t offset = 0; offset < BoundsPerPage; ++offset)
             {
+                const BoundSlot* slot = page->bounds.find(offset);
                 if (slot && slot->variable.id() < upperBound)
                     variables.push_back(slot->variable);
             }

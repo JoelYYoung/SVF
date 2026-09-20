@@ -594,6 +594,7 @@ struct BoxStoragePageSnapshot
     std::size_t occupiedSlots = 0;
     std::size_t rationalUsedLimbBytes = 0;
     std::string canonicalContent;
+    std::size_t shallowBytes = 0;
 };
 
 struct BoxStorageDirectoryChunkSnapshot
@@ -641,6 +642,8 @@ public:
 
     static BoxDomain top(const BoxSemanticConfig& config = {});
     static BoxDomain bottom(const BoxSemanticConfig& config = {});
+    /// Runtime library identity for representation experiments, not semantics.
+    static const char* storageRepresentation() noexcept;
     static BoxDomain fromConstraints(const LinearConstraintSet& constraints,
                                      const BoxSemanticConfig& config = {});
 
@@ -715,7 +718,102 @@ private:
 
     struct BoundPage
     {
-        std::array<std::optional<BoundSlot>, BoundsPerPage> bounds;
+        /// Stable offsets are independent of physical placement. Packed pages
+        /// construct only present slots; vector capacity is included in census.
+        struct Slots
+        {
+#ifdef SVF_BOX_PACKED_PAGES
+            std::vector<BoundSlot> values;
+            unsigned mask = 0;
+
+            std::size_t rank(std::size_t offset) const
+            {
+                unsigned bits = mask & ((1u << offset) - 1);
+                bits -= (bits >> 1) & 0x55u;
+                bits = (bits & 0x33u) + ((bits >> 2) & 0x33u);
+                return (bits + (bits >> 4)) & 0x0fu;
+            }
+            const BoundSlot* find(std::size_t offset) const
+            {
+                return mask & (1u << offset) ? &values[rank(offset)] : nullptr;
+            }
+            void set(std::size_t offset, BoundSlot value)
+            {
+                const auto index = rank(offset);
+                if (mask & (1u << offset))
+                    values[index] = std::move(value);
+                else
+                {
+                    if (values.size() == values.capacity())
+                    {
+                        const auto capacity = values.capacity();
+                        values.reserve(capacity == 0 ? 1 :
+                                       capacity * 2 < BoundsPerPage ? capacity * 2 : BoundsPerPage);
+                    }
+                    values.insert(values.begin() + index, std::move(value));
+                    mask |= 1u << offset;
+                }
+            }
+            void erase(std::size_t offset)
+            {
+                if (!(mask & (1u << offset)))
+                    return;
+                values.erase(values.begin() + rank(offset));
+                mask &= ~(1u << offset);
+                // Hysteresis avoids allocating on every erase/reinsert pair.
+                // A COW clone also copies only live slots, not spare capacity.
+                if (values.size() * 4 <= values.capacity())
+                    std::vector<BoundSlot>(values).swap(values);
+            }
+            std::size_t size() const
+            {
+                return values.size();
+            }
+            std::size_t allocatedBytes() const
+            {
+                return values.capacity() * sizeof(BoundSlot);
+            }
+            bool operator!=(const Slots& other) const
+            {
+                return mask != other.mask || values != other.values;
+            }
+#else
+            std::array<std::optional<BoundSlot>, BoundsPerPage> values;
+
+            const BoundSlot* find(std::size_t offset) const
+            {
+                return values[offset] ? &*values[offset] : nullptr;
+            }
+            void set(std::size_t offset, BoundSlot value)
+            {
+                values[offset] = std::move(value);
+            }
+            void erase(std::size_t offset)
+            {
+                values[offset].reset();
+            }
+            std::size_t size() const
+            {
+                std::size_t count = 0;
+                for (const auto& value : values)
+                    count += value.has_value();
+                return count;
+            }
+            std::size_t allocatedBytes() const
+            {
+                return 0;
+            }
+            bool operator!=(const Slots& other) const
+            {
+                return values != other.values;
+            }
+#endif
+            BoundSlot* find(std::size_t offset)
+            {
+                return const_cast<BoundSlot*>(
+                           static_cast<const Slots&>(*this).find(offset));
+            }
+        } bounds;
 #ifdef SVF_BOX_STORAGE_TELEMETRY
         BoundPage() = default;
         BoundPage(const BoundPage&) = delete;
@@ -773,7 +871,7 @@ private:
 #ifdef SVF_BOX_STORAGE_TELEMETRY
     static std::shared_ptr<BoundPage> allocatePage(std::size_t pageIndex);
     static std::shared_ptr<BoundPage> clonePage(const BoundPage& source,
-                                                BoxStorageEventKind reason);
+            BoxStorageEventKind reason);
     static void emitStorageEvent(BoxStorageEventKind kind,
                                  const BoundPage& page,
                                  std::uint64_t parentPageId = 0) noexcept;

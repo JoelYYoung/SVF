@@ -162,7 +162,6 @@ struct CarrierStorage
     std::size_t bottomStates = 0;
     std::size_t logicalPageReferences = 0;
     std::size_t directoryAllocatedBytes = 0;
-    std::size_t pageObjectBytes = 0;
     std::size_t slotsPerPage = 0;
     std::size_t logicalDirectoryChunks = 0;
     std::size_t logicalPhysicalDirectoryChunks = 0;
@@ -197,8 +196,6 @@ struct CarrierStorage
             slotsPerPage = snapshot.slotsPerPage;
         else if (slotsPerPage != snapshot.slotsPerPage)
             throw std::runtime_error("inconsistent Box page width");
-        if (!snapshot.pages.empty())
-            pageObjectBytes = snapshot.pageShallowBytes / snapshot.pages.size();
 
         DirectoryContent directory;
         directory.bottom = snapshot.bottom;
@@ -244,6 +241,7 @@ struct CarrierStorage
     {
         std::size_t occupied = 0;
         std::size_t rationalBytes = 0;
+        std::size_t pageBytes = 0;
         std::size_t maxReferences = 0;
         std::size_t uniqueDirectoryAllocatedBytes = 0;
         std::size_t uniqueDirectoryChunkPageEntries = 0;
@@ -259,6 +257,7 @@ struct CarrierStorage
             const BoxStoragePageSnapshot &page = entry.second;
             occupied += page.occupiedSlots;
             rationalBytes += page.rationalUsedLimbBytes;
+            pageBytes += page.shallowBytes;
             maxReferences = std::max(maxReferences, page.referenceCount);
         }
         const std::size_t uniquePages = pages.size();
@@ -305,17 +304,17 @@ struct CarrierStorage
                 << logicalPhysicalDirectoryChunks
                 << " logical_physical_directory_chunk_empty_slots="
                 << logicalPhysicalDirectoryChunks * DirectoryChunkEntries -
-                   logicalPageReferences
+                logicalPageReferences
                 << " unique_directory_chunks="
                 << physicalDirectoryChunks.size()
                 << " unique_directory_chunk_page_entries="
                 << uniqueDirectoryChunkPageEntries
                 << " unique_directory_chunk_empty_slots="
                 << physicalDirectoryChunks.size() * DirectoryChunkEntries -
-                   uniqueDirectoryChunkPageEntries
+                uniqueDirectoryChunkPageEntries
                 << " unique_directory_allocated_bytes="
                 << uniqueDirectoryAllocatedBytes
-                << " unique_page_shallow_bytes=" << uniquePages * pageObjectBytes
+                << " unique_page_shallow_bytes=" << pageBytes
                 << " unique_index_shallow_bytes=" << occupied * sizeof(Variable)
                 << " unique_interval_shallow_bytes=" << occupied * sizeof(Interval)
                 << " unique_rational_used_limb_bytes=" << rationalBytes

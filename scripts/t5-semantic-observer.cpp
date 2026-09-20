@@ -27,6 +27,10 @@ using namespace SVFUtil;
 
 int main(int argc, char** argv)
 {
+#ifdef SVF_BOX_PAGE_IDENTITY
+    SVFUtil::outs() << "BOX_REPRESENTATION "
+                   << SVF::AbstractDomain::BoxDomain::storageRepresentation() << '\n';
+#endif
     std::vector<char*> arguments(argv, argv + argc);
     arguments.reserve(static_cast<std::size_t>(argc) + 3);
     const auto hasOption = [&](std::string_view option)

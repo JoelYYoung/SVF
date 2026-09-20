@@ -23,6 +23,9 @@ set(ABSTRACT_DOMAIN_CORE_SOURCES
     ${CMAKE_CURRENT_LIST_DIR}/lib/AE/Core/NumericalDomain.cpp
 )
 add_library(AbstractDomainCore)
+if(SVF_BOX_PACKED_PAGES)
+  target_compile_definitions(AbstractDomainCore PUBLIC SVF_BOX_PACKED_PAGES)
+endif()
 add_library(SVF::AbstractDomainCore ALIAS AbstractDomainCore)
 target_compile_features(AbstractDomainCore PUBLIC cxx_std_17)
 target_sources(
