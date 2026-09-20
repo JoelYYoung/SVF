@@ -18,6 +18,7 @@ def digest(path):
 def parse_storage(text):
     carriers = {}
     events = None
+    occupancy = {}
     for line in text.splitlines():
         if line.startswith("BOX_STORAGE_CARRIER "):
             values = dict(item.split("=", 1) for item in line.split()[1:])
@@ -30,9 +31,48 @@ def parse_storage(text):
                 raise ValueError("duplicate event record")
             events = {key: int(value) for key, value in
                       (item.split("=", 1) for item in line.split()[1:])}
+        elif line.startswith("BOX_STORAGE_OCCUPANCY "):
+            fields = [item.split("=", 1) for item in line.split()[1:]]
+            values = dict(fields)
+            if len(values) != len(fields):
+                raise ValueError("duplicate occupancy field")
+            scope, name = values.pop("scope"), values.pop("name")
+            key = f"{scope}:{name}"
+            if key in occupancy:
+                raise ValueError("duplicate occupancy record")
+            bins = {}
+            for field, value in values.items():
+                if not re.fullmatch(r"used(0|[1-9][0-9]*)", field):
+                    raise ValueError("invalid occupancy bucket")
+                count = int(value)
+                if count <= 0:
+                    raise ValueError("invalid occupancy count")
+                bins[int(field[4:])] = count
+            occupancy[key] = bins
     if len(carriers) != 2 or events is None:
         raise ValueError("missing storage census")
-    return {"carriers": carriers, "events": events}
+    result = {"carriers": carriers, "events": events}
+    # Old frozen census logs remain readable. New logs must be complete and
+    # self-consistent; partial histograms must never look like zero observations.
+    if occupancy:
+        event_names = {"allocate_empty": "allocate", "detach_before": "detach",
+                       "release": "release", "write_unique_before": "write_unique",
+                       "erase_unique_before": "erase_unique", "join_shared": "join_shared",
+                       "join_clone_before": "join_materialized"}
+        expected = {f"event:{name}" for name in event_names}
+        expected.update(f"retained:{role}" for role in carriers)
+        if set(occupancy) != expected:
+            raise ValueError("incomplete occupancy records")
+        for name, event in event_names.items():
+            if sum(occupancy[f"event:{name}"].values()) != events[event]:
+                raise ValueError("occupancy event total mismatch")
+        for role, carrier in carriers.items():
+            bins = occupancy[f"retained:{role}"]
+            if (sum(bins.values()) != carrier["unique_pages"] or
+                    sum(used * count for used, count in bins.items()) != carrier["occupied_slots"]):
+                raise ValueError("occupancy retained total mismatch")
+        result["occupancy"] = occupancy
+    return result
 
 
 def fingerprint(build, layout):
@@ -60,6 +100,9 @@ def main():
     parser.add_argument("--mode", choices=("semi-sparse", "sparse"), required=True)
     parser.add_argument("--first", choices=("inline", "packed"), default="inline")
     parser.add_argument("--cap-seconds", type=int, required=True)
+    parser.add_argument("--build-suffix", default="census-v1")
+    parser.add_argument("--result-set", default="page-layout-census-v1")
+    parser.add_argument("--require-occupancy", action="store_true")
     args = parser.parse_args()
     gate_path = args.study / "results/page-layout-semantic-v1" / args.mode / args.program / "result.json"
     gate = json.loads(gate_path.read_text())
@@ -71,7 +114,7 @@ def main():
     for key, path in (("input", bitcode), ("extapi", extapi)):
         if digest(path) != gate["manifest"][key + "_sha256"]:
             raise ValueError(f"{key} changed")
-    output = args.study / "results/page-layout-census-v1" / args.mode / args.program
+    output = args.study / "results" / args.result_set / args.mode / args.program
     output.mkdir(parents=True, exist_ok=False)
     helper = args.study / "page-runner-v1/scripts/run-t5-storage-performance-case.py"
     run_variant = runpy.run_path(str(helper))["run_variant"]
@@ -90,7 +133,7 @@ def main():
         order = [args.first, "packed" if args.first == "inline" else "inline"]
         audits = []
         for layout in order:
-            build = args.study / f"build-page-{layout}-census-v1"
+            build = args.study / f"build-page-{layout}-{args.build_suffix}"
             before = fingerprint(build, layout)
             record = run_variant(build / "bin/box-storage-observer", extapi,
                                  bitcode, args.cap_seconds, output / layout, args.mode)
@@ -104,6 +147,8 @@ def main():
             record["audit_sha256"] = hashlib.sha256("\n".join(audit).encode()).hexdigest()
             state["runs"].append(record)
             save()
+            if args.require_occupancy and "occupancy" not in record:
+                raise ValueError("missing required occupancy histograms")
             if not audit:
                 raise ValueError("empty value audit")
             audits.append(audit)
@@ -123,6 +168,8 @@ def main():
                 raise ValueError(f"unexpected structural census difference: {role}")
         if state["runs"][0]["events"] != state["runs"][1]["events"]:
             raise ValueError("unexpected COW event difference")
+        if state["runs"][0].get("occupancy") != state["runs"][1].get("occupancy"):
+            raise ValueError("unexpected occupancy distribution difference")
         state["passed"] = True
     except Exception as error:
         state["error"] = str(error)

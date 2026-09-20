@@ -23,6 +23,7 @@
 #include <array>
 #include <iterator>
 #include <limits>
+#include <map>
 #include <unordered_map>
 #include <unordered_set>
 #endif
@@ -36,11 +37,25 @@ namespace
 {
 using namespace SVF::AbstractDomain;
 
+using OccupancyHistogram = std::map<std::size_t, std::uint64_t>;
+
+void printOccupancy(const char *scope, const char *name,
+                    const OccupancyHistogram &histogram)
+{
+    SVFUtil::outs() << "BOX_STORAGE_OCCUPANCY scope=" << scope
+                    << " name=" << name;
+    for (const auto &bin : histogram)
+        SVFUtil::outs() << " used" << bin.first << '=' << bin.second;
+    SVFUtil::outs() << '\n';
+}
+
 struct StorageEvents
 {
     std::array<std::uint64_t,
         static_cast<std::size_t>(BoxStorageEventKind::Count)>
         counts{};
+    std::array<OccupancyHistogram,
+        static_cast<std::size_t>(BoxStorageEventKind::Count)> occupancy;
     std::unordered_set<std::uint64_t> livePages;
     std::size_t peakLivePages = 0;
     std::size_t directoryEntriesCopied = 0;
@@ -55,6 +70,9 @@ std::size_t eventIndex(BoxStorageEventKind kind)
 void collectStorageEvent(const BoxStorageEvent &event)
 {
     ++storageEvents.counts[eventIndex(event.kind)];
+    if (event.kind != BoxStorageEventKind::DirectoryDetach &&
+            event.kind != BoxStorageEventKind::DirectoryChunkDetach)
+        ++storageEvents.occupancy[eventIndex(event.kind)][event.occupiedSlots];
     if (event.kind == BoxStorageEventKind::PageAllocate ||
             event.kind == BoxStorageEventKind::PageDetach ||
             event.kind == BoxStorageEventKind::JoinMaterializedPage)
@@ -239,6 +257,7 @@ struct CarrierStorage
 
     void print(const char *role) const
     {
+        OccupancyHistogram occupancy;
         std::size_t occupied = 0;
         std::size_t rationalBytes = 0;
         std::size_t pageBytes = 0;
@@ -255,6 +274,7 @@ struct CarrierStorage
         for (const auto &entry : pages)
         {
             const BoxStoragePageSnapshot &page = entry.second;
+            ++occupancy[page.occupiedSlots];
             occupied += page.occupiedSlots;
             rationalBytes += page.rationalUsedLimbBytes;
             pageBytes += page.shallowBytes;
@@ -340,8 +360,55 @@ struct CarrierStorage
                 << " nearest_directory_edit_sum=" << nearestEditSum
                 << " nearest_directory_edit_max=" << nearestEditMax
                 << '\n';
+        // Count each physical page once per carrier, not once per state reference.
+        printOccupancy("retained", role, occupancy);
     }
 };
+
+void testStorageOccupancy()
+{
+    const auto check = [](bool condition)
+    {
+        if (!condition)
+            throw std::runtime_error("Box occupancy event contract failed");
+    };
+    // Validate the observation boundary against real mutations for every density.
+    const std::size_t width = BoxDomain::top().storageSnapshot().slotsPerPage;
+    for (std::size_t used = 1; used <= width; ++used)
+    {
+        storageEvents = StorageEvents{};
+        {
+            BoxDomain box = BoxDomain::top();
+            for (std::size_t slot = 0; slot < used; ++slot)
+                box.assign(Variable(slot), LinearExpression(Rational(slot)));
+            check(storageEvents.occupancy[eventIndex(BoxStorageEventKind::PageAllocate)] ==
+            OccupancyHistogram{{0, 1}});
+            const auto &writes = storageEvents.occupancy[
+                                     eventIndex(BoxStorageEventKind::PageWriteUnique)];
+            // Assignment writes once, then canonicalization writes again.
+            // These count physical writable-page requests, not AE statements.
+            check(writes.size() == used);
+            for (std::size_t prior = 1; prior < used; ++prior)
+                check(writes.at(prior) == 2);
+            check(writes.at(used) == 1);
+            BoxDomain copy = box;
+            copy.forget(Variable(0));
+            check(storageEvents.occupancy[eventIndex(BoxStorageEventKind::PageDetach)] ==
+            OccupancyHistogram{{used, 1}});
+            check(box.storageSnapshot().pages.front().occupiedSlots == used);
+            if (used > 1)
+            {
+                check(copy.storageSnapshot().pages.front().occupiedSlots == used - 1);
+                copy.forget(Variable(1));
+                check(storageEvents.occupancy[eventIndex(BoxStorageEventKind::PageEraseUnique)] ==
+                OccupancyHistogram{{used - 1, 1}});
+            }
+        }
+        check(storageEvents.livePages.empty());
+    }
+    storageEvents = StorageEvents{};
+    SVFUtil::outs() << "Box occupancy event contract passed\n";
+}
 
 const BoxAddressDomain *
 boxAddress(const SVF::AbstractDomain::AbstractDomain &domain)
@@ -355,6 +422,12 @@ int main(int argc, char **argv)
 {
 #ifdef SVF_BOX_STORAGE_TELEMETRY
     BoxDomain::setStorageEventSink(collectStorageEvent);
+    if (argc == 2 && std::string_view(argv[1]) == "--storage-occupancy-self-test")
+    {
+        testStorageOccupancy();
+        BoxDomain::setStorageEventSink(nullptr);
+        return 0;
+    }
 #endif
     std::vector<char *> arguments(argv, argv + argc);
     arguments.reserve(static_cast<std::size_t>(argc) + 3);
@@ -450,6 +523,17 @@ int main(int argc, char **argv)
             << " live_pages=" << storageEvents.livePages.size()
             << " peak_live_pages=" << storageEvents.peakLivePages
             << " retained_snapshot_pages=" << retainedPages.size() << '\n';
+    // Mutating events are emitted before the mutation. A detach is observed
+    // after cloning but before either write or erase; these are event-weighted
+    // samples, not time-weighted density or a peak-byte snapshot.
+    const std::array<const char *, 7> eventNames{{
+            "allocate_empty", "detach_before", "release", "write_unique_before",
+            "erase_unique_before", "join_shared", "join_clone_before"
+        }};
+    static_assert(static_cast<std::size_t>(BoxStorageEventKind::DirectoryDetach) ==
+                  eventNames.size(), "update occupancy event names");
+    for (std::size_t index = 0; index < eventNames.size(); ++index)
+        printOccupancy("event", eventNames[index], storageEvents.occupancy[index]);
 #endif
 
     if (!std::getenv("BOX_STORAGE_CENSUS_ONLY"))
