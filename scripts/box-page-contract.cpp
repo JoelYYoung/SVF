@@ -20,6 +20,7 @@
 #include "AE/Core/Expression.h"
 #include "AE/Core/NumericalDomain.h"
 
+#include <algorithm>
 #include <chrono>
 #include <iostream>
 #include <map>
@@ -291,6 +292,82 @@ void workload(unsigned occupancy, unsigned rounds, bool churn = false)
     std::cout << '\n';
 }
 
+// Each phase has one timed loop: construction and result checks are outside it.
+// This isolates mechanisms; it does not estimate their frequency in real AE.
+void phaseWorkload(const std::string& phase, unsigned occupancy, unsigned rounds)
+{
+    check(occupancy >= 1 && occupancy <= 8 && rounds > 0, "invalid phase workload");
+    const std::vector<std::string> phases = {"lookup_hit", "lookup_miss", "copy",
+                                             "write_unique", "write_cow", "join_changed", "churn_unique"
+                                            };
+    check(std::find(phases.begin(), phases.end(), phase) != phases.end(),
+          "unknown phase");
+    constexpr unsigned pageCount = 64;
+    const auto makeBox = [occupancy](unsigned shift)
+    {
+        BoxDomain box = BoxDomain::top();
+        for (unsigned page = 0; page < pageCount; ++page)
+            for (unsigned offset = 0; offset < occupancy; ++offset)
+                box.assign(Variable(page * 8 + offset),
+                           LinearExpression(Rational(offset + shift)));
+        return box;
+    };
+    const BoxDomain seed = makeBox(0);
+    const BoxDomain right = makeBox(1);
+    BoxDomain unique = makeBox(0);
+    std::vector<BoxDomain> live(64, seed);
+    // Preconstruct operands so expression allocation is not counted as layout cost.
+    const LinearExpression low(Rational(101)), high(Rational(102));
+    std::uint64_t observed = 0;
+    const auto start = std::chrono::steady_clock::now();
+    for (unsigned round = 0; round < rounds; ++round)
+    {
+        const auto page = round * 31 % pageCount;
+        const Variable variable(page * 8 + round % occupancy);
+        const auto destination = round % live.size();
+        if (phase == "lookup_hit")
+            observed += seed.bound(variable).isSingleton();
+        else if (phase == "lookup_miss")
+            // Includes an in-page hole where available, otherwise a missing page.
+            observed += seed.bound(Variable(occupancy < 8 ? page * 8 + occupancy :
+                                            pageCount * 8 + page)).isTop();
+        else if (phase == "copy")
+            live[destination] = round % 2 ? seed : right;
+        else if (phase == "write_unique")
+            unique.assign(variable, (round / pageCount) % 2 ? high : low);
+        else if (phase == "write_cow")
+        {
+            live[destination] = seed;
+            live[destination].assign(variable, (round / pageCount) % 2 ? high : low);
+        }
+        else if (phase == "join_changed")
+        {
+            live[destination] = seed;
+            live[destination].joinWith(right);
+        }
+        else
+        {
+            // At k>=6 this crosses both adaptive thresholds on every cycle.
+            // k<=5 is a no-conversion control with the same erase/reinsert pattern.
+            for (unsigned slot = 1; slot < occupancy; ++slot)
+                unique.forget(Variable(page * 8 + slot));
+            for (unsigned slot = 1; slot < occupancy; ++slot)
+                unique.assign(Variable(page * 8 + slot), low);
+        }
+    }
+    const auto elapsed = std::chrono::duration<double>(
+                             std::chrono::steady_clock::now() - start).count();
+    if (phase == "lookup_hit" || phase == "lookup_miss")
+        check(observed == rounds, "phase lookup result mismatch");
+    check(seed.bound(Variable(0)) == Interval::singleton(Rational(0)),
+          "phase mutated seed snapshot");
+    std::uint64_t digest = unique.hash() * 131 + observed;
+    for (const auto& box : live) digest = digest * 131 + box.hash();
+    std::cout << "phase=" << phase << " occupancy=" << occupancy
+              << " rounds=" << rounds << " pages=" << pageCount
+              << " seconds=" << elapsed << " semantic_digest=" << digest << '\n';
+}
+
 #ifdef SVF_BOX_ADAPTIVE_PAGES
 void adaptiveContract()
 {
@@ -388,6 +465,8 @@ int main(int argc, char** argv)
         workload(std::stoul(argv[2]), std::stoul(argv[3]));
     else if (argc == 4 && std::string(argv[1]) == "--churn")
         workload(std::stoul(argv[2]), std::stoul(argv[3]), true);
+    else if (argc == 5 && std::string(argv[1]) == "--phase")
+        phaseWorkload(argv[2], std::stoul(argv[3]), std::stoul(argv[4]));
     else
     {
         contract();
