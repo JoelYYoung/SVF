@@ -28,8 +28,11 @@
 
 #include <algorithm>
 #include <array>
-#ifdef SVF_BOX_STORAGE_TELEMETRY
+#if defined(SVF_BOX_STORAGE_TELEMETRY) || defined(SVF_BOX_PAGE_INTERNING)
 #    include <atomic>
+#endif
+#ifdef SVF_BOX_PAGE_INTERNING
+#    include <unordered_map>
 #endif
 #include <cmath>
 #include <cstddef>
@@ -2470,7 +2473,222 @@ BoxDomain::BoxDomain(const BoxDomain& other)
     : NumericalDomain(other), config_(other.config_),
       boundPages_(other.boundPages_), bottom_(other.bottom_)
 {
+#ifdef SVF_BOX_PAGE_INTERNING
+    dirtyPages_ = other.dirtyPages_;
+#endif
 }
+
+const char* BoxDomain::pageInterningPolicy() noexcept
+{
+#ifdef SVF_BOX_PAGE_INTERN_AFTER_WRITE
+    return "write";
+#elif defined(SVF_BOX_PAGE_INTERNING)
+    return "publish";
+#else
+    return "off";
+#endif
+}
+
+#ifdef SVF_BOX_PAGE_INTERNING
+struct BoxDomain::PagePool::Impl
+{
+    std::unordered_multimap<std::uint64_t, std::weak_ptr<BoundPage>> pages;
+    Statistics stats;
+    std::size_t capacity;
+    std::uint64_t scope;
+    bool afterWrite;
+    bool forceHashCollision;
+
+    static std::uint64_t hash(const BoundPage& page)
+    {
+        std::uint64_t value = 14695981039346656037ULL;
+        const auto add = [&](std::uint64_t word)
+        {
+            value ^= word;
+            value *= 1099511628211ULL;
+        };
+        const auto integer = [&](mpz_srcptr number)
+        {
+            add(static_cast<std::uint64_t>(mpz_sgn(number)));
+            const std::size_t size = mpz_size(number);
+            add(size);
+            for (std::size_t limb = 0; limb < size; ++limb)
+                add(mpz_getlimbn(number, limb));
+        };
+        const auto bound = [&](const Bound& endpoint)
+        {
+            add(static_cast<std::uint64_t>(endpoint.kind()));
+            if (endpoint.isFinite())
+            {
+                add(endpoint.isStrict());
+                const mpq_srcptr rational = endpoint.value().value().get_mpq_t();
+                integer(mpq_numref(rational));
+                integer(mpq_denref(rational));
+            }
+        };
+        for (std::size_t offset = 0; offset < BoundsPerPage; ++offset)
+        {
+            const BoundSlot* slot = page.bounds.find(offset);
+            add(slot != nullptr);
+            if (!slot)
+                continue;
+            add(slot->variable.id());
+            add(static_cast<unsigned>(slot->variable.type().kind));
+            add(slot->variable.type().floatFormat.exponentBits);
+            add(slot->variable.type().floatFormat.significandBits);
+            bound(slot->interval.lower());
+            bound(slot->interval.upper());
+        }
+        return value;
+    }
+
+    static bool equal(const BoundPage& left, const BoundPage& right)
+    {
+        for (std::size_t offset = 0; offset < BoundsPerPage; ++offset)
+        {
+            const BoundSlot* a = left.bounds.find(offset);
+            const BoundSlot* b = right.bounds.find(offset);
+            if ((a == nullptr) != (b == nullptr) || (a && !(*a == *b)))
+                return false;
+        }
+        return true;
+    }
+};
+
+thread_local BoxDomain::PagePool* BoxDomain::PagePool::active_ = nullptr;
+
+BoxDomain::PagePool::PagePool(bool afterWrite, std::size_t capacity,
+                              bool forceHashCollision)
+    : impl_(std::make_unique<Impl>()), previous_(active_)
+{
+    static std::atomic<std::uint64_t> nextScope{1};
+    impl_->capacity = capacity;
+    impl_->scope = nextScope.fetch_add(1, std::memory_order_relaxed);
+    impl_->afterWrite = afterWrite;
+    impl_->forceHashCollision = forceHashCollision;
+    active_ = this;
+}
+
+BoxDomain::PagePool::~PagePool()
+{
+    active_ = previous_;
+}
+
+BoxDomain::PagePool::Statistics BoxDomain::PagePool::statistics() const
+{
+    Statistics result = impl_->stats;
+    result.entries = impl_->pages.size();
+    return result;
+}
+
+void BoxDomain::PagePool::sweepExpired()
+{
+    for (auto entry = impl_->pages.begin(); entry != impl_->pages.end();)
+    {
+        if (entry->second.expired())
+        {
+            entry = impl_->pages.erase(entry);
+            ++impl_->stats.expired;
+        }
+        else
+            ++entry;
+    }
+}
+
+void BoxDomain::markPageDirty(std::size_t index)
+{
+    if (dirtyPages_.empty() || dirtyPages_.back() != index)
+        dirtyPages_.push_back(index);
+}
+
+void BoxDomain::internAfterWrite()
+{
+    if (PagePool::active_ && PagePool::active_->impl_->afterWrite)
+        internPendingPages();
+}
+
+void BoxDomain::internPendingPages()
+{
+    if (!PagePool::active_)
+        return;
+    auto& pool = *PagePool::active_->impl_;
+    ++pool.stats.publications;
+    std::sort(dirtyPages_.begin(), dirtyPages_.end());
+    dirtyPages_.erase(std::unique(dirtyPages_.begin(), dirtyPages_.end()),
+                      dirtyPages_.end());
+    for (std::size_t pageIndex : dirtyPages_)
+    {
+        ++pool.stats.candidates;
+        const std::size_t chunkIndex = pageIndex / DirectoryPagesPerChunk;
+        const auto& directory = pageDirectory();
+        const auto entry = std::lower_bound(
+                               directory.begin(), directory.end(), chunkIndex,
+                               [](const BoundPageDirectoryEntry& item, std::size_t index)
+        {
+            return item.index < index;
+        });
+        if (entry == directory.end() || entry->index != chunkIndex)
+            continue;
+        const auto page = entry->chunk->pages[pageIndex % DirectoryPagesPerChunk];
+        if (!page || page->internedScope == pool.scope || pool.capacity == 0)
+            continue;
+        ++pool.stats.probes;
+        const std::uint64_t hash = pool.forceHashCollision ? 0 : PagePool::Impl::hash(*page);
+        const auto range = pool.pages.equal_range(hash);
+        std::shared_ptr<BoundPage> canonical;
+        for (auto candidate = range.first; candidate != range.second;)
+        {
+            const auto existing = candidate->second.lock();
+            if (!existing)
+            {
+                candidate = pool.pages.erase(candidate);
+                ++pool.stats.expired;
+                continue;
+            }
+            ++pool.stats.comparisons;
+            if (PagePool::Impl::equal(*page, *existing))
+            {
+                canonical = existing;
+                break;
+            }
+            ++candidate;
+        }
+        if (canonical)
+        {
+            ++pool.stats.hits;
+            auto& writable = writablePageDirectory();
+            const auto target = std::lower_bound(
+                                    writable.begin(), writable.end(), chunkIndex,
+                                    [](const BoundPageDirectoryEntry& item, std::size_t index)
+            {
+                return item.index < index;
+            });
+            if (target->chunk.use_count() != 1)
+            {
+#ifdef SVF_BOX_STORAGE_TELEMETRY
+                emitDirectoryChunkDetach(DirectoryPagesPerChunk);
+#endif
+                target->chunk = std::make_shared<BoundPageDirectoryChunk>(*target->chunk);
+            }
+            target->chunk->pages[pageIndex % DirectoryPagesPerChunk] = std::move(canonical);
+        }
+        else
+        {
+            if (pool.pages.size() == pool.capacity)
+            {
+                // Bounded index, including expired weak control blocks. No
+                // strong retention; eviction only sacrifices an opportunity.
+                pool.pages.erase(pool.pages.begin());
+                ++pool.stats.evictions;
+            }
+            page->internedScope = pool.scope;
+            pool.pages.emplace(hash, page);
+            pool.stats.peakEntries = std::max(pool.stats.peakEntries, pool.pages.size());
+        }
+    }
+    dirtyPages_.clear();
+}
+#endif
 
 const BoxDomain::BoundPageDirectory& BoxDomain::pageDirectory() const noexcept
 {
@@ -2940,6 +3158,9 @@ void BoxDomain::forget(Variable variable)
 {
     if (!bottom_)
         eraseBound(variable);
+#ifdef SVF_BOX_PAGE_INTERNING
+    internAfterWrite();
+#endif
     recordOperation(OperationKind::Forget, ApproximationKind::Exact, true);
 }
 
@@ -3134,6 +3355,9 @@ void BoxDomain::canonicalize()
 {
     for (Variable variable : boundedVariables())
         canonicalize(variable);
+#ifdef SVF_BOX_PAGE_INTERNING
+    internAfterWrite();
+#endif
     recordOperation(OperationKind::Canonicalization, ApproximationKind::Exact,
                     true, "canonicalization");
 }
@@ -3307,6 +3531,9 @@ void BoxDomain::joinDomain(const AbstractDomain& other)
 #else
         auto joined = std::make_shared<BoundPage>(*entry.page);
 #endif
+#ifdef SVF_BOX_PAGE_INTERNING
+        joined->internedScope = 0;
+#endif
         for (std::size_t slot = 0; slot < BoundsPerPage; ++slot)
         {
             BoundSlot* left = joined->bounds.find(slot);
@@ -3327,6 +3554,12 @@ void BoxDomain::joinDomain(const AbstractDomain& other)
             joinedPages.push_back({entry.index, std::move(joined)});
     }
     boundPages_ = makePageDirectory(joinedPages);
+#ifdef SVF_BOX_PAGE_INTERNING
+    dirtyPages_.clear();
+    for (const BoundPageEntry& entry : joinedPages)
+        markPageDirty(entry.index);
+    internAfterWrite();
+#endif
 }
 
 void BoxDomain::meetDomain(const AbstractDomain& other)
@@ -3462,6 +3695,9 @@ void BoxDomain::setBound(Variable variable, Interval interval)
         .bounds.set(variable.id() % BoundsPerPage,
                     BoundSlot{variable, std::move(interval)});
     canonicalize(variable);
+#ifdef SVF_BOX_PAGE_INTERNING
+    internAfterWrite();
+#endif
 }
 
 const Interval& BoxDomain::boundAt(Variable variable) const
@@ -3517,18 +3753,30 @@ BoxDomain::BoundPage& BoxDomain::writablePage(std::size_t pageIndex)
     }
     std::shared_ptr<BoundPage>& page =
         iterator->chunk->pages[pageIndex % DirectoryPagesPerChunk];
+#ifdef SVF_BOX_PAGE_INTERNING
+    const bool frozen = page && page->internedScope != 0;
+    if (frozen && page.use_count() == 1 && PagePool::active_)
+        ++PagePool::active_->impl_->stats.frozenDetaches;
+    const bool shared = page && (page.use_count() != 1 || frozen);
+    markPageDirty(pageIndex);
+#else
+    const bool shared = page && page.use_count() != 1;
+#endif
 #ifdef SVF_BOX_STORAGE_TELEMETRY
     if (!page)
         page = allocatePage(pageIndex);
-    else if (page.use_count() != 1)
+    else if (shared)
         page = clonePage(*page, BoxStorageEventKind::PageDetach);
     else
         emitStorageEvent(BoxStorageEventKind::PageWriteUnique, *page);
 #else
     if (!page)
         page = std::make_shared<BoundPage>();
-    else if (page.use_count() != 1)
+    else if (shared)
         page = std::make_shared<BoundPage>(*page);
+#endif
+#ifdef SVF_BOX_PAGE_INTERNING
+    page->internedScope = 0;
 #endif
     return *page;
 }
@@ -3576,13 +3824,25 @@ void BoxDomain::eraseBound(Variable variable)
             std::make_shared<BoundPageDirectoryChunk>(*iterator->chunk);
     }
     std::shared_ptr<BoundPage>& page = iterator->chunk->pages[pageOffset];
-    if (page.use_count() != 1)
+#ifdef SVF_BOX_PAGE_INTERNING
+    const bool frozen = page->internedScope != 0;
+    if (frozen && page.use_count() == 1 && PagePool::active_)
+        ++PagePool::active_->impl_->stats.frozenDetaches;
+    const bool shared = page.use_count() != 1 || frozen;
+    markPageDirty(pageIndex);
+#else
+    const bool shared = page.use_count() != 1;
+#endif
+    if (shared)
 #ifdef SVF_BOX_STORAGE_TELEMETRY
         page = clonePage(*page, BoxStorageEventKind::PageDetach);
     else
         emitStorageEvent(BoxStorageEventKind::PageEraseUnique, *page);
 #else
         page = std::make_shared<BoundPage>(*page);
+#endif
+#ifdef SVF_BOX_PAGE_INTERNING
+    page->internedScope = 0;
 #endif
     page->bounds.erase(offset);
     if (pageIsEmpty(*page))
@@ -3648,6 +3908,9 @@ void BoxDomain::makeBottom()
 {
     bottom_ = true;
     boundPages_ = emptyPageDirectory();
+#ifdef SVF_BOX_PAGE_INTERNING
+    dirtyPages_.clear();
+#endif
 }
 
 void BoxDomain::report(OperationKind operation, ApproximationKind approximation,

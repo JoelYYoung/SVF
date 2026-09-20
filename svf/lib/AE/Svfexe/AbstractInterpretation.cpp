@@ -289,7 +289,30 @@ FIFOWorkList<const FunObjVar*> AbstractInterpretation::collectProgEntryFuns()
 /// Program entry - entry policy is selected by -ae-fun-entry.
 void AbstractInterpretation::analyse()
 {
+#ifdef SVF_BOX_PAGE_INTERNING
+    AD::BoxDomain::PagePool pagePool(
+#ifdef SVF_BOX_PAGE_INTERN_AFTER_WRITE
+        true
+#else
+        false
+#endif
+    );
+#endif
     analyzeFromAllProgEntries();
+#ifdef SVF_BOX_PAGE_INTERNING
+    const auto poolStats = pagePool.statistics();
+    SVFUtil::outs() << "BOX_PAGE_POOL policy=" << AD::BoxDomain::pageInterningPolicy()
+                    << " publications=" << poolStats.publications
+                    << " candidates=" << poolStats.candidates
+                    << " probes=" << poolStats.probes
+                    << " hits=" << poolStats.hits
+                    << " comparisons=" << poolStats.comparisons
+                    << " expired=" << poolStats.expired
+                    << " evictions=" << poolStats.evictions
+                    << " frozen_detaches=" << poolStats.frozenDetaches
+                    << " entries=" << poolStats.entries
+                    << " peak_entries=" << poolStats.peakEntries << '\n';
+#endif
 }
 
 /// Analyze the entry functions selected by collectProgEntryFuns().

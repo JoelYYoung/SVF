@@ -56,7 +56,14 @@ const AD::AbstractDomain* AbstractInterpretation::getScalarAbstractState() const
     return nullptr;
 }
 
-void AbstractInterpretation::finalizeAbstractState(const ICFGNode*) {}
+void AbstractInterpretation::finalizeAbstractState(const ICFGNode* node)
+{
+#ifdef SVF_BOX_PAGE_INTERNING
+    ensureState(node).numerical().internPendingPages();
+#else
+    (void)node;
+#endif
+}
 
 void AbstractInterpretation::updateInterval(const SVFVar* variable,
         const AD::Interval& interval,

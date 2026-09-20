@@ -538,12 +538,117 @@ void adaptiveContract()
     std::cout << "adaptive_contract=pass cross_layout_ops=8 hysteresis_rounds=128 conversion_cycles=64\n";
 }
 #endif
+#ifdef SVF_BOX_PAGE_INTERNING
+void interningContract()
+{
+    const Variable x(8), y(9);
+    const auto put = [](BoxDomain& state, Variable variable, std::int64_t value)
+    {
+        state.assign(variable, LinearExpression(Rational(value)));
+        state.internPendingPages();
+    };
+    for (bool afterWrite :
+            {
+                false, true
+            })
+    {
+        // Every key intentionally collides: no hash-only equality is allowed.
+        BoxDomain::PagePool pool(afterWrite, 8, true);
+        BoxDomain a = BoxDomain::top();
+        BoxDomain b = BoxDomain::top();
+        put(a, x, 1);
+        const auto before = pool.statistics();
+        put(b, x, 1);
+        check(pool.statistics().hits > before.hits, "independent equal page not reused");
+        const BoxDomain old = a;
+        put(a, x, 2);
+        check(old.bound(x) == Interval::singleton(Rational(1)) &&
+              b.bound(x) == old.bound(x), "interning mutated an old snapshot");
+        check(a.bound(x) == Interval::singleton(Rational(2)), "collision changed interval");
+        BoxDomain differentVariable = BoxDomain::top();
+        put(differentVariable, y, 1);
+        check(differentVariable.bound(x).isTop(), "collision conflated coordinates");
+        BoxDomain real = BoxDomain::top();
+        const Variable realX(8, NumericType::real());
+        put(real, realX, 1);
+        check(real.bound(realX) == Interval::singleton(Rational(1)), "collision conflated types");
+
+        BoxDomain unique = BoxDomain::top();
+        put(unique, Variable(80), 4);
+        const auto detaches = pool.statistics().frozenDetaches;
+        put(unique, Variable(80), 5);
+        check(pool.statistics().frozenDetaches > detaches,
+              "sole strong owner modified a weak-indexed page in place");
+        unique.forget(Variable(80));
+        unique.internPendingPages();
+        check(unique.isTop(), "forget did not remove interned page");
+
+        BoxDomain joined = a.join(b);
+        joined.internPendingPages();
+        check(joined.bound(x) == Interval(Bound::finite(Rational(1)),
+                                          Bound::finite(Rational(2))), "interned join mismatch");
+        check(joined.meet(a).isEquivalentTo(a) == CheckResult::True, "interned meet mismatch");
+        BoxDomain widened = b.widen(a);
+        widened.internPendingPages();
+        check(widened.bound(x).upper().isPlusInfinity(), "interned widening mismatch");
+        BoxDomain narrowed = widened.narrow(a);
+        narrowed.internPendingPages();
+        check(narrowed.bound(x) == joined.bound(x), "interned narrowing mismatch");
+        check(a.serializeRaw() == BoxDomain::fromConstraints(a.toConstraints()).serializeRaw(),
+              "interning changed serialization");
+        const auto outerHits = pool.statistics().hits;
+        {
+            BoxDomain::PagePool independent(afterWrite, 8, true);
+            BoxDomain otherAnalysis = BoxDomain::top();
+            put(otherAnalysis, x, 1);
+            check(independent.statistics().hits == 0, "analysis scopes shared a pool");
+        }
+        BoxDomain resumed = BoxDomain::top();
+        put(resumed, x, 1);
+        check(pool.statistics().hits > outerHits, "nested scope did not restore outer pool");
+    }
+    {
+        BoxDomain::PagePool pool(false, 2);
+        std::vector<BoxDomain> retained;
+        for (unsigned i = 0; i < 20; ++i)
+        {
+            retained.push_back(BoxDomain::top());
+            put(retained.back(), Variable(8 * i), i);
+        }
+        check(pool.statistics().entries <= 2 && pool.statistics().peakEntries <= 2,
+              "weak index exceeded capacity");
+        check(pool.statistics().evictions >= 18, "bounded pool did not evict");
+        retained.clear();
+        pool.sweepExpired();
+        check(pool.statistics().entries == 0, "weak pool retained dead pages");
+    }
+    {
+        BoxDomain::PagePool disabled(true, 0);
+        BoxDomain a = BoxDomain::top();
+        put(a, x, 7);
+        check(disabled.statistics().entries == 0, "zero budget stored an index entry");
+        check(a.bound(x) == Interval::singleton(Rational(7)), "zero budget changed semantics");
+    }
+    // Existing randomized oracle exercises assignment, snapshots and lattice
+    // operations with automatic write-time interning and forced collisions.
+    {
+        BoxDomain::PagePool pool(true, 64, true);
+        contract();
+    }
+    std::cout << "interning_contract=pass policies=2 collision=forced budget=bounded weak_reclaim=pass\n";
+}
+#endif
 }
 
 int main(int argc, char** argv)
 {
     std::cout << "representation=" << BoxDomain::storageRepresentation() << '\n';
     if (argc == 2 && std::string(argv[1]) == "--identity") return 0;
+    if (argc == 2 && std::string(argv[1]) == "--interning-identity")
+    {
+        std::cout << "pool_policy=" << BoxDomain::pageInterningPolicy() << '\n';
+        return 0;
+    }
     if (argc == 4 && std::string(argv[1]) == "--bench")
         workload(std::stoul(argv[2]), std::stoul(argv[3]));
     else if (argc == 4 && std::string(argv[1]) == "--churn")
@@ -558,6 +663,9 @@ int main(int argc, char** argv)
 #endif
 #ifdef SVF_BOX_ADAPTIVE_PAGES
         adaptiveContract();
+#endif
+#ifdef SVF_BOX_PAGE_INTERNING
+        interningContract();
 #endif
     }
 }

@@ -23,6 +23,12 @@ set(ABSTRACT_DOMAIN_CORE_SOURCES
     ${CMAKE_CURRENT_LIST_DIR}/lib/AE/Core/NumericalDomain.cpp
 )
 add_library(AbstractDomainCore)
+if(NOT SVF_BOX_PAGE_INTERNING STREQUAL "OFF")
+  target_compile_definitions(AbstractDomainCore PUBLIC SVF_BOX_PAGE_INTERNING)
+  if(SVF_BOX_PAGE_INTERNING STREQUAL "WRITE")
+    target_compile_definitions(AbstractDomainCore PUBLIC SVF_BOX_PAGE_INTERN_AFTER_WRITE)
+  endif()
+endif()
 if(SVF_BOX_PACKED_PAGES)
   target_compile_definitions(AbstractDomainCore PUBLIC SVF_BOX_PACKED_PAGES)
 endif()

@@ -667,6 +667,38 @@ public:
     static BoxDomain bottom(const BoxSemanticConfig& config = {});
     /// Runtime library identity for representation experiments, not semantics.
     static const char* storageRepresentation() noexcept;
+    static const char* pageInterningPolicy() noexcept;
+#ifdef SVF_BOX_PAGE_INTERNING
+    /// Experimental, thread-confined, analysis-scoped weak content pool.
+    /// The budget counts index entries, not bytes or retained strong pages.
+    class PagePool
+    {
+    public:
+        struct Statistics
+        {
+            std::uint64_t publications = 0, candidates = 0, probes = 0;
+            std::uint64_t hits = 0, comparisons = 0, expired = 0;
+            std::uint64_t evictions = 0, frozenDetaches = 0;
+            std::size_t entries = 0, peakEntries = 0;
+        };
+        explicit PagePool(bool afterWrite, std::size_t capacity = 32768,
+                          bool forceHashCollision = false);
+        ~PagePool();
+        PagePool(const PagePool&) = delete;
+        PagePool& operator=(const PagePool&) = delete;
+        Statistics statistics() const;
+        void sweepExpired();
+
+    private:
+        friend class BoxDomain;
+        struct Impl;
+        std::unique_ptr<Impl> impl_;
+        PagePool* previous_;
+        static thread_local PagePool* active_;
+    };
+    /// Physical normalization only; does not change logical bounds or metadata.
+    void internPendingPages();
+#endif
     static BoxDomain fromConstraints(const LinearConstraintSet& constraints,
                                      const BoxSemanticConfig& config = {});
 
@@ -977,6 +1009,10 @@ private:
                            static_cast<const Slots&>(*this).find(offset));
             }
         } bounds;
+#ifdef SVF_BOX_PAGE_INTERNING
+        // Nonzero pages are immutable even if only one strong owner remains.
+        std::uint64_t internedScope = 0;
+#endif
 #ifdef SVF_BOX_STORAGE_TELEMETRY
         BoundPage() = default;
         BoundPage(const BoundPage&) = delete;
@@ -1031,6 +1067,10 @@ private:
     std::vector<BoundPageEntry> pageEntries() const;
     const Interval& boundAt(Variable variable) const;
     BoundPage& writablePage(std::size_t pageIndex);
+#ifdef SVF_BOX_PAGE_INTERNING
+    void markPageDirty(std::size_t pageIndex);
+    void internAfterWrite();
+#endif
 #ifdef SVF_BOX_STORAGE_TELEMETRY
     static std::shared_ptr<BoundPage> allocatePage(std::size_t pageIndex);
     static std::shared_ptr<BoundPage> clonePage(const BoundPage& source,
@@ -1059,6 +1099,9 @@ private:
     /// only the root, affected chunk, and affected page that remain shared.
     std::shared_ptr<BoundPageDirectory> boundPages_;
     bool bottom_ = false;
+#ifdef SVF_BOX_PAGE_INTERNING
+    std::vector<std::size_t> dirtyPages_;
+#endif
 };
 
 } // namespace SVF::AbstractDomain

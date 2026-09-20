@@ -230,6 +230,14 @@ void SemiSparseAbstractInterpretation::finalizeAbstractState(
 {
     State& denseState = this->ensureState(node);
     forgetActiveScalarValues(denseState);
+#ifdef SVF_BOX_PAGE_INTERNING
+    // Both sparse modes use this finalized ICFG memory carrier. Full sparse
+    // definition support and its separate interval refinement map are not Box
+    // page payloads and must not be folded into a content-identity key.
+    denseState.numerical().internPendingPages();
+    if (scalarState_)
+        scalarState_->numerical().internPendingPages();
+#endif
 }
 
 void SemiSparseAbstractInterpretation::forgetActiveScalarValues(

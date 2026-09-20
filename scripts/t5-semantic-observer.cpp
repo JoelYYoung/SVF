@@ -124,6 +124,8 @@ int main(int argc, char** argv)
     SVFUtil::outs() << "BOX_REPRESENTATION "
                     << SVF::AbstractDomain::BoxDomain::storageRepresentation() << '\n';
     SVFUtil::outs() << "BOX_CONTENT_LAYOUT " << SVFIRAdapter::contentLayout() << '\n';
+    SVFUtil::outs() << "BOX_PAGE_INTERNING "
+                    << SVF::AbstractDomain::BoxDomain::pageInterningPolicy() << '\n';
 #endif
     std::vector<char*> arguments(argv, argv + argc);
 #if AUDIT_BOX
