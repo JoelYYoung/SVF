@@ -67,13 +67,13 @@ def allowed_pr1887_residual(difference):
     )
 
 
-def run_variant(executable, extapi, bitcode, cap, directory):
+def run_variant(executable, extapi, bitcode, cap, directory, sparsity="semi-sparse"):
     directory.mkdir()
     log = directory / "analysis.log"
     timing = directory / "time.txt"
     command = [
         str(executable),
-        "-ae-sparsity=semi-sparse",
+        f"-ae-sparsity={sparsity}",
         "-ae-fun-entry=main",
         "-stat=true",
         f"-extapi={extapi}",

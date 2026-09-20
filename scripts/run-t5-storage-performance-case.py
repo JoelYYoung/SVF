@@ -22,11 +22,11 @@ def single_value(pattern, text):
     return values[-1] if values else None
 
 
-def run_variant(executable, extapi, bitcode, cap_seconds, output):
+def run_variant(executable, extapi, bitcode, cap_seconds, output, sparsity="semi-sparse"):
     output.mkdir()
     command = [
         str(executable),
-        "-ae-sparsity=semi-sparse",
+        f"-ae-sparsity={sparsity}",
         "-ae-fun-entry=main",
         "-stat=true",
         f"-extapi={extapi}",
