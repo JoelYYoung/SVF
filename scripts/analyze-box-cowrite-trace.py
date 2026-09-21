@@ -453,8 +453,24 @@ class Replay:
         return dict(self.metrics)
 
 
+def evaluate_replay(events, mapping, cache, raw_epochs=None):
+    signature = mapping_signature(mapping)
+    if signature in cache:
+        return cache[signature]
+    engine = Replay(mapping, collect_clone_conflicts=True)
+    metrics = engine.run(events, raw_epochs)
+    evaluation = {
+        "metrics": metrics,
+        "clone_conflicts": engine.clone_conflicts,
+        "clone_triggers": engine.clone_triggers,
+        "diagnostics": engine.diagnostics,
+    }
+    cache[signature] = evaluation
+    return evaluation
+
+
 def future_conflict_search(events, variables, marginal, initial_mapping,
-                           rounds):
+                           rounds, evaluation_cache=None):
     """Use the full future trace to iteratively expose clone conflicts.
 
     This is a feasible future-informed search, not a proof of the global
@@ -462,6 +478,7 @@ def future_conflict_search(events, variables, marginal, initial_mapping,
     bound remains responsible for ruling out headroom.
     """
     mapping = initial_mapping
+    evaluation_cache = evaluation_cache if evaluation_cache is not None else {}
     cumulative = collections.Counter()
     seen = set()
     candidates = []
@@ -470,16 +487,17 @@ def future_conflict_search(events, variables, marginal, initial_mapping,
         if signature in seen:
             break
         seen.add(signature)
-        engine = Replay(mapping, collect_clone_conflicts=True)
-        metrics = engine.run(events)
+        evaluation = evaluate_replay(events, mapping, evaluation_cache)
+        metrics = evaluation["metrics"]
+        conflicts = evaluation["clone_conflicts"]
         candidates.append({
             "round": round_index,
             "mapping": mapping,
             "metrics": metrics,
-            "conflict_pairs": len(engine.clone_conflicts),
-            "conflict_weight": sum(engine.clone_conflicts.values()),
+            "conflict_pairs": len(conflicts),
+            "conflict_weight": sum(conflicts.values()),
         })
-        cumulative.update(engine.clone_conflicts)
+        cumulative.update(conflicts)
         next_mapping = clone_conflict_mapping(
             variables, marginal, cumulative)
         if mapping_signature(next_mapping) == signature:
@@ -515,11 +533,11 @@ def main():
     events, variables, marginal, pair, hyperedges, raw, raw_epochs = read_trace(args.trace)
     g0_mapping = current_mapping(variables)
     mappings = {"g0_current": g0_mapping}
-    g0_engine = Replay(g0_mapping, collect_clone_conflicts=True)
-    replay = {
-        "g0_current": g0_engine.run(events, raw_epochs),
-    }
-    g0_diagnostics = g0_engine.diagnostics
+    evaluation_cache = {}
+    g0 = evaluate_replay(
+        events, g0_mapping, evaluation_cache, raw_epochs)
+    replay = {"g0_current": g0["metrics"]}
+    g0_diagnostics = g0["diagnostics"]
     future_search = None
     if not args.g0_only:
         mappings.update({
@@ -527,18 +545,18 @@ def main():
             "g3_cowrite": relational_mapping(
                 variables, marginal, pair, hyperedges),
             "g3_clone_conflict": clone_conflict_mapping(
-                variables, marginal, g0_engine.clone_conflicts),
+                variables, marginal, g0["clone_conflicts"]),
         })
         if args.future_rounds:
             mappings["g4_future_conflict"], future_search = (
                 future_conflict_search(
                     events, variables, marginal, g0_mapping,
-                    args.future_rounds))
+                    args.future_rounds, evaluation_cache))
     for name, mapping in mappings.items():
         if name == "g0_current":
             continue
-        engine = Replay(mapping)
-        replay[name] = engine.run(events)
+        replay[name] = evaluate_replay(
+            events, mapping, evaluation_cache)["metrics"]
     validation = {
         "detach_match": replay["g0_current"].get("detaches", 0) == raw["detaches"],
         "cloned_slots_match": replay["g0_current"].get("cloned_slots", 0) == raw["cloned_slots"],
@@ -554,11 +572,12 @@ def main():
             "explicit_pair_limit": EXPLICIT_PAIR_LIMIT,
         },
         "clone_conflict_model": {
-            "pairs": len(g0_engine.clone_conflicts),
-            "weight": sum(g0_engine.clone_conflicts.values()),
-            "triggers": len(g0_engine.clone_triggers),
-            "trigger_events": sum(g0_engine.clone_triggers.values()),
+            "pairs": len(g0["clone_conflicts"]),
+            "weight": sum(g0["clone_conflicts"].values()),
+            "triggers": len(g0["clone_triggers"]),
+            "trigger_events": sum(g0["clone_triggers"].values()),
         },
+        "unique_replays": len(evaluation_cache),
         "future_search": future_search,
         "raw": raw,
         "validation": validation,
