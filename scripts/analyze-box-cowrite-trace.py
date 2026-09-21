@@ -29,6 +29,7 @@ def read_trace(path):
     pair = collections.Counter()
     hyperedges = collections.Counter()
     raw = {"detaches": 0, "cloned_slots": 0}
+    raw_epochs = collections.defaultdict(collections.Counter)
     for line_number, line in enumerate(path.read_text().splitlines(), 1):
         if not line or line.startswith("#"):
             continue
@@ -74,11 +75,13 @@ def read_trace(path):
             events.append(("M", *head[:-1], changed, touched))
         elif tag == "D":
             raw["detaches"] += 1
+            raw_epochs[int(fields[2])]["detaches"] += 1
         elif tag == "W":
             raw["cloned_slots"] += int(fields[3])
+            raw_epochs[int(fields[1])]["cloned_slots"] += int(fields[3])
         else:
             raise ValueError(f"line {line_number}: unknown record {tag}")
-    return events, variables, marginal, pair, hyperedges, raw
+    return events, variables, marginal, pair, hyperedges, raw, raw_epochs
 
 
 def current_mapping(variables):
@@ -156,6 +159,7 @@ class Replay:
         self.next_page = 1
         self.replacement_epochs = set()
         self.metrics = collections.Counter()
+        self.diagnostics = {"mismatch_count": 0, "first_mismatches": []}
 
     def retain(self, page):
         self.references[page] += 1
@@ -309,12 +313,52 @@ class Replay:
                 self.detach(state, page_index)
         self.apply_support(state, changed)
 
-    def run(self, events):
+    def run(self, events, raw_epochs=None):
+        seen_epochs = set()
         for event in events:
+            before_detaches = self.metrics["detaches"]
+            before_slots = self.metrics["cloned_slots"]
             if event[0] == "S":
                 self.lifecycle(event)
             else:
                 self.mutation(event)
+                if raw_epochs is not None:
+                    epoch = event[2]
+                    seen_epochs.add(epoch)
+                    expected = raw_epochs.get(epoch, {})
+                    actual_detaches = self.metrics["detaches"] - before_detaches
+                    actual_slots = self.metrics["cloned_slots"] - before_slots
+                    expected_detaches = expected.get("detaches", 0)
+                    expected_slots = expected.get("cloned_slots", 0)
+                    if (actual_detaches != expected_detaches or
+                            actual_slots != expected_slots):
+                        self.diagnostics["mismatch_count"] += 1
+                        if len(self.diagnostics["first_mismatches"]) < 32:
+                            self.diagnostics["first_mismatches"].append({
+                                "epoch": epoch,
+                                "kind": event[3],
+                                "state": event[4],
+                                "related_state": event[5],
+                                "before_bottom": event[6],
+                                "after_bottom": event[7],
+                                "changed": len(event[8]),
+                                "touched": len(event[9]),
+                                "expected_detaches": expected_detaches,
+                                "actual_detaches": actual_detaches,
+                                "expected_cloned_slots": expected_slots,
+                                "actual_cloned_slots": actual_slots,
+                            })
+        if raw_epochs is not None:
+            for epoch in sorted(set(raw_epochs) - seen_epochs):
+                expected = raw_epochs[epoch]
+                self.diagnostics["mismatch_count"] += 1
+                if len(self.diagnostics["first_mismatches"]) < 32:
+                    self.diagnostics["first_mismatches"].append({
+                        "epoch": epoch,
+                        "missing_mutation_record": True,
+                        "expected_detaches": expected.get("detaches", 0),
+                        "expected_cloned_slots": expected.get("cloned_slots", 0),
+                    })
         self.metrics["live_states"] = len(self.states)
         self.metrics["live_pages"] = len(self.pages)
         return dict(self.metrics)
@@ -324,15 +368,26 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("trace", type=Path)
     parser.add_argument("--json", type=Path)
+    parser.add_argument("--g0-only", action="store_true")
     args = parser.parse_args()
-    events, variables, marginal, pair, hyperedges, raw = read_trace(args.trace)
+    events, variables, marginal, pair, hyperedges, raw, raw_epochs = read_trace(args.trace)
     mappings = {
         "g0_current": current_mapping(variables),
-        "g2_marginal": marginal_mapping(variables, marginal),
-        "g3_cowrite": relational_mapping(variables, marginal, pair, hyperedges),
     }
-    replay = {name: Replay(mapping).run(events)
-              for name, mapping in mappings.items()}
+    if not args.g0_only:
+        mappings.update({
+            "g2_marginal": marginal_mapping(variables, marginal),
+            "g3_cowrite": relational_mapping(
+                variables, marginal, pair, hyperedges),
+        })
+    replay = {}
+    g0_diagnostics = None
+    for name, mapping in mappings.items():
+        engine = Replay(mapping)
+        replay[name] = engine.run(
+            events, raw_epochs if name == "g0_current" else None)
+        if name == "g0_current":
+            g0_diagnostics = engine.diagnostics
     validation = {
         "detach_match": replay["g0_current"].get("detaches", 0) == raw["detaches"],
         "cloned_slots_match": replay["g0_current"].get("cloned_slots", 0) == raw["cloned_slots"],
@@ -349,6 +404,7 @@ def main():
         },
         "raw": raw,
         "validation": validation,
+        "g0_diagnostics": g0_diagnostics,
         "replay": replay,
     }
     text = json.dumps(result, indent=2, sort_keys=True)

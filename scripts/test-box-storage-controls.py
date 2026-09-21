@@ -77,10 +77,31 @@ class Controls(unittest.TestCase):
                 + ' T 40 '
                 + ' '.join(':'.join(map(str, key)) for key in variables)
                 + '\n')
-            _, _, marginal, pair, hyperedges, _ = COWRITE['read_trace'](trace)
+            _, _, marginal, pair, hyperedges, _, _ = COWRITE['read_trace'](trace)
         self.assertEqual(pair, {(changed[0], changed[1]): 1})
         self.assertEqual(hyperedges, {})
         self.assertTrue(all(marginal[key] == 1 for key in variables))
+
+    def test_cowrite_trace_records_storage_work_by_epoch(self):
+        with tempfile.TemporaryDirectory() as directory:
+            trace = Path(directory) / 'trace.tsv'
+            trace.write_text('D 10 7 1 0 3\nW 7 1 3 3\n')
+            *_, raw, raw_epochs = COWRITE['read_trace'](trace)
+        self.assertEqual(raw, {'detaches': 1, 'cloned_slots': 3})
+        self.assertEqual(raw_epochs[7], {'detaches': 1, 'cloned_slots': 3})
+
+    def test_cowrite_replay_reports_first_epoch_mismatch(self):
+        key = (1, 0, 0, 0)
+        replay = COWRITE['Replay']({key: 0})
+        replay.run([
+            ('S', 1, COWRITE['CREATE'], 1, 0, 0, 0),
+            ('M', 2, 1, 0, 1, 0, 0, 0, [(key, True)], [key]),
+        ], {1: {'detaches': 1, 'cloned_slots': 1}})
+        self.assertEqual(replay.diagnostics['mismatch_count'], 1)
+        mismatch = replay.diagnostics['first_mismatches'][0]
+        self.assertEqual(mismatch['epoch'], 1)
+        self.assertEqual(mismatch['expected_detaches'], 1)
+        self.assertEqual(mismatch['actual_detaches'], 0)
 
     def test_actual_identity(self):
         for variant, representation in DIRECTORY['REPRESENTATIONS'].items():
