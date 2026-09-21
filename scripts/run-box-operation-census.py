@@ -12,7 +12,7 @@ from pathlib import Path
 
 
 OPERATIONS = ("join", "meet", "widen", "narrow", "subset", "equivalent")
-CAPACITIES = (64, 256, 1024, 4096)
+CAPACITIES = (64, 256)
 
 
 def digest(path):
@@ -30,11 +30,8 @@ def fields(line):
 def parse_operations(text):
     summaries = {}
     lru = {}
-    version_lru = {}
     caches = {}
-    version_caches = {}
-    states = None
-    version_states = None
+    window = None
     for line in text.splitlines():
         if line.startswith("BOX_OPERATION_SUMMARY "):
             values = fields(line)
@@ -49,22 +46,10 @@ def parse_operations(text):
             if key in lru:
                 raise ValueError("duplicate operation LRU row")
             lru[key] = {name: int(value) for name, value in values.items()}
-        elif line.startswith("BOX_OPERATION_VERSION_LRU "):
-            values = fields(line)
-            key = (values.pop("op"), int(values.pop("capacity")))
-            if key in version_lru:
-                raise ValueError("duplicate operation version LRU row")
-            version_lru[key] = {name: int(value)
-                                for name, value in values.items()}
-        elif line.startswith("BOX_OPERATION_STATES "):
-            if states is not None:
-                raise ValueError("duplicate operation state row")
-            states = {key: int(value) for key, value in fields(line).items()}
-        elif line.startswith("BOX_OPERATION_VERSION_STATES "):
-            if version_states is not None:
-                raise ValueError("duplicate operation version state row")
-            version_states = {key: int(value)
-                              for key, value in fields(line).items()}
+        elif line.startswith("BOX_OPERATION_WINDOW "):
+            if window is not None:
+                raise ValueError("duplicate operation window row")
+            window = {key: int(value) for key, value in fields(line).items()}
         elif line.startswith("BOX_OPERATION_CACHE "):
             values = fields(line)
             capacity = int(values.pop("capacity"))
@@ -72,22 +57,13 @@ def parse_operations(text):
                 raise ValueError("duplicate operation cache row")
             caches[capacity] = {key: int(value)
                                 for key, value in values.items()}
-        elif line.startswith("BOX_OPERATION_VERSION_CACHE "):
-            values = fields(line)
-            capacity = int(values.pop("capacity"))
-            if capacity in version_caches:
-                raise ValueError("duplicate operation version cache row")
-            version_caches[capacity] = {key: int(value)
-                                        for key, value in values.items()}
 
-    if tuple(summaries) != OPERATIONS or states is None:
+    if tuple(summaries) != OPERATIONS or window is None:
         raise ValueError("incomplete operation summaries")
     expected_lru = {
             (operation, capacity) for operation in OPERATIONS
             for capacity in CAPACITIES}
-    if (set(caches) != set(CAPACITIES) or
-            set(version_caches) != set(CAPACITIES) or
-            set(lru) != expected_lru or set(version_lru) != expected_lru):
+    if set(caches) != set(CAPACITIES) or set(lru) != expected_lru:
         raise ValueError("incomplete operation cache census")
     summary_fields = {"calls", "tracked", "dropped", "elapsed_ns",
                       "normalization_ns", "result_canonical_bytes"}
@@ -96,6 +72,8 @@ def parse_operations(text):
             raise ValueError(f"invalid {operation} summary")
         if row["tracked"] + row["dropped"] != row["calls"]:
             raise ValueError(f"inconsistent {operation} coverage")
+        if row["dropped"] != 0:
+            raise ValueError(f"incomplete {operation} exact window")
         prior_hits = -1
         prior_hit_time = -1
         for capacity in CAPACITIES:
@@ -109,43 +87,20 @@ def parse_operations(text):
                 raise ValueError(f"invalid {operation} LRU monotonicity")
             prior_hits = reuse["hits"]
             prior_hit_time = reuse["hit_elapsed_ns"]
-        prior_hits = -1
-        prior_hit_time = -1
-        for capacity in CAPACITIES:
-            reuse = version_lru[(operation, capacity)]
-            if set(reuse) != {"hits", "hit_elapsed_ns"}:
-                raise ValueError("invalid version LRU fields")
-            if (reuse["hits"] < prior_hits or
-                    reuse["hit_elapsed_ns"] < prior_hit_time or
-                    reuse["hits"] > row["calls"] or
-                    reuse["hit_elapsed_ns"] > row["elapsed_ns"]):
-                raise ValueError(f"invalid {operation} version LRU monotonicity")
-            prior_hits = reuse["hits"]
-            prior_hit_time = reuse["hit_elapsed_ns"]
-    if set(states) != {"unique", "canonical_bytes", "canonical_budget_bytes",
-                       "entry_shallow_bytes", "pending"}:
-        raise ValueError("invalid operation state fields")
-    if (any(value < 0 for value in states.values()) or states["pending"] != 0 or
-            states["canonical_bytes"] > states["canonical_budget_bytes"]):
-        raise ValueError("invalid operation state budget")
-    if (version_states is None or set(version_states) !=
-            {"identities", "values", "collisions"} or
-            any(value < 0 for value in version_states.values()) or
-            version_states["collisions"] != 0):
-        raise ValueError("invalid operation version identities")
-    for cache_kind, cache_rows in (("canonical", caches),
-                                   ("version", version_caches)):
-        for capacity, row in cache_rows.items():
-            if set(row) != {"entries", "peak_result_canonical_bytes",
-                            "key_shallow_bytes"}:
-                raise ValueError(f"invalid operation {cache_kind} cache fields")
-            if (any(value < 0 for value in row.values()) or
-                    row["entries"] > capacity):
-                raise ValueError(f"invalid operation {cache_kind} cache occupancy")
+    if (set(window) != {"exact", "pending"} or
+            window != {"exact": 1, "pending": 0}):
+        raise ValueError("invalid exact operation window")
+    for capacity, row in caches.items():
+        if set(row) != {"entries", "peak_operand_canonical_bytes",
+                       "peak_result_canonical_bytes", "key_shallow_bytes",
+                       "exact_mismatches"}:
+            raise ValueError("invalid operation exact cache fields")
+        if (any(value < 0 for value in row.values()) or
+                row["entries"] > capacity):
+            raise ValueError("invalid operation exact cache occupancy")
 
     total_elapsed = sum(row["elapsed_ns"] for row in summaries.values())
     ideal = {}
-    version_ideal = {}
     for capacity in CAPACITIES:
         hit_elapsed = sum(lru[(operation, capacity)]["hit_elapsed_ns"]
                           for operation in OPERATIONS)
@@ -156,28 +111,12 @@ def parse_operations(text):
             "measured_operation_fraction":
                 hit_elapsed / total_elapsed if total_elapsed else 0.0,
         }
-        version_hit_elapsed = sum(
-            version_lru[(operation, capacity)]["hit_elapsed_ns"]
-            for operation in OPERATIONS)
-        version_ideal[str(capacity)] = {
-            "hits": sum(version_lru[(operation, capacity)]["hits"]
-                        for operation in OPERATIONS),
-            "hit_elapsed_ns": version_hit_elapsed,
-            "measured_operation_fraction":
-                version_hit_elapsed / total_elapsed if total_elapsed else 0.0,
-        }
     return {"summaries": summaries,
             "lru": {f"{operation}/{capacity}": row
                     for (operation, capacity), row in lru.items()},
-            "states": states, "caches": caches,
+            "window": window, "caches": caches,
             "total_elapsed_ns": total_elapsed,
-            "ideal_removable_operation_cost": ideal,
-            "version_lru": {f"{operation}/{capacity}": row
-                            for (operation, capacity), row
-                            in version_lru.items()},
-            "version_states": version_states,
-            "version_caches": version_caches,
-            "version_ideal_removable_operation_cost": version_ideal}
+            "ideal_removable_operation_cost": ideal}
 
 
 def fingerprint(build):
@@ -250,12 +189,8 @@ def main():
     parser.add_argument("--program", required=True)
     parser.add_argument("--mode", choices=("semi-sparse", "sparse"), required=True)
     parser.add_argument("--cap-seconds", type=int, required=True)
-    parser.add_argument("--state-budget-bytes", type=int,
-                        default=256 * 1024 * 1024)
     parser.add_argument("--result-set", default="operation-reuse-census-v1")
     args = parser.parse_args()
-    if args.state_budget_bytes < 0:
-        parser.error("state budget must be non-negative")
 
     gate = json.loads(args.gate.read_text())
     if not gate["passed"] or gate["program"] != args.program or \
@@ -281,7 +216,6 @@ def main():
                  text=True).strip(),
              "gate": str(args.gate), "gate_sha256": digest(args.gate),
              "helper_sha256": digest(helper), "runner_sha256": digest(__file__),
-             "state_budget_bytes": args.state_budget_bytes,
              "cap_seconds": args.cap_seconds, "runs": []}
 
     def save():
@@ -309,19 +243,9 @@ def main():
         if not control["completed"] or not control["audit_entries"]:
             raise ValueError("operation census audit control failed")
 
-        previous_budget = os.environ.get("BOX_OPERATION_STATE_BUDGET_BYTES")
-        os.environ["BOX_OPERATION_STATE_BUDGET_BYTES"] = str(
-            args.state_budget_bytes)
-        try:
-            observer_dir = output / "observer"
-            observer = observer_run(observer_executable, extapi, bitcode,
-                                    args.cap_seconds, observer_dir, args.mode,
-                                    True)
-        finally:
-            if previous_budget is None:
-                os.environ.pop("BOX_OPERATION_STATE_BUDGET_BYTES", None)
-            else:
-                os.environ["BOX_OPERATION_STATE_BUDGET_BYTES"] = previous_budget
+        observer_dir = output / "observer"
+        observer = observer_run(observer_executable, extapi, bitcode,
+                                args.cap_seconds, observer_dir, args.mode, True)
         observer["role"] = "operation-census"
         observer["operations"] = parse_operations(
             (observer_dir / "analysis.log").read_text(errors="replace"))

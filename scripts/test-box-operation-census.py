@@ -11,7 +11,7 @@ CENSUS = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(CENSUS)
 
 
-def fixture(dropped=0):
+def fixture(dropped=0, exact=1):
     tracked = 3 - dropped
     lines = []
     for operation in CENSUS.OPERATIONS:
@@ -24,53 +24,40 @@ def fixture(dropped=0):
             lines.append(
                 f"BOX_OPERATION_LRU op={operation} capacity={capacity} "
                 f"hits={hits} hit_elapsed_ns={hits * 5}")
-            lines.append(
-                f"BOX_OPERATION_VERSION_LRU op={operation} "
-                f"capacity={capacity} hits={hits} "
-                f"hit_elapsed_ns={hits * 5}")
-    lines.append(
-        "BOX_OPERATION_STATES unique=4 canonical_bytes=100 "
-        "canonical_budget_bytes=1000 entry_shallow_bytes=160 pending=0")
-    lines.append(
-        "BOX_OPERATION_VERSION_STATES identities=5 values=4 collisions=0")
+    lines.append(f"BOX_OPERATION_WINDOW exact={exact} pending=0")
     for capacity in CENSUS.CAPACITIES:
         lines.append(
             f"BOX_OPERATION_CACHE capacity={capacity} entries=4 "
-            "peak_result_canonical_bytes=80 key_shallow_bytes=96")
-        lines.append(
-            f"BOX_OPERATION_VERSION_CACHE capacity={capacity} entries=4 "
-            "peak_result_canonical_bytes=80 key_shallow_bytes=96")
+            "peak_operand_canonical_bytes=160 "
+            "peak_result_canonical_bytes=80 key_shallow_bytes=96 "
+            "exact_mismatches=1")
     return "\n".join(lines)
 
 
 class OperationCensusTest(unittest.TestCase):
     def test_complete_fixture(self):
         parsed = CENSUS.parse_operations(fixture())
-        self.assertEqual(parsed["states"]["unique"], 4)
+        self.assertEqual(parsed["window"], {"exact": 1, "pending": 0})
         self.assertEqual(
             parsed["ideal_removable_operation_cost"]["64"]["hits"], 6)
-        self.assertEqual(
-            parsed["version_ideal_removable_operation_cost"]["64"]["hits"],
-            6)
 
-    def test_dropped_is_explicit(self):
-        parsed = CENSUS.parse_operations(fixture(dropped=1))
-        self.assertEqual(parsed["summaries"]["join"]["dropped"], 1)
+    def test_dropped_is_rejected(self):
+        with self.assertRaises(ValueError):
+            CENSUS.parse_operations(fixture(dropped=1))
+
+    def test_non_exact_window_is_rejected(self):
+        with self.assertRaises(ValueError):
+            CENSUS.parse_operations(fixture(exact=0))
 
     def test_missing_row_rejected(self):
         with self.assertRaises(ValueError):
             CENSUS.parse_operations(fixture().replace(
-                "BOX_OPERATION_CACHE capacity=4096", "BROKEN", 1))
+                "BOX_OPERATION_CACHE capacity=256", "BROKEN", 1))
 
     def test_non_monotone_hits_rejected(self):
         with self.assertRaises(ValueError):
             CENSUS.parse_operations(fixture().replace(
                 "op=join capacity=256 hits=2", "op=join capacity=256 hits=0"))
-
-    def test_version_collision_rejected(self):
-        with self.assertRaises(ValueError):
-            CENSUS.parse_operations(
-                fixture().replace("collisions=0", "collisions=1"))
 
 
 if __name__ == "__main__":

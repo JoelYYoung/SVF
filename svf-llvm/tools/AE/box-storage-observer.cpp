@@ -479,6 +479,7 @@ int main(int argc, char **argv)
             BoxOperationCensus::collect);
     if (argc == 2 && std::string_view(argv[1]) == "--storage-occupancy-self-test")
     {
+        BoxOperationCensus::selfTest();
         testStorageOccupancy();
         BoxDomain::setStorageEventSink(nullptr);
         BoxDomain::setStorageWorkSink(nullptr);

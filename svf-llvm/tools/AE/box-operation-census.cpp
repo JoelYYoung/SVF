@@ -28,9 +28,9 @@
 #include <array>
 #include <chrono>
 #include <cstdlib>
-#include <limits>
+#include <iterator>
 #include <list>
-#include <optional>
+#include <memory>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -44,7 +44,7 @@ namespace
 {
 using namespace AbstractDomain;
 
-constexpr std::array<std::size_t, 4> Capacities{{64, 256, 1024, 4096}};
+constexpr std::array<std::size_t, 2> Capacities{{64, 256}};
 
 void combineHash(std::size_t& seed, std::size_t value)
 {
@@ -54,27 +54,56 @@ void combineHash(std::size_t& seed, std::size_t value)
 struct OperationKey
 {
     AbstractOperationKind operation;
-    std::uint64_t left;
-    std::uint64_t right;
-
-    bool operator==(const OperationKey& other) const
+    struct Operands
     {
-        return operation == other.operation && left == other.left &&
-               right == other.right;
+        std::string left;
+        std::string right;
+    };
+    std::shared_ptr<const Operands> operands;
+    std::size_t digest;
+
+    bool sameValue(const OperationKey& other) const
+    {
+        return operation == other.operation &&
+               operands->left == other.operands->left &&
+               operands->right == other.operands->right;
+    }
+
+    std::size_t canonicalBytes() const
+    {
+        return operands->left.size() + operands->right.size();
     }
 };
 
-struct OperationKeyHash
+bool commutative(AbstractOperationKind operation)
 {
-    std::size_t operator()(const OperationKey& key) const
-    {
-        std::size_t seed =
-            std::hash<unsigned>{}(static_cast<unsigned>(key.operation));
-        combineHash(seed, std::hash<std::uint64_t>{}(key.left));
-        combineHash(seed, std::hash<std::uint64_t>{}(key.right));
-        return seed;
-    }
-};
+    return operation == AbstractOperationKind::Join ||
+           operation == AbstractOperationKind::Meet ||
+           operation == AbstractOperationKind::Equivalent;
+}
+
+OperationKey makeKey(AbstractOperationKind operation, std::string left,
+                     std::string right)
+{
+    if (commutative(operation) && right < left)
+        std::swap(left, right);
+    std::size_t digest =
+        std::hash<unsigned> {}(static_cast<unsigned>(operation));
+    combineHash(digest, std::hash<std::string> {}(left));
+    combineHash(digest, std::hash<std::string> {}(right));
+    return {operation,
+            std::make_shared<OperationKey::Operands>(
+                OperationKey::Operands{std::move(left), std::move(right)}),
+            digest};
+}
+
+OperationKey makeKeyForTest(AbstractOperationKind operation, std::string left,
+                            std::string right, std::size_t digest)
+{
+    OperationKey key = makeKey(operation, std::move(left), std::move(right));
+    key.digest = digest;
+    return key;
+}
 
 class Lru
 {
@@ -83,30 +112,46 @@ public:
 
     bool probe(const OperationKey& key)
     {
-        const auto found = entries_.find(key);
-        if (found == entries_.end())
-            return false;
-        order_.splice(order_.begin(), order_, found->second);
-        return true;
+        // The digest selects candidates only. A hit always compares the full
+        // canonical operands, so a hash collision cannot create reuse.
+        const auto range = entries_.equal_range(key.digest);
+        for (auto found = range.first; found != range.second; ++found)
+        {
+            if (!found->second->key.sameValue(key))
+            {
+                ++exactMismatchCount_;
+                continue;
+            }
+            order_.splice(order_.begin(), order_, found->second);
+            return true;
+        }
+        return false;
     }
 
-    void remember(const OperationKey& key, std::size_t resultBytes)
+    void remember(OperationKey key, std::size_t resultBytes)
     {
-        const auto existing = entries_.find(key);
-        if (existing != entries_.end())
-        {
-            order_.splice(order_.begin(), order_, existing->second);
-            return;
-        }
-        order_.push_front({key, resultBytes});
-        entries_.emplace(key, order_.begin());
+        order_.push_front({std::move(key), resultBytes});
+        entries_.emplace(order_.front().key.digest, order_.begin());
+        operandBytes_ += order_.front().key.canonicalBytes();
         resultBytes_ += resultBytes;
+        peakOperandBytes_ = std::max(peakOperandBytes_, operandBytes_);
         peakResultBytes_ = std::max(peakResultBytes_, resultBytes_);
         if (entries_.size() <= capacity_)
             return;
-        resultBytes_ -= order_.back().resultBytes;
-        entries_.erase(order_.back().key);
-        order_.pop_back();
+        const auto removed = std::prev(order_.end());
+        const auto range = entries_.equal_range(removed->key.digest);
+        const auto indexed = std::find_if(
+                                 range.first, range.second,
+                                 [removed](const auto& entry)
+        {
+            return entry.second == removed;
+        });
+        if (indexed == range.second)
+            throw std::runtime_error("missing Box operation LRU index");
+        entries_.erase(indexed);
+        operandBytes_ -= removed->key.canonicalBytes();
+        resultBytes_ -= removed->resultBytes;
+        order_.erase(removed);
     }
 
     std::size_t size() const
@@ -119,6 +164,16 @@ public:
         return peakResultBytes_;
     }
 
+    std::size_t peakOperandBytes() const
+    {
+        return peakOperandBytes_;
+    }
+
+    std::uint64_t exactMismatchCount() const
+    {
+        return exactMismatchCount_;
+    }
+
 private:
     struct Entry
     {
@@ -128,11 +183,12 @@ private:
 
     std::size_t capacity_;
     std::list<Entry> order_;
-    std::unordered_map<OperationKey, std::list<Entry>::iterator,
-                       OperationKeyHash>
-        entries_;
+    std::unordered_multimap<std::size_t, std::list<Entry>::iterator> entries_;
+    std::size_t operandBytes_ = 0;
     std::size_t resultBytes_ = 0;
+    std::size_t peakOperandBytes_ = 0;
     std::size_t peakResultBytes_ = 0;
+    std::uint64_t exactMismatchCount_ = 0;
 };
 
 struct Stats
@@ -145,50 +201,20 @@ struct Stats
     std::uint64_t resultCanonicalBytes = 0;
     std::array<std::uint64_t, Capacities.size()> hits{};
     std::array<std::uint64_t, Capacities.size()> hitNanoseconds{};
-    std::array<std::uint64_t, Capacities.size()> versionHits{};
-    std::array<std::uint64_t, Capacities.size()> versionHitNanoseconds{};
 };
 
 struct Pending
 {
     AbstractOperationKind operation;
-    std::optional<OperationKey> key;
+    OperationKey key;
     std::array<bool, Capacities.size()> hits{};
-    OperationKey versionKey;
-    std::array<bool, Capacities.size()> versionHits{};
 };
 
 std::array<Stats, static_cast<std::size_t>(AbstractOperationKind::Count)> stats;
-std::array<Lru, Capacities.size()> caches{
-    {Lru(64), Lru(256), Lru(1024), Lru(4096)}};
-std::array<Lru, Capacities.size()> versionCaches{
-    {Lru(64), Lru(256), Lru(1024), Lru(4096)}};
-std::vector<Pending> pending;
-std::unordered_map<std::string, std::uint64_t> stateIds;
-std::unordered_map<std::string, std::uint64_t> valueStateIds;
-std::unordered_map<std::uint64_t, std::uint64_t> versionStates;
-std::uint64_t nextStateId = 1;
-std::uint64_t nextValueStateId = 1;
-std::size_t stateBytes = 0;
-std::uint64_t versionCollisions = 0;
-
-std::size_t stateBudget()
+std::array<Lru, Capacities.size()> caches
 {
-    static const std::size_t budget = [] {
-        constexpr std::size_t DefaultBudget = 256U * 1024U * 1024U;
-        const char* value = std::getenv("BOX_OPERATION_STATE_BUDGET_BYTES");
-        if (!value || !*value)
-            return DefaultBudget;
-        char* end = nullptr;
-        const unsigned long long parsed = std::strtoull(value, &end, 10);
-        if (*end != '\0' || value[0] == '-' ||
-            parsed > std::numeric_limits<std::size_t>::max())
-            throw std::runtime_error(
-                "invalid BOX_OPERATION_STATE_BUDGET_BYTES");
-        return static_cast<std::size_t>(parsed);
-    }();
-    return budget;
-}
+    {Lru(64), Lru(256)}};
+std::vector<Pending> pending;
 
 std::string canonical(const BoxAddressDomain& product)
 {
@@ -201,34 +227,15 @@ std::string canonical(const BoxAddressDomain& product)
     return output.str();
 }
 
-std::optional<std::uint64_t> intern(std::string state)
-{
-    const auto existing = stateIds.find(state);
-    if (existing != stateIds.end())
-        return existing->second;
-    if (state.size() > stateBudget() - std::min(stateBudget(), stateBytes))
-        return std::nullopt;
-    stateBytes += state.size();
-    const std::uint64_t id = nextStateId++;
-    stateIds.emplace(std::move(state), id);
-    return id;
-}
-
 std::size_t index(AbstractOperationKind operation)
 {
     return static_cast<std::size_t>(operation);
 }
 
-bool commutative(AbstractOperationKind operation)
-{
-    return operation == AbstractOperationKind::Join ||
-           operation == AbstractOperationKind::Meet ||
-           operation == AbstractOperationKind::Equivalent;
-}
-
 const char* name(AbstractOperationKind operation)
 {
-    static const std::array<const char*, 6> names{
+    static const std::array<const char*, 6> names
+    {
         {"join", "meet", "widen", "narrow", "subset", "equivalent"}};
     return names.at(index(operation));
 }
@@ -237,7 +244,7 @@ const char* name(AbstractOperationKind operation)
 void collect(const AbstractOperationEvent& event)
 {
     if (!event.left || !event.right ||
-        event.left->kind() != DomainKind::Product)
+            event.left->kind() != DomainKind::Product)
         return;
     Stats& current = stats[index(event.operation)];
     if (event.phase == AbstractOperationPhase::Begin)
@@ -248,53 +255,16 @@ void collect(const AbstractOperationEvent& event)
         const auto& right = static_cast<const BoxAddressDomain&>(*event.right);
         std::string leftCanonical = canonical(left);
         std::string rightCanonical = canonical(right);
-        const auto validateVersion = [](std::uint64_t version,
-                                        const std::string& state)
-        {
-            const std::size_t marker = state.find(";state=");
-            if (marker == std::string::npos)
-                throw std::runtime_error("invalid canonical Product state");
-            // MemoryLayout is a shared monotone schema: extending it adds
-            // implicit-Top coordinates to every copy and does not mutate the
-            // Product value represented by this version identity.
-            const std::string value = state.substr(marker);
-            const auto [valueIterator, valueInserted] =
-                valueStateIds.emplace(value, nextValueStateId);
-            if (valueInserted)
-                ++nextValueStateId;
-            const auto [iterator, inserted] =
-                versionStates.emplace(version, valueIterator->second);
-            if (!inserted && iterator->second != valueIterator->second)
-                ++versionCollisions;
-        };
-        validateVersion(left.operationVersion(), leftCanonical);
-        validateVersion(right.operationVersion(), rightCanonical);
-        const auto leftId = intern(std::move(leftCanonical));
-        const auto rightId = intern(std::move(rightCanonical));
+        OperationKey key = makeKey(event.operation, std::move(leftCanonical),
+                                   std::move(rightCanonical));
         current.normalizationNanoseconds += static_cast<std::uint64_t>(
-            std::chrono::duration_cast<std::chrono::nanoseconds>(
-                std::chrono::steady_clock::now() - start)
-                .count());
-        OperationKey versionKey{event.operation, left.operationVersion(),
-                                right.operationVersion()};
-        if (commutative(event.operation) && versionKey.right < versionKey.left)
-            std::swap(versionKey.left, versionKey.right);
-        Pending entry{event.operation, std::nullopt, {}, versionKey, {}};
-        for (std::size_t cache = 0; cache < versionCaches.size(); ++cache)
-            entry.versionHits[cache] =
-                versionCaches[cache].probe(versionKey);
-        if (leftId && rightId)
-        {
-            OperationKey key{event.operation, *leftId, *rightId};
-            if (commutative(event.operation) && key.right < key.left)
-                std::swap(key.left, key.right);
-            entry.key = key;
-            ++current.tracked;
-            for (std::size_t cache = 0; cache < caches.size(); ++cache)
-                entry.hits[cache] = caches[cache].probe(key);
-        }
-        else
-            ++current.dropped;
+                                                std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                                        std::chrono::steady_clock::now() - start)
+                                                .count());
+        Pending entry{event.operation, std::move(key), {}};
+        ++current.tracked;
+        for (std::size_t cache = 0; cache < caches.size(); ++cache)
+            entry.hits[cache] = caches[cache].probe(entry.key);
         pending.push_back(std::move(entry));
         return;
     }
@@ -307,7 +277,7 @@ void collect(const AbstractOperationEvent& event)
     const auto start = std::chrono::steady_clock::now();
     std::size_t resultBytes = 1;
     if (event.operation == AbstractOperationKind::Subset ||
-        event.operation == AbstractOperationKind::Equivalent)
+            event.operation == AbstractOperationKind::Equivalent)
         ++current.resultCanonicalBytes;
     else
     {
@@ -316,11 +286,9 @@ void collect(const AbstractOperationEvent& event)
         current.resultCanonicalBytes += resultBytes;
     }
     current.normalizationNanoseconds += static_cast<std::uint64_t>(
-        std::chrono::duration_cast<std::chrono::nanoseconds>(
-            std::chrono::steady_clock::now() - start)
-            .count());
-    if (!entry.key)
-        return;
+                                            std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                                    std::chrono::steady_clock::now() - start)
+                                            .count());
     for (std::size_t cache = 0; cache < caches.size(); ++cache)
     {
         if (entry.hits[cache])
@@ -329,17 +297,7 @@ void collect(const AbstractOperationEvent& event)
             current.hitNanoseconds[cache] += event.elapsedNanoseconds;
         }
         else
-            caches[cache].remember(*entry.key, resultBytes);
-    }
-    for (std::size_t cache = 0; cache < versionCaches.size(); ++cache)
-    {
-        if (entry.versionHits[cache])
-        {
-            ++current.versionHits[cache];
-            current.versionHitNanoseconds[cache] += event.elapsedNanoseconds;
-        }
-        else
-            versionCaches[cache].remember(entry.versionKey, resultBytes);
+            caches[cache].remember(entry.key, resultBytes);
     }
 }
 
@@ -361,45 +319,58 @@ void print()
         for (std::size_t cache = 0; cache < caches.size(); ++cache)
         {
             SVFUtil::outs()
-                << "BOX_OPERATION_LRU op=" << name(kind)
-                << " capacity=" << Capacities[cache]
-                << " hits=" << current.hits[cache]
-                << " hit_elapsed_ns=" << current.hitNanoseconds[cache] << '\n';
-            SVFUtil::outs()
-                << "BOX_OPERATION_VERSION_LRU op=" << name(kind)
-                << " capacity=" << Capacities[cache]
-                << " hits=" << current.versionHits[cache]
-                << " hit_elapsed_ns="
-                << current.versionHitNanoseconds[cache] << '\n';
+                    << "BOX_OPERATION_LRU op=" << name(kind)
+                    << " capacity=" << Capacities[cache]
+                    << " hits=" << current.hits[cache]
+                    << " hit_elapsed_ns=" << current.hitNanoseconds[cache] << '\n';
         }
     }
-    SVFUtil::outs() << "BOX_OPERATION_STATES unique=" << stateIds.size()
-                    << " canonical_bytes=" << stateBytes
-                    << " canonical_budget_bytes=" << stateBudget()
-                    << " entry_shallow_bytes="
-                    << stateIds.size() *
-                           (sizeof(std::string) + sizeof(std::uint64_t))
-                    << " pending=" << pending.size() << '\n';
-    SVFUtil::outs() << "BOX_OPERATION_VERSION_STATES identities="
-                    << versionStates.size()
-                    << " values=" << valueStateIds.size()
-                    << " collisions=" << versionCollisions << '\n';
+    SVFUtil::outs() << "BOX_OPERATION_WINDOW exact=1 pending="
+                    << pending.size() << '\n';
     for (std::size_t cache = 0; cache < caches.size(); ++cache)
     {
         SVFUtil::outs() << "BOX_OPERATION_CACHE capacity=" << Capacities[cache]
                         << " entries=" << caches[cache].size()
+                        << " peak_operand_canonical_bytes="
+                        << caches[cache].peakOperandBytes()
                         << " peak_result_canonical_bytes="
                         << caches[cache].peakResultBytes()
                         << " key_shallow_bytes="
-                        << caches[cache].size() * sizeof(OperationKey) << '\n';
-        SVFUtil::outs()
-            << "BOX_OPERATION_VERSION_CACHE capacity=" << Capacities[cache]
-            << " entries=" << versionCaches[cache].size()
-            << " peak_result_canonical_bytes="
-            << versionCaches[cache].peakResultBytes()
-            << " key_shallow_bytes="
-            << versionCaches[cache].size() * sizeof(OperationKey) << '\n';
+                        << caches[cache].size() * sizeof(OperationKey)
+                        << " exact_mismatches="
+                        << caches[cache].exactMismatchCount() << '\n';
     }
+}
+
+void selfTest()
+{
+    constexpr std::size_t SameDigest = 7;
+    Lru cache(2);
+    OperationKey first = makeKeyForTest(AbstractOperationKind::Join, "left",
+                                        "right", SameDigest);
+    OperationKey swapped = makeKeyForTest(AbstractOperationKind::Join, "right",
+                                          "left", SameDigest);
+    OperationKey collision = makeKeyForTest(AbstractOperationKind::Join, "left",
+                                            "other", SameDigest);
+    if (cache.probe(first))
+        throw std::runtime_error("empty Box operation LRU hit");
+    cache.remember(first, 4);
+    if (!cache.probe(swapped) || cache.probe(collision) ||
+            cache.exactMismatchCount() != 1)
+        throw std::runtime_error("Box operation LRU exact-key failure");
+    cache.remember(collision, 5);
+    OperationKey third = makeKeyForTest(AbstractOperationKind::Join, "third",
+                                        "value", 11);
+    cache.remember(third, 6);
+    OperationKey forward = makeKeyForTest(AbstractOperationKind::Subset,
+                                          "left", "right", 13);
+    OperationKey reverse = makeKeyForTest(AbstractOperationKind::Subset,
+                                          "right", "left", 13);
+    if (cache.size() != 2 || cache.probe(first) || !cache.probe(collision) ||
+            !cache.probe(third) || cache.peakOperandBytes() == 0 ||
+            cache.peakResultBytes() != 15 || forward.sameValue(reverse))
+        throw std::runtime_error("Box operation LRU eviction failure");
+    SVFUtil::outs() << "Box operation census contract passed\n";
 }
 
 } // namespace SVF::BoxOperationCensus

@@ -29,6 +29,7 @@ namespace SVF::BoxOperationCensus
 
 void collect(const AbstractDomain::AbstractOperationEvent& event);
 void print();
+void selfTest();
 
 } // namespace SVF::BoxOperationCensus
 
