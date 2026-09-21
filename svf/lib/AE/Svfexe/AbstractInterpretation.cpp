@@ -1240,8 +1240,8 @@ void AbstractInterpretation::updateStateOnBinary(const BinaryOPStmt* binary)
             SVFUtil::dyn_cast<ValVar>(binary->getRes());
         if (affine && resultValue && adapter_.contains(*resultValue))
         {
-            transferState.assignNumeric(adapter_.variable(*resultValue),
-                                        *affine);
+            assignRelationalValue(resultValue, *affine,
+                                  AD::AddressSet::bottom(), node);
             return;
         }
     }
@@ -1528,10 +1528,8 @@ void AbstractInterpretation::updateStateOnCopy(const CopyStmt* copy)
             const AD::Variable source = adapter_.variable(*rhsValue);
             if (!transferState.numericalMayBeUninitialized(source))
             {
-                transferState.assignNumeric(
-                    adapter_.variable(*lhsValue), AD::LinearExpression(source));
-                transferState.setAddressSet(adapter_.variable(*lhsValue),
-                                            rhsAddresses);
+                assignRelationalValue(lhsValue, AD::LinearExpression(source),
+                                      rhsAddresses, node);
                 return;
             }
         }

@@ -439,6 +439,11 @@ protected:
     /// AE uses the current ICFG state; semi-sparse AE overrides this with its
     /// module-wide SSA carrier.
     virtual State& scalarTransferState(const ICFGNode* node);
+    virtual void assignRelationalValue(
+        const ValVar* target,
+        const AbstractDomain::LinearExpression& expression,
+        const AbstractDomain::AddressSet& addresses,
+        const ICFGNode* node);
     State topState() const;
     State bottomState() const;
     std::unique_ptr<AbstractDomain::NumericalDomain> makeNumericalDomain(

@@ -94,6 +94,25 @@ SemiSparseAbstractInterpretation::scalarTransferState(const ICFGNode*)
     return scalarState();
 }
 
+void SemiSparseAbstractInterpretation::assignRelationalValue(
+    const ValVar* target, const AD::LinearExpression& expression,
+    const AD::AddressSet& addresses, const ICFGNode* node)
+{
+    if (!target || !this->adapter_.contains(*target))
+        return;
+    const AD::Variable variable = this->adapter_.variable(*target);
+    State& scalars = scalarState();
+    scalars.assignNumeric(variable, expression);
+    scalars.setAddressSet(variable, addresses);
+
+    // Keep the same equation in the path-local refinement component. The
+    // global SSA carrier answers def-use reads; this local copy is what lets a
+    // later branch combine the equation with predecessor-specific guards.
+    State& local = this->ensureState(node);
+    local.assignNumeric(variable, expression);
+    local.setAddressSet(variable, addresses);
+}
+
 const AD::AbstractDomain* SemiSparseAbstractInterpretation::
 getScalarAbstractState() const
 {
@@ -235,6 +254,17 @@ void SemiSparseAbstractInterpretation::finalizeAbstractState(
     const ICFGNode* node)
 {
     State& denseState = this->ensureState(node);
+    if (Options::AEDomain() != AENumericalDomain::Box)
+    {
+        State checkpoint(this->makeNumericalDomain(false),
+                         this->adapter_.memoryLayout());
+        checkpoint.numerical().meetWith(denseState.numerical());
+        forgetMemoryValues(checkpoint);
+        if (checkpoint.isTop())
+            refinementTrace_.erase(node);
+        else
+            refinementTrace_.insert_or_assign(node, std::move(checkpoint));
+    }
     forgetActiveScalarValues(denseState);
 }
 
@@ -342,6 +372,11 @@ void SemiSparseAbstractInterpretation::restoreCallerFrameAfterSharedCallee(
 void SemiSparseAbstractInterpretation::applyScalarRefinement(
     State& denseState, const State& checkpoint)
 {
+    if (Options::AEDomain() != AENumericalDomain::Box)
+    {
+        denseState.numerical().meetWith(checkpoint.numerical());
+        return;
+    }
     for (AD::Variable variable : checkpoint.numerical().supportVariables())
     {
         const ValVar* value = this->adapter_.value(variable);

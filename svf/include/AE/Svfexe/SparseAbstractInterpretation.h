@@ -89,6 +89,11 @@ protected:
     void materializeValue(State& state, const ValVar* value,
                           const ICFGNode* node) override;
     State& scalarTransferState(const ICFGNode* node) override;
+    void assignRelationalValue(
+        const ValVar* target,
+        const AbstractDomain::LinearExpression& expression,
+        const AbstractDomain::AddressSet& addresses,
+        const ICFGNode* node) override;
     void loadValue(const ValVar* pointer, AbstractDomain::Interval& interval,
                    AbstractDomain::AddressSet& addresses,
                    bool& numericalMayBeUninitialized,

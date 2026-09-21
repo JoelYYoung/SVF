@@ -407,6 +407,18 @@ scalarTransferState(const ICFGNode* node)
     return ensureState(node);
 }
 
+void AbstractInterpretation::assignRelationalValue(
+    const ValVar* target, const AD::LinearExpression& expression,
+    const AD::AddressSet& addresses, const ICFGNode* node)
+{
+    if (!target || !adapter_.contains(*target))
+        return;
+    State& destination = ensureState(node);
+    const AD::Variable variable = adapter_.variable(*target);
+    destination.assignNumeric(variable, expression);
+    destination.setAddressSet(variable, addresses);
+}
+
 void AbstractInterpretation::resetAbstractState(const ICFGNode* node)
 {
     stateTrace_.insert_or_assign(node, topState());
