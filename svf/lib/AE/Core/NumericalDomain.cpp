@@ -3367,6 +3367,12 @@ Interval BoxDomain::bound(Variable variable) const
     return boundAt(variable);
 }
 
+const Interval& BoxDomain::boundView(Variable variable) const
+{
+    static const Interval bottom = Interval::bottom();
+    return bottom_ ? bottom : boundAt(variable);
+}
+
 Interval BoxDomain::bound(const LinearExpression& expression) const
 {
     if (bottom_)

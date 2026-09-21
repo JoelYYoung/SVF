@@ -360,6 +360,9 @@ if(SVF_BUILD_BOX_PAGE_TESTS)
   add_executable(box-page-contract scripts/box-page-contract.cpp)
   target_link_libraries(box-page-contract PRIVATE AbstractDomainCore)
   add_test(NAME box-page-contract COMMAND box-page-contract)
+  add_executable(box-read-view-contract scripts/box-read-view-contract.cpp)
+  target_link_libraries(box-read-view-contract PRIVATE AbstractDomainCore)
+  add_test(NAME box-read-view-contract COMMAND box-read-view-contract)
 endif()
 
 # =================================================================================

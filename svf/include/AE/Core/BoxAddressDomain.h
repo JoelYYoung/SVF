@@ -535,6 +535,8 @@ private:
     AddressDomain addresses_;
     LifetimeDomain lifetimes_;
     enum class Combination { Join, Meet, Widen };
+    /// Internal read-only borrow; invalidated by mutation of this product.
+    const Interval& intervalView(Variable variable) const;
     void combineInitialized(const BoxAddressDomain& other, Combination operation);
     bool initializedSubsetOf(const BoxAddressDomain& other) const;
     bool trackInitialization_ = false;

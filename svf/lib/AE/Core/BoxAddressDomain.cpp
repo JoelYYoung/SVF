@@ -69,6 +69,15 @@ Interval BoxAddressDomain::interval(Variable variable) const
     return numerical_.bound(variable);
 }
 
+const Interval& BoxAddressDomain::intervalView(Variable variable) const
+{
+    static const Interval bottom = Interval::bottom();
+    if (isBottomDomain() || (trackInitialization_ &&
+                             !mayBeInitialized(numericalInitialization_.value(variable))))
+        return bottom;
+    return numerical_.boundView(variable);
+}
+
 bool BoxAddressDomain::numericalMayBeUninitialized(Variable variable) const
 {
     return trackInitialization_ &&
@@ -310,7 +319,9 @@ void BoxAddressDomain::combineInitialized(
         if (result.isBottomDomain())
             break;
         Interval number = interval(variable);
-        const Interval nextNumber = other.interval(variable);
+        // Only result is mutated below. Both source products, including when
+        // other aliases *this, keep the borrowed bound alive until loop exit.
+        const Interval& nextNumber = other.intervalView(variable);
         if (intersect)
             number.meetWith(nextNumber);
         else
@@ -333,7 +344,7 @@ void BoxAddressDomain::combineInitialized(
                                                        static_cast<InitializationState>(static_cast<unsigned>(guard) & 1U));
             }
         }
-        else if (number != numerical_.bound(variable))
+        else if (number != numerical_.boundView(variable))
             result.numerical_.setBound(variable, number);
     }
     const auto pointers = mergedVariables(addresses_.nonDefaultVariables(),
@@ -378,7 +389,7 @@ bool BoxAddressDomain::initializedSubsetOf(const BoxAddressDomain& other) const
     {
         for (Variable variable : other.numerical_.constrainedVariables())
             if (mayBeInitialized(numericalInitialization_.value(variable)) &&
-                    !numerical_.bound(variable).isSubsetOf(other.numerical_.bound(variable)))
+                    !numerical_.boundView(variable).isSubsetOf(other.numerical_.boundView(variable)))
                 return false;
     }
     if (addresses_.isSubsetOf(other.addresses_) != CheckResult::True)

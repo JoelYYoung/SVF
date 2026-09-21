@@ -1092,6 +1092,9 @@ private:
     BoundPageDirectory& writablePageDirectory();
     std::vector<BoundPageEntry> pageEntries() const;
     const Interval& boundAt(Variable variable) const;
+    /// Internal borrow including Bottom; invalidated by mutation of this Box.
+    /// Public NumericalDomain queries continue to return owning values.
+    const Interval& boundView(Variable variable) const;
     BoundPage& writablePage(std::size_t pageIndex);
 #ifdef SVF_BOX_PAGE_INTERNING
     void markPageDirty(std::size_t pageIndex);
