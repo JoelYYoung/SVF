@@ -1052,6 +1052,7 @@ void AbstractInterpretation::updateStateOnPhi(const PhiStmt* phi)
     const bool isFormalReturn = exit && exit->getFormalRet() == phi->getRes();
     AD::Interval interval = AD::Interval::bottom();
     AD::AddressSet addresses = AD::AddressSet::bottom();
+    std::optional<State> relationalPhi;
     for (u32_t i = 0; i < phi->getOpVarNum(); i++)
     {
         const ICFGNode* opICFGNode = phi->getOpICFGNode(i);
@@ -1082,10 +1083,53 @@ void AbstractInterpretation::updateStateOnPhi(const PhiStmt* phi)
                     : getInterval(phi->getOpVar(i), opICFGNode));
                 addresses.joinWith(getAddressSet(phi->getOpVar(i),
                                                  opICFGNode));
+
+                if (Options::AEDomain() != AENumericalDomain::Box)
+                {
+                    const auto* target =
+                        SVFUtil::dyn_cast<ValVar>(phi->getRes());
+                    const auto* source =
+                        SVFUtil::dyn_cast<ValVar>(phi->getOpVar(i));
+                    if (target && source && adapter_.contains(*target) &&
+                            adapter_.contains(*source))
+                    {
+                        State alternative = phiAlternativeState(opICFGNode);
+                        const AD::Variable sourceVariable =
+                            adapter_.variable(*source);
+                        if (!alternative.numericalMayBeUninitialized(
+                                    sourceVariable))
+                        {
+                            const AD::Variable targetVariable =
+                                adapter_.variable(*target);
+                            alternative.assignNumeric(
+                                targetVariable,
+                                AD::LinearExpression(sourceVariable));
+                            alternative.setAddressSet(
+                                targetVariable,
+                                alternative.addressSet(sourceVariable));
+                            if (!relationalPhi)
+                                relationalPhi = std::move(alternative);
+                            else
+                                relationalPhi->joinWith(alternative);
+                        }
+                    }
+                }
             }
         }
     }
     updateValue(phi->getRes(), interval, addresses, icfgNode);
+    if (relationalPhi)
+    {
+        const auto* target = SVFUtil::dyn_cast<ValVar>(phi->getRes());
+        if (target && adapter_.contains(*target))
+        {
+            const AD::Variable targetVariable = adapter_.variable(*target);
+            relationalPhi->numerical().project(
+                relationalPhi->numerical().relationalClosure({targetVariable}));
+            scalarTransferState(icfgNode).numerical().meetWith(
+                relationalPhi->numerical());
+        }
+    }
 }
 
 /// Handle CallPE: phi-like merging of actual parameters from all call sites

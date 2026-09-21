@@ -92,6 +92,7 @@ protected:
         State& state,
         const std::vector<AbstractDomain::Variable>& variables) override;
     State& scalarTransferState(const ICFGNode* node) override;
+    State phiAlternativeState(const ICFGNode* predecessor) override;
     void assignRelationalValue(
         const ValVar* target,
         const AbstractDomain::LinearExpression& expression,

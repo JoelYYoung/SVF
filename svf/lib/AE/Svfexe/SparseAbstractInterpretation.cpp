@@ -94,6 +94,17 @@ SemiSparseAbstractInterpretation::scalarTransferState(const ICFGNode*)
     return scalarState();
 }
 
+SemiSparseAbstractInterpretation::State
+SemiSparseAbstractInterpretation::phiAlternativeState(
+    const ICFGNode* predecessor)
+{
+    State alternative = scalarState();
+    if (predecessor && this->hasAbsState(predecessor))
+        alternative.numerical().meetWith(
+            this->state(predecessor).numerical());
+    return alternative;
+}
+
 void SemiSparseAbstractInterpretation::assignRelationalValue(
     const ValVar* target, const AD::LinearExpression& expression,
     const AD::AddressSet& addresses, const ICFGNode* node)

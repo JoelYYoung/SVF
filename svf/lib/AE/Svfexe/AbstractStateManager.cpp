@@ -407,6 +407,12 @@ scalarTransferState(const ICFGNode* node)
     return ensureState(node);
 }
 
+AbstractInterpretation::State AbstractInterpretation::
+phiAlternativeState(const ICFGNode* predecessor)
+{
+    return state(predecessor);
+}
+
 void AbstractInterpretation::assignRelationalValue(
     const ValVar* target, const AD::LinearExpression& expression,
     const AD::AddressSet& addresses, const ICFGNode* node)
