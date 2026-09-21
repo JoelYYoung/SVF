@@ -121,6 +121,8 @@ std::set<AD::Variable> definedScalars(const ICFGNode* node,
 {
     std::set<AD::Variable> result;
     const auto add = [&](const SVFVar* variable) {
+        if (!variable)
+            return;
         const auto* value = SVFUtil::dyn_cast<ValVar>(variable);
         if (value && adapter.contains(*value))
             result.insert(adapter.variable(*value));
