@@ -1026,21 +1026,64 @@ void AbstractInterpretation::updateStateOnSelect(const SelectStmt* select)
     const AD::Interval condition = getInterval(select->getCondition(), node);
     AD::Interval interval;
     AD::AddressSet addresses;
+    std::vector<const SVFVar*> selectedValues;
     if (condition.isSingleton())
     {
         const SVFVar* selected = condition.isZero() ? select->getFalseValue()
                                  : select->getTrueValue();
+        selectedValues.push_back(selected);
         interval = getInterval(selected, node);
         addresses = getAddressSet(selected, node);
     }
     else
     {
+        selectedValues.push_back(select->getTrueValue());
+        selectedValues.push_back(select->getFalseValue());
         interval = getInterval(select->getTrueValue(), node);
         interval.joinWith(getInterval(select->getFalseValue(), node));
         addresses = getAddressSet(select->getTrueValue(), node);
         addresses.joinWith(getAddressSet(select->getFalseValue(), node));
     }
     updateValue(select->getRes(), interval, addresses, node);
+
+    if (Options::AEDomain() == AENumericalDomain::Box)
+        return;
+    const auto* target = SVFUtil::dyn_cast<ValVar>(select->getRes());
+    if (!target || !adapter_.contains(*target))
+        return;
+    const AD::Variable targetVariable = adapter_.variable(*target);
+    std::optional<State> relationalSelect;
+    for (const SVFVar* selected : selectedValues)
+    {
+        const auto* source = SVFUtil::dyn_cast<ValVar>(selected);
+        if (!source || !adapter_.contains(*source))
+        {
+            relationalSelect.reset();
+            break;
+        }
+        State alternative = phiAlternativeState(node);
+        const AD::Variable sourceVariable = adapter_.variable(*source);
+        if (alternative.numericalMayBeUninitialized(sourceVariable))
+        {
+            relationalSelect.reset();
+            break;
+        }
+        alternative.assignNumeric(targetVariable,
+                                  AD::LinearExpression(sourceVariable));
+        alternative.setAddressSet(targetVariable,
+                                  alternative.addressSet(sourceVariable));
+        if (!relationalSelect)
+            relationalSelect = std::move(alternative);
+        else
+            relationalSelect->joinWith(alternative);
+    }
+    if (relationalSelect)
+    {
+        relationalSelect->numerical().project(
+            relationalSelect->numerical().relationalClosure({targetVariable}));
+        scalarTransferState(node).numerical().meetWith(
+            relationalSelect->numerical());
+    }
 }
 
 void AbstractInterpretation::updateStateOnPhi(const PhiStmt* phi)
