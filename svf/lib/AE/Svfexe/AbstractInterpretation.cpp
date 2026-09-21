@@ -1150,6 +1150,8 @@ void AbstractInterpretation::updateStateOnPhi(const PhiStmt* phi)
                             alternative.setAddressSet(
                                 targetVariable,
                                 alternative.addressSet(sourceVariable));
+                            if (sourceVariable != targetVariable)
+                                alternative.numerical().forget(sourceVariable);
                             if (!relationalPhi)
                                 relationalPhi = std::move(alternative);
                             else
