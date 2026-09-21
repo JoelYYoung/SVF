@@ -15,6 +15,7 @@
 #include "Util/Options.h"
 #include "WPA/Andersen.h"
 
+#include <iostream>
 #include <string_view>
 #include <vector>
 
@@ -52,6 +53,14 @@ int main(int argc, char** argv)
         OptionBase::parseOptions(static_cast<int>(arguments.size()),
                                  arguments.data(), "Static Symbolic Execution",
                                  "[options] <input-bitcode...>");
+
+    if (Options::AESparsity() == AbstractInterpretation::Sparse &&
+            Options::AEDomain() != AbstractInterpretation::Box)
+    {
+        std::cerr << "ae: relational numerical domains support only "
+                     "dense and semi-sparse modes\n";
+        return 2;
+    }
 
     LLVMModuleSet::getLLVMModuleSet()->buildSVFModule(modules);
     SVFIRBuilder builder;
