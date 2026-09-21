@@ -155,10 +155,11 @@ def main():
     if not gate["passed"] or gate["program"] != args.program or \
             gate["mode"] != args.mode:
         raise ValueError("operation census requires matching semantic gate")
-    bitcode = Path(gate["manifest"]["input"])
-    extapi = Path(gate["manifest"]["extapi"])
-    if digest(bitcode) != gate["manifest"]["input_sha256"] or \
-            digest(extapi) != gate["manifest"]["extapi_sha256"]:
+    manifest = gate.get("manifest", gate)
+    bitcode = Path(manifest["input"])
+    extapi = Path(manifest["extapi"])
+    if digest(bitcode) != manifest["input_sha256"] or \
+            digest(extapi) != manifest["extapi_sha256"]:
         raise ValueError("semantic gate inputs changed")
 
     output = (args.study / "results" / args.result_set /
@@ -216,7 +217,7 @@ def main():
                          "function_coverage_percent", "icfg_node_trace")
         if any(observer[key] != canonical[key] for key in semantic_keys):
             raise ValueError("operation census changed canonical projection")
-        for key in ("function_coverage_percent", "icfg_node_trace"):
+        for key in semantic_keys:
             if any(run[key] != canonical[key] for run in gate["runs"]):
                 raise ValueError(f"operation census gate mismatch: {key}")
         if fingerprint(args.build) != before:
