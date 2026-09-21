@@ -802,9 +802,17 @@ void SemiSparseAbstractInterpretation::preparePostReplayState(
     for (AD::Variable definition :
             definedScalarVariables(target, this->adapter_))
         targetInputs.erase(definition);
-    const std::vector<AD::Variable> inputs(targetInputs.begin(),
-                                           targetInputs.end());
-    materializeScalarDefinitions(denseState, inputs, target);
+    std::vector<AD::Variable> missingInputs;
+    for (AD::Variable variable : targetInputs)
+    {
+        // Preserve path-local facts already reconstructed at the source.
+        // The global per-definition summary is only a fallback for an input
+        // that semi-sparse transfer would materialize on demand but dense Post
+        // replay cannot otherwise observe.
+        if (!denseState.hasValue(variable))
+            missingInputs.push_back(variable);
+    }
+    materializeScalarDefinitions(denseState, missingInputs, target);
 }
 
 void SemiSparseAbstractInterpretation::restorePostReplayCallerFrame(
