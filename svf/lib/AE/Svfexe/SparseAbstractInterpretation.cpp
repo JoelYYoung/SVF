@@ -104,13 +104,6 @@ void SemiSparseAbstractInterpretation::assignRelationalValue(
     State& scalars = scalarState();
     scalars.assignNumeric(variable, expression);
     scalars.setAddressSet(variable, addresses);
-
-    // Keep the same equation in the path-local refinement component. The
-    // global SSA carrier answers def-use reads; this local copy is what lets a
-    // later branch combine the equation with predecessor-specific guards.
-    State& local = this->ensureState(node);
-    local.assignNumeric(variable, expression);
-    local.setAddressSet(variable, addresses);
 }
 
 const AD::AbstractDomain* SemiSparseAbstractInterpretation::
@@ -254,17 +247,6 @@ void SemiSparseAbstractInterpretation::finalizeAbstractState(
     const ICFGNode* node)
 {
     State& denseState = this->ensureState(node);
-    if (Options::AEDomain() != AENumericalDomain::Box)
-    {
-        State checkpoint(this->makeNumericalDomain(false),
-                         this->adapter_.memoryLayout());
-        checkpoint.numerical().meetWith(denseState.numerical());
-        forgetMemoryValues(checkpoint);
-        if (checkpoint.isTop())
-            refinementTrace_.erase(node);
-        else
-            refinementTrace_.insert_or_assign(node, std::move(checkpoint));
-    }
     forgetActiveScalarValues(denseState);
 }
 
@@ -404,6 +386,16 @@ void SemiSparseAbstractInterpretation::materializeValue(
         this->constrainInterval(denseState, variable, getInterval(value, node));
         denseState.setAddressSet(variable, AD::AddressSet::bottom());
     }
+}
+
+void SemiSparseAbstractInterpretation::materializeRelations(
+    State& denseState, const std::vector<AD::Variable>& variables)
+{
+    if (Options::AEDomain() == AENumericalDomain::Box || variables.empty())
+        return;
+    State projected = scalarState();
+    projected.numerical().project(variables);
+    denseState.numerical().meetWith(projected.numerical());
 }
 
 void SemiSparseAbstractInterpretation::loadValue(

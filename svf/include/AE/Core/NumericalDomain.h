@@ -481,6 +481,8 @@ public:
     virtual void assume(const LinearConstraint& constraint) = 0;
     virtual void assume(const TreeConstraint& constraint) = 0;
     virtual void forget(Variable variable) = 0;
+    /// Existentially remove every variable not present in `retained`.
+    virtual void project(const std::vector<Variable>& retained) = 0;
     /// Duplicate a summary variable into fresh variables. Every copy has the
     /// source variable's relations with all other variables, while the
     /// expanded variables remain mutually unrelated except where those
@@ -612,6 +614,7 @@ public:
     void assume(const TreeConstraint& constraint) override;
     void assumeAll(const LinearConstraintSet& constraints) override;
     void forget(Variable variable) override;
+    void project(const std::vector<Variable>& retained) override;
     void expand(Variable source, const std::vector<Variable>& copies) override;
     void fold(Variable target, const std::vector<Variable>& folded) override;
 

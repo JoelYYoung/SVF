@@ -95,7 +95,7 @@ public:
     }
     BoxDomain toBox() const;
     /// Existential projection: omitted variables become unrestricted.
-    void project(const std::vector<Variable>& retained);
+    void project(const std::vector<Variable>& retained) override;
     OctagonDomain(const OctagonDomain& other);
     OctagonDomain(OctagonDomain&& other) noexcept;
     OctagonDomain& operator=(const OctagonDomain& other);

@@ -464,6 +464,9 @@ protected:
                            const AbstractDomain::Interval& interval);
     virtual void materializeValue(State& state, const ValVar* value,
                                   const ICFGNode* node);
+    virtual void materializeRelations(
+        State& state,
+        const std::vector<AbstractDomain::Variable>& variables);
     void forgetValue(State& state,
                      AbstractDomain::Variable variable) const;
     void assumeBranch(const IntraCFGEdge* edge, State& state);

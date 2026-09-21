@@ -2687,6 +2687,14 @@ void BoxDomain::forget(Variable variable)
     recordOperation(OperationKind::Forget, ApproximationKind::Exact, true);
 }
 
+void BoxDomain::project(const std::vector<Variable>& retained)
+{
+    const std::set<Variable> keep(retained.begin(), retained.end());
+    for (Variable variable : constrainedVariables())
+        if (keep.count(variable) == 0)
+            forget(variable);
+}
+
 std::vector<Variable> BoxDomain::constrainedVariables() const
 {
     std::vector<Variable> variables;

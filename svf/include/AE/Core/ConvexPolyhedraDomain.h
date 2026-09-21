@@ -88,7 +88,7 @@ public:
     }
     BoxDomain toBox() const;
     /// Existential projection: omitted variables become unrestricted.
-    void project(const std::vector<Variable>& retained);
+    void project(const std::vector<Variable>& retained) override;
     /// Generator coordinates use exactly the caller-supplied variable order.
     static ConvexPolyhedraDomain fromGenerators(const std::vector<Variable>& variables,
             const PolyhedraGeneratorSet& generators, const ConvexPolyhedraConfig& config = {});

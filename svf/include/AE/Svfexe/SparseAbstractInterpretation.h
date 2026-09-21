@@ -88,6 +88,9 @@ protected:
 
     void materializeValue(State& state, const ValVar* value,
                           const ICFGNode* node) override;
+    void materializeRelations(
+        State& state,
+        const std::vector<AbstractDomain::Variable>& variables) override;
     State& scalarTransferState(const ICFGNode* node) override;
     void assignRelationalValue(
         const ValVar* target,

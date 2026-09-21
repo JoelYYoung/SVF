@@ -516,6 +516,11 @@ void AbstractInterpretation::materializeValue(State&, const ValVar*,
 {
 }
 
+void AbstractInterpretation::materializeRelations(
+    State&, const std::vector<AD::Variable>&)
+{
+}
+
 void AbstractInterpretation::forgetValue(State& denseState,
         AD::Variable variable) const
 {
@@ -889,6 +894,7 @@ void AbstractInterpretation::assumeBranch(const IntraCFGEdge* edge,
         if (supported)
         {
             const ICFGNode* source = edge->getSrcNode();
+            std::vector<AD::Variable> relationVariables;
             const auto expressionFor = [&](const SVFVar* operand)
                 -> std::optional<AD::LinearExpression>
             {
@@ -900,6 +906,7 @@ void AbstractInterpretation::assumeBranch(const IntraCFGEdge* edge,
                         const AD::Variable variable = adapter_.variable(*value);
                         if (denseState.numericalMayBeUninitialized(variable))
                             return std::nullopt;
+                        relationVariables.push_back(variable);
                         return AD::LinearExpression(variable);
                     }
                 }
@@ -913,6 +920,7 @@ void AbstractInterpretation::assumeBranch(const IntraCFGEdge* edge,
             const auto rhs = expressionFor(comparison->getOpVar(1));
             if (lhs && rhs)
             {
+                materializeRelations(denseState, relationVariables);
                 const bool taken = edge->getSuccessorCondValue() != 0;
                 AD::ConstraintKind kind = AD::ConstraintKind::Equal;
                 switch (predicate)
