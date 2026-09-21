@@ -98,6 +98,12 @@ protected:
         const AbstractDomain::LinearExpression& expression,
         const AbstractDomain::AddressSet& addresses,
         const ICFGNode* node) override;
+    void assignRelationalStore(
+        const ValVar* source, AbstractDomain::Variable content,
+        const ICFGNode* node) override;
+    void assignRelationalLoad(
+        const ValVar* target, AbstractDomain::Variable content,
+        const ICFGNode* node) override;
     void loadValue(const ValVar* pointer, AbstractDomain::Interval& interval,
                    AbstractDomain::AddressSet& addresses,
                    bool& numericalMayBeUninitialized,

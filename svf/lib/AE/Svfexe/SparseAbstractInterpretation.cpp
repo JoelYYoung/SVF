@@ -117,6 +117,36 @@ void SemiSparseAbstractInterpretation::assignRelationalValue(
     scalars.setAddressSet(variable, addresses);
 }
 
+void SemiSparseAbstractInterpretation::assignRelationalStore(
+    const ValVar* source, AD::Variable content, const ICFGNode* node)
+{
+    if (!source || !this->adapter_.contains(*source))
+        return;
+    State& local = this->ensureState(node);
+    const AD::Variable sourceVariable = this->adapter_.variable(*source);
+    materializeRelations(local, {sourceVariable});
+    if (!scalarState().numericalMayBeUninitialized(sourceVariable))
+        local.assignNumeric(content, AD::LinearExpression(sourceVariable));
+}
+
+void SemiSparseAbstractInterpretation::assignRelationalLoad(
+    const ValVar* target, AD::Variable content, const ICFGNode* node)
+{
+    if (!target || !this->adapter_.contains(*target))
+        return;
+    State& local = this->ensureState(node);
+    if (local.numericalMayBeUninitialized(content))
+        return;
+    const AD::Variable targetVariable = this->adapter_.variable(*target);
+    local.assignNumeric(targetVariable, AD::LinearExpression(content));
+
+    State projection = local;
+    for (AD::Variable variable : projection.numerical().supportVariables())
+        if (this->adapter_.contentObject(variable))
+            projection.numerical().forget(variable);
+    scalarState().numerical().meetWith(projection.numerical());
+}
+
 const AD::AbstractDomain* SemiSparseAbstractInterpretation::
 getScalarAbstractState() const
 {
@@ -266,14 +296,28 @@ void SemiSparseAbstractInterpretation::forgetActiveScalarValues(
 {
     const AD::Variable contentBegin =
         this->adapter_.firstObjectContentVariable();
+    std::set<AD::Variable> retainedScalars;
+    if (Options::AEDomain() != AENumericalDomain::Box)
+    {
+        std::vector<AD::Variable> memorySeeds;
+        for (AD::Variable variable : denseState.numerical().supportVariables())
+            if (this->adapter_.contentObject(variable))
+                memorySeeds.push_back(variable);
+        for (AD::Variable variable :
+                denseState.numerical().relationalClosure(memorySeeds))
+            if (variable < contentBegin)
+                retainedScalars.insert(variable);
+    }
     for (AD::Variable variable :
             denseState.numerical().supportVariablesBefore(contentBegin))
-        denseState.numerical().forget(variable);
+        if (retainedScalars.count(variable) == 0)
+            denseState.numerical().forget(variable);
     for (AD::Variable variable :
             denseState.addresses().nonDefaultVariablesBefore(contentBegin))
         denseState.addresses().forget(variable);
     for (AD::Variable variable : denseState.initializedVariablesBefore(contentBegin))
-        denseState.resetValue(variable);
+        if (retainedScalars.count(variable) == 0)
+            denseState.resetValue(variable);
 }
 
 void SemiSparseAbstractInterpretation::forgetMemoryValues(

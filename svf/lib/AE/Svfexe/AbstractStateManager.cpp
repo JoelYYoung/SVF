@@ -425,6 +425,29 @@ void AbstractInterpretation::assignRelationalValue(
     destination.setAddressSet(variable, addresses);
 }
 
+void AbstractInterpretation::assignRelationalStore(
+    const ValVar* source, AD::Variable content, const ICFGNode* node)
+{
+    if (!source || !adapter_.contains(*source))
+        return;
+    State& destination = ensureState(node);
+    const AD::Variable sourceVariable = adapter_.variable(*source);
+    if (!destination.numericalMayBeUninitialized(sourceVariable))
+        destination.assignNumeric(content,
+                                  AD::LinearExpression(sourceVariable));
+}
+
+void AbstractInterpretation::assignRelationalLoad(
+    const ValVar* target, AD::Variable content, const ICFGNode* node)
+{
+    if (!target || !adapter_.contains(*target))
+        return;
+    State& destination = ensureState(node);
+    if (!destination.numericalMayBeUninitialized(content))
+        destination.assignNumeric(adapter_.variable(*target),
+                                  AD::LinearExpression(content));
+}
+
 void AbstractInterpretation::resetAbstractState(const ICFGNode* node)
 {
     stateTrace_.insert_or_assign(node, topState());

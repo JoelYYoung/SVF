@@ -445,6 +445,12 @@ protected:
         const AbstractDomain::LinearExpression& expression,
         const AbstractDomain::AddressSet& addresses,
         const ICFGNode* node);
+    virtual void assignRelationalStore(
+        const ValVar* source, AbstractDomain::Variable content,
+        const ICFGNode* node);
+    virtual void assignRelationalLoad(
+        const ValVar* target, AbstractDomain::Variable content,
+        const ICFGNode* node);
     State topState() const;
     State bottomState() const;
     std::unique_ptr<AbstractDomain::NumericalDomain> makeNumericalDomain(

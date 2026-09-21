@@ -1568,6 +1568,20 @@ void AbstractInterpretation::updateStateOnLoad(const LoadStmt* load)
     updateValue(load->getLHSVar(), interval, addresses, node);
     if (numericalMayBeUninitialized)
         addUninitializedNumericalAlternative(load->getLHSVar(), node);
+    if (Options::AEDomain() != AENumericalDomain::Box)
+    {
+        const AD::AddressSet pointees = getAddressSet(load->getRHSVar(), node);
+        if (pointees.isSingleton())
+        {
+            const AD::Location location = *pointees.begin();
+            const ObjVar* object = location.isNull() ? nullptr
+                                   : objectAt(location);
+            if (object)
+                assignRelationalLoad(
+                    SVFUtil::dyn_cast<ValVar>(load->getLHSVar()),
+                    memoryVariable(*object, ensureState(node)), node);
+        }
+    }
 }
 
 void AbstractInterpretation::updateStateOnStore(const StoreStmt* store)
@@ -1576,6 +1590,20 @@ void AbstractInterpretation::updateStateOnStore(const StoreStmt* store)
     storeValue(SVFUtil::cast<ValVar>(store->getLHSVar()),
                getInterval(store->getRHSVar(), node),
                getAddressSet(store->getRHSVar(), node), node);
+    if (Options::AEDomain() != AENumericalDomain::Box)
+    {
+        const AD::AddressSet pointees = getAddressSet(store->getLHSVar(), node);
+        if (pointees.isSingleton())
+        {
+            const AD::Location location = *pointees.begin();
+            const ObjVar* object = location.isNull() ? nullptr
+                                   : objectAt(location);
+            if (object)
+                assignRelationalStore(
+                    SVFUtil::dyn_cast<ValVar>(store->getRHSVar()),
+                    memoryVariable(*object, ensureState(node)), node);
+        }
+    }
 }
 
 void AbstractInterpretation::updateStateOnCopy(const CopyStmt* copy)
