@@ -136,6 +136,49 @@ def fingerprint(build):
             "ldd": re.sub(r"\(0x[0-9a-fA-F]+\)", "(address)", linkage)}
 
 
+def observer_run(executable, extapi, bitcode, cap, directory, mode,
+                 operation_census):
+    directory.mkdir()
+    log = directory / "analysis.log"
+    timing = directory / "time.txt"
+    command = [str(executable), f"-ae-sparsity={mode}",
+               "-ae-fun-entry=main", "-stat=true", f"-extapi={extapi}",
+               str(bitcode)]
+    wrapped = ["/usr/bin/time", "-v", "-o", str(timing),
+               "timeout", "--signal=TERM", str(cap), *command]
+    environment = os.environ.copy()
+    environment.pop("BOX_OPERATION_CENSUS", None)
+    if operation_census:
+        environment["BOX_OPERATION_CENSUS"] = "1"
+    with log.open("w") as stream:
+        completed = subprocess.run(wrapped, stdout=stream,
+                                   stderr=subprocess.STDOUT, env=environment)
+    log_text = log.read_text(errors="replace")
+    time_text = timing.read_text(errors="replace") if timing.exists() else ""
+    audits = sorted(line for line in log_text.splitlines()
+                    if line.startswith("AUDIT "))
+    coverage = re.findall(r"^Func_Coverage_Percent\s+(\S+)",
+                          log_text, re.MULTILINE)
+    trace = re.findall(r"^ICFG_Node_Trace\s+(\S+)",
+                       log_text, re.MULTILINE)
+    wall = re.findall(r"Elapsed \(wall clock\) time.*:\s*(\S+)", time_text)
+    rss = re.findall(r"Maximum resident set size \(kbytes\):\s*(\d+)",
+                     time_text)
+    return {
+        "command": command,
+        "exit_code": completed.returncode,
+        "completed": completed.returncode == 0,
+        "executable_sha256": digest(executable),
+        "log_sha256": digest(log),
+        "audit_entries": len(audits),
+        "audit_sha256": hashlib.sha256("\n".join(audits).encode()).hexdigest(),
+        "function_coverage_percent": coverage,
+        "icfg_node_trace": trace,
+        "wall_clock": wall,
+        "max_rss_kib": rss,
+    }
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--study", type=Path, required=True)
@@ -193,14 +236,24 @@ def main():
         if not canonical["completed"]:
             raise ValueError("operation census semantic control failed")
 
+        observer_executable = args.build / "bin/box-storage-observer"
+        control_dir = output / "audit-control"
+        control = observer_run(observer_executable, extapi, bitcode,
+                               args.cap_seconds, control_dir, args.mode, False)
+        control["role"] = "audit-control"
+        state["runs"].append(control)
+        save()
+        if not control["completed"] or not control["audit_entries"]:
+            raise ValueError("operation census audit control failed")
+
         previous_budget = os.environ.get("BOX_OPERATION_STATE_BUDGET_BYTES")
-        os.environ["BOX_OPERATION_STATE_BUDGET_BYTES"] = \
-            str(args.state_budget_bytes)
+        os.environ["BOX_OPERATION_STATE_BUDGET_BYTES"] = str(
+            args.state_budget_bytes)
         try:
             observer_dir = output / "observer"
-            _, observer = run_variant(args.build / "bin/box-storage-observer",
-                                      extapi, bitcode, args.cap_seconds,
-                                      observer_dir, args.mode)
+            observer = observer_run(observer_executable, extapi, bitcode,
+                                    args.cap_seconds, observer_dir, args.mode,
+                                    True)
         finally:
             if previous_budget is None:
                 os.environ.pop("BOX_OPERATION_STATE_BUDGET_BYTES", None)
@@ -213,10 +266,12 @@ def main():
         save()
         if not observer["completed"]:
             raise ValueError("operation census observer failed")
+        audit_keys = ("audit_entries", "audit_sha256",
+                      "function_coverage_percent", "icfg_node_trace")
+        if any(observer[key] != control[key] for key in audit_keys):
+            raise ValueError("operation census changed observer audit")
         semantic_keys = ("projection_sha256", "counts",
                          "function_coverage_percent", "icfg_node_trace")
-        if any(observer[key] != canonical[key] for key in semantic_keys):
-            raise ValueError("operation census changed canonical projection")
         for key in semantic_keys:
             if any(run[key] != canonical[key] for run in gate["runs"]):
                 raise ValueError(f"operation census gate mismatch: {key}")

@@ -469,10 +469,14 @@ boxAddress(const SVF::AbstractDomain::AbstractDomain &domain)
 int main(int argc, char **argv)
 {
 #ifdef SVF_BOX_STORAGE_TELEMETRY
+    const char *operationCensusValue = std::getenv("BOX_OPERATION_CENSUS");
+    const bool operationCensusEnabled = operationCensusValue &&
+                                        std::string_view(operationCensusValue) != "0";
     BoxDomain::setStorageEventSink(collectStorageEvent);
     BoxDomain::setStorageWorkSink(collectStorageWork);
-    SVF::AbstractDomain::AbstractDomain::setOperationEventSink(
-        BoxOperationCensus::collect);
+    if (operationCensusEnabled)
+        SVF::AbstractDomain::AbstractDomain::setOperationEventSink(
+            BoxOperationCensus::collect);
     if (argc == 2 && std::string_view(argv[1]) == "--storage-occupancy-self-test")
     {
         testStorageOccupancy();
@@ -588,7 +592,8 @@ int main(int argc, char **argv)
     for (std::size_t index = 0; index < eventNames.size(); ++index)
         printOccupancy("event", eventNames[index], storageEvents.occupancy[index]);
     printStorageWork();
-    BoxOperationCensus::print();
+    if (operationCensusEnabled)
+        BoxOperationCensus::print();
 #endif
 
     if (!std::getenv("BOX_STORAGE_CENSUS_ONLY"))
