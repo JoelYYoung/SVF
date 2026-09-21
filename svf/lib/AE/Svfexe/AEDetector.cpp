@@ -627,9 +627,13 @@ void NullptrDerefDetector::detect(const ICFGNode* node)
             else if (const LoadStmt* load = SVFUtil::dyn_cast<LoadStmt>(stmt))
             {
                 // like llvm bitcode `p = load q`
-                // we check lhs p's all address are valid mem
-                const ValVar* lhs = load->getLHSVar();
-                if (!canSafelyDerefPtr(lhs, node))
+                // The dereferenced pointer is the load address (RHS), not the
+                // SSA value produced by the load (LHS).  Querying the LHS
+                // reports scalar loads as null-pointer alarms and also misses
+                // an unsafe address when the loaded value happens to be a
+                // valid pointer.
+                const ValVar* address = load->getRHSVar();
+                if (!canSafelyDerefPtr(address, node))
                 {
                     AEException bug(stmt->toString());
                     addBugToReporter(bug, stmt->getICFGNode());
