@@ -66,6 +66,22 @@ class Controls(unittest.TestCase):
         self.assertEqual(len(mapping), len(variables))
         self.assertLessEqual(max(collections.Counter(mapping.values()).values()), 8)
 
+    def test_cowrite_relation_uses_changes_not_physical_touches(self):
+        variables = [(index, 0, 0, 0) for index in range(40)]
+        changed = variables[:2]
+        with tempfile.TemporaryDirectory() as directory:
+            trace = Path(directory) / 'trace.tsv'
+            trace.write_text(
+                'M 1 1 0 1 0 0 0 2 '
+                + ' '.join('+' + ':'.join(map(str, key)) for key in changed)
+                + ' T 40 '
+                + ' '.join(':'.join(map(str, key)) for key in variables)
+                + '\n')
+            _, _, marginal, pair, hyperedges, _ = COWRITE['read_trace'](trace)
+        self.assertEqual(pair, {(changed[0], changed[1]): 1})
+        self.assertEqual(hyperedges, {})
+        self.assertTrue(all(marginal[key] == 1 for key in variables))
+
     def test_actual_identity(self):
         for variant, representation in DIRECTORY['REPRESENTATIONS'].items():
             identity = 'representation=' + representation + '\npool_policy=off\n'

@@ -56,6 +56,13 @@ def read_trace(path):
                 sign, key = variable(token)
                 changed.append((key, sign == "+"))
                 variables.add(key)
+            changed_keys = [key for key, _ in changed]
+            if len(changed_keys) <= EXPLICIT_PAIR_LIMIT:
+                for index, left in enumerate(changed_keys):
+                    for right in changed_keys[index + 1:]:
+                        pair[tuple(sorted((left, right)))] += 1
+            else:
+                hyperedges[tuple(sorted(changed_keys))] += 1
             touched = []
             for token in touched_tokens:
                 sign, key = variable(token)
@@ -64,12 +71,6 @@ def read_trace(path):
                 touched.append(key)
                 variables.add(key)
                 marginal[key] += 1
-            if len(touched) <= EXPLICIT_PAIR_LIMIT:
-                for index, left in enumerate(touched):
-                    for right in touched[index + 1:]:
-                        pair[tuple(sorted((left, right)))] += 1
-            else:
-                hyperedges[tuple(sorted(touched))] += 1
             events.append(("M", *head[:-1], changed, touched))
         elif tag == "D":
             raw["detaches"] += 1
