@@ -15,6 +15,10 @@
 #include "Util/Options.h"
 #include "WPA/Andersen.h"
 
+#ifdef SVF_BOX_STORAGE_TELEMETRY
+#include "box-operation-census.h"
+#endif
+
 #include <algorithm>
 #include <cstdlib>
 #include <stdexcept>
@@ -467,11 +471,14 @@ int main(int argc, char **argv)
 #ifdef SVF_BOX_STORAGE_TELEMETRY
     BoxDomain::setStorageEventSink(collectStorageEvent);
     BoxDomain::setStorageWorkSink(collectStorageWork);
+    SVF::AbstractDomain::AbstractDomain::setOperationEventSink(
+        BoxOperationCensus::collect);
     if (argc == 2 && std::string_view(argv[1]) == "--storage-occupancy-self-test")
     {
         testStorageOccupancy();
         BoxDomain::setStorageEventSink(nullptr);
         BoxDomain::setStorageWorkSink(nullptr);
+        SVF::AbstractDomain::AbstractDomain::setOperationEventSink(nullptr);
         return 0;
     }
 #endif
@@ -581,6 +588,7 @@ int main(int argc, char **argv)
     for (std::size_t index = 0; index < eventNames.size(); ++index)
         printOccupancy("event", eventNames[index], storageEvents.occupancy[index]);
     printStorageWork();
+    BoxOperationCensus::print();
 #endif
 
     if (!std::getenv("BOX_STORAGE_CENSUS_ONLY"))
@@ -691,6 +699,7 @@ int main(int argc, char **argv)
 #ifdef SVF_BOX_STORAGE_TELEMETRY
     BoxDomain::setStorageEventSink(nullptr);
     BoxDomain::setStorageWorkSink(nullptr);
+    SVF::AbstractDomain::AbstractDomain::setOperationEventSink(nullptr);
 #endif
     return 0;
 }

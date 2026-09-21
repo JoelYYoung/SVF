@@ -23,10 +23,48 @@
 
 #include "AE/Core/AbstractDomain.h"
 
+#ifdef SVF_BOX_STORAGE_TELEMETRY
+#    include <atomic>
+#    include <chrono>
+#endif
 #include <stdexcept>
 
 namespace SVF::AbstractDomain
 {
+
+#ifdef SVF_BOX_STORAGE_TELEMETRY
+namespace
+{
+std::atomic<AbstractOperationEventSink> operationEventSink{nullptr};
+
+using OperationClock = std::chrono::steady_clock;
+
+std::uint64_t elapsedNanoseconds(OperationClock::time_point start)
+{
+    return static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            OperationClock::now() - start)
+            .count());
+}
+
+AbstractOperationEventSink enabledOperationSink(const AbstractDomain& domain)
+{
+    const AbstractOperationEventSink sink =
+        operationEventSink.load(std::memory_order_relaxed);
+    return sink && domain.kind() == DomainKind::Product ? sink : nullptr;
+}
+
+void emitOperation(AbstractOperationEventSink sink,
+                   AbstractOperationKind operation,
+                   AbstractOperationPhase phase, const AbstractDomain& left,
+                   const AbstractDomain& right, std::uint64_t elapsed = 0,
+                   CheckResult result = CheckResult::Unknown)
+{
+    if (sink)
+        sink({operation, phase, &left, &right, elapsed, result});
+}
+} // namespace
+#endif
 
 const char* toString(CheckResult result)
 {
@@ -44,6 +82,14 @@ const char* toString(CheckResult result)
 
 AbstractDomain::~AbstractDomain() = default;
 
+#ifdef SVF_BOX_STORAGE_TELEMETRY
+void AbstractDomain::setOperationEventSink(
+    AbstractOperationEventSink sink) noexcept
+{
+    operationEventSink.store(sink, std::memory_order_relaxed);
+}
+#endif
+
 void AbstractDomain::requireCompatible(const AbstractDomain& other) const
 {
     if (!hasCompatibleDomain(other))
@@ -53,29 +99,85 @@ void AbstractDomain::requireCompatible(const AbstractDomain& other) const
 
 void AbstractDomain::joinWith(const AbstractDomain& other)
 {
+#ifdef SVF_BOX_STORAGE_TELEMETRY
+    const AbstractOperationEventSink sink = enabledOperationSink(*this);
+    if (sink)
+        emitOperation(sink, AbstractOperationKind::Join,
+                      AbstractOperationPhase::Begin, *this, other);
+    const auto start =
+        sink ? OperationClock::now() : OperationClock::time_point{};
+#endif
     requireCompatible(other);
     joinDomain(other);
+#ifdef SVF_BOX_STORAGE_TELEMETRY
+    if (sink)
+        emitOperation(sink, AbstractOperationKind::Join,
+                      AbstractOperationPhase::End, *this, other,
+                      elapsedNanoseconds(start));
+#endif
 }
 
 void AbstractDomain::meetWith(const AbstractDomain& other)
 {
+#ifdef SVF_BOX_STORAGE_TELEMETRY
+    const AbstractOperationEventSink sink = enabledOperationSink(*this);
+    if (sink)
+        emitOperation(sink, AbstractOperationKind::Meet,
+                      AbstractOperationPhase::Begin, *this, other);
+    const auto start =
+        sink ? OperationClock::now() : OperationClock::time_point{};
+#endif
     requireCompatible(other);
     meetDomain(other);
+#ifdef SVF_BOX_STORAGE_TELEMETRY
+    if (sink)
+        emitOperation(sink, AbstractOperationKind::Meet,
+                      AbstractOperationPhase::End, *this, other,
+                      elapsedNanoseconds(start));
+#endif
 }
 
 void AbstractDomain::widenWith(const AbstractDomain& next)
 {
+#ifdef SVF_BOX_STORAGE_TELEMETRY
+    const AbstractOperationEventSink sink = enabledOperationSink(*this);
+    if (sink)
+        emitOperation(sink, AbstractOperationKind::Widen,
+                      AbstractOperationPhase::Begin, *this, next);
+    const auto start =
+        sink ? OperationClock::now() : OperationClock::time_point{};
+#endif
     requireCompatible(next);
     widenDomain(next);
+#ifdef SVF_BOX_STORAGE_TELEMETRY
+    if (sink)
+        emitOperation(sink, AbstractOperationKind::Widen,
+                      AbstractOperationPhase::End, *this, next,
+                      elapsedNanoseconds(start));
+#endif
 }
 
 void AbstractDomain::narrowWith(const AbstractDomain& next)
 {
+#ifdef SVF_BOX_STORAGE_TELEMETRY
+    const AbstractOperationEventSink sink = enabledOperationSink(*this);
+    if (sink)
+        emitOperation(sink, AbstractOperationKind::Narrow,
+                      AbstractOperationPhase::Begin, *this, next);
+    const auto start =
+        sink ? OperationClock::now() : OperationClock::time_point{};
+#endif
     requireCompatible(next);
     if (!next.leqDomain(*this))
         throw std::invalid_argument(
             "narrowing requires next to be included in current");
     narrowDomain(next);
+#ifdef SVF_BOX_STORAGE_TELEMETRY
+    if (sink)
+        emitOperation(sink, AbstractOperationKind::Narrow,
+                      AbstractOperationPhase::End, *this, next,
+                      elapsedNanoseconds(start));
+#endif
 }
 
 bool AbstractDomain::isBottom() const
@@ -90,15 +192,47 @@ bool AbstractDomain::isTop() const
 
 CheckResult AbstractDomain::isSubsetOf(const AbstractDomain& other) const
 {
+#ifdef SVF_BOX_STORAGE_TELEMETRY
+    const AbstractOperationEventSink sink = enabledOperationSink(*this);
+    if (sink)
+        emitOperation(sink, AbstractOperationKind::Subset,
+                      AbstractOperationPhase::Begin, *this, other);
+    const auto start =
+        sink ? OperationClock::now() : OperationClock::time_point{};
+#endif
     requireCompatible(other);
-    return leqDomain(other) ? CheckResult::True : CheckResult::False;
+    const CheckResult result =
+        leqDomain(other) ? CheckResult::True : CheckResult::False;
+#ifdef SVF_BOX_STORAGE_TELEMETRY
+    if (sink)
+        emitOperation(sink, AbstractOperationKind::Subset,
+                      AbstractOperationPhase::End, *this, other,
+                      elapsedNanoseconds(start), result);
+#endif
+    return result;
 }
 
 CheckResult AbstractDomain::isEquivalentTo(const AbstractDomain& other) const
 {
+#ifdef SVF_BOX_STORAGE_TELEMETRY
+    const AbstractOperationEventSink sink = enabledOperationSink(*this);
+    if (sink)
+        emitOperation(sink, AbstractOperationKind::Equivalent,
+                      AbstractOperationPhase::Begin, *this, other);
+    const auto start =
+        sink ? OperationClock::now() : OperationClock::time_point{};
+#endif
     requireCompatible(other);
-    return leqDomain(other) && other.leqDomain(*this) ? CheckResult::True
-           : CheckResult::False;
+    const CheckResult result = leqDomain(other) && other.leqDomain(*this)
+                                   ? CheckResult::True
+                                   : CheckResult::False;
+#ifdef SVF_BOX_STORAGE_TELEMETRY
+    if (sink)
+        emitOperation(sink, AbstractOperationKind::Equivalent,
+                      AbstractOperationPhase::End, *this, other,
+                      elapsedNanoseconds(start), result);
+#endif
+    return result;
 }
 
 std::string AbstractDomain::toString() const

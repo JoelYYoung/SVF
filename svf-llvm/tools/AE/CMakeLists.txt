@@ -1,7 +1,12 @@
 set(LLVM_REQUIRES_EH ON)
 add_llvm_executable(ae PARTIAL_SOURCES_INTENDED ae.cpp)
 if(SVF_BUILD_BOX_STORAGE_OBSERVER)
-  add_llvm_executable(box-storage-observer PARTIAL_SOURCES_INTENDED box-storage-observer.cpp)
+  set(BOX_STORAGE_OBSERVER_SOURCES box-storage-observer.cpp)
+  if(SVF_BOX_STORAGE_TELEMETRY)
+    list(APPEND BOX_STORAGE_OBSERVER_SOURCES box-operation-census.cpp)
+  endif()
+  add_llvm_executable(box-storage-observer PARTIAL_SOURCES_INTENDED
+    ${BOX_STORAGE_OBSERVER_SOURCES})
   target_compile_definitions(box-storage-observer PRIVATE AUDIT_BOX=1)
   if(SVF_BOX_STORAGE_TELEMETRY)
     add_test(NAME box-storage-occupancy-contract

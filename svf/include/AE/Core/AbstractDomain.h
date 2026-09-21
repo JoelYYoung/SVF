@@ -24,6 +24,7 @@
 #ifndef SVF_AE_ABSTRACT_DOMAIN_H
 #define SVF_AE_ABSTRACT_DOMAIN_H
 
+#include <cstdint>
 #include <memory>
 #include <string>
 
@@ -47,6 +48,42 @@ enum class DomainKind
     Octagon,
     ConvexPolyhedra
 };
+
+#ifdef SVF_BOX_STORAGE_TELEMETRY
+class AbstractDomain;
+
+enum class AbstractOperationKind
+{
+    Join,
+    Meet,
+    Widen,
+    Narrow,
+    Subset,
+    Equivalent,
+    Count
+};
+
+enum class AbstractOperationPhase
+{
+    Begin,
+    End
+};
+
+/// Diagnostic-only event around a public lattice operation. Begin observes
+/// the untouched operands. End observes the result in `left` and reports only
+/// the operation body time; sink work is outside elapsedNanoseconds.
+struct AbstractOperationEvent
+{
+    AbstractOperationKind operation;
+    AbstractOperationPhase phase;
+    const AbstractDomain* left;
+    const AbstractDomain* right;
+    std::uint64_t elapsedNanoseconds;
+    CheckResult result;
+};
+
+using AbstractOperationEventSink = void (*)(const AbstractOperationEvent&);
+#endif
 
 const char* toString(CheckResult result);
 
@@ -74,6 +111,10 @@ public:
     CheckResult isSubsetOf(const AbstractDomain& other) const;
     CheckResult isEquivalentTo(const AbstractDomain& other) const;
     std::string toString() const;
+
+#ifdef SVF_BOX_STORAGE_TELEMETRY
+    static void setOperationEventSink(AbstractOperationEventSink sink) noexcept;
+#endif
 
     /// RTTI-free concrete-state query. SVF is commonly built with -fno-rtti,
     /// so abstract domains use stable per-C++-type tokens for checked dispatch.

@@ -17,6 +17,7 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "AE/Core/BoxAddressDomain.h"
 #include "AE/Core/Expression.h"
 #include "AE/Core/NumericalDomain.h"
 
@@ -369,6 +370,57 @@ void phaseWorkload(const std::string& phase, unsigned occupancy, unsigned rounds
 }
 
 #ifdef SVF_BOX_STORAGE_TELEMETRY
+struct OperationRecord
+{
+    AbstractOperationKind operation;
+    AbstractOperationPhase phase;
+    DomainKind leftKind;
+    std::uint64_t elapsedNanoseconds;
+    CheckResult result;
+};
+
+std::vector<OperationRecord> operationRecords;
+
+void collectOperation(const AbstractOperationEvent& event)
+{
+    operationRecords.push_back({event.operation, event.phase,
+                                event.left->kind(),
+                                event.elapsedNanoseconds, event.result});
+}
+
+void operationEventContract()
+{
+    operationRecords.clear();
+    AbstractDomain::setOperationEventSink(collectOperation);
+    MemoryLayout layout;
+    BoxAddressDomain left(BoxDomain::top(), layout, true);
+    BoxAddressDomain right(BoxDomain::top(), layout, true);
+    left.setInterval(Variable(1), Interval::singleton(Rational(1)));
+    right.setInterval(Variable(1), Interval::singleton(Rational(2)));
+    BoxAddressDomain joined = left;
+    joined.joinWith(right);
+    const CheckResult subset = left.isSubsetOf(joined);
+    AbstractDomain::setOperationEventSink(nullptr);
+
+    check(subset == CheckResult::True, "operation event subset result");
+    check(operationRecords.size() == 4, "nested operation event leaked");
+    check(operationRecords[0].operation == AbstractOperationKind::Join &&
+          operationRecords[0].phase == AbstractOperationPhase::Begin &&
+          operationRecords[1].operation == AbstractOperationKind::Join &&
+          operationRecords[1].phase == AbstractOperationPhase::End &&
+          operationRecords[2].operation == AbstractOperationKind::Subset &&
+          operationRecords[2].phase == AbstractOperationPhase::Begin &&
+          operationRecords[3].operation == AbstractOperationKind::Subset &&
+          operationRecords[3].phase == AbstractOperationPhase::End,
+          "operation event pairing");
+    for (const OperationRecord& record : operationRecords)
+        check(record.leftKind == DomainKind::Product,
+              "operation event non-product");
+    check(operationRecords[3].result == CheckResult::True,
+          "operation event query result");
+    std::cout << "operation_event_contract=pass product_only=checked pairs=2\n";
+}
+
 void directoryContract()
 {
     BoxDomain seed = BoxDomain::top();
@@ -699,6 +751,7 @@ int main(int argc, char** argv)
 #ifdef SVF_BOX_STORAGE_TELEMETRY
         storageWorkContract();
         directoryContract();
+        operationEventContract();
 #endif
 #ifdef SVF_BOX_ADAPTIVE_PAGES
         adaptiveContract();
