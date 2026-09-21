@@ -1,5 +1,4 @@
-//===- ConvexPolyhedraDomain.h -- Native relational numerical domain -*- C++
-//-*-===//
+//===- ConvexPolyhedraDomain.h -- Native relational numerical domain -*- C++ -*-===//
 //
 //                     SVF: Static Value-Flow Analysis
 //
@@ -79,13 +78,10 @@ public:
     using NumericalDomain::substituteParallel;
 
     static ConvexPolyhedraDomain top(const ConvexPolyhedraConfig& config = {});
-    static ConvexPolyhedraDomain bottom(
-        const ConvexPolyhedraConfig& config = {});
-    static ConvexPolyhedraDomain fromConstraints(
-        const LinearConstraintSet& constraints,
-        const ConvexPolyhedraConfig& config = {});
-    static ConvexPolyhedraDomain fromBox(
-        const BoxDomain& box, const ConvexPolyhedraConfig& config = {});
+    static ConvexPolyhedraDomain bottom(const ConvexPolyhedraConfig& config = {});
+    static ConvexPolyhedraDomain fromConstraints(const LinearConstraintSet& constraints,
+            const ConvexPolyhedraConfig& config = {});
+    static ConvexPolyhedraDomain fromBox(const BoxDomain& box, const ConvexPolyhedraConfig& config = {});
     DomainKind kind() const noexcept override
     {
         return DomainKind::ConvexPolyhedra;
@@ -94,12 +90,9 @@ public:
     /// Existential projection: omitted variables become unrestricted.
     void project(const std::vector<Variable>& retained);
     /// Generator coordinates use exactly the caller-supplied variable order.
-    static ConvexPolyhedraDomain fromGenerators(
-        const std::vector<Variable>& variables,
-        const PolyhedraGeneratorSet& generators,
-        const ConvexPolyhedraConfig& config = {});
-    PolyhedraGeneratorSet toGenerators(
-        const std::vector<Variable>& variables) const;
+    static ConvexPolyhedraDomain fromGenerators(const std::vector<Variable>& variables,
+            const PolyhedraGeneratorSet& generators, const ConvexPolyhedraConfig& config = {});
+    PolyhedraGeneratorSet toGenerators(const std::vector<Variable>& variables) const;
     ConvexPolyhedraDomain(const ConvexPolyhedraDomain& other);
     ConvexPolyhedraDomain(ConvexPolyhedraDomain&& other) noexcept;
     ConvexPolyhedraDomain& operator=(const ConvexPolyhedraDomain& other);
@@ -114,18 +107,22 @@ public:
         return config_;
     }
 
-    void assign(Variable target, const LinearExpression& expression) override;
+    void assign(Variable target,
+                const LinearExpression& expression) override;
     void assign(Variable target, const TreeExpression& expression) override;
     void assignParallel(const LinearAssignmentList& assignments) override;
     void substitute(Variable target,
                     const LinearExpression& expression) override;
-    void substituteParallel(const LinearAssignmentList& assignments) override;
+    void substituteParallel(
+        const LinearAssignmentList& assignments) override;
     void assume(const LinearConstraint& constraint) override;
     void assumeAll(const LinearConstraintSet& constraints) override;
     void assume(const TreeConstraint& constraint) override;
     void forget(Variable variable) override;
-    void expand(Variable source, const std::vector<Variable>& copies) override;
-    void fold(Variable target, const std::vector<Variable>& folded) override;
+    void expand(Variable source,
+                const std::vector<Variable>& copies) override;
+    void fold(Variable target,
+              const std::vector<Variable>& folded) override;
 
     CheckResult entails(const LinearConstraint& constraint) const override;
     Interval bound(Variable variable) const override;
@@ -135,17 +132,23 @@ public:
     void close() override;
     void canonicalize() override;
 
-    ConvexPolyhedraDomain join(const ConvexPolyhedraDomain& other) const;
-    ConvexPolyhedraDomain meet(const ConvexPolyhedraDomain& other) const;
-    ConvexPolyhedraDomain widen(const ConvexPolyhedraDomain& next,
-                                const WideningPolicy& policy = {}) const;
-    ConvexPolyhedraDomain narrow(const ConvexPolyhedraDomain& next) const;
+    ConvexPolyhedraDomain join(
+        const ConvexPolyhedraDomain& other) const;
+    ConvexPolyhedraDomain meet(
+        const ConvexPolyhedraDomain& other) const;
+    ConvexPolyhedraDomain widen(
+        const ConvexPolyhedraDomain& next,
+        const WideningPolicy& policy = {}) const;
+    ConvexPolyhedraDomain narrow(
+        const ConvexPolyhedraDomain& next) const;
 
 private:
-    static ConvexPolyhedraDomain top(const detail::DimensionLayout& layout,
-                                     const ConvexPolyhedraConfig& config);
-    static ConvexPolyhedraDomain bottom(const detail::DimensionLayout& layout,
-                                        const ConvexPolyhedraConfig& config);
+    static ConvexPolyhedraDomain top(
+        const detail::DimensionLayout& layout,
+        const ConvexPolyhedraConfig& config);
+    static ConvexPolyhedraDomain bottom(
+        const detail::DimensionLayout& layout,
+        const ConvexPolyhedraConfig& config);
     static ConvexPolyhedraDomain fromConstraints(
         const detail::DimensionLayout& layout,
         const LinearConstraintSet& constraints,
@@ -162,8 +165,7 @@ private:
     void changeLayout(const detail::DimensionLayout& layout);
     void ensureVariables(const std::vector<Variable>& variables);
     void ensureExpression(const LinearExpression& expression);
-    void expandDimensions(Variable source,
-                          const std::vector<detail::DimensionEntry>& copies);
+    void expandDimensions(Variable source, const std::vector<detail::DimensionEntry>& copies);
     PolyhedraGeneratorSet toGenerators() const;
     class Impl;
     ConvexPolyhedraDomain(detail::DimensionLayout layout,

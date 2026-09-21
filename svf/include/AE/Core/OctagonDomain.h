@@ -88,8 +88,7 @@ public:
     static OctagonDomain bottom(const OctagonConfig& config = {});
     static OctagonDomain fromConstraints(const LinearConstraintSet& constraints,
                                          const OctagonConfig& config = {});
-    static OctagonDomain fromBox(const BoxDomain& box,
-                                 const OctagonConfig& config = {});
+    static OctagonDomain fromBox(const BoxDomain& box, const OctagonConfig& config = {});
     DomainKind kind() const noexcept override
     {
         return DomainKind::Octagon;
@@ -106,20 +105,24 @@ public:
     std::unique_ptr<AbstractDomain> clone() const override;
     const char* name() const;
 
-    void assign(Variable target, const LinearExpression& expression) override;
+    void assign(Variable target,
+                const LinearExpression& expression) override;
     void assign(Variable target, const TreeExpression& expression) override;
     void assignParallel(const LinearAssignmentList& assignments) override;
     void substitute(Variable target,
                     const LinearExpression& expression) override;
-    void substituteParallel(const LinearAssignmentList& assignments) override;
+    void substituteParallel(
+        const LinearAssignmentList& assignments) override;
     void assume(const LinearConstraint& constraint) override;
     void assume(const TreeConstraint& constraint) override;
     void assumeAll(const LinearConstraintSet& constraints) override;
     void forget(Variable variable) override;
     void assignInterval(Variable target, const Interval& value) override;
     void projectLowerBounds();
-    void expand(Variable source, const std::vector<Variable>& copies) override;
-    void fold(Variable target, const std::vector<Variable>& folded) override;
+    void expand(Variable source,
+                const std::vector<Variable>& copies) override;
+    void fold(Variable target,
+              const std::vector<Variable>& folded) override;
 
     CheckResult entails(const LinearConstraint& constraint) const override;
     Interval bound(Variable variable) const override;
@@ -139,8 +142,9 @@ public:
 
     OctagonDomain join(const OctagonDomain& other) const;
     OctagonDomain meet(const OctagonDomain& other) const;
-    OctagonDomain widen(const OctagonDomain& next,
-                        const WideningPolicy& policy = {}) const;
+    OctagonDomain widen(
+        const OctagonDomain& next,
+        const WideningPolicy& policy = {}) const;
     OctagonDomain narrow(const OctagonDomain& next) const;
     OctagonDomain projectedLowerBounds() const;
 
@@ -149,9 +153,10 @@ private:
                              const OctagonConfig& config);
     static OctagonDomain bottom(const detail::DimensionLayout& layout,
                                 const OctagonConfig& config);
-    static OctagonDomain fromConstraints(const detail::DimensionLayout& layout,
-                                         const LinearConstraintSet& constraints,
-                                         const OctagonConfig& config);
+    static OctagonDomain fromConstraints(
+        const detail::DimensionLayout& layout,
+        const LinearConstraintSet& constraints,
+        const OctagonConfig& config);
 
     const detail::DimensionLayout& layout() const
     {
@@ -160,12 +165,10 @@ private:
     void changeLayout(const detail::DimensionLayout& layout);
     void ensureVariables(const std::vector<Variable>& variables);
     void ensureExpression(const LinearExpression& expression);
-    void expandDimensions(Variable source,
-                          const std::vector<detail::DimensionEntry>& copies);
+    void expandDimensions(Variable source, const std::vector<detail::DimensionEntry>& copies);
     class Impl;
 
-    OctagonDomain(detail::DimensionLayout layout, OctagonConfig config,
-                  bool bottom);
+    OctagonDomain(detail::DimensionLayout layout, OctagonConfig config, bool bottom);
     OctagonDomain(detail::DimensionLayout layout, std::unique_ptr<Impl> impl);
 
     const void* dynamicTypeToken() const noexcept override
@@ -176,9 +179,10 @@ private:
     void report(OperationKind operation, ApproximationKind approximation,
                 std::string reason, bool best = true) const;
     bool hasCompatibleDomain(const AbstractDomain& other) const override;
-    ApproximationKind assignState(Variable target,
-                                  const LinearExpression& expression);
-    ApproximationKind assumeState(const LinearConstraint& constraint);
+    ApproximationKind assignState(
+        Variable target, const LinearExpression& expression);
+    ApproximationKind assumeState(
+        const LinearConstraint& constraint);
     void forgetState(Variable variable);
     void joinDomain(const AbstractDomain& other) override;
     void meetDomain(const AbstractDomain& other) override;
