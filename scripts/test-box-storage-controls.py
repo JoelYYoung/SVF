@@ -9,9 +9,32 @@ import unittest
 HERE = Path(__file__).resolve().parent
 DIRECTORY = runpy.run_path(str(HERE / 'run-box-directory-control.py'))
 COLLECT = runpy.run_path(str(HERE / 'collect-box-interning-screen.py'))
+COWRITE = runpy.run_path(str(HERE / 'analyze-box-cowrite-trace.py'))
 
 
 class Controls(unittest.TestCase):
+    def test_cowrite_no_edges_falls_back_to_marginal_packing(self):
+        variables = {(index, 0, 0, 0) for index in range(19)}
+        marginal = {key: (key[0] * 7) % 11 for key in variables}
+        self.assertEqual(
+            COWRITE['relational_mapping'](variables, marginal, {}),
+            COWRITE['marginal_mapping'](variables, marginal),
+        )
+
+    def test_cowrite_missing_top_noop_does_not_detach_shared_page(self):
+        variables = [(index, 0, 0, 0) for index in range(8)]
+        mapping = {key: 0 for key in variables}
+        changed = [(key, True) for key in variables[:6]]
+        replay = COWRITE['Replay'](mapping)
+        result = replay.run([
+            ('S', 1, COWRITE['CREATE'], 1, 0, 0, 0),
+            ('M', 2, 1, 0, 1, 0, 0, 0, changed, variables[:6]),
+            ('S', 3, COWRITE['COPY_CONSTRUCT'], 2, 1, 0, 0),
+            ('M', 4, 2, 0, 2, 0, 0, 0, [], [variables[7]]),
+        ])
+        self.assertEqual(result.get('detaches', 0), 0)
+        self.assertEqual(result.get('cloned_slots', 0), 0)
+
     def test_actual_identity(self):
         for variant, representation in DIRECTORY['REPRESENTATIONS'].items():
             identity = 'representation=' + representation + '\npool_policy=off\n'

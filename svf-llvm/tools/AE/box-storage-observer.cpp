@@ -611,6 +611,20 @@ void testStorageOccupancy()
         check(storageEvents.livePages.empty());
     }
     storageEvents = StorageEvents{};
+    {
+        BoxDomain box = BoxDomain::top();
+        for (std::size_t slot = 0; slot < 6; ++slot)
+            box.assign(Variable(slot), LinearExpression(Rational(slot)));
+        BoxDomain copy = box;
+        const std::uint64_t detaches = storageEvents.counts[
+                                           eventIndex(BoxStorageEventKind::PageDetach)];
+        copy.assign(Variable(7), LinearExpression(Variable(8)));
+        check(storageEvents.counts[
+                  eventIndex(BoxStorageEventKind::PageDetach)] == detaches);
+        check(copy.bound(Variable(7)).isTop());
+    }
+    check(storageEvents.livePages.empty());
+    storageEvents = StorageEvents{};
     SVFUtil::outs() << "Box occupancy event contract passed\n";
 }
 

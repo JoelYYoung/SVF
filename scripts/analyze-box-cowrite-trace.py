@@ -3,6 +3,7 @@
 
 import argparse
 import collections
+import heapq
 import json
 import math
 from pathlib import Path
@@ -85,20 +86,36 @@ def marginal_mapping(variables, marginal):
 
 def relational_mapping(variables, marginal, pair):
     ordered = sorted(variables, key=lambda key: (-marginal[key], key))
+    neighbours = collections.defaultdict(list)
+    for (left, right), weight in pair.items():
+        if weight <= 0:
+            continue
+        neighbours[left].append((right, weight))
+        neighbours[right].append((left, weight))
     groups = []
+    open_groups = []
     mapping = {}
     for key in ordered:
-        candidates = []
-        for index, group in enumerate(groups):
-            if len(group) == 8:
-                continue
-            affinity = sum(pair[tuple(sorted((key, other)))] for other in group)
-            candidates.append((affinity, -len(group), -index, index))
-        if candidates and max(candidates)[0] > 0:
-            group_index = max(candidates)[-1]
+        affinity = collections.Counter()
+        for other, weight in neighbours[key]:
+            if other in mapping:
+                group_index = mapping[other]
+                if len(groups[group_index]) < 8:
+                    affinity[group_index] += weight
+        if affinity:
+            group_index = max(
+                (weight, -len(groups[index]), -index, index)
+                for index, weight in affinity.items()
+            )[-1]
         else:
-            group_index = len(groups)
-            groups.append([])
+            while open_groups and len(groups[open_groups[0]]) == 8:
+                heapq.heappop(open_groups)
+            if open_groups:
+                group_index = open_groups[0]
+            else:
+                group_index = len(groups)
+                groups.append([])
+                heapq.heappush(open_groups, group_index)
         groups[group_index].append(key)
         mapping[key] = group_index
     return mapping
@@ -251,6 +268,12 @@ class Replay:
             page = state["pages"].get(page_index)
             present = changed_map.get(key)
             if page is None and present is not True:
+                continue
+            # Missing slots denote Top. A Top-to-Top update reaches
+            # eraseBound(), which returns before requesting a writable page;
+            # sharing unrelated slots in that page therefore causes no detach.
+            if (page is not None and present is None and
+                    key not in self.pages[page]):
                 continue
             if page_index not in touched_pages:
                 self.metrics["page_touches"] += 1
