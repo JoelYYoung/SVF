@@ -29,6 +29,8 @@
 #include "Util/Options.h"
 
 #include <algorithm>
+#include <cstdlib>
+#include <iostream>
 #include <iterator>
 #include <optional>
 #include <set>
@@ -60,11 +62,147 @@ std::vector<AD::Variable> nonDefaultVariables(
     return variables;
 }
 
+std::set<AD::Variable> definedScalarVariables(const ICFGNode* node,
+                                              const SVFIRAdapter& adapter)
+{
+    std::set<AD::Variable> result;
+    const auto add = [&](const SVFVar* variable) {
+        const auto* value = SVFUtil::dyn_cast<ValVar>(variable);
+        if (value && adapter.contains(*value))
+            result.insert(adapter.variable(*value));
+    };
+    for (const SVFStmt* statement : node->getSVFStmts())
+    {
+        if (const auto* address = SVFUtil::dyn_cast<AddrStmt>(statement))
+            add(address->getLHSVar());
+        else if (const auto* binary =
+                     SVFUtil::dyn_cast<BinaryOPStmt>(statement))
+            add(binary->getRes());
+        else if (const auto* compare = SVFUtil::dyn_cast<CmpStmt>(statement))
+            add(compare->getRes());
+        else if (const auto* load = SVFUtil::dyn_cast<LoadStmt>(statement))
+            add(load->getLHSVar());
+        else if (const auto* copy = SVFUtil::dyn_cast<CopyStmt>(statement))
+            add(copy->getLHSVar());
+        else if (const auto* gep = SVFUtil::dyn_cast<GepStmt>(statement))
+            add(gep->getLHSVar());
+        else if (const auto* select = SVFUtil::dyn_cast<SelectStmt>(statement))
+            add(select->getRes());
+        else if (const auto* phi = SVFUtil::dyn_cast<PhiStmt>(statement))
+            add(phi->getRes());
+        else if (const auto* call = SVFUtil::dyn_cast<CallPE>(statement))
+            add(call->getRes());
+        else if (const auto* ret = SVFUtil::dyn_cast<RetPE>(statement))
+            add(ret->getLHSVar());
+    }
+    // External models bind the actual return directly in the call node's
+    // post-state.  Internal calls expose their result at the RetICFGNode via
+    // RetPE; importing that future definition at the call boundary would make
+    // reconstruction circular.
+    if (const auto* call = SVFUtil::dyn_cast<CallICFGNode>(node))
+        if (call->getCalledFunction() &&
+            SVFUtil::isExtCall(call->getCalledFunction()))
+            add(call->getRetICFGNode()->getActualRet());
+    if (const auto* returnSite = SVFUtil::dyn_cast<RetICFGNode>(node))
+        add(returnSite->getActualRet());
+    return result;
+}
+
 } // namespace
 
 SemiSparseAbstractInterpretation::SemiSparseAbstractInterpretation()
 {
     this->preAnalysis->initCycleValVars();
+    initializeScalarAvailability();
+}
+
+void SemiSparseAbstractInterpretation::initializeScalarAvailability()
+{
+    std::set<AD::Variable> universe;
+    for (auto iterator = this->svfir->begin(); iterator != this->svfir->end();
+         ++iterator)
+    {
+        const auto* value = SVFUtil::dyn_cast<ValVar>(iterator->second);
+        if (value && this->adapter_.contains(*value))
+            universe.insert(this->adapter_.variable(*value));
+    }
+
+    std::vector<const ICFGNode*> nodes;
+    for (auto iterator = this->icfg->begin(); iterator != this->icfg->end();
+         ++iterator)
+    {
+        nodes.push_back(iterator->second);
+        scalarAvailability_.emplace(iterator->second, universe);
+    }
+    std::sort(nodes.begin(), nodes.end(),
+              [](const ICFGNode* left, const ICFGNode* right) {
+                  return left->getId() < right->getId();
+              });
+
+    const ICFGNode* global = this->icfg->getGlobalICFGNode();
+    std::set<AD::Variable> globalOut =
+        definedScalarVariables(global, this->adapter_);
+    FIFOWorkList<const FunObjVar*> roots = this->collectProgEntryFuns();
+    while (!roots.empty())
+    {
+        const FunEntryICFGNode* entry =
+            this->icfg->getFunEntryICFGNode(roots.pop());
+        for (const SVFVar* argument : entry->getFormalParms())
+        {
+            const auto* value = SVFUtil::dyn_cast<ValVar>(argument);
+            if (value && this->adapter_.contains(*value))
+                globalOut.insert(this->adapter_.variable(*value));
+        }
+    }
+    scalarAvailability_[global] = std::move(globalOut);
+
+    bool changed = true;
+    while (changed)
+    {
+        changed = false;
+        for (const ICFGNode* node : nodes)
+        {
+            if (node == global)
+                continue;
+            bool first = true;
+            std::set<AD::Variable> incoming;
+            for (const ICFGEdge* edge : node->getInEdges())
+            {
+                if (!SVFUtil::isa<IntraCFGEdge>(edge) &&
+                    !SVFUtil::isa<CallCFGEdge>(edge) &&
+                    !SVFUtil::isa<RetCFGEdge>(edge))
+                    continue;
+                const auto predecessor =
+                    scalarAvailability_.find(edge->getSrcNode());
+                if (predecessor == scalarAvailability_.end())
+                    continue;
+                if (first)
+                {
+                    incoming = predecessor->second;
+                    first = false;
+                }
+                else
+                {
+                    std::set<AD::Variable> intersection;
+                    std::set_intersection(
+                        incoming.begin(), incoming.end(),
+                        predecessor->second.begin(), predecessor->second.end(),
+                        std::inserter(intersection, intersection.end()));
+                    incoming = std::move(intersection);
+                }
+            }
+            if (first)
+                incoming.clear();
+            const std::set<AD::Variable> definitions =
+                definedScalarVariables(node, this->adapter_);
+            incoming.insert(definitions.begin(), definitions.end());
+            if (incoming != scalarAvailability_.at(node))
+            {
+                scalarAvailability_[node] = std::move(incoming);
+                changed = true;
+            }
+        }
+    }
 }
 
 SemiSparseAbstractInterpretation::State
@@ -98,10 +236,20 @@ SemiSparseAbstractInterpretation::State
 SemiSparseAbstractInterpretation::phiAlternativeState(
     const ICFGNode* predecessor)
 {
-    State alternative = scalarState();
-    if (predecessor && this->hasAbsState(predecessor))
-        alternative.numerical().meetWith(
-            this->state(predecessor).numerical());
+    State alternative = Options::AEDomain() == AENumericalDomain::Box
+                            ? scalarState()
+                            : this->topState();
+    if (Options::AEDomain() != AENumericalDomain::Box && predecessor)
+    {
+        std::vector<AD::Variable> seeds;
+        const auto available = scalarAvailability_.find(predecessor);
+        if (available != scalarAvailability_.end())
+            seeds.assign(available->second.begin(), available->second.end());
+        materializeScalarDefinitions(alternative, seeds, predecessor);
+        if (this->hasAbsState(predecessor))
+            alternative.numerical().meetWith(
+                this->state(predecessor).numerical());
+    }
     return alternative;
 }
 
@@ -115,6 +263,123 @@ void SemiSparseAbstractInterpretation::assignRelationalValue(
     State& scalars = scalarState();
     scalars.assignNumeric(variable, expression);
     scalars.setAddressSet(variable, addresses);
+    if (Options::AEDomain() != AENumericalDomain::Box)
+    {
+        State summary = this->topState();
+        std::vector<AD::Variable> sources;
+        for (const auto& [source, coefficient] : expression.terms())
+        {
+            (void)coefficient;
+            sources.push_back(source);
+        }
+        materializeScalarDefinitions(summary, sources, node);
+        summary.assignNumeric(variable, expression);
+        summary.setAddressSet(variable, addresses);
+        // updateValue has just installed a unary summary for this same
+        // definition.  Joining that state would immediately erase the affine
+        // relation established above.  Only join a saved value from an older
+        // visit to this definition (for example, a loop iteration).
+        const auto pending = pendingDefinitionHistory_.find(variable);
+        if (pending != pendingDefinitionHistory_.end() &&
+            pending->second.first == node)
+        {
+            summary.joinWith(pending->second.second);
+            pendingDefinitionHistory_.erase(pending);
+        }
+        scalarDefinitions_.insert_or_assign(variable, std::move(summary));
+        if (std::getenv("SVF_AE_TRACE_SCALAR_SUMMARY"))
+            std::cerr << "AE scalar summary assign node=" << node->getId()
+                      << " target=" << variable.id() << " state="
+                      << scalarDefinitions_.at(variable).numerical().toString()
+                      << '\n';
+    }
+    for (const auto& [source, coefficient] : expression.terms())
+    {
+        (void)coefficient;
+        recordRelationalDependency(variable, source);
+    }
+}
+
+void SemiSparseAbstractInterpretation::recordRelationalDependency(
+    AD::Variable target, AD::Variable source)
+{
+    if (target == source)
+        return;
+    const auto dependencies = scalarDependencies_.find(source);
+    if (dependencies == scalarDependencies_.end() ||
+        dependencies->second.empty())
+        scalarDependencies_[target].insert(source);
+    else
+        scalarDependencies_[target].insert(dependencies->second.begin(),
+                                           dependencies->second.end());
+}
+
+void SemiSparseAbstractInterpretation::recordRelationalSummary(
+    AD::Variable target, const State& sourceSummary, const ICFGNode* node)
+{
+    if (Options::AEDomain() == AENumericalDomain::Box)
+        return;
+    // Phi/select alternatives record syntactic dependencies before their
+    // relational states are joined.  A join can eliminate some or all of
+    // those relations, so stale branch-local sources must not remain an
+    // availability prerequisite for the target's (possibly Top) definition.
+    const std::vector<AD::Variable> support =
+        sourceSummary.numerical().supportVariables();
+    if (std::find(support.begin(), support.end(), target) == support.end())
+    {
+        scalarDependencies_.erase(target);
+    }
+    else
+    {
+        auto dependencies = scalarDependencies_.find(target);
+        if (dependencies != scalarDependencies_.end())
+        {
+            std::set<AD::Variable> supported;
+            for (AD::Variable dependency : dependencies->second)
+                if (std::find(support.begin(), support.end(), dependency) !=
+                    support.end())
+                    supported.insert(dependency);
+            if (supported.empty())
+                scalarDependencies_.erase(dependencies);
+            else
+                dependencies->second = std::move(supported);
+        }
+    }
+    const std::vector<AD::Variable> variables =
+        carrierDependencyClosure({target});
+    State summary = this->topState();
+    for (AD::Variable variable : variables)
+        summary.assignValueFrom(variable, sourceSummary, variable);
+    // The unary summary written by updateValue owns the target's
+    // initialization/address facets.  Do not meet the complete products:
+    // every other coordinate is deliberately absent (Uninitialized) there,
+    // and meeting it with an Initialized dependency would collapse the
+    // independent initialization lattice to Bottom.
+    const auto intervalSummary = scalarDefinitions_.find(target);
+    if (intervalSummary != scalarDefinitions_.end())
+        summary.assignValueFrom(target, intervalSummary->second, target);
+    State projected = sourceSummary;
+    projected.numerical().project(variables);
+    summary.numerical().meetWith(projected.numerical());
+    const auto pending = pendingDefinitionHistory_.find(target);
+    if (pending != pendingDefinitionHistory_.end() &&
+        pending->second.first == node)
+    {
+        summary.joinWith(pending->second.second);
+        pendingDefinitionHistory_.erase(pending);
+    }
+    scalarDefinitions_.insert_or_assign(target, std::move(summary));
+    if (std::getenv("SVF_AE_TRACE_SCALAR_SUMMARY"))
+        std::cerr << "AE scalar summary merge target=" << target.id()
+                  << " dependencies=";
+    if (std::getenv("SVF_AE_TRACE_SCALAR_SUMMARY"))
+    {
+        for (AD::Variable variable : variables)
+            std::cerr << variable.id() << ',';
+        std::cerr << " state="
+                  << scalarDefinitions_.at(target).numerical().toString()
+                  << '\n';
+    }
 }
 
 void SemiSparseAbstractInterpretation::assignRelationalStore(
@@ -124,7 +389,7 @@ void SemiSparseAbstractInterpretation::assignRelationalStore(
         return;
     State& local = this->ensureState(node);
     const AD::Variable sourceVariable = this->adapter_.variable(*source);
-    materializeRelations(local, {sourceVariable});
+    materializeRelations(local, {sourceVariable}, node);
     if (!scalarState().numericalMayBeUninitialized(sourceVariable))
         local.assignNumeric(content, AD::LinearExpression(sourceVariable));
 }
@@ -145,6 +410,13 @@ void SemiSparseAbstractInterpretation::assignRelationalLoad(
         if (this->adapter_.contentObject(variable))
             projection.numerical().forget(variable);
     scalarState().numerical().meetWith(projection.numerical());
+    for (AD::Variable variable : projection.numerical().supportVariables())
+    {
+        if (variable != targetVariable &&
+            !this->adapter_.contentObject(variable))
+            recordRelationalDependency(targetVariable, variable);
+    }
+    recordRelationalSummary(targetVariable, projection, node);
 }
 
 const AD::AbstractDomain* SemiSparseAbstractInterpretation::
@@ -165,10 +437,16 @@ AD::Interval SemiSparseAbstractInterpretation::getInterval(
     const AD::Interval result = getDefinedInterval(value, node);
     if (!value || !this->adapter_.contains(*value))
         return result;
-    const State& scalars = scalarState();
-    return scalars.numericalMayBeUninitialized(
-               this->adapter_.variable(*value))
-           ? AD::Interval::top() : result;
+    State materialized = this->topState();
+    const AD::Variable variable = this->adapter_.variable(*value);
+    if (Options::AEDomain() == AENumericalDomain::Box)
+        materialized.assignValueFrom(variable, scalarState(), variable);
+    else
+        materializeScalarDefinitions(materialized, {variable}, node);
+    return result.isBottom() &&
+                   materialized.numericalMayBeUninitialized(variable)
+               ? AD::Interval::top()
+               : result;
 }
 
 AD::Interval SemiSparseAbstractInterpretation::getDefinedInterval(
@@ -193,14 +471,21 @@ AD::Interval SemiSparseAbstractInterpretation::getDefinedInterval(
     if (SVFUtil::isa<DummyValVar>(value))
         return AD::Interval::top();
 
-    const State& scalars = scalarState();
     const AD::Variable variable = this->adapter_.variable(*value);
     // A forward reference in a global initializer has not executed its
     // AddrStmt yet. Match the unresolved-symbol policy of the dense reader.
     if ((SVFUtil::isa<FunValVar>(value) || SVFUtil::isa<GlobalValVar>(value)) &&
-            !scalars.hasValue(variable))
+        !scalarState().hasValue(variable))
         return AD::Interval::top();
-    AD::Interval result = scalars.interval(variable);
+    AD::Interval result;
+    if (Options::AEDomain() == AENumericalDomain::Box)
+        result = scalarState().interval(variable);
+    else
+    {
+        State materialized = this->topState();
+        materializeScalarDefinitions(materialized, {variable}, node);
+        result = materialized.interval(variable);
+    }
     // Conditional-edge refinement is intentionally local to the ICFG state.
     // Read it in addition to the module-wide scalar carrier so transfer
     // functions observe path constraints without copying all SSA values into
@@ -215,6 +500,22 @@ AD::Interval SemiSparseAbstractInterpretation::getDefinedInterval(
                 result = refined;
             else
                 result.meetWith(refined);
+        }
+    }
+    if (Options::AEDomain() != AENumericalDomain::Box && node)
+    {
+        const auto refinement = refinementTrace_.find(node);
+        if (refinement != refinementTrace_.end())
+        {
+            const AD::Interval refined =
+                refinement->second.numerical().bound(variable);
+            if (!refined.isTop())
+            {
+                if (result.isBottom())
+                    result = refined;
+                else
+                    result.meetWith(refined);
+            }
         }
     }
     return result;
@@ -236,9 +537,12 @@ AD::AddressSet SemiSparseAbstractInterpretation::getAddressSet(
         return AD::AddressSet::bottom();
     if (!this->adapter_.contains(*value))
         return AD::AddressSet::bottom();
-    const State& scalars = scalarState();
     const AD::Variable variable = this->adapter_.variable(*value);
-    return scalars.addressSet(variable);
+    if (Options::AEDomain() == AENumericalDomain::Box)
+        return scalarState().addressSet(variable);
+    State materialized = this->topState();
+    materializeScalarDefinitions(materialized, {variable}, node);
+    return materialized.addressSet(variable);
 }
 
 bool SemiSparseAbstractInterpretation::hasAbsValue(
@@ -255,11 +559,22 @@ void SemiSparseAbstractInterpretation::updateValue(
     const ValVar* value, const AD::Interval& interval,
     const AD::AddressSet& addresses, const ICFGNode* node)
 {
-    (void)node;
     if (value && this->adapter_.contains(*value))
     {
-        this->assignValue(scalarState(), this->adapter_.variable(*value),
-                          interval, addresses);
+        const AD::Variable variable = this->adapter_.variable(*value);
+        this->assignValue(scalarState(), variable, interval, addresses);
+        if (Options::AEDomain() != AENumericalDomain::Box)
+        {
+            const auto previous = scalarDefinitions_.find(variable);
+            if (previous != scalarDefinitions_.end())
+                pendingDefinitionHistory_.insert_or_assign(
+                    variable, std::make_pair(node, previous->second));
+            else
+                pendingDefinitionHistory_.erase(variable);
+            State summary = this->topState();
+            this->assignValue(summary, variable, interval, addresses);
+            scalarDefinitions_.insert_or_assign(variable, std::move(summary));
+        }
     }
 }
 
@@ -268,8 +583,13 @@ void SemiSparseAbstractInterpretation::addUninitializedNumericalAlternative(
 {
     (void)node;
     if (value && this->adapter_.contains(*value))
-        scalarState().addUninitializedNumericalAlternative(
-            this->adapter_.variable(*value));
+    {
+        const AD::Variable variable = this->adapter_.variable(*value);
+        scalarState().addUninitializedNumericalAlternative(variable);
+        const auto summary = scalarDefinitions_.find(variable);
+        if (summary != scalarDefinitions_.end())
+            summary->second.addUninitializedNumericalAlternative(variable);
+    }
 }
 
 void SemiSparseAbstractInterpretation::copyAbstractState(
@@ -289,6 +609,82 @@ void SemiSparseAbstractInterpretation::finalizeAbstractState(
 {
     State& denseState = this->ensureState(node);
     forgetActiveScalarValues(denseState);
+}
+
+SemiSparseAbstractInterpretation::State SemiSparseAbstractInterpretation::
+    reconstructPostState(const ICFGNode* node,
+                         const std::set<AD::Variable>& availableScalars)
+{
+    const State& local = this->state(node);
+    State reconstructed = this->topState();
+
+    // Copy the complete flow component onto a neutral product. A local reset
+    // memory cell is semantically uninitialized, so it must be copied too;
+    // treating it as absent would weaken the Post check.
+    std::vector<AD::Variable> localNumericalVariables;
+    localNumericalVariables.reserve(
+        this->adapter_.memoryLayout().cells().size() + availableScalars.size());
+    for (const auto& [location, content] :
+         this->adapter_.memoryLayout().cells())
+    {
+        (void)location;
+        reconstructed.assignValueFrom(content, local, content);
+        localNumericalVariables.push_back(content);
+    }
+    localNumericalVariables.insert(localNumericalVariables.end(),
+                                   availableScalars.begin(),
+                                   availableScalars.end());
+    std::sort(localNumericalVariables.begin(), localNumericalVariables.end());
+    localNumericalVariables.erase(std::unique(localNumericalVariables.begin(),
+                                              localNumericalVariables.end()),
+                                  localNumericalVariables.end());
+    reconstructed.lifetimes() = local.lifetimes();
+
+    if (Options::AEDomain() != AENumericalDomain::Box)
+    {
+        const std::vector<AD::Variable> variables(availableScalars.begin(),
+                                                  availableScalars.end());
+        materializeScalarDefinitions(reconstructed, variables, node);
+    }
+    else if (const State* carrier = findScalarState())
+    {
+        // Copy only point-available scalar facets. Whole-product meet would
+        // conflate the carrier's "not stored" defaults with flow-state
+        // uninitialized memory coordinates.
+        for (AD::Variable variable : availableScalars)
+            reconstructed.assignValueFrom(variable, *carrier, variable);
+    }
+
+    // Copying individual coordinates above intentionally discards relations.
+    // Reapply the projected local component last so that scalar--memory and
+    // memory--memory relations survive without meeting unrelated product
+    // facets from the sparse carrier.
+    State projectedLocal = local;
+    projectedLocal.numerical().project(localNumericalVariables);
+    reconstructed.numerical().meetWith(projectedLocal.numerical());
+
+    const auto refinement = refinementTrace_.find(node);
+    if (refinement != refinementTrace_.end())
+    {
+        State projected = refinement->second;
+        std::vector<AD::Variable> variables(availableScalars.begin(),
+                                            availableScalars.end());
+        projected.numerical().project(variables);
+        applyScalarRefinement(reconstructed, projected);
+    }
+    return reconstructed;
+}
+
+void SemiSparseAbstractInterpretation::normalizePostReplayState(
+    State& denseState, const std::set<AD::Variable>& availableScalars) const
+{
+    const AD::Variable contentBegin =
+        this->adapter_.firstObjectContentVariable();
+    for (AD::Variable variable : nonDefaultVariables(denseState))
+    {
+        if (variable < contentBegin && availableScalars.count(variable) == 0)
+            this->forgetValue(denseState, variable);
+    }
 }
 
 void SemiSparseAbstractInterpretation::forgetActiveScalarValues(
@@ -444,14 +840,95 @@ void SemiSparseAbstractInterpretation::materializeValue(
 }
 
 void SemiSparseAbstractInterpretation::materializeRelations(
-    State& denseState, const std::vector<AD::Variable>& variables)
+    State& denseState, const std::vector<AD::Variable>& variables,
+    const ICFGNode* node)
 {
     if (Options::AEDomain() == AENumericalDomain::Box || variables.empty())
         return;
-    State projected = scalarState();
-    projected.numerical().project(
-        projected.numerical().relationalClosure(variables));
+    State projected = this->topState();
+    materializeScalarDefinitions(projected, variables, node);
     denseState.numerical().meetWith(projected.numerical());
+}
+
+std::vector<AD::Variable> SemiSparseAbstractInterpretation::
+    carrierDependencyClosure(const std::vector<AD::Variable>& seeds) const
+{
+    std::set<AD::Variable> closure(seeds.begin(), seeds.end());
+    std::vector<AD::Variable> worklist(seeds.begin(), seeds.end());
+    while (!worklist.empty())
+    {
+        const AD::Variable variable = worklist.back();
+        worklist.pop_back();
+        const auto dependencies = scalarDependencies_.find(variable);
+        if (dependencies == scalarDependencies_.end())
+            continue;
+        for (AD::Variable dependency : dependencies->second)
+        {
+            if (closure.insert(dependency).second)
+                worklist.push_back(dependency);
+        }
+    }
+    return std::vector<AD::Variable>(closure.begin(), closure.end());
+}
+
+void SemiSparseAbstractInterpretation::materializeScalarDefinitions(
+    State& destination, const std::vector<AD::Variable>& seeds,
+    const ICFGNode* node) const
+{
+    if (!node || seeds.empty())
+        return;
+    const auto available = scalarAvailability_.find(node);
+    if (available == scalarAvailability_.end())
+        return;
+
+    std::set<AD::Variable> retained;
+    for (AD::Variable seed : seeds)
+    {
+        const std::vector<AD::Variable> closure =
+            carrierDependencyClosure({seed});
+        const bool entirelyAvailable = std::all_of(
+            closure.begin(), closure.end(), [&](AD::Variable variable) {
+                return available->second.count(variable) != 0;
+            });
+        if (entirelyAvailable)
+            retained.insert(closure.begin(), closure.end());
+    }
+    if (retained.empty())
+        return;
+
+    const std::vector<AD::Variable> variables(retained.begin(), retained.end());
+    for (AD::Variable variable : variables)
+    {
+        const auto definition = scalarDefinitions_.find(variable);
+        if (definition != scalarDefinitions_.end())
+            destination.assignValueFrom(variable, definition->second, variable);
+        else if (scalarState_)
+            destination.assignValueFrom(variable, *scalarState_, variable);
+    }
+    // Coordinate copies intentionally discard relations. Reapply every
+    // available definition summary only after initialization/address facets
+    // are in place, and never meet whole products with incompatible sparse
+    // defaults.
+    for (AD::Variable variable : variables)
+    {
+        const auto definition = scalarDefinitions_.find(variable);
+        if (definition == scalarDefinitions_.end())
+            continue;
+        State projected = definition->second;
+        projected.numerical().project(variables);
+        destination.numerical().meetWith(projected.numerical());
+    }
+    if (std::getenv("SVF_AE_TRACE_SCALAR_SUMMARY"))
+    {
+        std::cerr << "AE scalar summary materialize node=" << node->getId()
+                  << " seeds=";
+        for (AD::Variable variable : seeds)
+            std::cerr << variable.id() << ',';
+        std::cerr << " retained=";
+        for (AD::Variable variable : variables)
+            std::cerr << variable.id() << ',';
+        std::cerr << " state=" << destination.numerical().toString() << '\n';
+    }
 }
 
 void SemiSparseAbstractInterpretation::loadValue(
@@ -485,6 +962,9 @@ void SemiSparseAbstractInterpretation::filterPropagatedState(
 bool SemiSparseAbstractInterpretation::mergeStatesFromPredecessors(
     const ICFGNode* node)
 {
+    const bool traceMerge = std::getenv("SVF_AE_TRACE_SPARSE_MERGE");
+    if (traceMerge)
+        std::cerr << "AE sparse merge target=" << node->getId() << '\n';
     State merged = flowState(true);
     std::optional<State> mergedRefinement;
     bool refinementIsTop = false;
@@ -529,8 +1009,20 @@ bool SemiSparseAbstractInterpretation::mergeStatesFromPredecessors(
             if (hasConditional)
                 this->assumeBranch(conditional, *refinement);
             if (refinement->isBottom())
+            {
+                if (traceMerge)
+                    std::cerr << "  predecessor=" << predecessor->getId()
+                              << " refinement=bottom\n";
                 continue;
+            }
         }
+
+        if (traceMerge)
+            std::cerr << "  predecessor=" << predecessor->getId()
+                      << " refinement="
+                      << (refinement ? refinement->numerical().toString()
+                                     : std::string("top"))
+                      << '\n';
 
         State source = this->state(predecessor);
         filterPropagatedState(source);
@@ -555,7 +1047,11 @@ bool SemiSparseAbstractInterpretation::mergeStatesFromPredecessors(
     }
 
     if (!hasFeasiblePredecessor)
+    {
+        if (traceMerge)
+            std::cerr << "  result=unreachable\n";
         return false;
+    }
     restoreCallerFrameAfterSharedCallee(
         merged, SVFUtil::dyn_cast<RetICFGNode>(node));
     if (mergedRefinement && !refinementIsTop && !mergedRefinement->isTop())
@@ -568,6 +1064,9 @@ bool SemiSparseAbstractInterpretation::mergeStatesFromPredecessors(
         refinementTrace_.erase(node);
     }
     this->stateTrace_.insert_or_assign(node, std::move(merged));
+    if (traceMerge)
+        std::cerr << "  result=" << this->state(node).numerical().toString()
+                  << '\n';
     return true;
 }
 
@@ -576,28 +1075,39 @@ cloneCycleHeadState(const ICFGCycleWTO* cycle)
 {
     const ICFGNode* head = cycle->head()->getICFGNode();
     State snapshot = this->state(head);
+    const auto available = scalarAvailability_.find(head);
     for (const ValVar* value : this->preAnalysis->getCycleValVars(cycle))
     {
         if (!value || !this->adapter_.contains(*value))
             continue;
-        this->assignValue(snapshot, this->adapter_.variable(*value),
-                          getInterval(value, head), getAddressSet(value, head));
+        const AD::Variable variable = this->adapter_.variable(*value);
+        if (available != scalarAvailability_.end() &&
+            available->second.count(variable) == 0)
+            continue;
+        this->assignValue(snapshot, variable, getInterval(value, head),
+                          getAddressSet(value, head));
     }
+    if (std::getenv("SVF_AE_TRACE_SPARSE_CYCLE"))
+        std::cerr << "AE sparse cycle snapshot head=" << head->getId()
+                  << " state=" << snapshot.numerical().toString() << '\n';
     return std::make_unique<State>(std::move(snapshot));
 }
 
 void SemiSparseAbstractInterpretation::scatterCycleValues(
     const ICFGCycleWTO* cycle, const State& cycleState)
 {
+    const ICFGNode* head = cycle->head()->getICFGNode();
+    const auto available = scalarAvailability_.find(head);
     for (const ValVar* value : this->preAnalysis->getCycleValVars(cycle))
     {
         if (!value || !this->adapter_.contains(*value))
             continue;
         const AD::Variable variable = this->adapter_.variable(*value);
-        updateValue(value,
-                    cycleState.interval(variable),
-                    cycleState.addressSet(variable),
-                    cycle->head()->getICFGNode());
+        if (available != scalarAvailability_.end() &&
+            available->second.count(variable) == 0)
+            continue;
+        updateValue(value, cycleState.interval(variable),
+                    cycleState.addressSet(variable), head);
     }
 }
 
@@ -606,6 +1116,13 @@ bool SemiSparseAbstractInterpretation::widenCycleState(
     const ICFGCycleWTO* cycle)
 {
     const bool fixpoint = Base::widenCycleState(previous, current, cycle);
+    if (std::getenv("SVF_AE_TRACE_SPARSE_CYCLE"))
+        std::cerr
+            << "AE sparse cycle widen head="
+            << cycle->head()->getICFGNode()->getId() << " fixpoint=" << fixpoint
+            << " state="
+            << this->state(cycle->head()->getICFGNode()).numerical().toString()
+            << '\n';
     scatterCycleValues(cycle, this->state(cycle->head()->getICFGNode()));
     finalizeAbstractState(cycle->head()->getICFGNode());
     return fixpoint;
@@ -616,6 +1133,13 @@ bool SemiSparseAbstractInterpretation::narrowCycleState(
     const ICFGCycleWTO* cycle)
 {
     const bool fixpoint = Base::narrowCycleState(previous, current, cycle);
+    if (std::getenv("SVF_AE_TRACE_SPARSE_CYCLE"))
+        std::cerr
+            << "AE sparse cycle narrow head="
+            << cycle->head()->getICFGNode()->getId() << " fixpoint=" << fixpoint
+            << " state="
+            << this->state(cycle->head()->getICFGNode()).numerical().toString()
+            << '\n';
     if (!fixpoint)
     {
         scatterCycleValues(cycle, this->state(cycle->head()->getICFGNode()));

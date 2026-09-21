@@ -6,7 +6,9 @@
 #include "Util/Options.h"
 
 #include <algorithm>
+#include <cstdlib>
 #include <fstream>
+#include <iostream>
 #include <stdexcept>
 #include <tuple>
 
@@ -100,6 +102,153 @@ bool isDiagnosticOnlyExternal(const FunObjVar* function)
            name == "UNSAFE_BUFACCESS";
 }
 
+bool isEquationEdge(
+    const ICFGEdge* edge,
+    const Map<const ICFGNode*, AbstractInterpretation::State>& reachable)
+{
+    if (SVFUtil::isa<IntraCFGEdge>(edge) || SVFUtil::isa<CallCFGEdge>(edge))
+        return true;
+    if (!SVFUtil::isa<RetCFGEdge>(edge))
+        return false;
+    if (Options::HandleRecur() == AbstractInterpretation::TOP)
+        return true;
+    const auto* returnSite = SVFUtil::dyn_cast<RetICFGNode>(edge->getDstNode());
+    return returnSite && reachable.count(returnSite->getCallICFGNode()) != 0;
+}
+
+std::set<AD::Variable> definedScalars(const ICFGNode* node,
+                                      const SVFIRAdapter& adapter)
+{
+    std::set<AD::Variable> result;
+    const auto add = [&](const SVFVar* variable) {
+        const auto* value = SVFUtil::dyn_cast<ValVar>(variable);
+        if (value && adapter.contains(*value))
+            result.insert(adapter.variable(*value));
+    };
+    for (const SVFStmt* statement : node->getSVFStmts())
+    {
+        if (const auto* address = SVFUtil::dyn_cast<AddrStmt>(statement))
+            add(address->getLHSVar());
+        else if (const auto* binary =
+                     SVFUtil::dyn_cast<BinaryOPStmt>(statement))
+            add(binary->getRes());
+        else if (const auto* compare = SVFUtil::dyn_cast<CmpStmt>(statement))
+            add(compare->getRes());
+        else if (const auto* load = SVFUtil::dyn_cast<LoadStmt>(statement))
+            add(load->getLHSVar());
+        else if (const auto* copy = SVFUtil::dyn_cast<CopyStmt>(statement))
+            add(copy->getLHSVar());
+        else if (const auto* gep = SVFUtil::dyn_cast<GepStmt>(statement))
+            add(gep->getLHSVar());
+        else if (const auto* select = SVFUtil::dyn_cast<SelectStmt>(statement))
+            add(select->getRes());
+        else if (const auto* phi = SVFUtil::dyn_cast<PhiStmt>(statement))
+            add(phi->getRes());
+        else if (const auto* call = SVFUtil::dyn_cast<CallPE>(statement))
+            add(call->getRes());
+        else if (const auto* ret = SVFUtil::dyn_cast<RetPE>(statement))
+            add(ret->getLHSVar());
+    }
+    // An external model binds the actual return in the call node.  An internal
+    // call's result belongs to the RetICFGNode equation; treating it as already
+    // available at the call boundary would use a future definition.
+    if (const auto* call = SVFUtil::dyn_cast<CallICFGNode>(node))
+        if (call->getCalledFunction() &&
+            SVFUtil::isExtCall(call->getCalledFunction()))
+            add(call->getRetICFGNode()->getActualRet());
+    if (const auto* returnSite = SVFUtil::dyn_cast<RetICFGNode>(node))
+        add(returnSite->getActualRet());
+    return result;
+}
+
+Map<const ICFGNode*, std::set<AD::Variable>> computeAvailability(
+    ICFG* graph, const SVFIR& svfir, const SVFIRAdapter& adapter,
+    const Map<const ICFGNode*, AbstractInterpretation::State>& reachable,
+    const std::vector<const FunObjVar*>& roots)
+{
+    std::set<AD::Variable> universe;
+    for (auto iterator = svfir.begin(); iterator != svfir.end(); ++iterator)
+    {
+        const auto* value = SVFUtil::dyn_cast<ValVar>(iterator->second);
+        if (value && adapter.contains(*value))
+            universe.insert(adapter.variable(*value));
+    }
+
+    std::vector<const ICFGNode*> nodes;
+    Map<const ICFGNode*, std::set<AD::Variable>> available;
+    for (const auto& [node, state] : reachable)
+    {
+        (void)state;
+        nodes.push_back(node);
+        available.emplace(node, universe);
+    }
+    std::sort(nodes.begin(), nodes.end(),
+              [](const ICFGNode* left, const ICFGNode* right) {
+                  return left->getId() < right->getId();
+              });
+
+    const ICFGNode* global = graph->getGlobalICFGNode();
+    std::set<AD::Variable> globalOut = definedScalars(global, adapter);
+    for (const FunObjVar* root : roots)
+    {
+        const FunEntryICFGNode* entry = graph->getFunEntryICFGNode(root);
+        for (const SVFVar* argument : entry->getFormalParms())
+        {
+            const auto* value = SVFUtil::dyn_cast<ValVar>(argument);
+            if (value && adapter.contains(*value))
+                globalOut.insert(adapter.variable(*value));
+        }
+    }
+    if (available.count(global))
+        available[global] = globalOut;
+
+    bool changed = true;
+    while (changed)
+    {
+        changed = false;
+        for (const ICFGNode* node : nodes)
+        {
+            if (node == global)
+                continue;
+            bool first = true;
+            std::set<AD::Variable> incoming;
+            for (const ICFGEdge* edge : node->getInEdges())
+            {
+                const ICFGNode* predecessor = edge->getSrcNode();
+                if (!isEquationEdge(edge, reachable) ||
+                    reachable.count(predecessor) == 0)
+                    continue;
+                if (first)
+                {
+                    incoming = available.at(predecessor);
+                    first = false;
+                }
+                else
+                {
+                    std::set<AD::Variable> intersection;
+                    std::set_intersection(
+                        incoming.begin(), incoming.end(),
+                        available.at(predecessor).begin(),
+                        available.at(predecessor).end(),
+                        std::inserter(intersection, intersection.end()));
+                    incoming = std::move(intersection);
+                }
+            }
+            if (first)
+                incoming.clear();
+            const std::set<AD::Variable> definitions =
+                definedScalars(node, adapter);
+            incoming.insert(definitions.begin(), definitions.end());
+            if (incoming != available.at(node))
+            {
+                available[node] = std::move(incoming);
+                changed = true;
+            }
+        }
+    }
+    return available;
+}
+
 void writeReport(const std::vector<EquationRecord>& records)
 {
     std::ofstream output(Options::AEPostCheckFile(),
@@ -127,6 +276,17 @@ void writeReport(const std::vector<EquationRecord>& records)
 bool AbstractInterpretation::postCheckEnabled() const
 {
     return !Options::AEPostCheckFile().empty();
+}
+
+AbstractInterpretation::State AbstractInterpretation::reconstructPostState(
+    const ICFGNode* node, const std::set<AD::Variable>&)
+{
+    return state(node);
+}
+
+void AbstractInterpretation::normalizePostReplayState(
+    State&, const std::set<AD::Variable>&) const
+{
 }
 
 void AbstractInterpretation::verifyPostFixpoint()
@@ -157,19 +317,16 @@ void AbstractInterpretation::verifyPostFixpoint()
         failed |= status == EquationStatus::Fail ||
                   status == EquationStatus::Unsupported;
     };
+    const auto traceFailure = [&](const std::string& label,
+                                  const State& replayed,
+                                  const State& finalState) {
+        if (!std::getenv("SVF_AE_TRACE_POST_FAILURE"))
+            return;
+        std::cerr << "AE Post failure " << label << '\n'
+                  << "  replayed: " << replayed.toString() << '\n'
+                  << "  final:    " << finalState.toString() << '\n';
+    };
 
-    if (Options::AESparsity() != AESparsity::Dense)
-    {
-        addRecord("solver", 0, 0, EquationStatus::Unsupported,
-                  "semi-sparse dense-state reconstruction is not implemented",
-                  "");
-        writeReport(records);
-        throw std::runtime_error(
-            "AE Post check does not yet support semi-sparse reconstruction");
-    }
-
-    const Map<const ICFGNode*, State> finalStates = stateTrace_;
-    const Set<const CallICFGNode*> savedCheckpoints = utils->checkpoints;
     std::vector<const FunObjVar*> roots;
     FIFOWorkList<const FunObjVar*> rootWorklist = collectProgEntryFuns();
     while (!rootWorklist.empty())
@@ -184,191 +341,220 @@ void AbstractInterpretation::verifyPostFixpoint()
             "AE Post check currently requires exactly one analysis entry");
     }
 
-    const ICFGNode* global = icfg->getGlobalICFGNode();
-    auto restore = [&]()
+    const Map<const ICFGNode*, State> storedStates = stateTrace_;
+    const auto availability =
+        computeAvailability(icfg, *svfir, adapter_, storedStates, roots);
+    Map<const ICFGNode*, State> finalStates;
+    for (const auto& [node, stored] : storedStates)
     {
-        stateTrace_ = finalStates;
-        utils->checkpoints = savedCheckpoints;
-    };
+        (void)stored;
+        finalStates.emplace(node,
+                            reconstructPostState(node, availability.at(node)));
+    }
 
-    const auto replayNode = [&](const ICFGNode* node, const State& incoming)
-        -> State
-    {
-        stateTrace_ = finalStates;
-        stateTrace_.insert_or_assign(node, incoming);
+    // Replay through a separate dense interpreter. This prevents virtual
+    // sparse transfer hooks from mutating the analyzed SSA carrier while the
+    // equations are checked. Reuse the exact symbol mapping so reconstructed
+    // states and replay states remain lattice-compatible.
+    AbstractInterpretation replay;
+    replay.adapter_ = adapter_;
+    replay.utils = new AbsExtAPI(&replay);
+    const ICFGNode* global = icfg->getGlobalICFGNode();
+
+    const auto replayNode = [&](const ICFGNode* node,
+                                const State& incoming) -> State {
+        replay.stateTrace_ = finalStates;
+        replay.stateTrace_.insert_or_assign(node, incoming);
         for (const SVFStmt* statement : node->getSVFStmts())
-            handleSVFStatement(statement);
+            replay.handleSVFStatement(statement);
         if (const auto* call = SVFUtil::dyn_cast<CallICFGNode>(node))
         {
-            if (isExtCall(call))
+            if (replay.isExtCall(call))
             {
                 if (!isDiagnosticOnlyExternal(call->getCalledFunction()))
-                    utils->handleExtAPI(call);
+                    replay.utils->handleExtAPI(call);
+            }
+            else if (Options::HandleRecur() == TOP &&
+                     call->getCalledFunction() &&
+                     replay.isRecursiveFun(call->getCalledFunction()))
+            {
+                replay.skipRecursionWithTop(call);
             }
             else if (!call->getCalledFunction())
             {
                 bool hasConcreteCallee = false;
-                if (callGraph->hasIndCSCallees(call))
+                if (replay.callGraph->hasIndCSCallees(call))
                 {
                     for (const FunObjVar* callee :
-                            callGraph->getIndCSCallees(call))
+                         replay.callGraph->getIndCSCallees(call))
                         hasConcreteCallee |= !callee->isDeclaration();
                 }
                 if (!hasConcreteCallee)
                 {
                     const SVFVar* result =
                         call->getRetICFGNode()->getActualRet();
-                    if (result && getInterval(result, call).isBottom() &&
-                            getAddressSet(result, call).isBottom())
-                        updateInterval(result, AD::Interval::top(), call);
+                    if (result && replay.getInterval(result, call).isBottom() &&
+                        replay.getAddressSet(result, call).isBottom())
+                        replay.updateInterval(result, AD::Interval::top(),
+                                              call);
                 }
             }
         }
-        finalizeAbstractState(node);
-        return state(node);
+        replay.finalizeAbstractState(node);
+        State result = replay.state(node);
+        normalizePostReplayState(result, availability.at(node));
+        return result;
     };
 
-    try
+    const auto globalFinal = finalStates.find(global);
+    if (globalFinal == finalStates.end())
     {
-        const auto globalFinal = finalStates.find(global);
-        if (globalFinal == finalStates.end())
-        {
-            addRecord("initial", 0, global->getId(), EquationStatus::Fail,
-                      "global node has no final abstract state", "");
-        }
-        else
-        {
-            stateTrace_ = finalStates;
-            stateTrace_.insert_or_assign(global, topState());
-            for (const SVFStmt* statement : global->getSVFStmts())
-                handleSVFStatement(statement);
-            if (const auto* blackHole = SVFUtil::dyn_cast<ValVar>(
-                    svfir->getGNode(PAG::getPAG()->getBlkPtr())))
-                updateValue(blackHole, AD::Interval::top(),
-                            blackHoleAddressSet(), global);
-            const FunObjVar* root = roots.front();
-            const FunEntryICFGNode* rootEntry =
-                icfg->getFunEntryICFGNode(root);
-            for (const SVFVar* argument : rootEntry->getFormalParms())
-                updateInterval(argument, AD::Interval::top(), global);
-            const State replayedGlobal = state(global);
-            const bool included = replayedGlobal.isSubsetOf(
-                                      globalFinal->second) == AD::CheckResult::True;
-            addRecord("initial", 0, global->getId(),
-                      included ? EquationStatus::Pass : EquationStatus::Fail,
-                      included ? "initial state is covered"
-                               : "final global state does not cover initialization",
-                      "");
+        addRecord("initial", 0, global->getId(), EquationStatus::Fail,
+                  "global node has no final abstract state", "");
+    }
+    else
+    {
+        replay.stateTrace_ = finalStates;
+        replay.stateTrace_.insert_or_assign(global, replay.topState());
+        for (const SVFStmt* statement : global->getSVFStmts())
+            replay.handleSVFStatement(statement);
+        if (const auto* blackHole = SVFUtil::dyn_cast<ValVar>(
+                replay.svfir->getGNode(PAG::getPAG()->getBlkPtr())))
+            replay.updateValue(blackHole, AD::Interval::top(),
+                               replay.blackHoleAddressSet(), global);
+        const FunObjVar* root = roots.front();
+        const FunEntryICFGNode* rootEntry =
+            replay.icfg->getFunEntryICFGNode(root);
+        for (const SVFVar* argument : rootEntry->getFormalParms())
+            replay.updateInterval(argument, AD::Interval::top(), global);
+        State replayedGlobal = replay.state(global);
+        normalizePostReplayState(replayedGlobal, availability.at(global));
+        const bool included = replayedGlobal.isSubsetOf(globalFinal->second) ==
+                              AD::CheckResult::True;
+        if (!included)
+            traceFailure("initial", replayedGlobal, globalFinal->second);
+        addRecord("initial", 0, global->getId(),
+                  included ? EquationStatus::Pass : EquationStatus::Fail,
+                  included ? "initial state is covered"
+                           : "final global state does not cover initialization",
+                  "");
 
-            if (included)
-            {
-                const State replayedEntry = replayNode(rootEntry,
-                                                       replayedGlobal);
-                const auto entryFinal = finalStates.find(rootEntry);
-                const bool entryIncluded = entryFinal != finalStates.end() &&
-                    replayedEntry.isSubsetOf(entryFinal->second) ==
+        if (included)
+        {
+            const State replayedEntry = replayNode(rootEntry, replayedGlobal);
+            const auto entryFinal = finalStates.find(rootEntry);
+            const bool entryIncluded =
+                entryFinal != finalStates.end() &&
+                replayedEntry.isSubsetOf(entryFinal->second) ==
                     AD::CheckResult::True;
-                addRecord("entry", global->getId(), rootEntry->getId(),
-                          entryIncluded ? EquationStatus::Pass
-                                        : EquationStatus::Fail,
-                          entryIncluded ? "entry transfer is covered"
-                          : "final entry state does not cover root initialization",
-                          "");
-            }
-        }
-
-        std::vector<const ICFGEdge*> edges;
-        for (auto nodeIterator = icfg->begin(); nodeIterator != icfg->end();
-                ++nodeIterator)
-        {
-            for (const ICFGEdge* edge : nodeIterator->second->getOutEdges())
-                edges.push_back(edge);
-        }
-        std::sort(edges.begin(), edges.end(),
-                  [](const ICFGEdge* left, const ICFGEdge* right)
-        {
-            return std::make_tuple(left->getSrcNode()->getId(),
-                                   left->getDstNode()->getId(),
-                                   left->getEdgeKind()) <
-                   std::make_tuple(right->getSrcNode()->getId(),
-                                   right->getDstNode()->getId(),
-                                   right->getEdgeKind());
-        });
-
-        for (const ICFGEdge* edge : edges)
-        {
-            const ICFGNode* source = edge->getSrcNode();
-            const ICFGNode* target = edge->getDstNode();
-            const auto* conditional = SVFUtil::dyn_cast<IntraCFGEdge>(edge);
-            bool equation = conditional || SVFUtil::isa<CallCFGEdge>(edge);
-            if (SVFUtil::isa<RetCFGEdge>(edge))
-            {
-                equation = Options::HandleRecur() == TOP;
-                if (!equation)
-                {
-                    const auto* returnSite =
-                        SVFUtil::dyn_cast<RetICFGNode>(target);
-                    equation = returnSite &&
-                        finalStates.count(returnSite->getCallICFGNode()) != 0;
-                }
-            }
-            if (!equation)
-                continue;
-
-            const std::string kind = edgeKind(edge);
-            std::string discriminator =
-                ":edge=" + std::to_string(edge->getEdgeKind());
-            if (conditional && conditional->getCondition())
-                discriminator += ":condition=" +
-                    std::to_string(conditional->getCondition()->getId()) +
-                    ":value=" +
-                    std::to_string(conditional->getSuccessorCondValue());
-            const auto sourceFinal = finalStates.find(source);
-            if (sourceFinal == finalStates.end())
-            {
-                addRecord(kind, source->getId(), target->getId(),
-                          EquationStatus::Unreachable,
-                          "source has no final abstract state", discriminator);
-                continue;
-            }
-            State incoming = sourceFinal->second;
-            if (conditional && conditional->getCondition())
-            {
-                assumeBranch(conditional, incoming);
-                collectBranchRefinement(conditional, incoming);
-            }
-            if (incoming.isBottom())
-            {
-                addRecord(kind, source->getId(), target->getId(),
-                          EquationStatus::Infeasible,
-                          "edge assumption is bottom", discriminator);
-                continue;
-            }
-            const auto targetFinal = finalStates.find(target);
-            if (targetFinal == finalStates.end())
-            {
-                addRecord(kind, source->getId(), target->getId(),
-                          EquationStatus::Fail,
-                          "feasible edge target has no final abstract state",
-                          discriminator);
-                continue;
-            }
-            const State replayed = replayNode(target, incoming);
-            const bool included = replayed.isSubsetOf(targetFinal->second) ==
-                                  AD::CheckResult::True;
-            addRecord(kind, source->getId(), target->getId(),
-                      included ? EquationStatus::Pass : EquationStatus::Fail,
-                      included ? "replayed transfer is covered"
-                               : "replayed transfer is not included in final state",
-                      discriminator);
+            if (!entryIncluded && entryFinal != finalStates.end())
+                traceFailure("entry", replayedEntry, entryFinal->second);
+            addRecord(
+                "entry", global->getId(), rootEntry->getId(),
+                entryIncluded ? EquationStatus::Pass : EquationStatus::Fail,
+                entryIncluded
+                    ? "entry transfer is covered"
+                    : "final entry state does not cover root initialization",
+                "");
         }
     }
-    catch (...)
+
+    std::vector<const ICFGEdge*> edges;
+    for (auto nodeIterator = icfg->begin(); nodeIterator != icfg->end();
+         ++nodeIterator)
     {
-        restore();
-        throw;
+        for (const ICFGEdge* edge : nodeIterator->second->getOutEdges())
+            edges.push_back(edge);
     }
-    restore();
+    std::sort(edges.begin(), edges.end(),
+              [](const ICFGEdge* left, const ICFGEdge* right) {
+                  return std::make_tuple(left->getSrcNode()->getId(),
+                                         left->getDstNode()->getId(),
+                                         left->getEdgeKind()) <
+                         std::make_tuple(right->getSrcNode()->getId(),
+                                         right->getDstNode()->getId(),
+                                         right->getEdgeKind());
+              });
+
+    for (const ICFGEdge* edge : edges)
+    {
+        if (!isEquationEdge(edge, finalStates))
+            continue;
+        const ICFGNode* source = edge->getSrcNode();
+        const ICFGNode* target = edge->getDstNode();
+        const auto* conditional = SVFUtil::dyn_cast<IntraCFGEdge>(edge);
+        const std::string kind = edgeKind(edge);
+        std::string discriminator =
+            ":edge=" + std::to_string(edge->getEdgeKind());
+        if (conditional && conditional->getCondition())
+            discriminator +=
+                ":condition=" +
+                std::to_string(conditional->getCondition()->getId()) +
+                ":value=" +
+                std::to_string(conditional->getSuccessorCondValue());
+        // TOP recursion is represented by a conservative summary at the
+        // caller.  Its body equations are intentionally absent from this
+        // configured analysis and must not be mistaken for missing states.
+        const bool summarizedRecursiveBody =
+            Options::HandleRecur() == TOP &&
+            ((source->getFun() && replay.isRecursiveFun(source->getFun())) ||
+             (target->getFun() && replay.isRecursiveFun(target->getFun())));
+        if (summarizedRecursiveBody)
+        {
+            addRecord(
+                kind, source->getId(), target->getId(),
+                EquationStatus::Unreachable,
+                "recursive body is replaced by the configured top summary",
+                discriminator);
+            continue;
+        }
+        const auto sourceFinal = finalStates.find(source);
+        if (sourceFinal == finalStates.end())
+        {
+            addRecord(kind, source->getId(), target->getId(),
+                      EquationStatus::Unreachable,
+                      "source has no final abstract state", discriminator);
+            continue;
+        }
+        State incoming = sourceFinal->second;
+        if (conditional && conditional->getCondition())
+        {
+            replay.assumeBranch(conditional, incoming);
+            replay.collectBranchRefinement(conditional, incoming);
+        }
+        if (incoming.isBottom())
+        {
+            addRecord(kind, source->getId(), target->getId(),
+                      EquationStatus::Infeasible, "edge assumption is bottom",
+                      discriminator);
+            continue;
+        }
+        const auto targetFinal = finalStates.find(target);
+        if (targetFinal == finalStates.end())
+        {
+            if (std::getenv("SVF_AE_TRACE_POST_FAILURE"))
+                std::cerr << "AE Post failure missing target "
+                          << source->getId() << ':' << target->getId()
+                          << " incoming: " << incoming.toString() << '\n';
+            addRecord(kind, source->getId(), target->getId(),
+                      EquationStatus::Fail,
+                      "feasible edge target has no final abstract state",
+                      discriminator);
+            continue;
+        }
+        const State replayed = replayNode(target, incoming);
+        const bool included =
+            replayed.isSubsetOf(targetFinal->second) == AD::CheckResult::True;
+        if (!included)
+            traceFailure(kind + ":" + std::to_string(source->getId()) + ":" +
+                             std::to_string(target->getId()),
+                         replayed, targetFinal->second);
+        addRecord(kind, source->getId(), target->getId(),
+                  included ? EquationStatus::Pass : EquationStatus::Fail,
+                  included ? "replayed transfer is covered"
+                           : "replayed transfer is not included in final state",
+                  discriminator);
+    }
     std::sort(records.begin(), records.end(),
               [](const EquationRecord& left, const EquationRecord& right)
     {

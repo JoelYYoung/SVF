@@ -425,6 +425,16 @@ void AbstractInterpretation::assignRelationalValue(
     destination.setAddressSet(variable, addresses);
 }
 
+void AbstractInterpretation::recordRelationalDependency(AD::Variable,
+                                                        AD::Variable)
+{
+}
+
+void AbstractInterpretation::recordRelationalSummary(AD::Variable, const State&,
+                                                     const ICFGNode*)
+{
+}
+
 void AbstractInterpretation::assignRelationalStore(
     const ValVar* source, AD::Variable content, const ICFGNode* node)
 {
@@ -546,7 +556,7 @@ void AbstractInterpretation::materializeValue(State&, const ValVar*,
 }
 
 void AbstractInterpretation::materializeRelations(
-    State&, const std::vector<AD::Variable>&)
+    State&, const std::vector<AD::Variable>&, const ICFGNode*)
 {
 }
 
@@ -949,7 +959,7 @@ void AbstractInterpretation::assumeBranch(const IntraCFGEdge* edge,
             const auto rhs = expressionFor(comparison->getOpVar(1));
             if (lhs && rhs)
             {
-                materializeRelations(denseState, relationVariables);
+                materializeRelations(denseState, relationVariables, source);
                 const bool taken = edge->getSuccessorCondValue() != 0;
                 AD::ConstraintKind kind = AD::ConstraintKind::Equal;
                 switch (predicate)

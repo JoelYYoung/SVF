@@ -24,6 +24,7 @@
 #ifndef SVF_AE_SPARSE_ABSTRACT_INTERPRETATION_H
 #define SVF_AE_SPARSE_ABSTRACT_INTERPRETATION_H
 
+#include <map>
 #include <memory>
 #include <optional>
 #include <set>
@@ -76,6 +77,12 @@ protected:
     void resetAbstractState(const ICFGNode* node) override;
     void finalizeAbstractState(const ICFGNode* node) override;
     bool mergeStatesFromPredecessors(const ICFGNode* node) override;
+    State reconstructPostState(
+        const ICFGNode* node,
+        const std::set<AbstractDomain::Variable>& availableScalars) override;
+    void normalizePostReplayState(State& state,
+                                  const std::set<AbstractDomain::Variable>&
+                                      availableScalars) const override;
 
     std::unique_ptr<AbstractDomain::AbstractDomain> cloneCycleHeadState(
         const ICFGCycleWTO* cycle) override;
@@ -89,8 +96,8 @@ protected:
     void materializeValue(State& state, const ValVar* value,
                           const ICFGNode* node) override;
     void materializeRelations(
-        State& state,
-        const std::vector<AbstractDomain::Variable>& variables) override;
+        State& state, const std::vector<AbstractDomain::Variable>& variables,
+        const ICFGNode* node) override;
     State& scalarTransferState(const ICFGNode* node) override;
     State phiAlternativeState(const ICFGNode* predecessor) override;
     void assignRelationalValue(
@@ -98,6 +105,11 @@ protected:
         const AbstractDomain::LinearExpression& expression,
         const AbstractDomain::AddressSet& addresses,
         const ICFGNode* node) override;
+    void recordRelationalDependency(AbstractDomain::Variable target,
+                                    AbstractDomain::Variable source) override;
+    void recordRelationalSummary(AbstractDomain::Variable target,
+                                 const State& summary,
+                                 const ICFGNode* node) override;
     void assignRelationalStore(
         const ValVar* source, AbstractDomain::Variable content,
         const ICFGNode* node) override;
@@ -126,8 +138,21 @@ protected:
         State& state, const RetICFGNode* returnSite) const;
     void applyScalarRefinement(State& state, const State& checkpoint);
     void scatterCycleValues(const ICFGCycleWTO* cycle, const State& state);
+    void initializeScalarAvailability();
+    std::vector<AbstractDomain::Variable> carrierDependencyClosure(
+        const std::vector<AbstractDomain::Variable>& seeds) const;
+    void materializeScalarDefinitions(
+        State& state, const std::vector<AbstractDomain::Variable>& seeds,
+        const ICFGNode* node) const;
 
     Map<const ICFGNode*, State> refinementTrace_;
+    Map<const ICFGNode*, std::set<AbstractDomain::Variable>>
+        scalarAvailability_;
+    std::map<AbstractDomain::Variable, std::set<AbstractDomain::Variable>>
+        scalarDependencies_;
+    std::map<AbstractDomain::Variable, State> scalarDefinitions_;
+    std::map<AbstractDomain::Variable, std::pair<const ICFGNode*, State>>
+        pendingDefinitionHistory_;
     std::optional<State> scalarState_;
 };
 

@@ -44,6 +44,7 @@
 #include "SVFIR/SVFIR.h"
 #include "Util/SVFBugReport.h"
 #include "Util/WorkList.h"
+#include <set>
 
 namespace SVF
 {
@@ -379,7 +380,7 @@ protected:
 
     /// Handle a function body via worklist-driven WTO traversal starting from
     /// funEntry
-    void handleFunction(const ICFGNode* funEntry, const CallICFGNode* caller);
+    bool handleFunction(const ICFGNode* funEntry, const CallICFGNode* caller);
 
     /// Handle an ICFG node: execute statements; return true if state changed
     bool handleICFGNode(const ICFGNode* node);
@@ -467,6 +468,11 @@ protected:
         const AbstractDomain::LinearExpression& expression,
         const AbstractDomain::AddressSet& addresses,
         const ICFGNode* node);
+    virtual void recordRelationalDependency(AbstractDomain::Variable target,
+                                            AbstractDomain::Variable source);
+    virtual void recordRelationalSummary(AbstractDomain::Variable target,
+                                         const State& summary,
+                                         const ICFGNode* node);
     virtual void assignRelationalStore(
         const ValVar* source, AbstractDomain::Variable content,
         const ICFGNode* node);
@@ -494,8 +500,8 @@ protected:
     virtual void materializeValue(State& state, const ValVar* value,
                                   const ICFGNode* node);
     virtual void materializeRelations(
-        State& state,
-        const std::vector<AbstractDomain::Variable>& variables);
+        State& state, const std::vector<AbstractDomain::Variable>& variables,
+        const ICFGNode* node);
     void forgetValue(State& state,
                      AbstractDomain::Variable variable) const;
     void assumeBranch(const IntraCFGEdge* edge, State& state);
@@ -525,6 +531,14 @@ protected:
     void writeQueryLedger() const;
 
     bool postCheckEnabled() const;
+    /// Reconstruct the semantic post-state exposed to the dense-equation
+    /// checker. Sparse solvers materialize only scalars available at `node`.
+    virtual State reconstructPostState(
+        const ICFGNode* node,
+        const std::set<AbstractDomain::Variable>& availableScalars);
+    virtual void normalizePostReplayState(
+        State& state,
+        const std::set<AbstractDomain::Variable>& availableScalars) const;
     void verifyPostFixpoint();
 
     bool shouldApplyNarrowing(const FunObjVar* fun);

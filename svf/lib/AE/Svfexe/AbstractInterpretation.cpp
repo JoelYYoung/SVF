@@ -500,7 +500,14 @@ void AbstractInterpretation::analyzeFromAllProgEntries()
             updateInterval(argument, AD::Interval::top(), globalNode);
         }
         copyAbstractState(globalNode, funEntry);
-        handleFunction(funEntry, nullptr);
+        // A later call site can enlarge a context-insensitive callee summary.
+        // Revisit the root until every caller and its downstream states cover
+        // that enlarged summary.  Loop/recursion WTO handling remains
+        // responsible for convergence; an arbitrary iteration cap would not
+        // establish a post-fixpoint.
+        while (handleFunction(funEntry, nullptr))
+        {
+        }
     }
 }
 
@@ -915,12 +922,21 @@ bool AbstractInterpretation::handleICFGNode(const ICFGNode* node)
  * so the traversal order is exactly the WTO order — each node is
  * visited once, and cycles are handled as whole components.
  */
-void AbstractInterpretation::handleFunction(const ICFGNode* funEntry,
-        const CallICFGNode* caller)
+bool AbstractInterpretation::handleFunction(const ICFGNode* funEntry,
+                                            const CallICFGNode* caller)
 {
     auto it = preAnalysis->getFuncToWTO().find(funEntry->getFun());
     assert(it != preAnalysis->getFuncToWTO().end() &&
            "Missing WTO for function");
+
+    Map<const ICFGNode*, State> before;
+    for (auto nodeIterator = icfg->begin(); nodeIterator != icfg->end();
+         ++nodeIterator)
+    {
+        const ICFGNode* node = nodeIterator->second;
+        if (node->getFun() == funEntry->getFun() && hasAbsState(node))
+            before.emplace(node, state(node));
+    }
 
     // Push all top-level WTO components into the worklist in WTO order
     FIFOWorkList<const ICFGWTOComp*> worklist(it->second->getWTOComponents());
@@ -943,6 +959,19 @@ void AbstractInterpretation::handleFunction(const ICFGNode* funEntry,
                 handleLoopOrRecursion(cycle, caller);
         }
     }
+    for (auto nodeIterator = icfg->begin(); nodeIterator != icfg->end();
+         ++nodeIterator)
+    {
+        const ICFGNode* node = nodeIterator->second;
+        if (node->getFun() != funEntry->getFun() || !hasAbsState(node))
+            continue;
+        const auto previous = before.find(node);
+        if (previous == before.end() ||
+            state(node).isEquivalentTo(previous->second) !=
+                AD::CheckResult::True)
+            return true;
+    }
+    return false;
 }
 
 void AbstractInterpretation::handleCallSite(const ICFGNode* node)
@@ -1244,6 +1273,7 @@ void AbstractInterpretation::updateStateOnSelect(const SelectStmt* select)
         }
         alternative.assignNumeric(targetVariable,
                                   AD::LinearExpression(sourceVariable));
+        recordRelationalDependency(targetVariable, sourceVariable);
         alternative.setAddressSet(targetVariable,
                                   alternative.addressSet(sourceVariable));
         if (!relationalSelect)
@@ -1257,6 +1287,7 @@ void AbstractInterpretation::updateStateOnSelect(const SelectStmt* select)
             relationalSelect->numerical().relationalClosure({targetVariable}));
         scalarTransferState(node).numerical().meetWith(
             relationalSelect->numerical());
+        recordRelationalSummary(targetVariable, *relationalSelect, node);
     }
 }
 
@@ -1294,10 +1325,17 @@ void AbstractInterpretation::updateStateOnPhi(const PhiStmt* phi)
                 // slot; retain its guard for ordinary reads, but do not merge
                 // the undefined alternative into the function's defined
                 // return values.
-                interval.joinWith(
+                const AD::Interval operandInterval =
                     isFormalReturn
-                    ? getDefinedInterval(phi->getOpVar(i), opICFGNode)
-                    : getInterval(phi->getOpVar(i), opICFGNode));
+                        ? getDefinedInterval(phi->getOpVar(i), opICFGNode)
+                        : getInterval(phi->getOpVar(i), opICFGNode);
+                interval.joinWith(operandInterval);
+                if (std::getenv("SVF_AE_TRACE_PHI_RELATIONS"))
+                    SVFUtil::outs()
+                        << "AE_PHI_OPERAND target=" << phi->getRes()->getId()
+                        << " source=" << phi->getOpVar(i)->getId()
+                        << " node=" << opICFGNode->getId()
+                        << " interval=" << operandInterval.toString() << '\n';
                 addresses.joinWith(getAddressSet(phi->getOpVar(i),
                                                  opICFGNode));
 
@@ -1321,6 +1359,8 @@ void AbstractInterpretation::updateStateOnPhi(const PhiStmt* phi)
                             alternative.assignNumeric(
                                 targetVariable,
                                 AD::LinearExpression(sourceVariable));
+                            recordRelationalDependency(targetVariable,
+                                                       sourceVariable);
                             alternative.setAddressSet(
                                 targetVariable,
                                 alternative.addressSet(sourceVariable));
@@ -1349,6 +1389,11 @@ void AbstractInterpretation::updateStateOnPhi(const PhiStmt* phi)
             }
         }
     }
+    if (std::getenv("SVF_AE_TRACE_PHI_RELATIONS"))
+        SVFUtil::outs()
+            << "AE_PHI_INTERVAL target="
+            << adapter_.variable(*SVFUtil::cast<ValVar>(phi->getRes())).id()
+            << " interval=" << interval.toString() << '\n';
     updateValue(phi->getRes(), interval, addresses, icfgNode);
     if (relationalPhi)
     {
@@ -1360,6 +1405,7 @@ void AbstractInterpretation::updateStateOnPhi(const PhiStmt* phi)
                 relationalPhi->numerical().relationalClosure({targetVariable}));
             scalarTransferState(icfgNode).numerical().meetWith(
                 relationalPhi->numerical());
+            recordRelationalSummary(targetVariable, *relationalPhi, icfgNode);
         }
     }
 }
@@ -1401,6 +1447,8 @@ void AbstractInterpretation::updateStateOnCall(const CallPE* callPE)
                         alternative.assignNumeric(
                             targetVariable,
                             AD::LinearExpression(sourceVariable));
+                        recordRelationalDependency(targetVariable,
+                                                   sourceVariable);
                         alternative.setAddressSet(
                             targetVariable,
                             alternative.addressSet(sourceVariable));
@@ -1424,6 +1472,7 @@ void AbstractInterpretation::updateStateOnCall(const CallPE* callPE)
                 relationalCall->numerical().relationalClosure({targetVariable}));
             scalarTransferState(node).numerical().meetWith(
                 relationalCall->numerical());
+            recordRelationalSummary(targetVariable, *relationalCall, node);
         }
     }
 }
@@ -1441,9 +1490,8 @@ void AbstractInterpretation::updateStateOnRet(const RetPE* retPE)
     if (!target || !source || !adapter_.contains(*target) ||
             !adapter_.contains(*source))
         return;
-    State& transferState = scalarTransferState(node);
     const AD::Variable sourceVariable = adapter_.variable(*source);
-    if (!transferState.numericalMayBeUninitialized(sourceVariable))
+    if (!getDefinedInterval(source, node).isBottom())
         assignRelationalValue(target, AD::LinearExpression(sourceVariable),
                               getAddressSet(source, node), node);
 }
@@ -1517,6 +1565,13 @@ void AbstractInterpretation::updateStateOnBinary(const BinaryOPStmt* binary)
     default:
         assert(false && "undefined binary: ");
     }
+    if (std::getenv("SVF_AE_TRACE_AFFINE_TRANSFER"))
+        std::cerr << "AE affine candidate node=" << node->getId()
+                  << " lhs=" << lhs.toString() << " rhs=" << rhs.toString()
+                  << " result=" << result.toString() << " range="
+                  << utils->getRangeLimitFromType(binary->getRes()->getType())
+                         .toString()
+                  << '\n';
 
     // Keep an affine equality when the LLVM integer operation cannot wrap
     // under the incoming bounds. This is the point where Octagon and
@@ -1529,7 +1584,6 @@ void AbstractInterpretation::updateStateOnBinary(const BinaryOPStmt* binary)
             result.isSubsetOf(
                 utils->getRangeLimitFromType(binary->getRes()->getType())))
     {
-        State& transferState = scalarTransferState(node);
         const auto expressionFor = [&](const SVFVar* operand)
             -> std::optional<AD::LinearExpression>
         {
@@ -1538,7 +1592,7 @@ void AbstractInterpretation::updateStateOnBinary(const BinaryOPStmt* binary)
                 if (adapter_.contains(*value))
                 {
                     const AD::Variable variable = adapter_.variable(*value);
-                    if (transferState.numericalMayBeUninitialized(variable))
+                    if (getDefinedInterval(value, node).isBottom())
                         return std::nullopt;
                     return AD::LinearExpression(variable);
                 }
@@ -1879,12 +1933,11 @@ void AbstractInterpretation::updateStateOnCopy(const CopyStmt* copy)
     {
         const auto* lhsValue = SVFUtil::dyn_cast<ValVar>(lhsVar);
         const auto* rhsValue = SVFUtil::dyn_cast<ValVar>(rhsVar);
-        State& transferState = scalarTransferState(node);
         if (lhsValue && rhsValue && adapter_.contains(*lhsValue) &&
                 adapter_.contains(*rhsValue))
         {
             const AD::Variable source = adapter_.variable(*rhsValue);
-            if (!transferState.numericalMayBeUninitialized(source))
+            if (!getDefinedInterval(rhsValue, node).isBottom())
             {
                 assignRelationalValue(lhsValue, AD::LinearExpression(source),
                                       rhsAddresses, node);
