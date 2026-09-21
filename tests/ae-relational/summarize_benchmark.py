@@ -72,6 +72,10 @@ def accepted(row: dict[str, str]) -> bool:
     )
 
 
+def post_invalid(row: dict[str, str]) -> bool:
+    return row["post_fail"] != "0" or row["post_unsupported"] != "0"
+
+
 def coverage(row: dict[str, str]) -> tuple[str, ...]:
     return tuple(row[field] for field in COVERAGE)
 
@@ -258,13 +262,13 @@ def main() -> int:
                 "attempts": len(phase_rows),
                 "completed": sum(row["termination"] == "completed" for row in phase_rows),
                 "accepted": sum(accepted(row) for row in phase_rows),
-                "post_invalid": sum(
-                    row["termination"] == "completed" and not accepted(row)
+                "post_invalid": sum(post_invalid(row) for row in phase_rows),
+                "timeouts": sum(row["termination"] == "timeout" for row in phase_rows),
+                "other_failures": sum(
+                    row["termination"] not in ("completed", "timeout")
+                    and not post_invalid(row)
                     for row in phase_rows
                 ),
-                "timeouts": sum(row["termination"] == "timeout" for row in phase_rows),
-                "other_failures": sum(row["termination"] not in ("completed", "timeout")
-                                      for row in phase_rows),
                 "elapsed_sum_s": f"{sum(elapsed):.9g}",
                 "cpu_sum_s": f"{sum(cpu):.9g}",
                 "peak_rss_kb": f"{max(rss):.9g}" if rss else "NA",
