@@ -44,6 +44,20 @@ def create_attempt(root, label):
 
 
 def _group_exists(process_group):
+    if platform.system() == "Linux" and Path("/proc").is_dir():
+        for entry in Path("/proc").iterdir():
+            if not entry.name.isdigit():
+                continue
+            try:
+                text = (entry / "stat").read_text()
+                # comm is parenthesized and may contain spaces or parentheses.
+                fields = text[text.rfind(")") + 2:].split()
+                state, group = fields[0], int(fields[2])
+            except (FileNotFoundError, PermissionError, IndexError, ValueError):
+                continue
+            if group == process_group and state != "Z":
+                return True
+        return False
     try:
         os.killpg(process_group, 0)
         return True

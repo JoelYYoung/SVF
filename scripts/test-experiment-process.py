@@ -17,6 +17,15 @@ HELPER = runpy.run_path(str(HERE / "experiment_process.py"))
 
 
 def process_exists(pid):
+    stat = Path(f"/proc/{pid}/stat")
+    if stat.exists():
+        try:
+            text = stat.read_text()
+            fields = text[text.rfind(")") + 2:].split()
+            if fields and fields[0] == "Z":
+                return False
+        except FileNotFoundError:
+            return False
     try:
         os.kill(pid, 0)
         return True
