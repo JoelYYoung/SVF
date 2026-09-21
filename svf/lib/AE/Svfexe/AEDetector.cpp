@@ -45,6 +45,41 @@ bool upperAtLeast(const AD::Interval& interval, u32_t size)
     return !interval.upper().isFinite() ||
            interval.upper().value() >= AD::Rational(size);
 }
+
+std::vector<u32_t> nullDerefArgumentIndices(const CallICFGNode* call)
+{
+    std::vector<u32_t> result;
+    for (const std::string& annotation :
+            ExtAPI::getExtAPI()->getExtFuncAnnotations(call->getCalledFunction()))
+    {
+        if (annotation.find("MEMCPY") != std::string::npos)
+        {
+            if (call->arg_size() < 4)
+            {
+                result.push_back(0);
+                result.push_back(1);
+            }
+            else
+            {
+                result.push_back(1);
+                result.push_back(2);
+                result.push_back(3);
+                result.push_back(4);
+            }
+        }
+        else if (annotation.find("MEMSET") != std::string::npos)
+            result.push_back(0);
+        else if (annotation.find("STRCPY") != std::string::npos ||
+                 annotation.find("STRCAT") != std::string::npos)
+        {
+            result.push_back(0);
+            result.push_back(1);
+        }
+    }
+    std::sort(result.begin(), result.end());
+    result.erase(std::unique(result.begin(), result.end()), result.end());
+    return result;
+}
 } // namespace
 /**
  * @brief Detects buffer overflow issues within a given ICFG node.
@@ -67,6 +102,9 @@ void BufOverflowDetector::detect(const ICFGNode* node)
             if (const GepStmt* gep = SVFUtil::dyn_cast<GepStmt>(stmt))
             {
                 SVFIR* svfir = PAG::getPAG();
+                bool unsupported = false;
+                bool mayOverflow = false;
+                bool checkedTarget = false;
 
                 // Update the GEP object offset from its base
                 const AD::AddressSet lhsVal =
@@ -76,22 +114,31 @@ void BufOverflowDetector::detect(const ICFGNode* node)
                 updateGepObjOffsetFromBase(node, lhsVal, rhsVal,
                                            ae.getGepByteOffset(gep));
 
-                if (rhsVal.hasUnknownObject())
-                    continue;
-                for (AD::Location location : rhsVal)
+                if (rhsVal.isBottom() || !rhsVal.isFinite() ||
+                        rhsVal.hasUnknownObject())
+                    unsupported = true;
+                else for (AD::Location location : rhsVal)
                 {
                     const ObjVar* object = ae.objectAt(location);
                     if (!object)
+                    {
+                        unsupported = true;
                         continue;
+                    }
                     NodeID objId = object->getId();
                     const BaseObjVar* baseObject = svfir->getBaseObject(objId);
                     if (!baseObject)
+                    {
+                        unsupported = true;
                         continue;
+                    }
                     u32_t size = 0;
+                    bool sizeKnown = false;
                     // like `int arr[10]` which has constant size before runtime
                     if (baseObject->isConstantByteSize())
                     {
                         size = baseObject->getByteSizeOfObj();
+                        sizeKnown = true;
                     }
                     else
                     {
@@ -99,25 +146,45 @@ void BufOverflowDetector::detect(const ICFGNode* node)
                         // only be known in runtime
                         const ICFGNode* addrNode = baseObject->getICFGNode();
                         if (!addrNode)
+                        {
+                            unsupported = true;
                             continue;
+                        }
                         for (const SVFStmt* stmt2 : addrNode->getSVFStmts())
                         {
                             if (const AddrStmt* addrStmt =
                                         SVFUtil::dyn_cast<AddrStmt>(stmt2))
                             {
                                 size = ae.getAllocaInstByteSize(addrStmt);
+                                sizeKnown = true;
                             }
                         }
                     }
+
+                    if (!sizeKnown)
+                        unsupported = true;
+                    checkedTarget = true;
 
                     // Calculate access offset and check for potential overflow
                     AD::Interval accessOffset = getAccessOffset(objId, gep);
                     if (upperAtLeast(accessOffset, size))
                     {
+                        mayOverflow = true;
                         AEException bug(stmt->toString());
                         addBugToReporter(bug, stmt->getICFGNode());
                     }
                 }
+                const auto outcome = mayOverflow
+                    ? AbstractInterpretation::QueryOutcome::May
+                    : (unsupported || !checkedTarget
+                       ? AbstractInterpretation::QueryOutcome::Unsupported
+                       : AbstractInterpretation::QueryOutcome::Safe);
+                ae.recordQuery(BUF_OVERFLOW, node, gep->getRHSVar(),
+                               "gep-bounds", outcome,
+                               mayOverflow ? "access may exceed object bounds"
+                               : (unsupported || !checkedTarget
+                                  ? "object or object size is unsupported"
+                                  : "all target offsets are in bounds"));
             }
         }
     }
@@ -128,6 +195,78 @@ void BufOverflowDetector::detect(const ICFGNode* node)
         if (SVFUtil::isExtCall(callNode->getCalledFunction()))
         {
             detectExtAPI(callNode);
+        }
+    }
+}
+
+void BufOverflowDetector::enumerateQueries()
+{
+    auto& ae = AbstractInterpretation::getAEInstance();
+    ICFG* graph = PAG::getPAG()->getICFG();
+    for (auto iterator = graph->begin(); iterator != graph->end(); ++iterator)
+    {
+        const ICFGNode* node = iterator->second;
+        if (const auto* call = SVFUtil::dyn_cast<CallICFGNode>(node))
+        {
+            const FunObjVar* function = call->getCalledFunction();
+            if (!function)
+                continue;
+            const std::string name = function->getName();
+            if ((name == "SAFE_BUFACCESS" || name == "UNSAFE_BUFACCESS") &&
+                    call->arg_size() >= 2)
+                ae.registerQuery(BUF_OVERFLOW, call, call->getArgument(0),
+                                 "stub-bounds");
+            if (!SVFUtil::isExtCall(function))
+                continue;
+
+            AbsExtAPI::ExtAPIType extType = AbsExtAPI::UNCLASSIFIED;
+            for (const std::string& annotation :
+                    ExtAPI::getExtAPI()->getExtFuncAnnotations(function))
+            {
+                if (annotation.find("MEMCPY") != std::string::npos)
+                    extType = AbsExtAPI::MEMCPY;
+                if (annotation.find("MEMSET") != std::string::npos)
+                    extType = AbsExtAPI::MEMSET;
+                if (annotation.find("STRCPY") != std::string::npos)
+                    extType = AbsExtAPI::STRCPY;
+                if (annotation.find("STRCAT") != std::string::npos)
+                    extType = AbsExtAPI::STRCAT;
+            }
+
+            if (extType == AbsExtAPI::MEMCPY ||
+                    extType == AbsExtAPI::MEMSET)
+            {
+                auto rule = extAPIBufOverflowCheckRules.find(name);
+                if (rule == extAPIBufOverflowCheckRules.end())
+                {
+                    ae.registerQuery(BUF_OVERFLOW, call, nullptr,
+                                     "ext-bounds-unsupported-rule");
+                    continue;
+                }
+                for (const auto& argument : rule->second)
+                {
+                    const ValVar* pointer = argument.first < call->arg_size()
+                                            ? call->getArgument(argument.first)
+                                            : nullptr;
+                    ae.registerQuery(
+                        BUF_OVERFLOW, call, pointer,
+                        "ext-bounds-arg-" +
+                        std::to_string(argument.first) + "-len-" +
+                        std::to_string(argument.second));
+                }
+            }
+            else if ((extType == AbsExtAPI::STRCPY ||
+                      extType == AbsExtAPI::STRCAT) && call->arg_size() >= 1)
+                ae.registerQuery(BUF_OVERFLOW, call, call->getArgument(0),
+                                 "ext-string-destination");
+            continue;
+        }
+
+        for (const SVFStmt* statement : node->getSVFStmts())
+        {
+            if (const auto* gep = SVFUtil::dyn_cast<GepStmt>(statement))
+                ae.registerQuery(BUF_OVERFLOW, node, gep->getRHSVar(),
+                                 "gep-bounds");
         }
     }
 }
@@ -158,6 +297,11 @@ void BufOverflowDetector::handleStubFunctions(const SVF::CallICFGNode* callNode)
         }
         const ValVar* arg0Val = callNode->getArgument(0);
         bool isSafe = canSafelyAccessMemory(arg0Val, val, callNode);
+        ae.recordQuery(BUF_OVERFLOW, callNode, arg0Val, "stub-bounds",
+                       isSafe ? AbstractInterpretation::QueryOutcome::Safe
+                              : AbstractInterpretation::QueryOutcome::May,
+                       isSafe ? "access is in bounds"
+                              : "access may exceed object bounds");
         if (isSafe)
         {
             SVFUtil::outs()
@@ -187,6 +331,11 @@ void BufOverflowDetector::handleStubFunctions(const SVF::CallICFGNode* callNode)
         }
         const ValVar* arg0Val = callNode->getArgument(0);
         bool isSafe = canSafelyAccessMemory(arg0Val, val, callNode);
+        ae.recordQuery(BUF_OVERFLOW, callNode, arg0Val, "stub-bounds",
+                       isSafe ? AbstractInterpretation::QueryOutcome::Safe
+                              : AbstractInterpretation::QueryOutcome::May,
+                       isSafe ? "access is in bounds"
+                              : "access may exceed object bounds");
         if (!isSafe)
         {
             SVFUtil::outs()
@@ -278,6 +427,10 @@ void BufOverflowDetector::detectExtAPI(const CallICFGNode* call)
         if (extAPIBufOverflowCheckRules.count(
                     call->getCalledFunction()->getName()) == 0)
         {
+            ae.recordQuery(BUF_OVERFLOW, call, nullptr,
+                           "ext-bounds-unsupported-rule",
+                           AbstractInterpretation::QueryOutcome::Unsupported,
+                           "external API has no buffer-size rule");
             SVFUtil::errs()
                     << "Warning: " << call->getCalledFunction()->getName()
                     << " is not in the rules, please implement it\n";
@@ -288,11 +441,31 @@ void BufOverflowDetector::detectExtAPI(const CallICFGNode* call)
                 call->getCalledFunction()->getName());
         for (auto arg : args)
         {
+            const ValVar* argVar = arg.first < call->arg_size()
+                                   ? call->getArgument(arg.first) : nullptr;
+            if (arg.first >= call->arg_size() ||
+                    arg.second >= call->arg_size())
+            {
+                ae.recordQuery(
+                    BUF_OVERFLOW, call, argVar,
+                    "ext-bounds-arg-" + std::to_string(arg.first) +
+                    "-len-" + std::to_string(arg.second),
+                    AbstractInterpretation::QueryOutcome::Unsupported,
+                    "external API call does not match buffer-size rule");
+                continue;
+            }
             AD::Interval offset = AD::subtract(
                                       ae.getInterval(call->getArgument(arg.second), call),
                                       integerInterval(1));
-            const ValVar* argVar = call->getArgument(arg.first);
-            if (!canSafelyAccessMemory(argVar, offset, call))
+            const bool safe = canSafelyAccessMemory(argVar, offset, call);
+            ae.recordQuery(BUF_OVERFLOW, call, argVar,
+                           "ext-bounds-arg-" + std::to_string(arg.first) +
+                           "-len-" + std::to_string(arg.second),
+                           safe ? AbstractInterpretation::QueryOutcome::Safe
+                                : AbstractInterpretation::QueryOutcome::May,
+                           safe ? "access is in bounds"
+                                : "access may exceed object bounds");
+            if (!safe)
             {
                 AEException bug(call->toString());
                 addBugToReporter(bug, call);
@@ -304,6 +477,10 @@ void BufOverflowDetector::detectExtAPI(const CallICFGNode* call)
         if (extAPIBufOverflowCheckRules.count(
                     call->getCalledFunction()->getName()) == 0)
         {
+            ae.recordQuery(BUF_OVERFLOW, call, nullptr,
+                           "ext-bounds-unsupported-rule",
+                           AbstractInterpretation::QueryOutcome::Unsupported,
+                           "external API has no buffer-size rule");
             SVFUtil::errs()
                     << "Warning: " << call->getCalledFunction()->getName()
                     << " is not in the rules, please implement it\n";
@@ -314,11 +491,31 @@ void BufOverflowDetector::detectExtAPI(const CallICFGNode* call)
                 call->getCalledFunction()->getName());
         for (auto arg : args)
         {
+            const ValVar* argVar = arg.first < call->arg_size()
+                                   ? call->getArgument(arg.first) : nullptr;
+            if (arg.first >= call->arg_size() ||
+                    arg.second >= call->arg_size())
+            {
+                ae.recordQuery(
+                    BUF_OVERFLOW, call, argVar,
+                    "ext-bounds-arg-" + std::to_string(arg.first) +
+                    "-len-" + std::to_string(arg.second),
+                    AbstractInterpretation::QueryOutcome::Unsupported,
+                    "external API call does not match buffer-size rule");
+                continue;
+            }
             AD::Interval offset = AD::subtract(
                                       ae.getInterval(call->getArgument(arg.second), call),
                                       integerInterval(1));
-            const ValVar* argVar = call->getArgument(arg.first);
-            if (!canSafelyAccessMemory(argVar, offset, call))
+            const bool safe = canSafelyAccessMemory(argVar, offset, call);
+            ae.recordQuery(BUF_OVERFLOW, call, argVar,
+                           "ext-bounds-arg-" + std::to_string(arg.first) +
+                           "-len-" + std::to_string(arg.second),
+                           safe ? AbstractInterpretation::QueryOutcome::Safe
+                                : AbstractInterpretation::QueryOutcome::May,
+                           safe ? "access is in bounds"
+                                : "access may exceed object bounds");
+            if (!safe)
             {
                 AEException bug(call->toString());
                 addBugToReporter(bug, call);
@@ -327,7 +524,16 @@ void BufOverflowDetector::detectExtAPI(const CallICFGNode* call)
     }
     else if (extType == AbsExtAPI::STRCPY)
     {
-        if (!detectStrcpy(call))
+        const bool safe = detectStrcpy(call);
+        const ValVar* destination = call->arg_size() >= 1
+                                    ? call->getArgument(0) : nullptr;
+        ae.recordQuery(BUF_OVERFLOW, call, destination,
+                       "ext-string-destination",
+                       safe ? AbstractInterpretation::QueryOutcome::Safe
+                            : AbstractInterpretation::QueryOutcome::May,
+                       safe ? "destination is large enough"
+                            : "destination may be too small");
+        if (!safe)
         {
             AEException bug(call->toString());
             addBugToReporter(bug, call);
@@ -335,7 +541,16 @@ void BufOverflowDetector::detectExtAPI(const CallICFGNode* call)
     }
     else if (extType == AbsExtAPI::STRCAT)
     {
-        if (!detectStrcat(call))
+        const bool safe = detectStrcat(call);
+        const ValVar* destination = call->arg_size() >= 1
+                                    ? call->getArgument(0) : nullptr;
+        ae.recordQuery(BUF_OVERFLOW, call, destination,
+                       "ext-string-destination",
+                       safe ? AbstractInterpretation::QueryOutcome::Safe
+                            : AbstractInterpretation::QueryOutcome::May,
+                       safe ? "destination is large enough"
+                            : "destination may be too small");
+        if (!safe)
         {
             AEException bug(call->toString());
             addBugToReporter(bug, call);
@@ -599,6 +814,7 @@ bool BufOverflowDetector::canSafelyAccessMemory(const ValVar* value,
 
 void NullptrDerefDetector::detect(const ICFGNode* node)
 {
+    auto& ae = AbstractInterpretation::getAEInstance();
     if (SVFUtil::isa<CallICFGNode>(node))
     {
         // external API like memset(*dst, elem, sz)
@@ -618,7 +834,13 @@ void NullptrDerefDetector::detect(const ICFGNode* node)
                 // like llvm bitcode `p = gep p, idx`
                 // we check rhs p's all address are valid mem
                 const ValVar* rhs = gep->getRHSVar();
-                if (!canSafelyDerefPtr(rhs, node))
+                const bool safe = canSafelyDerefPtr(rhs, node);
+                ae.recordQuery(NULL_DEREF, node, rhs, "gep-address",
+                               safe ? AbstractInterpretation::QueryOutcome::Safe
+                                    : AbstractInterpretation::QueryOutcome::May,
+                               safe ? "all targets valid"
+                                    : "may be null, invalid, unknown, or freed");
+                if (!safe)
                 {
                     AEException bug(stmt->toString());
                     addBugToReporter(bug, stmt->getICFGNode());
@@ -633,12 +855,60 @@ void NullptrDerefDetector::detect(const ICFGNode* node)
                 // an unsafe address when the loaded value happens to be a
                 // valid pointer.
                 const ValVar* address = load->getRHSVar();
-                if (!canSafelyDerefPtr(address, node))
+                const bool safe = canSafelyDerefPtr(address, node);
+                ae.recordQuery(NULL_DEREF, node, address, "load-address",
+                               safe ? AbstractInterpretation::QueryOutcome::Safe
+                                    : AbstractInterpretation::QueryOutcome::May,
+                               safe ? "all targets valid"
+                                    : "may be null, invalid, unknown, or freed");
+                if (!safe)
                 {
                     AEException bug(stmt->toString());
                     addBugToReporter(bug, stmt->getICFGNode());
                 }
             }
+        }
+    }
+}
+
+void NullptrDerefDetector::enumerateQueries()
+{
+    auto& ae = AbstractInterpretation::getAEInstance();
+    ICFG* graph = PAG::getPAG()->getICFG();
+    for (auto iterator = graph->begin(); iterator != graph->end(); ++iterator)
+    {
+        const ICFGNode* node = iterator->second;
+        if (const auto* call = SVFUtil::dyn_cast<CallICFGNode>(node))
+        {
+            const FunObjVar* function = call->getCalledFunction();
+            if (!function)
+                continue;
+            const std::string name = function->getName();
+            if ((name == "SAFE_LOAD" || name == "UNSAFE_LOAD") &&
+                    call->arg_size() >= 1)
+                ae.registerQuery(NULL_DEREF, call, call->getArgument(0),
+                                 "stub-arg-0");
+            if (!SVFUtil::isExtCall(function))
+                continue;
+            for (u32_t argument : nullDerefArgumentIndices(call))
+            {
+                if (argument < call->arg_size())
+                    ae.registerQuery(NULL_DEREF, call,
+                                     call->getArgument(argument),
+                                     "ext-arg-" + std::to_string(argument));
+            }
+            continue;
+        }
+
+        for (const SVFStmt* statement : node->getSVFStmts())
+        {
+            if (const auto* gep = SVFUtil::dyn_cast<GepStmt>(statement))
+                ae.registerQuery(NULL_DEREF, node, gep->getRHSVar(),
+                                 "gep-address");
+            else if (const auto* load =
+                         SVFUtil::dyn_cast<LoadStmt>(statement))
+                ae.registerQuery(NULL_DEREF, node, load->getRHSVar(),
+                                 "load-address");
         }
     }
 }
@@ -659,6 +929,11 @@ void NullptrDerefDetector::handleStubFunctions(const CallICFGNode* callNode)
         // UNSAFE_LOAD(null)
         bool isSafe =
             canSafelyDerefPtr(arg0Val, callNode) && arg0Val->getId() != 0;
+        ae.recordQuery(NULL_DEREF, callNode, arg0Val, "stub-arg-0",
+                       isSafe ? AbstractInterpretation::QueryOutcome::Safe
+                              : AbstractInterpretation::QueryOutcome::May,
+                       isSafe ? "all targets valid"
+                              : "expected unsafe dereference");
         SVFUtil::outs() << "[UNSAFE_LOAD] node=" << callNode->getId()
                         << " arg0=" << arg0Val->getId() << " isSafe=" << isSafe
                         << "\n";
@@ -690,6 +965,11 @@ void NullptrDerefDetector::handleStubFunctions(const CallICFGNode* callNode)
         // UNSAFE_LOAD(null)ols
         bool isSafe =
             canSafelyDerefPtr(arg0Val, callNode) && arg0Val->getId() != 0;
+        ae.recordQuery(NULL_DEREF, callNode, arg0Val, "stub-arg-0",
+                       isSafe ? AbstractInterpretation::QueryOutcome::Safe
+                              : AbstractInterpretation::QueryOutcome::May,
+                       isSafe ? "all targets valid"
+                              : "unexpected unsafe dereference");
         if (isSafe)
         {
             SVFUtil::outs()
@@ -712,57 +992,22 @@ void NullptrDerefDetector::handleStubFunctions(const CallICFGNode* callNode)
 void NullptrDerefDetector::detectExtAPI(const CallICFGNode* call)
 {
     assert(call->getCalledFunction() && "FunObjVar* is nullptr");
-    // get ext type
-    // get argument index which are nullptr deref checkpoints for extapi
-    std::vector<u32_t> tmp_args;
-    for (const std::string& annotation :
-            ExtAPI::getExtAPI()->getExtFuncAnnotations(call->getCalledFunction()))
-    {
-        if (annotation.find("MEMCPY") != std::string::npos)
-        {
-            if (call->arg_size() < 4)
-            {
-                // for memcpy(void* dest, const void* src, size_t n)
-                tmp_args.push_back(0);
-                tmp_args.push_back(1);
-            }
-            else
-            {
-                // for unsigned long iconv(void* cd, char **restrict inbuf,
-                // unsigned long *restrict inbytesleft, char **restrict outbuf,
-                // unsigned long *restrict outbytesleft)
-                tmp_args.push_back(1);
-                tmp_args.push_back(2);
-                tmp_args.push_back(3);
-                tmp_args.push_back(4);
-            }
-        }
-        else if (annotation.find("MEMSET") != std::string::npos)
-        {
-            // for memset(void* dest, elem, sz)
-            tmp_args.push_back(0);
-        }
-        else if (annotation.find("STRCPY") != std::string::npos)
-        {
-            // for strcpy(void* dest, void* src)
-            tmp_args.push_back(0);
-            tmp_args.push_back(1);
-        }
-        else if (annotation.find("STRCAT") != std::string::npos)
-        {
-            // for strcat(void* dest, const void* src)
-            // for strncat(void* dest, const void* src, size_t n)
-            tmp_args.push_back(0);
-            tmp_args.push_back(1);
-        }
-    }
-
-    for (const auto& arg : tmp_args)
+    auto& ae = AbstractInterpretation::getAEInstance();
+    for (u32_t arg : nullDerefArgumentIndices(call))
     {
         if (call->arg_size() <= arg)
             continue;
         const ValVar* argVal = call->getArgument(arg);
-        if (argVal && !canSafelyDerefPtr(argVal, call))
+        if (!argVal)
+            continue;
+        const bool safe = canSafelyDerefPtr(argVal, call);
+        ae.recordQuery(NULL_DEREF, call, argVal,
+                       "ext-arg-" + std::to_string(arg),
+                       safe ? AbstractInterpretation::QueryOutcome::Safe
+                            : AbstractInterpretation::QueryOutcome::May,
+                       safe ? "all targets valid"
+                            : "may be null, invalid, unknown, or freed");
+        if (!safe)
         {
             AEException bug(call->toString());
             addBugToReporter(bug, call);

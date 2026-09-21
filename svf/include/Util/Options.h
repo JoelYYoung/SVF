@@ -235,6 +235,10 @@ public:
     // Abstract Execution
     static const OptionMap<u32_t> AESparsity;
     static const OptionMap<u32_t> AEDomain;
+    /// Optional complete abstract-execution query ledger (TSV).
+    static const Option<std::string> AEQueryLedgerFile;
+    /// Content identity supplied by the runner (normally input SHA-256).
+    static const Option<std::string> AEQueryInputID;
     static const OptionMap<u32_t> AEFunEntry;
     static const Option<u32_t> WidenDelay;
     /// recursion handling mode, Default: TOP

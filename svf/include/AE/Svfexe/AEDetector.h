@@ -81,6 +81,11 @@ public:
      */
     virtual void detect(const ICFGNode* node) = 0;
 
+    /// Enumerate the detector's syntactic query scope before abstract
+    /// interpretation so Safe/May/Unsupported results cannot change which
+    /// query identities exist.
+    virtual void enumerateQueries() = 0;
+
     /**
      * @brief Pure virtual function for handling stub external API calls. (e.g.
      * UNSAFE_BUFACCESS)
@@ -184,6 +189,8 @@ public:
      * @param node Pointer to the ICFG node.
      */
     void detect(const ICFGNode*) override;
+
+    void enumerateQueries() override;
 
     /**
      * @brief Handles external API calls related to buffer overflow detection.
@@ -371,6 +378,8 @@ public:
      * @param node Pointer to the ICFG node.
      */
     void detect(const ICFGNode* node) override;
+
+    void enumerateQueries() override;
 
     /**
      * @brief Handles external API calls related to nullptr dereferences.

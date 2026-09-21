@@ -36,6 +36,7 @@
 #include "WPA/Andersen.h"
 #include <cmath>
 #include <cstdlib>
+#include <fstream>
 #include <memory>
 #include <stdexcept>
 #include <tuple>
@@ -57,6 +58,86 @@ static std::vector<const ICFGEdge*> orderedIncomingEdges(const ICFGNode* node)
                                rhs->getEdgeKindWithoutMask());
     });
     return edges;
+}
+
+static const char* queryDetectorName(AEDetector::DetectorKind detector)
+{
+    switch (detector)
+    {
+    case AEDetector::BUF_OVERFLOW:
+        return "buffer-overflow";
+    case AEDetector::NULL_DEREF:
+        return "null-dereference";
+    case AEDetector::UNKNOWN:
+    default:
+        return "unknown";
+    }
+}
+
+static const char* queryOutcomeName(AbstractInterpretation::QueryOutcome outcome)
+{
+    switch (outcome)
+    {
+    case AbstractInterpretation::QueryOutcome::Safe:
+        return "Safe";
+    case AbstractInterpretation::QueryOutcome::May:
+        return "May";
+    case AbstractInterpretation::QueryOutcome::Unsupported:
+        return "Unsupported";
+    case AbstractInterpretation::QueryOutcome::Unreachable:
+    default:
+        return "Unreachable";
+    }
+}
+
+static unsigned queryOutcomeRank(AbstractInterpretation::QueryOutcome outcome)
+{
+    switch (outcome)
+    {
+    case AbstractInterpretation::QueryOutcome::Safe:
+        return 1;
+    case AbstractInterpretation::QueryOutcome::Unsupported:
+        return 2;
+    case AbstractInterpretation::QueryOutcome::May:
+        return 3;
+    case AbstractInterpretation::QueryOutcome::Unreachable:
+    default:
+        return 0;
+    }
+}
+
+static std::string queryKey(AEDetector::DetectorKind detector,
+                            const ICFGNode* node, const SVFVar* operand,
+                            const std::string& queryKind)
+{
+    return std::to_string(static_cast<unsigned>(detector)) + ':' +
+           std::to_string(node ? node->getId() : 0) + ':' +
+           std::to_string(operand ? operand->getId() : 0) + ':' + queryKind;
+}
+
+static std::string escapeQueryField(const std::string& field)
+{
+    std::string result;
+    result.reserve(field.size());
+    for (char character : field)
+    {
+        switch (character)
+        {
+        case '\t':
+            result += "\\t";
+            break;
+        case '\n':
+            result += "\\n";
+            break;
+        case '\r':
+            result += "\\r";
+            break;
+        default:
+            result += character;
+            break;
+        }
+    }
+    return result;
 }
 
 AD::AddressSet AbstractInterpretation::blackHoleAddressSet() const
@@ -134,6 +215,7 @@ void AbstractInterpretation::runOnModule()
 {
     stat->startClk();
     utils = new AbsExtAPI(this);
+    enumerateQueries();
     /// collect checkpoint
     utils->collectCheckPoint();
 
@@ -155,6 +237,97 @@ void AbstractInterpretation::runOnModule()
         stat->performStat();
     for (auto& detector : detectors)
         detector->reportBug();
+    writeQueryLedger();
+}
+
+bool AbstractInterpretation::queryLedgerEnabled() const
+{
+    return !Options::AEQueryLedgerFile().empty();
+}
+
+void AbstractInterpretation::enumerateQueries()
+{
+    if (!queryLedgerEnabled())
+        return;
+    if (Options::AEQueryInputID().empty())
+        throw std::invalid_argument(
+            "-ae-query-input-id is required with -ae-query-ledger");
+    for (auto& detector : detectors)
+        detector->enumerateQueries();
+}
+
+void AbstractInterpretation::registerQuery(
+    AEDetector::DetectorKind detector, const ICFGNode* node,
+    const SVFVar* operand, const std::string& queryKind)
+{
+    if (!queryLedgerEnabled())
+        return;
+    if (!node)
+        throw std::invalid_argument("AE query has no ICFG node");
+
+    QueryRecord record;
+    record.detector = detector;
+    record.icfgNode = node->getId();
+    record.operand = operand ? operand->getId() : 0;
+    record.queryKind = queryKind;
+    record.function = node->getFun() ? node->getFun()->getName() : "<global>";
+    record.sourceLocation = node->getSourceLoc();
+    queryLedger_.emplace(queryKey(detector, node, operand, queryKind),
+                         std::move(record));
+}
+
+void AbstractInterpretation::recordQuery(
+    AEDetector::DetectorKind detector, const ICFGNode* node,
+    const SVFVar* operand, const std::string& queryKind, QueryOutcome outcome,
+    const std::string& reason)
+{
+    if (!queryLedgerEnabled())
+        return;
+    registerQuery(detector, node, operand, queryKind);
+    QueryRecord& record = queryLedger_.at(
+                              queryKey(detector, node, operand, queryKind));
+    if (queryOutcomeRank(outcome) >= queryOutcomeRank(record.outcome))
+    {
+        record.outcome = outcome;
+        record.reason = reason;
+    }
+}
+
+void AbstractInterpretation::writeQueryLedger() const
+{
+    if (!queryLedgerEnabled())
+        return;
+    std::ofstream output(Options::AEQueryLedgerFile(),
+                         std::ios::out | std::ios::trunc);
+    if (!output)
+        throw std::runtime_error("cannot open AE query ledger: " +
+                                 Options::AEQueryLedgerFile());
+
+    output << "query_id\tinput_id\tdetector\tfunction\tsource_location\t"
+              "icfg_node\toperand\tquery_kind\toutcome\treason\n";
+    const std::string input = escapeQueryField(Options::AEQueryInputID());
+    for (const auto& [key, record] : queryLedger_)
+    {
+        const std::string detector = queryDetectorName(record.detector);
+        const std::string identity = input + ':' + detector + ':' +
+            escapeQueryField(record.function) + ':' +
+            std::to_string(record.icfgNode) + ':' +
+            std::to_string(record.operand) + ':' + record.queryKind;
+        output << escapeQueryField(identity) << '\t' << input << '\t'
+               << detector << '\t' << escapeQueryField(record.function)
+               << '\t' << escapeQueryField(record.sourceLocation) << '\t'
+               << record.icfgNode << '\t' << record.operand << '\t'
+               << escapeQueryField(record.queryKind) << '\t'
+               << queryOutcomeName(record.outcome) << '\t'
+               << escapeQueryField(
+                      record.outcome == QueryOutcome::Unreachable &&
+                              record.reason.empty()
+                      ? "not reached from configured analysis entries"
+                      : record.reason) << '\n';
+    }
+    if (!output)
+        throw std::runtime_error("failed to write AE query ledger: " +
+                                 Options::AEQueryLedgerFile());
 }
 
 AbstractInterpretation::AbstractInterpretation()

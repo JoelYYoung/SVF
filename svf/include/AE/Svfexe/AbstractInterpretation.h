@@ -136,6 +136,28 @@ public:
         detectors.push_back(std::move(detector));
     }
 
+    enum class QueryOutcome
+    {
+        Unreachable,
+        Safe,
+        Unsupported,
+        May
+    };
+
+    /// Register a syntactic detector query before analysis. Registered but
+    /// unevaluated queries remain Unreachable in the final ledger.
+    void registerQuery(AEDetector::DetectorKind detector,
+                       const ICFGNode* node, const SVFVar* operand,
+                       const std::string& queryKind);
+
+    /// Merge a path/iteration result into a registered query. May dominates
+    /// Unsupported, which dominates Safe; this prevents a later safe visit
+    /// from hiding an earlier uncertain or unsafe one.
+    void recordQuery(AEDetector::DetectorKind detector,
+                     const ICFGNode* node, const SVFVar* operand,
+                     const std::string& queryKind, QueryOutcome outcome,
+                     const std::string& reason = "");
+
     /// Retrieve SVFVar given its ID; asserts if no such variable exists
     inline const SVFVar* getSVFVar(NodeID varId) const
     {
@@ -484,6 +506,23 @@ protected:
     Map<const ICFGNode*, State> stateTrace_;
     bool unknownTargetTelemetryEnabled_ = false;
     UnknownTargetTelemetry unknownTargetTelemetry_;
+
+    struct QueryRecord
+    {
+        AEDetector::DetectorKind detector = AEDetector::UNKNOWN;
+        NodeID icfgNode = 0;
+        NodeID operand = 0;
+        std::string queryKind;
+        std::string function;
+        std::string sourceLocation;
+        QueryOutcome outcome = QueryOutcome::Unreachable;
+        std::string reason;
+    };
+
+    Map<std::string, QueryRecord> queryLedger_;
+    bool queryLedgerEnabled() const;
+    void enumerateQueries();
+    void writeQueryLedger() const;
 
     bool shouldApplyNarrowing(const FunObjVar* fun);
 };

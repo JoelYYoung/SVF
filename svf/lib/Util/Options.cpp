@@ -802,6 +802,16 @@ const OptionMap<u32_t> Options::AEDomain(
         "General convex linear constraints."
     }
 });
+const Option<std::string> Options::AEQueryLedgerFile(
+    "ae-query-ledger",
+    "Write the complete abstract-execution detector query ledger as TSV.",
+    ""
+);
+const Option<std::string> Options::AEQueryInputID(
+    "ae-query-input-id",
+    "Stable input identity recorded in the AE query ledger (for example SHA-256).",
+    ""
+);
 const OptionMap<u32_t> Options::AEFunEntry(
     "ae-fun-entry",
     "Abstract execution function entry mode (Default: main)",
