@@ -11,6 +11,7 @@ from pathlib import Path
 
 CREATE, COPY_CONSTRUCT, MOVE_CONSTRUCT, COPY_ASSIGN, MOVE_ASSIGN, DESTROY = range(6)
 JOIN = 9
+EXPLICIT_PAIR_LIMIT = 32
 
 
 def variable(text):
@@ -26,6 +27,7 @@ def read_trace(path):
     variables = set()
     marginal = collections.Counter()
     pair = collections.Counter()
+    hyperedges = collections.Counter()
     raw = {"detaches": 0, "cloned_slots": 0}
     for line_number, line in enumerate(path.read_text().splitlines(), 1):
         if not line or line.startswith("#"):
@@ -62,9 +64,12 @@ def read_trace(path):
                 touched.append(key)
                 variables.add(key)
                 marginal[key] += 1
-            for index, left in enumerate(touched):
-                for right in touched[index + 1:]:
-                    pair[tuple(sorted((left, right)))] += 1
+            if len(touched) <= EXPLICIT_PAIR_LIMIT:
+                for index, left in enumerate(touched):
+                    for right in touched[index + 1:]:
+                        pair[tuple(sorted((left, right)))] += 1
+            else:
+                hyperedges[tuple(sorted(touched))] += 1
             events.append(("M", *head[:-1], changed, touched))
         elif tag == "D":
             raw["detaches"] += 1
@@ -72,7 +77,7 @@ def read_trace(path):
             raw["cloned_slots"] += int(fields[3])
         else:
             raise ValueError(f"line {line_number}: unknown record {tag}")
-    return events, variables, marginal, pair, raw
+    return events, variables, marginal, pair, hyperedges, raw
 
 
 def current_mapping(variables):
@@ -84,7 +89,7 @@ def marginal_mapping(variables, marginal):
     return {key: index // 8 for index, key in enumerate(ordered)}
 
 
-def relational_mapping(variables, marginal, pair):
+def relational_mapping(variables, marginal, pair, hyperedges=()):
     ordered = sorted(variables, key=lambda key: (-marginal[key], key))
     neighbours = collections.defaultdict(list)
     for (left, right), weight in pair.items():
@@ -92,6 +97,16 @@ def relational_mapping(variables, marginal, pair):
             continue
         neighbours[left].append((right, weight))
         neighbours[right].append((left, weight))
+    memberships = collections.defaultdict(list)
+    edge_groups = []
+    items = hyperedges.items() if hasattr(hyperedges, "items") else hyperedges
+    for members, weight in items:
+        if weight <= 0:
+            continue
+        edge_index = len(edge_groups)
+        edge_groups.append(collections.Counter())
+        for key in members:
+            memberships[key].append((edge_index, weight))
     groups = []
     open_groups = []
     mapping = {}
@@ -102,6 +117,14 @@ def relational_mapping(variables, marginal, pair):
                 group_index = mapping[other]
                 if len(groups[group_index]) < 8:
                     affinity[group_index] += weight
+        # A large touched set denotes a uniformly weighted clique.  Keeping it
+        # as a hyperedge avoids materializing O(k^2) pairs while preserving the
+        # exact affinity: each already assigned member in a candidate group
+        # contributes the hyperedge weight once.
+        for edge_index, weight in memberships[key]:
+            for group_index, count in edge_groups[edge_index].items():
+                if len(groups[group_index]) < 8:
+                    affinity[group_index] += weight * count
         if affinity:
             group_index = max(
                 (weight, -len(groups[index]), -index, index)
@@ -118,6 +141,8 @@ def relational_mapping(variables, marginal, pair):
                 heapq.heappush(open_groups, group_index)
         groups[group_index].append(key)
         mapping[key] = group_index
+        for edge_index, _ in memberships[key]:
+            edge_groups[edge_index][group_index] += 1
     return mapping
 
 
@@ -299,11 +324,11 @@ def main():
     parser.add_argument("trace", type=Path)
     parser.add_argument("--json", type=Path)
     args = parser.parse_args()
-    events, variables, marginal, pair, raw = read_trace(args.trace)
+    events, variables, marginal, pair, hyperedges, raw = read_trace(args.trace)
     mappings = {
         "g0_current": current_mapping(variables),
         "g2_marginal": marginal_mapping(variables, marginal),
-        "g3_cowrite": relational_mapping(variables, marginal, pair),
+        "g3_cowrite": relational_mapping(variables, marginal, pair, hyperedges),
     }
     replay = {name: Replay(mapping).run(events)
               for name, mapping in mappings.items()}
@@ -316,6 +341,11 @@ def main():
         "trace": str(args.trace),
         "variables": len(variables),
         "mutation_events": sum(event[0] == "M" for event in events),
+        "cowrite_model": {
+            "explicit_pairs": len(pair),
+            "large_hyperedges": len(hyperedges),
+            "explicit_pair_limit": EXPLICIT_PAIR_LIMIT,
+        },
         "raw": raw,
         "validation": validation,
         "replay": replay,

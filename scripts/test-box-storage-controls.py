@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Fail-closed identities and terminal-only collection contracts."""
+import collections
 import json
 from pathlib import Path
 import runpy
@@ -34,6 +35,36 @@ class Controls(unittest.TestCase):
         ])
         self.assertEqual(result.get('detaches', 0), 0)
         self.assertEqual(result.get('cloned_slots', 0), 0)
+
+    def test_cowrite_hyperedges_preserve_explicit_pair_mapping(self):
+        variables = {(index, 0, 0, 0) for index in range(37)}
+        marginal = collections.Counter()
+        explicit = collections.Counter()
+        hyperedges = collections.Counter()
+        touched_sets = [
+            tuple(sorted(variables)),
+            tuple(sorted(key for key in variables if key[0] % 2 == 0)),
+            tuple(sorted(key for key in variables if key[0] % 3 != 0)),
+        ]
+        for weight, touched in enumerate(touched_sets, 1):
+            for key in touched:
+                marginal[key] += weight
+            hyperedges[touched] += weight
+            for index, left in enumerate(touched):
+                for right in touched[index + 1:]:
+                    explicit[(left, right)] += weight
+        self.assertEqual(
+            COWRITE['relational_mapping'](variables, marginal, {}, hyperedges),
+            COWRITE['relational_mapping'](variables, marginal, explicit),
+        )
+
+    def test_cowrite_large_set_does_not_materialize_pairs(self):
+        variables = tuple((index, 0, 0, 0) for index in range(1025))
+        mapping = COWRITE['relational_mapping'](
+            set(variables), collections.Counter(dict.fromkeys(variables, 1)),
+            {}, {variables: 7})
+        self.assertEqual(len(mapping), len(variables))
+        self.assertLessEqual(max(collections.Counter(mapping.values()).values()), 8)
 
     def test_actual_identity(self):
         for variant, representation in DIRECTORY['REPRESENTATIONS'].items():
