@@ -34,10 +34,13 @@
 #include "Util/Options.h"
 #include "Util/WorkList.h"
 #include "WPA/Andersen.h"
+#include <chrono>
 #include <cmath>
 #include <cstdlib>
 #include <fstream>
+#include <iomanip>
 #include <memory>
+#include <set>
 #include <stdexcept>
 #include <tuple>
 
@@ -213,13 +216,84 @@ void AbstractInterpretation::initializeObjectValue(
 
 void AbstractInterpretation::runOnModule()
 {
+    using PhaseClock = std::chrono::steady_clock;
+    const auto secondsSince = [](PhaseClock::time_point start) {
+        return std::chrono::duration<double>(PhaseClock::now() - start).count();
+    };
+    const bool phaseStats = std::getenv("SVF_AE_PHASE_STATS") != nullptr;
+    const bool domainStats = std::getenv("SVF_AE_DOMAIN_STATS") != nullptr;
+    double querySeconds = 0.0;
+
     stat->startClk();
     utils = new AbsExtAPI(this);
+    const PhaseClock::time_point queryEnumerationStart = PhaseClock::now();
     enumerateQueries();
+    querySeconds += secondsSince(queryEnumerationStart);
     /// collect checkpoint
     utils->collectCheckPoint();
 
+    if (domainStats)
+        AD::NumericalDomain::beginTelemetry();
+    const PhaseClock::time_point solveStart = PhaseClock::now();
     analyse();
+    const double solveSeconds = secondsSince(solveStart);
+    if (domainStats)
+    {
+        const AD::NumericalTelemetry operations =
+            AD::NumericalDomain::endTelemetry();
+        std::size_t activeProperties = 0;
+        std::size_t totalSupport = 0;
+        std::size_t maximumSupport = 0;
+        std::size_t components = 0;
+        std::size_t maximumComponent = 0;
+        const auto measure = [&](const State& property) {
+            const AD::NumericalDomain& numerical = property.numerical();
+            if (numerical.isBottom())
+                return;
+            ++activeProperties;
+            const std::vector<AD::Variable> support =
+                numerical.supportVariables();
+            totalSupport += support.size();
+            maximumSupport = std::max(maximumSupport, support.size());
+            if (numerical.isDomain<AD::BoxDomain>())
+            {
+                components += support.size();
+                if (!support.empty())
+                    maximumComponent = std::max<std::size_t>(
+                                           maximumComponent, 1);
+                return;
+            }
+            std::set<AD::Variable> remaining(support.begin(), support.end());
+            while (!remaining.empty())
+            {
+                const std::vector<AD::Variable> component =
+                    numerical.relationalClosure({*remaining.begin()});
+                ++components;
+                maximumComponent = std::max(maximumComponent,
+                                             component.size());
+                for (AD::Variable variable : component)
+                    remaining.erase(variable);
+            }
+        };
+        for (const auto& [node, property] : stateTrace_)
+        {
+            (void)node;
+            measure(property);
+        }
+        if (const AD::AbstractDomain* carrier = getScalarAbstractState())
+            measure(static_cast<const State&>(*carrier));
+        SVFUtil::outs()
+                << "AE_DOMAIN_STATS flow_states=" << stateTrace_.size()
+                << " active_properties=" << activeProperties
+                << " total_support=" << totalSupport
+                << " max_support=" << maximumSupport
+                << " components=" << components
+                << " max_component=" << maximumComponent
+                << " closure_calls=" << operations.relationalClosureCalls
+                << " join_calls=" << operations.joinCalls
+                << " widen_calls=" << operations.wideningCalls
+                << " narrow_calls=" << operations.narrowingCalls << '\n';
+    }
     if (unknownTargetTelemetryEnabled_)
     {
         const UnknownTargetTelemetry& telemetry = unknownTargetTelemetry_;
@@ -235,10 +309,19 @@ void AbstractInterpretation::runOnModule()
     stat->finializeStat();
     if (Options::PStat())
         stat->performStat();
+    const PhaseClock::time_point queryReportStart = PhaseClock::now();
     for (auto& detector : detectors)
         detector->reportBug();
     writeQueryLedger();
+    querySeconds += secondsSince(queryReportStart);
+    const PhaseClock::time_point postStart = PhaseClock::now();
     verifyPostFixpoint();
+    const double postSeconds = secondsSince(postStart);
+    if (phaseStats)
+        SVFUtil::outs() << std::defaultfloat << std::setprecision(9)
+                        << "AE_PHASE_TIMES ai_s=" << solveSeconds
+                        << " query_s=" << querySeconds
+                        << " post_s=" << postSeconds << '\n';
 }
 
 bool AbstractInterpretation::queryLedgerEnabled() const
@@ -1484,6 +1567,32 @@ void AbstractInterpretation::updateStateOnRet(const RetPE* retPE)
                 getDefinedInterval(retPE->getRHSVar(), node),
                 getAddressSet(retPE->getRHSVar(), node), node);
     if (Options::AEDomain() == AENumericalDomain::Box)
+        return;
+    // A context-insensitive callee summary shared by multiple call sites has
+    // one formal-return ghost. Relating every actual return to that same ghost
+    // would spuriously relate distinct calls (for example, r1 == r2). Keep the
+    // joined interval/address result, but do not export an affine equality
+    // unless the callee has a single call site.
+    bool sharedCallee = false;
+    if (const auto* returnSite = SVFUtil::dyn_cast<RetICFGNode>(node))
+    {
+        for (const ICFGEdge* edge : returnSite->getInEdges())
+        {
+            if (!SVFUtil::isa<RetCFGEdge>(edge) ||
+                    !edge->getSrcNode()->getFun())
+                continue;
+            const ICFGNode* entry = icfg->getFunEntryICFGNode(
+                                        edge->getSrcNode()->getFun());
+            const std::size_t callers = std::count_if(
+                                            entry->getInEdges().begin(),
+                                            entry->getInEdges().end(),
+                                            [](const ICFGEdge* incoming) {
+                return SVFUtil::isa<CallCFGEdge>(incoming);
+            });
+            sharedCallee |= callers > 1;
+        }
+    }
+    if (sharedCallee)
         return;
     const auto* target = SVFUtil::dyn_cast<ValVar>(retPE->getLHSVar());
     const auto* source = SVFUtil::dyn_cast<ValVar>(retPE->getRHSVar());

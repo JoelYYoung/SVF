@@ -44,6 +44,24 @@
 namespace SVF::AbstractDomain
 {
 
+namespace
+{
+bool telemetryEnabled = false;
+NumericalTelemetry telemetry;
+}
+
+void NumericalDomain::beginTelemetry()
+{
+    telemetry = {};
+    telemetryEnabled = true;
+}
+
+NumericalTelemetry NumericalDomain::endTelemetry()
+{
+    telemetryEnabled = false;
+    return telemetry;
+}
+
 std::vector<Variable> NumericalDomain::supportVariablesBefore(
     Variable upperBound) const
 {
@@ -56,6 +74,8 @@ std::vector<Variable> NumericalDomain::supportVariablesBefore(
 std::vector<Variable> NumericalDomain::relationalClosure(
     const std::vector<Variable>& seeds) const
 {
+    if (telemetryEnabled)
+        ++telemetry.relationalClosureCalls;
     std::map<Variable, std::set<Variable>> adjacency;
     for (const LinearConstraint& constraint : toConstraints())
     {
@@ -2368,6 +2388,15 @@ void NumericalDomain::recordOperation(OperationKind operation,
                                       ApproximationKind approximation,
                                       bool best, std::string reason) const
 {
+    if (telemetryEnabled)
+    {
+        if (operation == OperationKind::Join)
+            ++telemetry.joinCalls;
+        else if (operation == OperationKind::Widening)
+            ++telemetry.wideningCalls;
+        else if (operation == OperationKind::Narrowing)
+            ++telemetry.narrowingCalls;
+    }
     lastOperation_ = {operation, approximation,
                       approximation == ApproximationKind::Exact, best,
                       std::move(reason)

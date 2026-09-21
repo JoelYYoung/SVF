@@ -67,6 +67,8 @@ std::set<AD::Variable> definedScalarVariables(const ICFGNode* node,
 {
     std::set<AD::Variable> result;
     const auto add = [&](const SVFVar* variable) {
+        if (!variable)
+            return;
         const auto* value = SVFUtil::dyn_cast<ValVar>(variable);
         if (value && adapter.contains(*value))
             result.insert(adapter.variable(*value));
@@ -176,9 +178,21 @@ void SemiSparseAbstractInterpretation::initializeScalarAvailability()
                     scalarAvailability_.find(edge->getSrcNode());
                 if (predecessor == scalarAvailability_.end())
                     continue;
+                std::set<AD::Variable> edgeAvailable = predecessor->second;
+                // Return transfer retains the callee's formal-return ghosts
+                // needed to bind RetPE relations and restores the caller SSA
+                // frame. The node definitions add the actual return below.
+                if (const auto* ret = SVFUtil::dyn_cast<RetCFGEdge>(edge))
+                {
+                    const auto caller =
+                        scalarAvailability_.find(ret->getCallSite());
+                    if (caller != scalarAvailability_.end())
+                        edgeAvailable.insert(caller->second.begin(),
+                                             caller->second.end());
+                }
                 if (first)
                 {
-                    incoming = predecessor->second;
+                    incoming = std::move(edgeAvailable);
                     first = false;
                 }
                 else
@@ -186,7 +200,7 @@ void SemiSparseAbstractInterpretation::initializeScalarAvailability()
                     std::set<AD::Variable> intersection;
                     std::set_intersection(
                         incoming.begin(), incoming.end(),
-                        predecessor->second.begin(), predecessor->second.end(),
+                        edgeAvailable.begin(), edgeAvailable.end(),
                         std::inserter(intersection, intersection.end()));
                     incoming = std::move(intersection);
                 }
@@ -236,16 +250,20 @@ SemiSparseAbstractInterpretation::State
 SemiSparseAbstractInterpretation::phiAlternativeState(
     const ICFGNode* predecessor)
 {
-    State alternative = Options::AEDomain() == AENumericalDomain::Box
-                            ? scalarState()
-                            : this->topState();
-    if (Options::AEDomain() != AENumericalDomain::Box && predecessor)
+    State alternative = this->topState();
+    if (predecessor)
     {
         std::vector<AD::Variable> seeds;
         const auto available = scalarAvailability_.find(predecessor);
         if (available != scalarAvailability_.end())
             seeds.assign(available->second.begin(), available->second.end());
-        materializeScalarDefinitions(alternative, seeds, predecessor);
+        if (Options::AEDomain() == AENumericalDomain::Box)
+        {
+            for (AD::Variable variable : seeds)
+                alternative.assignValueFrom(variable, scalarState(), variable);
+        }
+        else
+            materializeScalarDefinitions(alternative, seeds, predecessor);
         if (this->hasAbsState(predecessor))
             alternative.numerical().meetWith(
                 this->state(predecessor).numerical());
@@ -443,10 +461,17 @@ AD::Interval SemiSparseAbstractInterpretation::getInterval(
         materialized.assignValueFrom(variable, scalarState(), variable);
     else
         materializeScalarDefinitions(materialized, {variable}, node);
-    return result.isBottom() &&
-                   materialized.numericalMayBeUninitialized(variable)
-               ? AD::Interval::top()
-               : result;
+    if (materialized.numericalMayBeUninitialized(variable))
+    {
+        if (std::getenv("SVF_AE_TRACE_UNINITIALIZED_READ"))
+            std::cerr << "AE uninitialized scalar read node="
+                      << (node ? node->getId() : 0)
+                      << " variable=" << variable.id()
+                      << " svfir=" << value->getId()
+                      << " payload=" << result.toString() << '\n';
+        return AD::Interval::top();
+    }
+    return result;
 }
 
 AD::Interval SemiSparseAbstractInterpretation::getDefinedInterval(
@@ -472,6 +497,11 @@ AD::Interval SemiSparseAbstractInterpretation::getDefinedInterval(
         return AD::Interval::top();
 
     const AD::Variable variable = this->adapter_.variable(*value);
+    const auto available = scalarAvailability_.find(node);
+    if (node && (available == scalarAvailability_.end() ||
+                 available->second.count(variable) == 0))
+        return value->isPointer() ? AD::Interval::bottom()
+                                  : AD::Interval::top();
     // A forward reference in a global initializer has not executed its
     // AddrStmt yet. Match the unresolved-symbol policy of the dense reader.
     if ((SVFUtil::isa<FunValVar>(value) || SVFUtil::isa<GlobalValVar>(value)) &&
@@ -538,6 +568,11 @@ AD::AddressSet SemiSparseAbstractInterpretation::getAddressSet(
     if (!this->adapter_.contains(*value))
         return AD::AddressSet::bottom();
     const AD::Variable variable = this->adapter_.variable(*value);
+    const auto available = scalarAvailability_.find(node);
+    if (node && (available == scalarAvailability_.end() ||
+                 available->second.count(variable) == 0))
+        return value->isPointer() ? AD::AddressSet::top()
+                                  : AD::AddressSet::bottom();
     if (Options::AEDomain() == AENumericalDomain::Box)
         return scalarState().addressSet(variable);
     State materialized = this->topState();
@@ -687,6 +722,17 @@ void SemiSparseAbstractInterpretation::normalizePostReplayState(
     }
 }
 
+void SemiSparseAbstractInterpretation::restorePostReplayCallerFrame(
+    State& denseState, const RetICFGNode* returnSite,
+    const State& callerState,
+    const std::set<AD::Variable>& callerScalars) const
+{
+    for (AD::Variable variable : callerScalars)
+        if (!denseState.hasValue(variable))
+            denseState.assignValueFrom(variable, callerState, variable);
+    restoreCallerFrameAfterSharedCallee(denseState, returnSite, &callerState);
+}
+
 void SemiSparseAbstractInterpretation::forgetActiveScalarValues(
     State& denseState) const
 {
@@ -727,12 +773,13 @@ void SemiSparseAbstractInterpretation::forgetMemoryValues(
 }
 
 void SemiSparseAbstractInterpretation::restoreCallerFrameAfterSharedCallee(
-    State& denseState, const RetICFGNode* returnSite) const
+    State& denseState, const RetICFGNode* returnSite,
+    const State* callerOverride) const
 {
     if (!returnSite)
         return;
     const CallICFGNode* call = returnSite->getCallICFGNode();
-    if (!call || !this->hasAbsState(call))
+    if (!call || (!callerOverride && !this->hasAbsState(call)))
         return;
 
     bool sharedCallee = false;
@@ -753,7 +800,7 @@ void SemiSparseAbstractInterpretation::restoreCallerFrameAfterSharedCallee(
     if (!sharedCallee)
         return;
 
-    const State& caller = this->state(call);
+    const State& caller = callerOverride ? *callerOverride : this->state(call);
     NodeBS exposedBases;
     bool exposesAllObjects = false;
     auto expose = [&](const ObjVar* object)

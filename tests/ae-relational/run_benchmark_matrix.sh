@@ -16,16 +16,20 @@ timeout_seconds=${SVF_AE_BENCHMARK_TIMEOUT_SECONDS:-300}
 memory_kib=${SVF_AE_BENCHMARK_MEMORY_KIB:-16777216}
 cpu=${SVF_AE_BENCHMARK_CPU:-8}
 
-programs=(
-  'cfourcc/cfourcc.bc'
-  'libpaper/paperconf.bc'
-  'atinout/atinout.bc'
-  'flip/flip.bc'
-  'bchunk/bchunk.bc'
-  'c2050/c2050.bc'
-  'dhcping/dhcping.bc'
-  'mscompress/mscompress.bc'
-)
+if [[ -n ${SVF_AE_BENCHMARK_PROGRAMS:-} ]]; then
+  read -r -a programs <<< "$SVF_AE_BENCHMARK_PROGRAMS"
+else
+  programs=(
+    'cfourcc/cfourcc.bc'
+    'libpaper/paperconf.bc'
+    'atinout/atinout.bc'
+    'flip/flip.bc'
+    'bchunk/bchunk.bc'
+    'c2050/c2050.bc'
+    'dhcping/dhcping.bc'
+    'mscompress/mscompress.bc'
+  )
+fi
 configs=(
   'dense:box'
   'dense:octagon'
@@ -38,7 +42,7 @@ configs=(
 mkdir -p "$output_dir"
 results="$output_dir/results.tsv"
 metadata="$output_dir/metadata.txt"
-printf 'program\tinput_sha256\tphase\trun\tsparsity\tdomain\tstatus\ttermination\telapsed_s\tuser_s\tsys_s\trss_kb\tqueries\tsafe\tmay\tunreachable\tunsupported\tquery_identity_sha256\tquery_outcome_sha256\tpost_pass\tpost_infeasible\tpost_unreachable\tpost_fail\tpost_unsupported\ticfg_nodes\tanalyzed_icfg_nodes\tfunctions\tanalyzed_functions\n' > "$results"
+printf 'program\tinput_sha256\tphase\trun\tsparsity\tdomain\tstatus\ttermination\telapsed_s\tuser_s\tsys_s\trss_kb\tllvm_ir_s\tsvfir_s\tpta_s\tai_s\tquery_s\tpost_s\tqueries\tsafe\tmay\tunreachable\tunsupported\tquery_identity_sha256\tquery_outcome_sha256\tpost_pass\tpost_infeasible\tpost_unreachable\tpost_fail\tpost_unsupported\ticfg_nodes\tanalyzed_icfg_nodes\tfunctions\tanalyzed_functions\n' > "$results"
 
 {
   printf 'ae=%s\n' "$ae_bin"
@@ -51,7 +55,9 @@ printf 'program\tinput_sha256\tphase\trun\tsparsity\tdomain\tstatus\ttermination
   printf 'cpu=%s\n' "$cpu"
   printf 'measured_runs=%s\n' "$measured_runs"
   printf 'warmups=%s\n' "$warmups"
+  printf 'domain_stats=%s\n' "${SVF_AE_DOMAIN_STATS:-0}"
   printf 'uname=%s\n' "$(uname -a)"
+  printf 'host=%s\n' "$(hostname)"
   "$ae_bin" --version 2>&1 | sed 's/^/ae_version=/' || true
   for relative in "${programs[@]}"; do
     printf 'input_sha256[%s]=%s\n' "$relative" \
@@ -73,6 +79,14 @@ read_stat_field()
   awk -v key="$key" '$1 == key { print $2 }' "$file" | tail -n 1
 }
 
+read_phase_field()
+{
+  local key=$1
+  local file=$2
+  sed -n "s/.*AE_PHASE_TIMES .*${key}=\([^ ]*\).*/\1/p" "$file" |
+    tail -n 1
+}
+
 run_one()
 {
   local relative=$1
@@ -90,7 +104,7 @@ run_one()
     -f 'elapsed_s=%e\nuser_s=%U\nsys_s=%S\nrss_kb=%M\ntime_exit=%x' \
     taskset -c "$cpu" timeout --signal=TERM --kill-after=5 \
       "$timeout_seconds" \
-      bash -c 'ulimit -v "$1"; shift; exec "$@"' benchmark-limit \
+      bash -c 'ulimit -v "$1"; shift; exec env SVF_AE_PHASE_STATS=1 "$@"' benchmark-limit \
         "$memory_kib" "$ae_bin" \
         -extapi="$extapi_bc" \
         -ae-domain="$domain" \
@@ -159,10 +173,20 @@ run_one()
   functions=$(read_stat_field Func_Num "$stem.stdout")
   analyzed_functions=$(read_stat_field Analyzed_Func_Num "$stem.stdout")
 
-  printf '%s\t%s\t%s\t%d\t%s\t%s\t%d\t%s\t%s\t%s\t%s\t%s\t%d\t%d\t%d\t%d\t%d\t%s\t%s\t%d\t%d\t%d\t%d\t%d\t%s\t%s\t%s\t%s\n' \
+  local llvm_ir svfir pta ai query_time post_time
+  llvm_ir=$(read_stat_field LLVMIRTime "$stem.stdout")
+  svfir=$(read_stat_field SVFIRTime "$stem.stdout")
+  pta=$(read_stat_field TotalTime "$stem.stdout")
+  ai=$(read_phase_field ai_s "$stem.stdout")
+  query_time=$(read_phase_field query_s "$stem.stdout")
+  post_time=$(read_phase_field post_s "$stem.stdout")
+
+  printf '%s\t%s\t%s\t%d\t%s\t%s\t%d\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%d\t%d\t%d\t%d\t%d\t%s\t%s\t%d\t%d\t%d\t%d\t%d\t%s\t%s\t%s\t%s\n' \
     "$program" "$input_id" "$phase" "$run" "$sparsity" "$domain" \
     "$status" "$termination" "${elapsed:-NA}" "${user:-NA}" \
-    "${sys:-NA}" "${rss:-NA}" "$queries" "$safe" "$may" \
+    "${sys:-NA}" "${rss:-NA}" "${llvm_ir:-NA}" "${svfir:-NA}" \
+    "${pta:-NA}" "${ai:-NA}" "${query_time:-NA}" "${post_time:-NA}" \
+    "$queries" "$safe" "$may" \
     "$unreachable" "$unsupported" "$query_identity" "$query_outcome" \
     "$post_pass" "$post_infeasible" "$post_unreachable" "$post_fail" \
     "$post_unsupported" "${icfg:-NA}" "${analyzed_icfg:-NA}" \

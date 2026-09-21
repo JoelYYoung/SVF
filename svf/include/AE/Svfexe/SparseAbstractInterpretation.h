@@ -83,6 +83,10 @@ protected:
     void normalizePostReplayState(State& state,
                                   const std::set<AbstractDomain::Variable>&
                                       availableScalars) const override;
+    void restorePostReplayCallerFrame(
+        State& state, const RetICFGNode* returnSite,
+        const State& callerState,
+        const std::set<AbstractDomain::Variable>& callerScalars) const override;
 
     std::unique_ptr<AbstractDomain::AbstractDomain> cloneCycleHeadState(
         const ICFGCycleWTO* cycle) override;
@@ -135,7 +139,8 @@ protected:
     void forgetActiveScalarValues(State& state) const;
     void forgetMemoryValues(State& state) const;
     void restoreCallerFrameAfterSharedCallee(
-        State& state, const RetICFGNode* returnSite) const;
+        State& state, const RetICFGNode* returnSite,
+        const State* callerOverride = nullptr) const;
     void applyScalarRefinement(State& state, const State& checkpoint);
     void scatterCycleValues(const ICFGCycleWTO* cycle, const State& state);
     void initializeScalarAvailability();

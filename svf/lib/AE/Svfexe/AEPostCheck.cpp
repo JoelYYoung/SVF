@@ -220,9 +220,21 @@ Map<const ICFGNode*, std::set<AD::Variable>> computeAvailability(
                 if (!isEquationEdge(edge, reachable) ||
                     reachable.count(predecessor) == 0)
                     continue;
+                std::set<AD::Variable> edgeAvailable =
+                    available.at(predecessor);
+                // RetPE needs the callee formal-return ghosts while the caller
+                // frame also remains live. The node definitions add the actual
+                // return value after these two inputs are combined.
+                if (const auto* ret = SVFUtil::dyn_cast<RetCFGEdge>(edge))
+                {
+                    const auto caller = available.find(ret->getCallSite());
+                    if (caller != available.end())
+                        edgeAvailable.insert(caller->second.begin(),
+                                             caller->second.end());
+                }
                 if (first)
                 {
-                    incoming = available.at(predecessor);
+                    incoming = std::move(edgeAvailable);
                     first = false;
                 }
                 else
@@ -230,8 +242,7 @@ Map<const ICFGNode*, std::set<AD::Variable>> computeAvailability(
                     std::set<AD::Variable> intersection;
                     std::set_intersection(
                         incoming.begin(), incoming.end(),
-                        available.at(predecessor).begin(),
-                        available.at(predecessor).end(),
+                        edgeAvailable.begin(), edgeAvailable.end(),
                         std::inserter(intersection, intersection.end()));
                     incoming = std::move(intersection);
                 }
@@ -291,6 +302,12 @@ void AbstractInterpretation::normalizePostReplayState(
 {
 }
 
+void AbstractInterpretation::restorePostReplayCallerFrame(
+    State&, const RetICFGNode*, const State&,
+    const std::set<AD::Variable>&) const
+{
+}
+
 void AbstractInterpretation::verifyPostFixpoint()
 {
     if (!postCheckEnabled())
@@ -326,7 +343,74 @@ void AbstractInterpretation::verifyPostFixpoint()
             return;
         std::cerr << "AE Post failure " << label << '\n'
                   << "  replayed: " << replayed.toString() << '\n'
-                  << "  final:    " << finalState.toString() << '\n';
+                  << "  final:    " << finalState.toString() << '\n'
+                  << "  facets: numerical="
+                  << AD::toString(replayed.numerical().isSubsetOf(
+                                      finalState.numerical()))
+                  << " addresses="
+                  << AD::toString(replayed.addresses().isSubsetOf(
+                                      finalState.addresses()))
+                  << " lifetimes="
+                  << AD::toString(replayed.lifetimes().isSubsetOf(
+                                      finalState.lifetimes()))
+                  << " numeric-init="
+                  << AD::toString(
+                         replayed.numericalInitialization().isSubsetOf(
+                             finalState.numericalInitialization()))
+                  << " address-init="
+                  << AD::toString(replayed.addressInitialization().isSubsetOf(
+                                      finalState.addressInitialization()))
+                  << '\n';
+        for (AD::Variable variable :
+             finalState.numerical().supportVariables())
+        {
+            const AD::Interval replayedBound =
+                replayed.numerical().bound(variable);
+            const AD::Interval finalBound =
+                finalState.numerical().bound(variable);
+            if (!replayedBound.isSubsetOf(finalBound))
+            {
+                std::cerr << "  numerical difference v" << variable.id()
+                          << " replayed=" << replayedBound.toString()
+                          << " final=" << finalBound.toString();
+                if (const ValVar* value = adapter_.value(variable))
+                    std::cerr << " svfir=" << value->getId() << ' '
+                              << value->toString();
+                std::cerr << '\n';
+            }
+        }
+        std::set<AD::Variable> initialized;
+        const std::vector<AD::Variable> replayedInitialized =
+            replayed.initializedVariables();
+        const std::vector<AD::Variable> finalInitialized =
+            finalState.initializedVariables();
+        initialized.insert(replayedInitialized.begin(),
+                           replayedInitialized.end());
+        initialized.insert(finalInitialized.begin(), finalInitialized.end());
+        for (AD::Variable variable : initialized)
+        {
+            const auto replayedNumeric =
+                replayed.numericalInitialization().value(variable);
+            const auto finalNumeric =
+                finalState.numericalInitialization().value(variable);
+            const auto replayedAddress =
+                replayed.addressInitialization().value(variable);
+            const auto finalAddress =
+                finalState.addressInitialization().value(variable);
+            if (replayedNumeric == finalNumeric &&
+                    replayedAddress == finalAddress)
+                continue;
+            std::cerr << "  initialization difference v" << variable.id()
+                      << " numerical="
+                      << static_cast<unsigned>(replayedNumeric) << "->"
+                      << static_cast<unsigned>(finalNumeric) << " address="
+                      << static_cast<unsigned>(replayedAddress) << "->"
+                      << static_cast<unsigned>(finalAddress);
+            if (const ValVar* value = adapter_.value(variable))
+                std::cerr << " svfir=" << value->getId() << ' '
+                          << value->toString();
+            std::cerr << '\n';
+        }
     };
 
     std::vector<const FunObjVar*> roots;
@@ -519,6 +603,17 @@ void AbstractInterpretation::verifyPostFixpoint()
             continue;
         }
         State incoming = sourceFinal->second;
+        if (const auto* ret = SVFUtil::dyn_cast<RetCFGEdge>(edge))
+        {
+            const CallICFGNode* call = ret->getCallSite();
+            const auto callerFinal = finalStates.find(call);
+            const auto callerAvailability = availability.find(call);
+            if (callerFinal != finalStates.end() &&
+                    callerAvailability != availability.end())
+                restorePostReplayCallerFrame(
+                    incoming, SVFUtil::cast<RetICFGNode>(target),
+                    callerFinal->second, callerAvailability->second);
+        }
         if (conditional && conditional->getCondition())
         {
             replay.assumeBranch(conditional, incoming);

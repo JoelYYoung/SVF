@@ -428,6 +428,14 @@ struct OperationMetadata
     std::string reason;
 };
 
+struct NumericalTelemetry
+{
+    std::uint64_t relationalClosureCalls = 0;
+    std::uint64_t joinCalls = 0;
+    std::uint64_t wideningCalls = 0;
+    std::uint64_t narrowingCalls = 0;
+};
+
 struct Diagnostic
 {
     OperationKind operation;
@@ -451,6 +459,11 @@ public:
     using RawBuffer = std::vector<std::uint8_t>;
 
     ~NumericalDomain() override = default;
+
+    /// Process-local counters used only by explicitly enabled profiling runs.
+    /// Analysis is single-threaded while these counters are active.
+    static void beginTelemetry();
+    static NumericalTelemetry endTelemetry();
 
     /// Return a deterministic semantic hash. Compatible properties that are
     /// equivalent according to isEquivalentTo() have the same hash. Hash

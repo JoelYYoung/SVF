@@ -539,6 +539,10 @@ protected:
     virtual void normalizePostReplayState(
         State& state,
         const std::set<AbstractDomain::Variable>& availableScalars) const;
+    virtual void restorePostReplayCallerFrame(
+        State& state, const RetICFGNode* returnSite,
+        const State& callerState,
+        const std::set<AbstractDomain::Variable>& callerScalars) const;
     void verifyPostFixpoint();
 
     bool shouldApplyNarrowing(const FunObjVar* fun);
