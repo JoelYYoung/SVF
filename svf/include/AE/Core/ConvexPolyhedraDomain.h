@@ -127,6 +127,7 @@ public:
     CheckResult entails(const LinearConstraint& constraint) const override;
     Interval bound(Variable variable) const override;
     Interval bound(const LinearExpression& expression) const override;
+    std::vector<Variable> supportVariables() const override;
     LinearConstraintSet toConstraints() const override;
     void close() override;
     void canonicalize() override;

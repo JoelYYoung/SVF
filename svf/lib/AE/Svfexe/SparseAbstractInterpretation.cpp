@@ -46,7 +46,7 @@ std::vector<AD::Variable> nonDefaultVariables(
 {
     // All domain support queries are already sorted and unique. Keep that
     // order without allocating a tree node for every initialized coordinate.
-    const auto numbers = state.numerical().constrainedVariables();
+    const auto numbers = state.numerical().supportVariables();
     const auto pointers = state.addresses().nonDefaultVariables();
     std::vector<AD::Variable> payloads;
     payloads.reserve(numbers.size() + pointers.size());
@@ -70,7 +70,7 @@ SemiSparseAbstractInterpretation::SemiSparseAbstractInterpretation()
 SemiSparseAbstractInterpretation::State
 SemiSparseAbstractInterpretation::flowState(bool bottom) const
 {
-    return State(bottom ? AD::BoxDomain::bottom() : AD::BoxDomain::top(),
+    return State(this->makeNumericalDomain(bottom),
                  this->adapter_.memoryLayout(), true);
 }
 
@@ -238,7 +238,7 @@ void SemiSparseAbstractInterpretation::forgetActiveScalarValues(
     const AD::Variable contentBegin =
         this->adapter_.firstObjectContentVariable();
     for (AD::Variable variable :
-            denseState.numerical().constrainedVariablesBefore(contentBegin))
+            denseState.numerical().supportVariablesBefore(contentBegin))
         denseState.numerical().forget(variable);
     for (AD::Variable variable :
             denseState.addresses().nonDefaultVariablesBefore(contentBegin))
@@ -336,7 +336,7 @@ void SemiSparseAbstractInterpretation::restoreCallerFrameAfterSharedCallee(
 void SemiSparseAbstractInterpretation::applyScalarRefinement(
     State& denseState, const State& checkpoint)
 {
-    for (AD::Variable variable : checkpoint.numerical().constrainedVariables())
+    for (AD::Variable variable : checkpoint.numerical().supportVariables())
     {
         const ValVar* value = this->adapter_.value(variable);
         if (!value || value->isPointer())
@@ -435,7 +435,8 @@ bool SemiSparseAbstractInterpretation::mergeStatesFromPredecessors(
         {
             refinement = refinementIterator != refinementTrace_.end()
                          ? refinementIterator->second
-                         : State(AD::BoxDomain::top(), this->adapter_.memoryLayout());
+                         : State(this->makeNumericalDomain(false),
+                                 this->adapter_.memoryLayout());
             if (hasConditional)
                 this->assumeBranch(conditional, *refinement);
             if (refinement->isBottom())

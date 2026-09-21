@@ -3996,6 +3996,15 @@ BoxDomain ConvexPolyhedraDomain::toBox() const
     return result;
 }
 
+std::vector<Variable> ConvexPolyhedraDomain::supportVariables() const
+{
+    std::vector<Variable> result;
+    result.reserve(layout_.size());
+    for (const auto& entry : layout_.variables())
+        result.push_back(entry.variable);
+    return result;
+}
+
 void ConvexPolyhedraDomain::ensureVariables(const std::vector<Variable>& variables)
 {
     std::set<Variable> missing;

@@ -513,6 +513,17 @@ public:
     /// exceptional IEEE outcomes that cannot be represented numerically lose
     /// the affected bound to top.
     Interval bound(const TreeExpression& expression) const;
+    /// Variables with explicitly represented numerical support. Absence means
+    /// unconstrained, never undefined. The result is sorted and unique.
+    virtual std::vector<Variable> supportVariables() const = 0;
+    std::vector<Variable> supportVariablesBefore(Variable upperBound) const;
+    /// Strongly replace one coordinate by an interval while forgetting its
+    /// previous relations. This is the public product-domain entry point for
+    /// an interval-valued transfer.
+    void assignBound(Variable target, const Interval& value)
+    {
+        assignInterval(target, value);
+    }
     virtual LinearConstraintSet toConstraints() const = 0;
 
     /// Replace strict boundaries by non-strict boundaries. This is the
@@ -613,6 +624,10 @@ public:
     std::vector<Variable> constrainedVariables() const;
     std::vector<Variable> constrainedVariablesBefore(
         Variable upperBound) const;
+    std::vector<Variable> supportVariables() const override
+    {
+        return constrainedVariables();
+    }
     LinearConstraintSet toConstraints() const override;
     void close() override;
     void canonicalize() override;

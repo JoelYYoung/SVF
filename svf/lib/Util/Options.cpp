@@ -784,6 +784,24 @@ const OptionMap<u32_t> Options::AESparsity(
         "Sparse abstract execution via SVFG."
     }
 });
+const OptionMap<u32_t> Options::AEDomain(
+    "ae-domain",
+    "Numerical abstract domain (Default: box)",
+    AbstractInterpretation::AENumericalDomain::Box,
+{
+    {
+        AbstractInterpretation::AENumericalDomain::Box, "box",
+        "Independent interval bounds."
+    },
+    {
+        AbstractInterpretation::AENumericalDomain::Octagon, "octagon",
+        "Relational constraints of the form +/-x +/-y <= c."
+    },
+    {
+        AbstractInterpretation::AENumericalDomain::Polyhedra, "polyhedra",
+        "General convex linear constraints."
+    }
+});
 const OptionMap<u32_t> Options::AEFunEntry(
     "ae-fun-entry",
     "Abstract execution function entry mode (Default: main)",

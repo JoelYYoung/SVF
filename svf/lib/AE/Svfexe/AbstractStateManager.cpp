@@ -2,7 +2,10 @@
 
 #include "AE/Svfexe/AbstractInterpretation.h"
 
+#include "AE/Core/ConvexPolyhedraDomain.h"
+#include "AE/Core/OctagonDomain.h"
 #include "SVFIR/SVFIR.h"
+#include "Util/Options.h"
 
 #include <algorithm>
 
@@ -347,13 +350,37 @@ const ObjVar* AbstractInterpretation::objectAt(AD::Location location) const
 AbstractInterpretation::State AbstractInterpretation::topState()
 const
 {
-    return State(AD::BoxDomain::top(), adapter_.memoryLayout(), true);
+    return State(makeNumericalDomain(false), adapter_.memoryLayout(), true);
 }
 
 AbstractInterpretation::State AbstractInterpretation::
 bottomState() const
 {
-    return State(AD::BoxDomain::bottom(), adapter_.memoryLayout(), true);
+    return State(makeNumericalDomain(true), adapter_.memoryLayout(), true);
+}
+
+std::unique_ptr<AD::NumericalDomain>
+AbstractInterpretation::makeNumericalDomain(bool bottom) const
+{
+    switch (Options::AEDomain())
+    {
+    case AENumericalDomain::Octagon:
+    {
+        AD::OctagonConfig config;
+        config.storage = AD::OctagonStorageKind::ComponentDense;
+        return std::make_unique<AD::OctagonDomain>(
+                   bottom ? AD::OctagonDomain::bottom(config)
+                   : AD::OctagonDomain::top(config));
+    }
+    case AENumericalDomain::Polyhedra:
+        return std::make_unique<AD::ConvexPolyhedraDomain>(
+                   bottom ? AD::ConvexPolyhedraDomain::bottom()
+                   : AD::ConvexPolyhedraDomain::top());
+    case AENumericalDomain::Box:
+    default:
+        return std::make_unique<AD::BoxDomain>(
+                   bottom ? AD::BoxDomain::bottom() : AD::BoxDomain::top());
+    }
 }
 
 AbstractInterpretation::State& AbstractInterpretation::

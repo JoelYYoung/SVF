@@ -91,6 +91,13 @@ public:
         Sparse
     };
 
+    enum AENumericalDomain
+    {
+        Box,
+        Octagon,
+        Polyhedra
+    };
+
     enum HandleRecur
     {
         TOP,
@@ -430,6 +437,8 @@ protected:
     const State& state(const ICFGNode* node) const;
     State topState() const;
     State bottomState() const;
+    std::unique_ptr<AbstractDomain::NumericalDomain> makeNumericalDomain(
+        bool bottom) const;
 
     void assignValue(State& state, AbstractDomain::Variable variable,
                      const AbstractDomain::Interval& interval,

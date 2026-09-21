@@ -44,6 +44,15 @@
 namespace SVF::AbstractDomain
 {
 
+std::vector<Variable> NumericalDomain::supportVariablesBefore(
+    Variable upperBound) const
+{
+    std::vector<Variable> variables = supportVariables();
+    variables.erase(std::lower_bound(variables.begin(), variables.end(), upperBound),
+                    variables.end());
+    return variables;
+}
+
 Integer::Integer() : value_(0) {}
 
 Integer::Integer(std::int64_t value)

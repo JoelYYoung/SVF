@@ -135,22 +135,31 @@ private:
 class BoxAddressDomain final : public AbstractDomain
 {
 public:
+    BoxAddressDomain(std::unique_ptr<NumericalDomain> numerical,
+                     MemoryLayout memoryLayout,
+                     bool trackInitialization = false);
     BoxAddressDomain(BoxDomain numerical, MemoryLayout memoryLayout,
                      bool trackInitialization = false)
-        : numerical_(std::move(numerical)),
-          memoryLayout_(std::move(memoryLayout)),
-          addresses_(AddressDomain::top()), lifetimes_(LifetimeDomain::bottom()),
-          trackInitialization_(trackInitialization)
+        : BoxAddressDomain(std::make_unique<BoxDomain>(std::move(numerical)),
+                           std::move(memoryLayout), trackInitialization)
     {
     }
 
+    BoxAddressDomain(std::unique_ptr<NumericalDomain> numerical,
+                     MemoryLayout memoryLayout,
+                     AddressDomain addresses, LifetimeDomain lifetimes);
     BoxAddressDomain(BoxDomain numerical, MemoryLayout memoryLayout,
                      AddressDomain addresses, LifetimeDomain lifetimes)
-        : numerical_(std::move(numerical)),
-          memoryLayout_(std::move(memoryLayout)),
-          addresses_(std::move(addresses)), lifetimes_(std::move(lifetimes))
+        : BoxAddressDomain(std::make_unique<BoxDomain>(std::move(numerical)),
+                           std::move(memoryLayout), std::move(addresses),
+                           std::move(lifetimes))
     {
     }
+
+    BoxAddressDomain(const BoxAddressDomain& other);
+    BoxAddressDomain(BoxAddressDomain&& other) noexcept = default;
+    BoxAddressDomain& operator=(const BoxAddressDomain& other);
+    BoxAddressDomain& operator=(BoxAddressDomain&& other) noexcept = default;
 
     DomainKind kind() const noexcept override
     {
@@ -161,13 +170,13 @@ public:
         return std::make_unique<BoxAddressDomain>(*this);
     }
 
-    BoxDomain& numerical()
+    NumericalDomain& numerical()
     {
-        return numerical_;
+        return *numerical_;
     }
-    const BoxDomain& numerical() const
+    const NumericalDomain& numerical() const
     {
-        return numerical_;
+        return *numerical_;
     }
     AddressDomain& addresses()
     {
@@ -239,7 +248,7 @@ public:
 
     void assignNumeric(Variable target, const LinearExpression& expression)
     {
-        numerical_.assign(target, expression);
+        numerical_->assign(target, expression);
         if (trackInitialization_)
         {
             numericalInitialization_.assign(target, InitializationState::Initialized);
@@ -251,7 +260,7 @@ public:
 
     void assignNumericParallel(const LinearAssignmentList& assignments)
     {
-        numerical_.assignParallel(assignments);
+        numerical_->assignParallel(assignments);
         for (const LinearAssignment& assignment : assignments)
         {
             if (trackInitialization_)
@@ -266,7 +275,7 @@ public:
 
     void assignNumericParallel(const TreeAssignmentList& assignments)
     {
-        numerical_.assignParallel(assignments);
+        numerical_->assignParallel(assignments);
         for (const TreeAssignment& assignment : assignments)
         {
             if (trackInitialization_)
@@ -289,7 +298,7 @@ public:
                     setInterval(term.first, Interval::top());
             }
         }
-        numerical_.assume(constraint);
+        numerical_->assume(constraint);
     }
 
     void load(Variable target, Variable pointer)
@@ -383,8 +392,7 @@ private:
                               : nullptr;
         return product && trackInitialization_ == product->trackInitialization_ &&
                memoryLayout_ == product->memoryLayout_ &&
-               numerical_.config().operationCompatible(
-                   product->numerical_.config());
+               numerical_->isCompatibleWith(*product->numerical_);
     }
 
     void joinDomain(const AbstractDomain& other) override
@@ -402,7 +410,7 @@ private:
             combineInitialized(product, Combination::Join);
             return;
         }
-        numerical_.joinWith(product.numerical_);
+        numerical_->joinWith(*product.numerical_);
         addresses_.joinWith(product.addresses_);
         lifetimes_.joinWith(product.lifetimes_);
     }
@@ -422,7 +430,7 @@ private:
             *this = product;
             return;
         }
-        numerical_.meetWith(product.numerical_);
+        numerical_->meetWith(*product.numerical_);
         addresses_.meetWith(product.addresses_);
         lifetimes_.meetWith(product.lifetimes_);
     }
@@ -442,7 +450,7 @@ private:
             combineInitialized(product, Combination::Widen);
             return;
         }
-        numerical_.widenWith(product.numerical_);
+        numerical_->widenWith(*product.numerical_);
         addresses_.widenWith(product.addresses_);
         lifetimes_.widenWith(product.lifetimes_);
     }
@@ -460,14 +468,14 @@ private:
             *this = product;
             return;
         }
-        numerical_.narrowWith(product.numerical_);
+        numerical_->narrowWith(*product.numerical_);
         addresses_.narrowWith(product.addresses_);
         lifetimes_.narrowWith(product.lifetimes_);
     }
 
     bool isBottomDomain() const override
     {
-        return numerical_.isBottom() || addresses_.isBottom() ||
+        return numerical_->isBottom() || addresses_.isBottom() ||
                (trackInitialization_ && (numericalInitialization_.isBottom() ||
                                          addressInitialization_.isBottom()));
     }
@@ -479,7 +487,7 @@ private:
         // conservatively project it as Address Top. Likewise, absent lifetime
         // facts impose no release constraint. This is the canonical
         // unconstrained flow state used by dense and sparse AE.
-        return numerical_.isTop() && addresses_.isTop() &&
+        return numerical_->isTop() && addresses_.isTop() &&
                lifetimes_.isBottom() &&
                (!trackInitialization_ || (numericalInitialization_.isTop() &&
                                           addressInitialization_.isTop()));
@@ -494,14 +502,14 @@ private:
             return false;
         if (trackInitialization_)
             return initializedSubsetOf(product);
-        return numerical_.isSubsetOf(product.numerical_) == CheckResult::True &&
+        return numerical_->isSubsetOf(*product.numerical_) == CheckResult::True &&
                addresses_.isSubsetOf(product.addresses_) == CheckResult::True &&
                lifetimes_.isSubsetOf(product.lifetimes_) == CheckResult::True;
     }
 
     std::string domainToString() const override
     {
-        return "numeric=" + numerical_.toString() +
+        return "numeric=" + numerical_->toString() +
                ", addresses=" + addresses_.toString() +
                ", lifetimes=" + lifetimes_.toString() +
                (trackInitialization_
@@ -527,7 +535,7 @@ private:
         joinDomain(alternative);
     }
 
-    BoxDomain numerical_;
+    std::unique_ptr<NumericalDomain> numerical_;
     MemoryLayout memoryLayout_;
     AddressDomain addresses_;
     LifetimeDomain lifetimes_;

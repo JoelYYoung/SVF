@@ -182,6 +182,11 @@ AbstractInterpretation& AbstractInterpretation::getAEInstance()
     // outside AE's control.
     static AbstractInterpretation* instance = []() -> AbstractInterpretation*
     {
+        if (Options::AESparsity() == AESparsity::Sparse &&
+                Options::AEDomain() != AENumericalDomain::Box)
+            throw std::invalid_argument(
+                "relational numerical domains currently support dense and "
+                "semi-sparse AE only");
         switch (Options::AESparsity())
         {
         case AESparsity::SemiSparse:

@@ -31,6 +31,66 @@
 namespace SVF::AbstractDomain
 {
 
+namespace
+{
+
+std::unique_ptr<NumericalDomain> cloneNumerical(
+    const NumericalDomain& numerical)
+{
+    std::unique_ptr<AbstractDomain> clone = numerical.clone();
+    return std::unique_ptr<NumericalDomain>(
+               static_cast<NumericalDomain*>(clone.release()));
+}
+
+} // namespace
+
+BoxAddressDomain::BoxAddressDomain(
+    std::unique_ptr<NumericalDomain> numerical, MemoryLayout memoryLayout,
+    bool trackInitialization)
+    : numerical_(std::move(numerical)),
+      memoryLayout_(std::move(memoryLayout)),
+      addresses_(AddressDomain::top()), lifetimes_(LifetimeDomain::bottom()),
+      trackInitialization_(trackInitialization)
+{
+    if (!numerical_)
+        throw std::invalid_argument("product requires a numerical domain");
+}
+
+BoxAddressDomain::BoxAddressDomain(
+    std::unique_ptr<NumericalDomain> numerical, MemoryLayout memoryLayout,
+    AddressDomain addresses, LifetimeDomain lifetimes)
+    : numerical_(std::move(numerical)),
+      memoryLayout_(std::move(memoryLayout)),
+      addresses_(std::move(addresses)), lifetimes_(std::move(lifetimes))
+{
+    if (!numerical_)
+        throw std::invalid_argument("product requires a numerical domain");
+}
+
+BoxAddressDomain::BoxAddressDomain(const BoxAddressDomain& other)
+    : numerical_(cloneNumerical(*other.numerical_)),
+      memoryLayout_(other.memoryLayout_), addresses_(other.addresses_),
+      lifetimes_(other.lifetimes_),
+      trackInitialization_(other.trackInitialization_),
+      numericalInitialization_(other.numericalInitialization_),
+      addressInitialization_(other.addressInitialization_)
+{
+}
+
+BoxAddressDomain& BoxAddressDomain::operator=(const BoxAddressDomain& other)
+{
+    if (this == &other)
+        return *this;
+    numerical_ = cloneNumerical(*other.numerical_);
+    memoryLayout_ = other.memoryLayout_;
+    addresses_ = other.addresses_;
+    lifetimes_ = other.lifetimes_;
+    trackInitialization_ = other.trackInitialization_;
+    numericalInitialization_ = other.numericalInitialization_;
+    addressInitialization_ = other.addressInitialization_;
+    return *this;
+}
+
 static bool mayBeInitialized(InitializationState state)
 {
     return (static_cast<unsigned>(state) &
@@ -65,7 +125,7 @@ Interval BoxAddressDomain::interval(Variable variable) const
     if (isBottomDomain() || (trackInitialization_ &&
                              !mayBeInitialized(numericalInitialization_.value(variable))))
         return Interval::bottom();
-    return numerical_.bound(variable);
+    return numerical_->bound(variable);
 }
 
 bool BoxAddressDomain::numericalMayBeUninitialized(Variable variable) const
@@ -99,7 +159,7 @@ bool BoxAddressDomain::hasValue(Variable variable) const
     if (trackInitialization_)
         return mayBeInitialized(numericalInitialization_.value(variable)) ||
                mayBeInitialized(addressInitialization_.value(variable));
-    return !numerical_.bound(variable).isTop() ||
+    return !numerical_->bound(variable).isTop() ||
            !addresses_.addressSet(variable).isTop();
 }
 
@@ -108,9 +168,9 @@ void BoxAddressDomain::setInterval(Variable variable, const Interval& value)
     if (isBottomDomain())
         return;
     if (value.isBottom())
-        numerical_.forget(variable);
+        numerical_->forget(variable);
     else
-        numerical_.setBound(variable, value);
+        numerical_->assignBound(variable, value);
     if (trackInitialization_)
         numericalInitialization_.assign(variable, value.isBottom()
                                         ? InitializationState::Uninitialized
@@ -191,7 +251,7 @@ void BoxAddressDomain::joinValueFrom(Variable target,
 
 void BoxAddressDomain::resetValue(Variable variable)
 {
-    numerical_.forget(variable);
+    numerical_->forget(variable);
     addresses_.forget(variable);
     if (trackInitialization_)
     {
@@ -224,9 +284,9 @@ void BoxAddressDomain::combineInitialized(
     const bool intersect = operation == Combination::Meet;
     if (isBottomDomain() || other.isBottomDomain())
     {
-        if (intersect)
-            numerical_ = BoxDomain::bottom(numerical_.config());
-        else if (isBottomDomain())
+        if (intersect && !isBottomDomain())
+            *this = other;
+        else if (!intersect && isBottomDomain())
             *this = other;
         return;
     }
@@ -247,8 +307,8 @@ void BoxAddressDomain::combineInitialized(
         result.addressInitialization_.joinWith(other.addressInitialization_);
         result.lifetimes_.joinWith(other.lifetimes_);
     }
-    const auto numbers = mergedVariables(numerical_.constrainedVariables(),
-                                         other.numerical_.constrainedVariables());
+    const auto numbers = mergedVariables(numerical_->supportVariables(),
+                                         other.numerical_->supportVariables());
     for (Variable variable : numbers)
     {
         if (result.isBottomDomain())
@@ -269,7 +329,7 @@ void BoxAddressDomain::combineInitialized(
         {
             // Clear even a latent raw constraint under an inactive guard:
             // mutable domain access must not make it survive a combination.
-            result.numerical_.forget(variable);
+            result.numerical_->forget(variable);
             if (intersect)
             {
                 const auto guard = result.numericalInitialization_.value(variable);
@@ -277,8 +337,8 @@ void BoxAddressDomain::combineInitialized(
                                                        static_cast<InitializationState>(static_cast<unsigned>(guard) & 1U));
             }
         }
-        else if (number != numerical_.bound(variable))
-            result.numerical_.setBound(variable, number);
+        else if (number != numerical_->bound(variable))
+            result.numerical_->assignBound(variable, number);
     }
     const auto pointers = mergedVariables(addresses_.nonDefaultVariables(),
                                           other.addresses_.nonDefaultVariables());
@@ -318,11 +378,12 @@ bool BoxAddressDomain::initializedSubsetOf(const BoxAddressDomain& other) const
     // shared-page fast paths, without confusing inactive payload Top with an
     // initialized Top. If native inclusion fails, only right-hand non-Top
     // constraints can witness a failure of conditional payload inclusion.
-    if (numerical_.isSubsetOf(other.numerical_) != CheckResult::True)
+    if (numerical_->isSubsetOf(*other.numerical_) != CheckResult::True)
     {
-        for (Variable variable : other.numerical_.constrainedVariables())
+        for (Variable variable : other.numerical_->supportVariables())
             if (mayBeInitialized(numericalInitialization_.value(variable)) &&
-                    !numerical_.bound(variable).isSubsetOf(other.numerical_.bound(variable)))
+                    !numerical_->bound(variable).isSubsetOf(
+                        other.numerical_->bound(variable)))
                 return false;
     }
     if (addresses_.isSubsetOf(other.addresses_) != CheckResult::True)
@@ -575,11 +636,11 @@ void BoxAddressDomain::restoreMissingMemoryFrom(
         restoreMissingAddressFrom(caller, content);
         return;
     }
-    if (numerical_.bound(content).isTop())
+    if (numerical_->bound(content).isTop())
     {
-        const Interval interval = caller.numerical_.bound(content);
+        const Interval interval = caller.numerical_->bound(content);
         if (!interval.isTop())
-            numerical_.setBound(content, interval);
+            numerical_->assignBound(content, interval);
     }
     restoreMissingAddressFrom(caller, content);
 }
