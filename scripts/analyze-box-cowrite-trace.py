@@ -30,7 +30,11 @@ def read_trace(path):
     hyperedges = collections.Counter()
     raw = {"detaches": 0, "cloned_slots": 0}
     raw_epochs = collections.defaultdict(collections.Counter)
-    for line_number, line in enumerate(path.read_text().splitlines(), 1):
+    lines = path.read_text().splitlines()
+    if any(line == "# box-cowrite-trace-v1" for line in lines):
+        raise ValueError(
+            "box-cowrite-trace-v1 conflates Bottom snapshots with actual touches")
+    for line_number, line in enumerate(lines, 1):
         if not line or line.startswith("#"):
             continue
         fields = line.split()
@@ -58,12 +62,16 @@ def read_trace(path):
                 changed.append((key, sign == "+"))
                 variables.add(key)
             changed_keys = [key for key, _ in changed]
-            if len(changed_keys) <= EXPLICIT_PAIR_LIMIT:
-                for index, left in enumerate(changed_keys):
-                    for right in changed_keys[index + 1:]:
-                        pair[tuple(sorted((left, right)))] += 1
-            else:
-                hyperedges[tuple(sorted(changed_keys))] += 1
+            # Transitioning to Bottom drops the directory as a whole.  The
+            # changed support is semantic, not a set of per-variable page
+            # writes, so it must not create a layout affinity hyperedge.
+            if not head[6]:
+                if len(changed_keys) <= EXPLICIT_PAIR_LIMIT:
+                    for index, left in enumerate(changed_keys):
+                        for right in changed_keys[index + 1:]:
+                            pair[tuple(sorted((left, right)))] += 1
+                else:
+                    hyperedges[tuple(sorted(changed_keys))] += 1
             touched = []
             for token in touched_tokens:
                 sign, key = variable(token)
@@ -286,11 +294,6 @@ class Replay:
             self.join(state, related, changed)
             state["bottom"] = bool(after_bottom)
             return
-        if after_bottom:
-            self.clear(state)
-            state["bottom"] = True
-            return
-        state["bottom"] = False
         changed_map = dict(changed)
         touched_pages = set()
         for key in touched:
@@ -311,6 +314,11 @@ class Replay:
                 touched_pages.add(page_index)
             if page is not None:
                 self.detach(state, page_index)
+        if after_bottom:
+            self.clear(state)
+            state["bottom"] = True
+            return
+        state["bottom"] = False
         self.apply_support(state, changed)
 
     def run(self, events, raw_epochs=None):
@@ -393,7 +401,7 @@ def main():
         "cloned_slots_match": replay["g0_current"].get("cloned_slots", 0) == raw["cloned_slots"],
     }
     result = {
-        "schema": "box-cowrite-replay-v1",
+        "schema": "box-cowrite-replay-v2",
         "trace": str(args.trace),
         "variables": len(variables),
         "mutation_events": sum(event[0] == "M" for event in events),

@@ -68,10 +68,10 @@ struct CowriteCensus
         if (!trace)
             throw std::runtime_error(
                 std::string("cannot open Box co-write trace: ") + path);
-        trace << "# box-cowrite-trace-v1\n"
+        trace << "# box-cowrite-trace-v2\n"
               << "# M sequence epoch kind state related_state before_bottom "
                  "after_bottom changed_count +/-id:type:exponent:significand... "
-                 "T touched_count id:type:exponent:significand...\n"
+                 "T actual_touch_count id:type:exponent:significand...\n"
               << "# S sequence kind state source_state mutation_epoch bottom\n"
               << "# D sequence epoch state page_index occupied_slots\n"
               << "# W epoch state copied_slots occupied_slots\n";

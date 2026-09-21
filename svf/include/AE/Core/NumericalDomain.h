@@ -1183,6 +1183,7 @@ private:
         MutationScope& operator=(const MutationScope&) = delete;
 
         static void recordBefore(BoxDomain& state, Variable variable);
+        static void recordBeforeClear(BoxDomain& state, Variable variable);
         static void recordReplacement(BoxDomain& state,
                                       const BoxDomain& replacement);
         static std::uint64_t activeEpoch() noexcept;
@@ -1196,6 +1197,7 @@ private:
         std::uint64_t relatedStateId_ = 0;
         bool beforeBottom_ = false;
         std::map<Variable, Interval> initialValues_;
+        std::vector<Variable> touchedVariables_;
 
         static thread_local std::vector<MutationScope*> active_;
     };

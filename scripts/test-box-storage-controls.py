@@ -14,6 +14,13 @@ COWRITE = runpy.run_path(str(HERE / 'analyze-box-cowrite-trace.py'))
 
 
 class Controls(unittest.TestCase):
+    def test_cowrite_v1_trace_is_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            trace = Path(directory) / 'trace.tsv'
+            trace.write_text('# box-cowrite-trace-v1\n')
+            with self.assertRaisesRegex(ValueError, 'conflates Bottom'):
+                COWRITE['read_trace'](trace)
+
     def test_cowrite_no_edges_falls_back_to_marginal_packing(self):
         variables = {(index, 0, 0, 0) for index in range(19)}
         marginal = {key: (key[0] * 7) % 11 for key in variables}
@@ -81,6 +88,34 @@ class Controls(unittest.TestCase):
         self.assertEqual(pair, {(changed[0], changed[1]): 1})
         self.assertEqual(hyperedges, {})
         self.assertTrue(all(marginal[key] == 1 for key in variables))
+
+    def test_cowrite_bottom_clear_does_not_create_layout_hyperedge(self):
+        variables = [(index, 0, 0, 0) for index in range(40)]
+        with tempfile.TemporaryDirectory() as directory:
+            trace = Path(directory) / 'trace.tsv'
+            trace.write_text(
+                'M 1 1 3 1 0 0 1 40 '
+                + ' '.join('-' + ':'.join(map(str, key)) for key in variables)
+                + ' T 1 ' + ':'.join(map(str, variables[0])) + '\n')
+            _, _, marginal, pair, hyperedges, _, _ = COWRITE['read_trace'](trace)
+        self.assertEqual(pair, {})
+        self.assertEqual(hyperedges, {})
+        self.assertEqual(marginal, {variables[0]: 1})
+
+    def test_cowrite_bottom_transition_detaches_before_clear(self):
+        variables = [(index, 0, 0, 0) for index in range(2)]
+        replay = COWRITE['Replay']({key: 0 for key in variables})
+        result = replay.run([
+            ('S', 1, COWRITE['CREATE'], 1, 0, 0, 0),
+            ('M', 2, 1, 0, 1, 0, 0, 0,
+             [(key, True) for key in variables], variables),
+            ('S', 3, COWRITE['COPY_CONSTRUCT'], 2, 1, 0, 0),
+            ('M', 4, 2, 3, 2, 0, 0, 1,
+             [(key, False) for key in variables], [variables[0]]),
+        ])
+        self.assertEqual(result.get('detaches', 0), 1)
+        self.assertEqual(result.get('cloned_slots', 0), 2)
+        self.assertEqual(result.get('live_pages', 0), 1)
 
     def test_cowrite_trace_records_storage_work_by_epoch(self):
         with tempfile.TemporaryDirectory() as directory:

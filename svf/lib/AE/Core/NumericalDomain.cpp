@@ -2880,6 +2880,21 @@ void BoxDomain::MutationScope::recordBefore(BoxDomain& state,
         return candidate->state_ == &state;
     });
     if (scope != active_.rend())
+    {
+        (*scope)->initialValues_.emplace(variable, state.boundAt(variable));
+        (*scope)->touchedVariables_.push_back(variable);
+    }
+}
+
+void BoxDomain::MutationScope::recordBeforeClear(BoxDomain& state,
+        Variable variable)
+{
+    const auto scope = std::find_if(active_.rbegin(), active_.rend(),
+                                    [&state](const MutationScope* candidate)
+    {
+        return candidate->state_ == &state;
+    });
+    if (scope != active_.rend())
         (*scope)->initialValues_.emplace(variable, state.boundAt(variable));
 }
 
@@ -2949,27 +2964,28 @@ BoxDomain::MutationScope::~MutationScope()
         const bool afterBottom = state_->bottom_;
         std::vector<Variable> changed;
         std::vector<std::uint8_t> constrainedAfter;
-        std::vector<Variable> touched;
         changed.reserve(initialValues_.size());
         constrainedAfter.reserve(initialValues_.size());
-        touched.reserve(initialValues_.size());
         for (const auto& [variable, initial] : initialValues_)
         {
-            touched.push_back(variable);
             if (initial != state_->boundAt(variable))
             {
                 changed.push_back(variable);
                 constrainedAfter.push_back(!state_->boundAt(variable).isTop());
             }
         }
+        std::sort(touchedVariables_.begin(), touchedVariables_.end());
+        touchedVariables_.erase(
+            std::unique(touchedVariables_.begin(), touchedVariables_.end()),
+            touchedVariables_.end());
         if (!active_.empty() && active_.back() == this)
             active_.pop_back();
         sink_({kind_, BoxMutationPhase::End,
                nextBoxStorageSequence.fetch_add(1, std::memory_order_relaxed),
                epoch_, state_->telemetryStateId_, relatedStateId_,
                beforeBottom_, afterBottom, changed.data(),
-               constrainedAfter.data(), changed.size(), touched.data(),
-               touched.size()});
+               constrainedAfter.data(), changed.size(), touchedVariables_.data(),
+               touchedVariables_.size()});
     }
     catch (...)
     {
@@ -4300,7 +4316,7 @@ void BoxDomain::makeBottom()
 {
 #ifdef SVF_BOX_STORAGE_TELEMETRY
     for (Variable variable : boundedVariables())
-        MutationScope::recordBefore(*this, variable);
+        MutationScope::recordBeforeClear(*this, variable);
 #endif
     bottom_ = true;
     boundPages_ = emptyPageDirectory();

@@ -524,6 +524,27 @@ void mutationEventContract()
                event.mutationEpoch == forgetEpoch && event.stateId != 0;
     }), "slot-copy work lacks mutation context");
 
+    BoxDomain bottoming = box;
+    mutationRecords.clear();
+    contextualStorageEvents.clear();
+    contextualWorkEvents.clear();
+    bottoming.assume(lessEqual(LinearExpression(first),
+                               LinearExpression(Rational(0))));
+    check(bottoming.isBottom() && mutationRecords.size() == 2 &&
+          mutationRecords[1].kind == BoxMutationKind::Assumption &&
+          mutationRecords[1].changed ==
+          (std::vector<Variable> {first, ninth}) &&
+          mutationRecords[1].touched == std::vector<Variable> {first},
+          "bottom transition confused snapshot variables with physical touches");
+    const std::uint64_t bottomEpoch = mutationRecords[1].epoch;
+    check(std::any_of(contextualStorageEvents.begin(),
+                      contextualStorageEvents.end(),
+                      [bottomEpoch](const BoxStorageEvent& event)
+    {
+        return event.kind == BoxStorageEventKind::PageDetach &&
+               event.mutationEpoch == bottomEpoch;
+    }), "bottom transition lost its pre-clear physical write");
+
     BoxDomain left = BoxDomain::top();
     left.assign(first, LinearExpression(Rational(2)));
     left.assign(ninth, LinearExpression(Rational(3)));
