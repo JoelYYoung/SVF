@@ -404,6 +404,12 @@ bool BoxAddressDomain::initializedSubsetOf(const BoxAddressDomain& other) const
     // constraints can witness a failure of conditional payload inclusion.
     if (numerical_->isSubsetOf(*other.numerical_) != CheckResult::True)
     {
+        // Unary fallback is valid only for Box. Equal per-variable bounds do
+        // not establish inclusion between relational properties and using
+        // them here would let the fixpoint engine stop before relations have
+        // stabilized.
+        if (numerical_->kind() != DomainKind::Box)
+            return false;
         for (Variable variable : other.numerical_->supportVariables())
             if (mayBeInitialized(numericalInitialization_.value(variable)) &&
                     !numerical_->bound(variable).isSubsetOf(
