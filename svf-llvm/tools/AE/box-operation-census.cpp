@@ -249,9 +249,16 @@ void collect(const AbstractOperationEvent& event)
         const auto validateVersion = [](std::uint64_t version,
                                         const std::string& state)
         {
+            const std::size_t marker = state.find(";state=");
+            if (marker == std::string::npos)
+                throw std::runtime_error("invalid canonical Product state");
+            // MemoryLayout is a shared monotone schema: extending it adds
+            // implicit-Top coordinates to every copy and does not mutate the
+            // Product value represented by this version identity.
+            const std::string value = state.substr(marker);
             const auto [iterator, inserted] =
-                versionStates.emplace(version, state);
-            if (!inserted && iterator->second != state)
+                versionStates.emplace(version, value);
+            if (!inserted && iterator->second != value)
                 ++versionCollisions;
         };
         validateVersion(left.operationVersion(), leftCanonical);
