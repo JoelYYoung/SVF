@@ -138,6 +138,62 @@ class Controls(unittest.TestCase):
         self.assertEqual(mismatch['expected_detaches'], 1)
         self.assertEqual(mismatch['actual_detaches'], 0)
 
+    def test_clone_conflict_separates_trigger_from_cloned_slots(self):
+        variables = [(index, 0, 0, 0) for index in range(9)]
+        current = {key: key[0] // 8 for key in variables}
+        events = [
+            ('S', 1, COWRITE['CREATE'], 1, 0, 0, 0),
+            ('M', 2, 1, 0, 1, 0, 0, 0,
+             [(key, True) for key in variables], variables),
+            ('S', 3, COWRITE['COPY_CONSTRUCT'], 2, 1, 0, 0),
+            ('M', 4, 2, 0, 2, 0, 0, 0, [], [variables[0]]),
+        ]
+        observed = COWRITE['Replay'](
+            current, collect_clone_conflicts=True)
+        baseline = observed.run(events)
+        self.assertEqual(baseline.get('detaches', 0), 1)
+        self.assertEqual(baseline.get('cloned_slots', 0), 8)
+        self.assertEqual(sum(observed.clone_conflicts.values()), 7)
+        candidate = COWRITE['clone_conflict_mapping'](
+            set(variables), collections.Counter(), observed.clone_conflicts)
+        self.assertNotEqual(candidate[variables[0]], candidate[variables[1]])
+        improved = COWRITE['Replay'](candidate).run(events)
+        self.assertEqual(improved.get('detaches', 0), 1)
+        self.assertEqual(improved.get('cloned_slots', 0), 1)
+
+    def test_clone_conflict_ignores_unique_writes_and_missing_top(self):
+        variables = [(index, 0, 0, 0) for index in range(3)]
+        replay = COWRITE['Replay'](
+            {key: 0 for key in variables}, collect_clone_conflicts=True)
+        replay.run([
+            ('S', 1, COWRITE['CREATE'], 1, 0, 0, 0),
+            ('M', 2, 1, 0, 1, 0, 0, 0,
+             [(variables[0], True), (variables[1], True)], variables[:2]),
+            ('M', 3, 2, 0, 1, 0, 0, 0, [], [variables[0]]),
+            ('S', 4, COWRITE['COPY_CONSTRUCT'], 2, 1, 0, 0),
+            ('M', 5, 3, 0, 2, 0, 0, 0, [], [variables[2]]),
+        ])
+        self.assertEqual(replay.clone_conflicts, {})
+        self.assertEqual(replay.clone_triggers, {})
+
+    def test_future_conflict_search_reports_feasible_best_round(self):
+        variables = [(index, 0, 0, 0) for index in range(9)]
+        events = [
+            ('S', 1, COWRITE['CREATE'], 1, 0, 0, 0),
+            ('M', 2, 1, 0, 1, 0, 0, 0,
+             [(key, True) for key in variables], variables),
+            ('S', 3, COWRITE['COPY_CONSTRUCT'], 2, 1, 0, 0),
+            ('M', 4, 2, 0, 2, 0, 0, 0, [], [variables[0]]),
+        ]
+        mapping, report = COWRITE['future_conflict_search'](
+            events, set(variables), collections.Counter(),
+            {key: key[0] // 8 for key in variables}, 4)
+        self.assertGreaterEqual(report['rounds_evaluated'], 2)
+        self.assertEqual(report['candidates'][report['best_round']]
+                         ['metrics']['cloned_slots'], 1)
+        self.assertEqual(COWRITE['Replay'](mapping).run(events)
+                         ['cloned_slots'], 1)
+
     def test_actual_identity(self):
         for variant, representation in DIRECTORY['REPRESENTATIONS'].items():
             identity = 'representation=' + representation + '\npool_policy=off\n'

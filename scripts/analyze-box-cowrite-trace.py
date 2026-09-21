@@ -158,9 +158,85 @@ def relational_mapping(variables, marginal, pair, hyperedges=()):
     return mapping
 
 
+def clone_conflict_mapping(variables, marginal, conflicts):
+    """Pack variables while avoiding pairs that caused cloned-slot work.
+
+    The number of groups is fixed to ceil(|variables| / 8), so this control
+    cannot buy fewer cloned slots by creating an unbounded sparse directory.
+    """
+    if not conflicts:
+        return marginal_mapping(variables, marginal)
+    weighted_degree = collections.Counter()
+    neighbours = collections.defaultdict(list)
+    for (left, right), weight in conflicts.items():
+        if weight <= 0:
+            continue
+        weighted_degree[left] += weight
+        weighted_degree[right] += weight
+        neighbours[left].append((right, weight))
+        neighbours[right].append((left, weight))
+    ordered = sorted(
+        variables,
+        key=lambda key: (-weighted_degree[key], -marginal[key], key),
+    )
+    groups = [[] for _ in range(math.ceil(len(ordered) / 8))]
+    # A full scan of all groups for every variable is quadratic when the trace
+    # contains many variables but only a sparse conflict graph.  Keep one heap
+    # per occupancy instead.  For a variable, only groups containing an actual
+    # conflict neighbour need to be skipped; stale heap entries are discarded
+    # lazily after a group changes size.
+    open_by_size = [[] for _ in range(8)]
+    open_by_size[0] = list(range(len(groups)))
+    heapq.heapify(open_by_size[0])
+    mapping = {}
+    for key in ordered:
+        conflict_cost = collections.Counter()
+        for other, weight in neighbours[key]:
+            if other in mapping:
+                conflict_cost[mapping[other]] += weight
+        group_index = None
+        for occupancy in range(7, -1, -1):
+            candidates = open_by_size[occupancy]
+            skipped = []
+            while candidates:
+                candidate = candidates[0]
+                if len(groups[candidate]) != occupancy:
+                    heapq.heappop(candidates)
+                elif conflict_cost[candidate] > 0:
+                    skipped.append(heapq.heappop(candidates))
+                else:
+                    group_index = candidate
+                    break
+            for candidate in skipped:
+                heapq.heappush(candidates, candidate)
+            if group_index is not None:
+                break
+        if group_index is None:
+            # Every open group conflicts.  This is possible only for a dense
+            # conflict neighbourhood; choose the least costly open group and
+            # preserve the same denser-group/deterministic tie break.
+            group_index = min(
+                (cost, -len(groups[index]), index)
+                for index, cost in conflict_cost.items()
+                if len(groups[index]) < 8)[-1]
+        groups[group_index].append(key)
+        mapping[key] = group_index
+        new_size = len(groups[group_index])
+        if new_size < 8:
+            heapq.heappush(open_by_size[new_size], group_index)
+    return mapping
+
+
+def mapping_signature(mapping):
+    return tuple(sorted(mapping.items()))
+
+
 class Replay:
-    def __init__(self, mapping):
+    def __init__(self, mapping, collect_clone_conflicts=False):
         self.mapping = mapping
+        self.collect_clone_conflicts = collect_clone_conflicts
+        self.clone_conflicts = collections.Counter()
+        self.clone_triggers = collections.Counter()
         self.states = {}
         self.pages = {}
         self.references = collections.Counter()
@@ -231,11 +307,16 @@ class Replay:
         if epoch:
             self.replacement_epochs.add(epoch)
 
-    def detach(self, state, page_index):
+    def detach(self, state, page_index, trigger=None):
         old = state["pages"][page_index]
         if self.references[old] == 1:
             return old
         values = self.pages[old]
+        if self.collect_clone_conflicts and trigger is not None:
+            self.clone_triggers[trigger] += 1
+            for other in values:
+                if other != trigger:
+                    self.clone_conflicts[tuple(sorted((trigger, other)))] += 1
         new = self.fresh_page(values)
         self.metrics["detaches"] += 1
         self.metrics["cloned_slots"] += len(values)
@@ -313,7 +394,7 @@ class Replay:
                 self.metrics["directory_chunks_touched"] += 1
                 touched_pages.add(page_index)
             if page is not None:
-                self.detach(state, page_index)
+                self.detach(state, page_index, key)
         if after_bottom:
             self.clear(state)
             state["bottom"] = True
@@ -372,30 +453,92 @@ class Replay:
         return dict(self.metrics)
 
 
+def future_conflict_search(events, variables, marginal, initial_mapping,
+                           rounds):
+    """Use the full future trace to iteratively expose clone conflicts.
+
+    This is a feasible future-informed search, not a proof of the global
+    optimum.  It supplies a stronger G4 candidate while the separate optimistic
+    bound remains responsible for ruling out headroom.
+    """
+    mapping = initial_mapping
+    cumulative = collections.Counter()
+    seen = set()
+    candidates = []
+    for round_index in range(rounds):
+        signature = mapping_signature(mapping)
+        if signature in seen:
+            break
+        seen.add(signature)
+        engine = Replay(mapping, collect_clone_conflicts=True)
+        metrics = engine.run(events)
+        candidates.append({
+            "round": round_index,
+            "mapping": mapping,
+            "metrics": metrics,
+            "conflict_pairs": len(engine.clone_conflicts),
+            "conflict_weight": sum(engine.clone_conflicts.values()),
+        })
+        cumulative.update(engine.clone_conflicts)
+        next_mapping = clone_conflict_mapping(
+            variables, marginal, cumulative)
+        if mapping_signature(next_mapping) == signature:
+            break
+        mapping = next_mapping
+    if not candidates:
+        raise ValueError("future conflict search requires at least one round")
+    objective = lambda item: (
+        item["metrics"].get("cloned_slots", 0),
+        item["metrics"].get("detaches", 0),
+        item["metrics"].get("page_touches", 0),
+        item["metrics"].get("page_allocations", 0),
+        item["round"],
+    )
+    best = min(candidates, key=objective)
+    return best["mapping"], {
+        "rounds_evaluated": len(candidates),
+        "best_round": best["round"],
+        "candidates": [{key: value for key, value in item.items()
+                        if key != "mapping"} for item in candidates],
+    }
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("trace", type=Path)
     parser.add_argument("--json", type=Path)
     parser.add_argument("--g0-only", action="store_true")
+    parser.add_argument("--future-rounds", type=int, default=0)
     args = parser.parse_args()
+    if args.future_rounds < 0:
+        parser.error("--future-rounds must be non-negative")
     events, variables, marginal, pair, hyperedges, raw, raw_epochs = read_trace(args.trace)
-    mappings = {
-        "g0_current": current_mapping(variables),
+    g0_mapping = current_mapping(variables)
+    mappings = {"g0_current": g0_mapping}
+    g0_engine = Replay(g0_mapping, collect_clone_conflicts=True)
+    replay = {
+        "g0_current": g0_engine.run(events, raw_epochs),
     }
+    g0_diagnostics = g0_engine.diagnostics
+    future_search = None
     if not args.g0_only:
         mappings.update({
             "g2_marginal": marginal_mapping(variables, marginal),
             "g3_cowrite": relational_mapping(
                 variables, marginal, pair, hyperedges),
+            "g3_clone_conflict": clone_conflict_mapping(
+                variables, marginal, g0_engine.clone_conflicts),
         })
-    replay = {}
-    g0_diagnostics = None
+        if args.future_rounds:
+            mappings["g4_future_conflict"], future_search = (
+                future_conflict_search(
+                    events, variables, marginal, g0_mapping,
+                    args.future_rounds))
     for name, mapping in mappings.items():
-        engine = Replay(mapping)
-        replay[name] = engine.run(
-            events, raw_epochs if name == "g0_current" else None)
         if name == "g0_current":
-            g0_diagnostics = engine.diagnostics
+            continue
+        engine = Replay(mapping)
+        replay[name] = engine.run(events)
     validation = {
         "detach_match": replay["g0_current"].get("detaches", 0) == raw["detaches"],
         "cloned_slots_match": replay["g0_current"].get("cloned_slots", 0) == raw["cloned_slots"],
@@ -410,6 +553,13 @@ def main():
             "large_hyperedges": len(hyperedges),
             "explicit_pair_limit": EXPLICIT_PAIR_LIMIT,
         },
+        "clone_conflict_model": {
+            "pairs": len(g0_engine.clone_conflicts),
+            "weight": sum(g0_engine.clone_conflicts.values()),
+            "triggers": len(g0_engine.clone_triggers),
+            "trigger_events": sum(g0_engine.clone_triggers.values()),
+        },
+        "future_search": future_search,
         "raw": raw,
         "validation": validation,
         "g0_diagnostics": g0_diagnostics,
