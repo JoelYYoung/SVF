@@ -29,7 +29,6 @@
 #include "Util/Options.h"
 
 #include <algorithm>
-#include <iterator>
 #include <optional>
 #include <set>
 
@@ -37,30 +36,6 @@ namespace SVF
 {
 
 namespace AD = AbstractDomain;
-
-namespace
-{
-
-std::vector<AD::Variable> nonDefaultVariables(
-    const SemiSparseAbstractInterpretation::State& state)
-{
-    // All domain support queries are already sorted and unique. Keep that
-    // order without allocating a tree node for every initialized coordinate.
-    const auto numbers = state.numerical().constrainedVariables();
-    const auto pointers = state.addresses().nonDefaultVariables();
-    std::vector<AD::Variable> payloads;
-    payloads.reserve(numbers.size() + pointers.size());
-    std::set_union(numbers.begin(), numbers.end(), pointers.begin(), pointers.end(),
-                   std::back_inserter(payloads));
-    const auto initialized = state.initializedVariables();
-    std::vector<AD::Variable> variables;
-    variables.reserve(payloads.size() + initialized.size());
-    std::set_union(payloads.begin(), payloads.end(), initialized.begin(), initialized.end(),
-                   std::back_inserter(variables));
-    return variables;
-}
-
-} // namespace
 
 SemiSparseAbstractInterpretation::SemiSparseAbstractInterpretation()
 {
@@ -258,7 +233,8 @@ void SemiSparseAbstractInterpretation::forgetActiveScalarValues(
 void SemiSparseAbstractInterpretation::forgetMemoryValues(
     State& denseState) const
 {
-    for (AD::Variable variable : nonDefaultVariables(denseState))
+    denseState.nonDefaultVariables(variableSupportScratch_);
+    for (AD::Variable variable : variableSupportScratch_)
     {
         if (this->adapter_.contentObject(variable))
             this->forgetValue(denseState, variable);
@@ -337,7 +313,8 @@ void SemiSparseAbstractInterpretation::restoreCallerFrameAfterSharedCallee(
         else
             denseState.restoreMissingAddressFrom(caller, content);
     };
-    for (AD::Variable content : nonDefaultVariables(caller))
+    caller.nonDefaultVariables(variableSupportScratch_);
+    for (AD::Variable content : variableSupportScratch_)
         restore(content);
 }
 
@@ -571,7 +548,8 @@ void FullSparseAbstractInterpretation::filterPropagatedState(
     State& denseState) const
 {
     this->forgetActiveScalarValues(denseState);
-    for (AD::Variable variable : nonDefaultVariables(denseState))
+    denseState.nonDefaultVariables(variableSupportScratch_);
+    for (AD::Variable variable : variableSupportScratch_)
     {
         const ObjVar* object = this->adapter_.contentObject(variable);
         if (object && !SVFUtil::isa<GepObjVar>(object) &&
@@ -752,7 +730,8 @@ void FullSparseAbstractInterpretation::pullObjectValueFlows(
 {
     NodeBS denseLocalObjects;
     State& destination = this->ensureState(node);
-    for (AD::Variable variable : nonDefaultVariables(destination))
+    destination.nonDefaultVariables(variableSupportScratch_);
+    for (AD::Variable variable : variableSupportScratch_)
     {
         const ObjVar* object = this->adapter_.contentObject(variable);
         if (object && SVFUtil::isa<GepObjVar>(object))

@@ -51,6 +51,25 @@ enum class InitializationState : unsigned char
 class InitializationDomain final : public AbstractDomain
 {
 public:
+    class NonDefaultVariableCursor
+    {
+    public:
+        bool next(Variable& variable);
+
+    private:
+        friend class InitializationDomain;
+        explicit NonDefaultVariableCursor(const InitializationDomain& domain)
+            : domain_(&domain)
+        {
+        }
+
+        const InitializationDomain* domain_;
+        std::size_t groupBegin_ = 0;
+        std::size_t groupEnd_ = 0;
+        unsigned slotOffset_ = 0;
+        std::size_t typeOffset_ = 0;
+    };
+
     static InitializationDomain top();
     static InitializationDomain bottom();
     static InitializationDomain uniform(InitializationState state);
@@ -66,6 +85,10 @@ public:
     void assign(Variable variable, InitializationState state);
     void forget(Variable variable);
     std::vector<Variable> nonDefaultVariables() const;
+    NonDefaultVariableCursor nonDefaultVariableCursor() const
+    {
+        return NonDefaultVariableCursor(*this);
+    }
     std::vector<Variable> nonDefaultVariablesBefore(Variable upperBound) const;
 
 private:

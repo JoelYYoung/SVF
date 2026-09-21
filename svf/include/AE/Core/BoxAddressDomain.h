@@ -222,6 +222,9 @@ public:
     void resetValue(Variable variable);
     std::vector<Variable> initializedVariables() const;
     std::vector<Variable> initializedVariablesBefore(Variable upperBound) const;
+    /// Sorted union of numerical, address and initialization support. The
+    /// caller-owned buffer is cleared and may retain capacity across queries.
+    void nonDefaultVariables(std::vector<Variable>& output) const;
 
     /// Restore absent facets from a caller frame after a shared callee.
     /// With initialization tracking, a defined Top is never treated as absent.

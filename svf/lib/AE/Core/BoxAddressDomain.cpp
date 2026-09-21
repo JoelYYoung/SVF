@@ -24,6 +24,7 @@
 #include "AE/Core/BoxAddressDomain.h"
 
 #include <algorithm>
+#include <array>
 #include <iterator>
 #include <sstream>
 #include <stdexcept>
@@ -216,6 +217,61 @@ std::vector<Variable> BoxAddressDomain::initializedVariablesBefore(
     return mergedVariables(
                numericalInitialization_.nonDefaultVariablesBefore(upperBound),
                addressInitialization_.nonDefaultVariablesBefore(upperBound));
+}
+
+void BoxAddressDomain::nonDefaultVariables(std::vector<Variable>& output) const
+{
+    auto numbers = numerical_.constrainedVariableCursor();
+    auto pointers = addresses_.nonDefaultVariableCursor();
+    auto numericalInitialization =
+        numericalInitialization_.nonDefaultVariableCursor();
+    auto addressInitialization =
+        addressInitialization_.nonDefaultVariableCursor();
+
+    std::array<Variable, 4> current;
+    std::array<bool, 4> valid = {
+        numbers.next(current[0]), pointers.next(current[1]),
+        trackInitialization_ && numericalInitialization.next(current[2]),
+        trackInitialization_ && addressInitialization.next(current[3])};
+    unsigned active = static_cast<unsigned>(
+                          std::count(valid.begin(), valid.end(), true));
+    const auto advance = [&](std::size_t index)
+    {
+        bool next = false;
+        switch (index)
+        {
+        case 0:
+            next = numbers.next(current[index]);
+            break;
+        case 1:
+            next = pointers.next(current[index]);
+            break;
+        case 2:
+            next = numericalInitialization.next(current[index]);
+            break;
+        default:
+            next = addressInitialization.next(current[index]);
+            break;
+        }
+        valid[index] = next;
+        active -= !next;
+    };
+
+    output.clear();
+    while (active != 0)
+    {
+        std::size_t least = 0;
+        while (!valid[least])
+            ++least;
+        for (std::size_t index = least + 1; index < valid.size(); ++index)
+            if (valid[index] && current[index] < current[least])
+                least = index;
+        const Variable variable = current[least];
+        output.push_back(variable);
+        for (std::size_t index = 0; index < valid.size(); ++index)
+            if (valid[index] && current[index] == variable)
+                advance(index);
+    }
 }
 
 void BoxAddressDomain::combineInitialized(

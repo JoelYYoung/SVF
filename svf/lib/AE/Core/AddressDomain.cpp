@@ -425,6 +425,35 @@ AddressSet AddressDomain::addressSet(Variable variable) const
     return value ? *value : AddressSet::top();
 }
 
+bool AddressDomain::NonDefaultVariableCursor::next(Variable& variable)
+{
+    if (domain_->bottom_)
+        return false;
+    if (!domain_->paged_)
+    {
+        if (entryIndex_ == domain_->smallValues_->size())
+            return false;
+        variable = (*domain_->smallValues_)[entryIndex_++].first;
+        return true;
+    }
+    while (entryIndex_ < domain_->pages_.size())
+    {
+        const ValuePage& page = *domain_->pages_[entryIndex_].page;
+        while (slotOffset_ < ValuesPerPage)
+        {
+            const auto& slot = page.values[slotOffset_++];
+            if (slot)
+            {
+                variable = slot->variable;
+                return true;
+            }
+        }
+        ++entryIndex_;
+        slotOffset_ = 0;
+    }
+    return false;
+}
+
 std::vector<Variable> AddressDomain::nonDefaultVariables() const
 {
     std::vector<Variable> variables;

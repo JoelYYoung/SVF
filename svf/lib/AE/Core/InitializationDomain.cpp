@@ -121,6 +121,45 @@ void InitializationDomain::forget(Variable variable)
     assign(variable, InitializationState::Top);
 }
 
+bool InitializationDomain::NonDefaultVariableCursor::next(Variable& variable)
+{
+    const Directory& directory = *domain_->pages_;
+    while (groupBegin_ < directory.size())
+    {
+        if (groupEnd_ == groupBegin_)
+        {
+            groupEnd_ = groupBegin_ + 1;
+            while (groupEnd_ < directory.size() &&
+                   directory[groupEnd_].key.id() ==
+                       directory[groupBegin_].key.id())
+                ++groupEnd_;
+        }
+        while (slotOffset_ < ValuesPerPage)
+        {
+            while (groupBegin_ + typeOffset_ < groupEnd_)
+            {
+                const PageEntry& entry = directory[groupBegin_ + typeOffset_++];
+                const auto bits =
+                    entry.page->uninitialized | entry.page->initialized;
+                if (bits & (std::uint64_t{1} << slotOffset_))
+                {
+                    variable =
+                        Variable(entry.key.id() * ValuesPerPage + slotOffset_,
+                                 entry.key.type());
+                    return true;
+                }
+            }
+            typeOffset_ = 0;
+            ++slotOffset_;
+        }
+        groupBegin_ = groupEnd_;
+        groupEnd_ = groupBegin_;
+        slotOffset_ = 0;
+        typeOffset_ = 0;
+    }
+    return false;
+}
+
 std::vector<Variable> InitializationDomain::nonDefaultVariables() const
 {
     return nonDefaultVariables(nullptr);

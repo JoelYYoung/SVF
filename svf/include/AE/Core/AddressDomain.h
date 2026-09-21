@@ -187,6 +187,23 @@ private:
 class AddressDomain final : public AbstractDomain
 {
 public:
+    class NonDefaultVariableCursor
+    {
+    public:
+        bool next(Variable& variable);
+
+    private:
+        friend class AddressDomain;
+        explicit NonDefaultVariableCursor(const AddressDomain& domain)
+            : domain_(&domain)
+        {
+        }
+
+        const AddressDomain* domain_;
+        std::size_t entryIndex_ = 0;
+        std::size_t slotOffset_ = 0;
+    };
+
     static AddressDomain top();
     static AddressDomain bottom();
 
@@ -199,6 +216,10 @@ public:
     AddressSet addressSet(Variable variable) const;
     /// Variables with a value different from Address Top.
     std::vector<Variable> nonDefaultVariables() const;
+    NonDefaultVariableCursor nonDefaultVariableCursor() const
+    {
+        return NonDefaultVariableCursor(*this);
+    }
     std::vector<Variable> nonDefaultVariablesBefore(
         Variable upperBound) const;
     void assign(Variable variable, AddressSet addresses);

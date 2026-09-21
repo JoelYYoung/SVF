@@ -658,6 +658,24 @@ class BoxDomain final : public NumericalDomain
     friend class BoxAddressDomain;
 
 public:
+    class ConstrainedVariableCursor
+    {
+    public:
+        bool next(Variable& variable);
+
+    private:
+        friend class BoxDomain;
+        explicit ConstrainedVariableCursor(const BoxDomain& domain)
+            : domain_(&domain)
+        {
+        }
+
+        const BoxDomain* domain_;
+        std::size_t directoryIndex_ = 0;
+        std::size_t pageOffset_ = 0;
+        std::size_t slotOffset_ = 0;
+    };
+
     using NumericalDomain::assignParallel;
     using NumericalDomain::bound;
     using NumericalDomain::substitute;
@@ -737,6 +755,10 @@ public:
     /// stricter than the analysis-wide Top default. This is a storage
     /// observation for sparse scheduling; absence never means undefined.
     std::vector<Variable> constrainedVariables() const;
+    ConstrainedVariableCursor constrainedVariableCursor() const
+    {
+        return ConstrainedVariableCursor(*this);
+    }
     std::vector<Variable> constrainedVariablesBefore(
         Variable upperBound) const;
     LinearConstraintSet toConstraints() const override;

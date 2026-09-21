@@ -113,6 +113,9 @@ protected:
 
     Map<const ICFGNode*, State> refinementTrace_;
     std::optional<State> scalarState_;
+    /// Reused only within one support traversal; sparse interpretation is
+    /// single-threaded and no traversal is nested.
+    mutable std::vector<AbstractDomain::Variable> variableSupportScratch_;
 };
 
 /// Full-sparse AE backed by BoxAddressDomain. Scalar SSA values share the same

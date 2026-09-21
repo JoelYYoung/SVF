@@ -17,12 +17,14 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "AE/Core/BoxAddressDomain.h"
 #include "AE/Core/Expression.h"
 #include "AE/Core/NumericalDomain.h"
 
 #include <algorithm>
 #include <chrono>
 #include <iostream>
+#include <iterator>
 #include <map>
 #include <random>
 #include <stdexcept>
@@ -238,6 +240,61 @@ void contract()
     typed.assign(real, LinearExpression(Rational("1/3")));
     check(typed.bound(real) == Interval::singleton(Rational("1/3")), "rational lost");
     std::cout << "contract=pass masks=256 mask_pairs=65536 random_steps=2000\n";
+}
+
+void supportContract()
+{
+    BoxAddressDomain state(BoxDomain::top(), MemoryLayout(), true);
+    const Variable number(1);
+    const Variable pointer(17);
+    const Variable duplicate(65);
+    const Variable initializedTop(130);
+    state.setInterval(number, Interval::singleton(Rational(1)));
+    state.setAddressSet(pointer, AddressSet::singleton(Location(4)));
+    state.setInterval(duplicate, Interval::singleton(Rational(2)));
+    state.setAddressSet(duplicate, AddressSet::singleton(Location(5)));
+    state.setInterval(initializedTop, Interval::top());
+
+    std::vector<Variable> support{Variable(999)};
+    state.nonDefaultVariables(support);
+    check(support == std::vector<Variable>(
+                         {number, pointer, duplicate, initializedTop}),
+          "product support merge mismatch");
+    check(std::is_sorted(support.begin(), support.end()) &&
+              std::adjacent_find(support.begin(), support.end()) ==
+                  support.end(),
+          "product support is not sorted and unique");
+
+    state.resetValue(pointer);
+    state.nonDefaultVariables(support);
+    check(support == std::vector<Variable>({number, duplicate, initializedTop}),
+          "product support reset mismatch");
+
+    // Cross the AddressDomain small/paged boundary and compare the streaming
+    // merge with the independently materialized public support queries.
+    for (unsigned index = 0; index < 32; ++index)
+    {
+        const Variable variable(1000 + index * 17);
+        if (index % 3 == 0)
+            state.setInterval(variable, Interval::singleton(Rational(index)));
+        if (index % 2 == 0)
+            state.setAddressSet(variable,
+                                AddressSet::singleton(Location(index + 10)));
+    }
+    state.setInterval(Variable(9000, NumericType::real()), Interval::top());
+    state.setAddressSet(Variable(9000), AddressSet::top());
+    const auto numbers = state.numerical().constrainedVariables();
+    const auto pointers = state.addresses().nonDefaultVariables();
+    const auto initialized = state.initializedVariables();
+    std::vector<Variable> payloads;
+    std::set_union(numbers.begin(), numbers.end(), pointers.begin(),
+                   pointers.end(), std::back_inserter(payloads));
+    std::vector<Variable> expected;
+    std::set_union(payloads.begin(), payloads.end(), initialized.begin(),
+                   initialized.end(), std::back_inserter(expected));
+    state.nonDefaultVariables(support);
+    check(support == expected, "streaming and materialized support differ");
+    std::cout << "support_contract=pass streams=4 sorted_unique=checked\n";
 }
 
 void workload(unsigned occupancy, unsigned rounds, bool churn = false)
@@ -696,6 +753,7 @@ int main(int argc, char** argv)
     else
     {
         contract();
+        supportContract();
 #ifdef SVF_BOX_STORAGE_TELEMETRY
         storageWorkContract();
         directoryContract();

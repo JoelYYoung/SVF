@@ -3188,6 +3188,56 @@ void BoxDomain::forget(Variable variable)
     recordOperation(OperationKind::Forget, ApproximationKind::Exact, true);
 }
 
+bool BoxDomain::ConstrainedVariableCursor::next(Variable& variable)
+{
+    if (domain_->bottom_)
+        return false;
+    const auto& directory = domain_->pageDirectory();
+#ifdef SVF_BOX_WHOLE_DIRECTORY
+    while (directoryIndex_ < directory.size())
+    {
+        const auto& entry = directory[directoryIndex_];
+        while (slotOffset_ < BoundsPerPage)
+        {
+            const BoundSlot* slot = entry.page->bounds.find(slotOffset_++);
+            if (slot)
+            {
+                variable = slot->variable;
+                return true;
+            }
+        }
+        ++directoryIndex_;
+        slotOffset_ = 0;
+    }
+#else
+    while (directoryIndex_ < directory.size())
+    {
+        const auto& entry = directory[directoryIndex_];
+        while (pageOffset_ < DirectoryPagesPerChunk)
+        {
+            const auto& page = entry.chunk->pages[pageOffset_];
+            if (page)
+            {
+                while (slotOffset_ < BoundsPerPage)
+                {
+                    const BoundSlot* slot = page->bounds.find(slotOffset_++);
+                    if (slot)
+                    {
+                        variable = slot->variable;
+                        return true;
+                    }
+                }
+            }
+            ++pageOffset_;
+            slotOffset_ = 0;
+        }
+        ++directoryIndex_;
+        pageOffset_ = 0;
+    }
+#endif
+    return false;
+}
+
 std::vector<Variable> BoxDomain::constrainedVariables() const
 {
     std::vector<Variable> variables;
