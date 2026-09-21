@@ -977,7 +977,13 @@ void ConvexPolyhedraDomain::assume(const LinearConstraint& constraint)
     }
 
     std::vector<Inequality> rows = constraintRows(layout_, constraint);
-    if (!rows.empty() && impl_->generatorsValid && impl_->generatorsExact &&
+    // Integer guards must stay on the H-representation path. Intersecting an
+    // already materialized rational generator system and then rebuilding the
+    // integer-tightened constraints can admit a spurious lattice point for an
+    // inconsistent affine equality plus guard. The constraint path detects
+    // the empty conjunction directly.
+    if (!rows.empty() && !hasIntegerVariable(layout_) &&
+            impl_->generatorsValid && impl_->generatorsExact &&
             impl_->generatorsMinimal &&
             (impl_->generatorsNNC || !hasStrictConstraint(rows)))
     {
@@ -1067,7 +1073,8 @@ void ConvexPolyhedraDomain::assumeAll(
                     std::make_move_iterator(next.end()));
     }
 
-    if (!rows.empty() && impl_->generatorsValid && impl_->generatorsExact &&
+    if (!rows.empty() && !hasIntegerVariable(layout_) &&
+            impl_->generatorsValid && impl_->generatorsExact &&
             impl_->generatorsMinimal &&
             (impl_->generatorsNNC || !hasStrictConstraint(rows)))
     {
