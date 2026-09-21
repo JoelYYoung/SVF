@@ -1565,6 +1565,13 @@ void AbstractInterpretation::updateStateOnBinary(const BinaryOPStmt* binary)
     default:
         assert(false && "undefined binary: ");
     }
+    const auto* integerType =
+        SVFUtil::dyn_cast<SVFIntegerType>(binary->getRes()->getType());
+    const AD::Interval typeRange =
+        integerType ? utils->getRangeLimitFromType(binary->getRes()->getType())
+                    : AD::Interval::top();
+    const bool noIntegerWrap =
+        integerType && !result.isBottom() && result.isSubsetOf(typeRange);
     if (std::getenv("SVF_AE_TRACE_AFFINE_TRANSFER"))
         std::cerr << "AE affine candidate node=" << node->getId()
                   << " lhs=" << lhs.toString() << " rhs=" << rhs.toString()
@@ -1578,11 +1585,7 @@ void AbstractInterpretation::updateStateOnBinary(const BinaryOPStmt* binary)
     // Polyhedra gain information beyond the interval baseline. Floating-point
     // operations retain interval semantics because rounding/NaN behavior is
     // not affine over rationals.
-    if (Options::AEDomain() != AENumericalDomain::Box &&
-            SVFUtil::isa<SVFIntegerType>(binary->getRes()->getType()) &&
-            !result.isBottom() &&
-            result.isSubsetOf(
-                utils->getRangeLimitFromType(binary->getRes()->getType())))
+    if (Options::AEDomain() != AENumericalDomain::Box && noIntegerWrap)
     {
         const auto expressionFor = [&](const SVFVar* operand)
             -> std::optional<AD::LinearExpression>
@@ -1629,6 +1632,10 @@ void AbstractInterpretation::updateStateOnBinary(const BinaryOPStmt* binary)
             return;
         }
     }
+    if (integerType && !noIntegerWrap)
+        result = AD::wrapIntegerInterval(
+            result, binary->getRes()->getType()->getByteSize() * 8,
+            integerType->isSigned());
     updateInterval(binary->getRes(), result, node);
 }
 
@@ -1735,13 +1742,10 @@ void AbstractInterpretation::updateStateOnCmp(const CmpStmt* cmp)
     }
     else
     {
-        // Preserve Original AE's numerical-Top comparison policy here, while
-        // keeping the domain's more precise Boolean operations available.
-        if (lhsInterval.isTop() || rhsInterval.isTop())
-        {
-            updateInterval(cmp->getRes(), AD::Interval::top(), node);
-            return;
-        }
+        // Even when an operand is unconstrained, an LLVM comparison result is
+        // still a Boolean.  Keeping [0, 1] here is both sound and important to
+        // dense-equation replay: mathematical Top must not leak into the i1
+        // result merely because a sparse operand summary is unavailable.
         switch (predicate)
         {
         case CmpStmt::ICMP_EQ:
@@ -1840,84 +1844,6 @@ void AbstractInterpretation::updateStateOnCopy(const CopyStmt* copy)
     const SVFVar* lhsVar = copy->getLHSVar();
     const SVFVar* rhsVar = copy->getRHSVar();
 
-    auto getZExtValue = [&](const SVFVar* var)
-    {
-        const SVFType* type = var->getType();
-        if (SVFUtil::isa<SVFIntegerType>(type))
-        {
-            const AD::Interval value = getInterval(var, node);
-            // Original AE only evaluates zero extension of a numeral; other
-            // inputs (including Bottom) produce numerical Top.
-            if (!value.isSingleton())
-                return AD::Interval::top();
-
-            const u32_t bits = type->getByteSize() * 8;
-            if (bits == 64)
-                return value;
-            mpz_class modulus = 1;
-            mpz_mul_2exp(modulus.get_mpz_t(), modulus.get_mpz_t(), bits);
-            if (!value.singletonValue().isInteger())
-                return AD::Interval::closed(
-                           AD::Rational(0),
-                           AD::Rational::fromRaw(mpq_class(modulus - 1)));
-
-            const mpz_class numeral = value.singletonValue().value().get_num();
-            mpz_class residue;
-            mpz_fdiv_r(residue.get_mpz_t(), numeral.get_mpz_t(),
-                       modulus.get_mpz_t());
-            return AD::Interval::singleton(
-                       AD::Rational::fromRaw(mpq_class(residue)));
-        }
-        return AD::Interval::top();
-    };
-
-    auto getTruncValue = [&](const SVFVar* var, const SVFType* dstType)
-    {
-        const AD::Interval interval = getInterval(var, node);
-        if (interval.isBottom() || !interval.lower().isFinite() ||
-                !interval.upper().isFinite())
-            return interval.isBottom() ? interval
-                   : utils->getRangeLimitFromType(dstType);
-        s64_t int_lb = interval.lower().value().toInt64();
-        s64_t int_ub = interval.upper().value().toInt64();
-        u32_t dst_bits = dstType->getByteSize() * 8;
-        if (dst_bits == 8)
-        {
-            int8_t s8_lb = static_cast<int8_t>(int_lb);
-            int8_t s8_ub = static_cast<int8_t>(int_ub);
-            if (s8_lb > s8_ub)
-                return utils->getRangeLimitFromType(dstType);
-            return AD::Interval::closed(AD::Rational(s8_lb),
-                                        AD::Rational(s8_ub));
-        }
-        else if (dst_bits == 16)
-        {
-            s16_t s16_lb = static_cast<s16_t>(int_lb);
-            s16_t s16_ub = static_cast<s16_t>(int_ub);
-            if (s16_lb > s16_ub)
-                return utils->getRangeLimitFromType(dstType);
-            return AD::Interval::closed(AD::Rational(s16_lb),
-                                        AD::Rational(s16_ub));
-        }
-        else if (dst_bits == 32)
-        {
-            s32_t s32_lb = static_cast<s32_t>(int_lb);
-            s32_t s32_ub = static_cast<s32_t>(int_ub);
-            if (s32_lb > s32_ub)
-                return utils->getRangeLimitFromType(dstType);
-            return AD::Interval::closed(AD::Rational(s32_lb),
-                                        AD::Rational(s32_ub));
-        }
-        else
-        {
-            // The interval carrier stores machine numerals in s64_t, so
-            // uncommon truncation targets (for example i64 from i128) cannot
-            // always be converted exactly here.  Falling back to the full
-            // destination-type range is sound and lets analysis continue.
-            return utils->getRangeLimitFromType(dstType);
-        }
-    };
-
     const AD::Interval rhsInterval = getInterval(rhsVar, node);
     const AD::AddressSet rhsAddresses = getAddressSet(rhsVar, node);
 
@@ -1952,7 +1878,15 @@ void AbstractInterpretation::updateStateOnCopy(const CopyStmt* copy)
     }
     else if (copy->getCopyKind() == CopyStmt::ZEXT)
     {
-        updateInterval(lhsVar, getZExtValue(rhsVar), node);
+        const auto* sourceType =
+            SVFUtil::dyn_cast<SVFIntegerType>(rhsVar->getType());
+        updateInterval(lhsVar,
+                       sourceType ? AD::zeroExtendIntegerInterval(
+                                        rhsInterval,
+                                        rhsVar->getType()->getByteSize() * 8,
+                                        sourceType->isSigned())
+                                  : AD::Interval::top(),
+                       node);
     }
     else if (copy->getCopyKind() == CopyStmt::SEXT)
     {
@@ -1984,7 +1918,16 @@ void AbstractInterpretation::updateStateOnCopy(const CopyStmt* copy)
     }
     else if (copy->getCopyKind() == CopyStmt::TRUNC)
     {
-        updateInterval(lhsVar, getTruncValue(rhsVar, lhsVar->getType()), node);
+        const auto* destinationType =
+            SVFUtil::dyn_cast<SVFIntegerType>(lhsVar->getType());
+        updateInterval(
+            lhsVar,
+            destinationType
+                ? AD::wrapIntegerInterval(rhsInterval,
+                                          lhsVar->getType()->getByteSize() * 8,
+                                          destinationType->isSigned())
+                : AD::Interval::top(),
+            node);
     }
     else if (copy->getCopyKind() == CopyStmt::FPTRUNC)
     {

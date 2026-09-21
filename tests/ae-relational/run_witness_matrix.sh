@@ -28,6 +28,7 @@ witnesses=(
   SharedCalleeWitness
   MultiAliasKillWitness
   RecursiveCallWitness
+  MachineInteger8Witness
 )
 modes=(dense semi-sparse)
 domains=(box octagon polyhedra)

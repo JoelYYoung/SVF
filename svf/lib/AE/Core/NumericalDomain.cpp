@@ -1766,6 +1766,71 @@ Interval integerRange(unsigned bitWidth, bool isSigned)
                             Rational::fromRaw(mpq_class(upper)));
 }
 
+Interval wrapIntegerInterval(const Interval& operand, unsigned bitWidth,
+                             bool isSigned)
+{
+    if (operand.isBottom())
+        return Interval::bottom();
+    const Interval range = integerRange(bitWidth, isSigned);
+    if (!operand.lower().isFinite() || !operand.upper().isFinite() ||
+        operand.lower().isStrict() || operand.upper().isStrict() ||
+        !operand.lower().value().isInteger() ||
+        !operand.upper().value().isInteger())
+        return range;
+
+    const mpz_class lower(
+        mpq_numref(operand.lower().value().value().get_mpq_t()));
+    const mpz_class upper(
+        mpq_numref(operand.upper().value().value().get_mpq_t()));
+    mpz_class modulus = 1;
+    mpz_mul_2exp(modulus.get_mpz_t(), modulus.get_mpz_t(), bitWidth);
+    mpz_class bias = 0;
+    if (isSigned)
+    {
+        bias = 1;
+        mpz_mul_2exp(bias.get_mpz_t(), bias.get_mpz_t(), bitWidth - 1);
+    }
+
+    mpz_class lowerQuotient;
+    mpz_class upperQuotient;
+    const mpz_class biasedLower = lower + bias;
+    const mpz_class biasedUpper = upper + bias;
+    mpz_fdiv_q(lowerQuotient.get_mpz_t(), biasedLower.get_mpz_t(),
+               modulus.get_mpz_t());
+    mpz_fdiv_q(upperQuotient.get_mpz_t(), biasedUpper.get_mpz_t(),
+               modulus.get_mpz_t());
+    if (lowerQuotient != upperQuotient)
+        return range;
+
+    return Interval::closed(
+        Rational::fromRaw(mpq_class(lower - lowerQuotient * modulus)),
+        Rational::fromRaw(mpq_class(upper - upperQuotient * modulus)));
+}
+
+Interval zeroExtendIntegerInterval(const Interval& operand,
+                                   unsigned sourceBitWidth, bool sourceIsSigned)
+{
+    if (operand.isBottom())
+        return Interval::bottom();
+    const Interval sourceRange = integerRange(sourceBitWidth, sourceIsSigned);
+    const Interval unsignedRange = integerRange(sourceBitWidth, false);
+    if (!operand.isSubsetOf(sourceRange) || !operand.lower().isFinite() ||
+        !operand.upper().isFinite() || operand.lower().isStrict() ||
+        operand.upper().isStrict() || !operand.lower().value().isInteger() ||
+        !operand.upper().value().isInteger())
+        return unsignedRange;
+    if (!sourceIsSigned || operand.lower().value().sign() >= 0)
+        return operand;
+    if (operand.upper().value().sign() >= 0)
+        return unsignedRange;
+
+    mpz_class modulus = 1;
+    mpz_mul_2exp(modulus.get_mpz_t(), modulus.get_mpz_t(), sourceBitWidth);
+    const Rational offset = Rational::fromRaw(mpq_class(modulus));
+    return Interval::closed(operand.lower().value() + offset,
+                            operand.upper().value() + offset);
+}
+
 Interval floatToInteger(const Interval& operand, unsigned bitWidth,
                         bool isSigned)
 {

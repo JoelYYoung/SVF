@@ -297,6 +297,16 @@ Interval greaterThan(const Interval& lhs, const Interval& rhs);
 Interval greaterEqual(const Interval& lhs, const Interval& rhs);
 /// Complete mathematical range of a fixed-width signed or unsigned integer.
 Interval integerRange(unsigned bitWidth, bool isSigned);
+/// Convex hull of the fixed-width two's-complement image of an integer
+/// interval.  This is exact when the interval does not cross a modular
+/// discontinuity and otherwise conservatively returns the complete range.
+Interval wrapIntegerInterval(const Interval& operand, unsigned bitWidth,
+                             bool isSigned);
+/// Convex hull of an LLVM zero extension from a fixed-width source.  The
+/// source interval uses the signedness selected by the frontend.
+Interval zeroExtendIntegerInterval(const Interval& operand,
+                                   unsigned sourceBitWidth,
+                                   bool sourceIsSigned);
 /// Convert a floating interval to a fixed-width integer using LLVM's
 /// round-toward-zero semantics. If the operand may produce poison because it
 /// is non-finite or outside the destination range, return that complete range.
