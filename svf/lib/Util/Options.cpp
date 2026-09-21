@@ -809,7 +809,12 @@ const Option<std::string> Options::AEQueryLedgerFile(
 );
 const Option<std::string> Options::AEQueryInputID(
     "ae-query-input-id",
-    "Stable input identity recorded in the AE query ledger (for example SHA-256).",
+    "Stable input identity recorded in AE verification artifacts (for example SHA-256).",
+    ""
+);
+const Option<std::string> Options::AEPostCheckFile(
+    "ae-post-check",
+    "Replay dense transfer equations and write the post-fixpoint report as TSV.",
     ""
 );
 const OptionMap<u32_t> Options::AEFunEntry(

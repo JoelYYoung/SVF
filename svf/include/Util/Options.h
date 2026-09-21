@@ -239,6 +239,8 @@ public:
     static const Option<std::string> AEQueryLedgerFile;
     /// Content identity supplied by the runner (normally input SHA-256).
     static const Option<std::string> AEQueryInputID;
+    /// Optional dense-equation post-fixpoint verification report (TSV).
+    static const Option<std::string> AEPostCheckFile;
     static const OptionMap<u32_t> AEFunEntry;
     static const Option<u32_t> WidenDelay;
     /// recursion handling mode, Default: TOP

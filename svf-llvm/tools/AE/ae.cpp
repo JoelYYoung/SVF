@@ -73,9 +73,18 @@ int main(int argc, char** argv)
         ae.addDetector(std::make_unique<BufOverflowDetector>());
     if (Options::NullDerefCheck())
         ae.addDetector(std::make_unique<NullptrDerefDetector>());
-    ae.runOnModule();
+    int status = 0;
+    try
+    {
+        ae.runOnModule();
+    }
+    catch (const std::exception& error)
+    {
+        SVFUtil::errs() << "ae: " << error.what() << '\n';
+        status = 2;
+    }
 
     AndersenWaveDiff::releaseAndersenWaveDiff();
     LLVMModuleSet::releaseLLVMModuleSet();
-    return 0;
+    return status;
 }

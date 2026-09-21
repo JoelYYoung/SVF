@@ -264,6 +264,10 @@ void AbstractInterpretation::handleLoopOrRecursion(const ICFGCycleWTO* cycle,
 
     // Iterate until fixpoint with widening/narrowing on the cycle head.
     bool increasing = true;
+    // A stable head is not enough until the body has been replayed from that
+    // head. Otherwise the final successor states may still correspond to the
+    // previous narrowing iterate and fail the original transfer equations.
+    bool narrowingHeadStable = false;
     u32_t widen_delay = Options::WidenDelay();
     for (u32_t cur_iter = 0;; cur_iter++)
     {
@@ -294,7 +298,13 @@ void AbstractInterpretation::handleLoopOrRecursion(const ICFGCycleWTO* cycle,
                 const bool stateFixpoint =
                     narrowCycleState(*previous, *current, cycle);
                 if (stateFixpoint)
-                    break;
+                {
+                    if (narrowingHeadStable)
+                        break;
+                    narrowingHeadStable = true;
+                }
+                else
+                    narrowingHeadStable = false;
             }
         }
         else

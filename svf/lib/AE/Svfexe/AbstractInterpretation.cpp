@@ -238,6 +238,7 @@ void AbstractInterpretation::runOnModule()
     for (auto& detector : detectors)
         detector->reportBug();
     writeQueryLedger();
+    verifyPostFixpoint();
 }
 
 bool AbstractInterpretation::queryLedgerEnabled() const

@@ -524,6 +524,9 @@ protected:
     void enumerateQueries();
     void writeQueryLedger() const;
 
+    bool postCheckEnabled() const;
+    void verifyPostFixpoint();
+
     bool shouldApplyNarrowing(const FunObjVar* fun);
 };
 } // namespace SVF
