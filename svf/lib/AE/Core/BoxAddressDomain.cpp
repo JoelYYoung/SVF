@@ -39,16 +39,15 @@ std::unique_ptr<NumericalDomain> cloneNumerical(
 {
     std::unique_ptr<AbstractDomain> clone = numerical.clone();
     return std::unique_ptr<NumericalDomain>(
-               static_cast<NumericalDomain*>(clone.release()));
+        static_cast<NumericalDomain*>(clone.release()));
 }
 
 } // namespace
 
-BoxAddressDomain::BoxAddressDomain(
-    std::unique_ptr<NumericalDomain> numerical, MemoryLayout memoryLayout,
-    bool trackInitialization)
-    : numerical_(std::move(numerical)),
-      memoryLayout_(std::move(memoryLayout)),
+BoxAddressDomain::BoxAddressDomain(std::unique_ptr<NumericalDomain> numerical,
+                                   MemoryLayout memoryLayout,
+                                   bool trackInitialization)
+    : numerical_(std::move(numerical)), memoryLayout_(std::move(memoryLayout)),
       addresses_(AddressDomain::top()), lifetimes_(LifetimeDomain::bottom()),
       trackInitialization_(trackInitialization)
 {
@@ -56,11 +55,11 @@ BoxAddressDomain::BoxAddressDomain(
         throw std::invalid_argument("product requires a numerical domain");
 }
 
-BoxAddressDomain::BoxAddressDomain(
-    std::unique_ptr<NumericalDomain> numerical, MemoryLayout memoryLayout,
-    AddressDomain addresses, LifetimeDomain lifetimes)
-    : numerical_(std::move(numerical)),
-      memoryLayout_(std::move(memoryLayout)),
+BoxAddressDomain::BoxAddressDomain(std::unique_ptr<NumericalDomain> numerical,
+                                   MemoryLayout memoryLayout,
+                                   AddressDomain addresses,
+                                   LifetimeDomain lifetimes)
+    : numerical_(std::move(numerical)), memoryLayout_(std::move(memoryLayout)),
       addresses_(std::move(addresses)), lifetimes_(std::move(lifetimes))
 {
     if (!numerical_)
@@ -110,8 +109,8 @@ static InitializationState joinInitialization(InitializationState lhs,
                                             static_cast<unsigned>(rhs));
 }
 
-static std::vector<Variable> mergedVariables(
-    const std::vector<Variable>& lhs, const std::vector<Variable>& rhs)
+static std::vector<Variable> mergedVariables(const std::vector<Variable>& lhs,
+                                             const std::vector<Variable>& rhs)
 {
     std::vector<Variable> result;
     result.reserve(lhs.size() + rhs.size());
@@ -122,8 +121,9 @@ static std::vector<Variable> mergedVariables(
 
 Interval BoxAddressDomain::interval(Variable variable) const
 {
-    if (isBottomDomain() || (trackInitialization_ &&
-                             !mayBeInitialized(numericalInitialization_.value(variable))))
+    if (isBottomDomain() ||
+        (trackInitialization_ &&
+         !mayBeInitialized(numericalInitialization_.value(variable))))
         return Interval::bottom();
     return numerical_->bound(variable);
 }
@@ -139,15 +139,15 @@ void BoxAddressDomain::addUninitializedNumericalAlternative(Variable variable)
     if (!trackInitialization_ || isBottomDomain())
         return;
     numericalInitialization_.assign(
-        variable,
-        joinInitialization(numericalInitialization_.value(variable),
-                           InitializationState::Uninitialized));
+        variable, joinInitialization(numericalInitialization_.value(variable),
+                                     InitializationState::Uninitialized));
 }
 
 AddressSet BoxAddressDomain::addressSet(Variable variable) const
 {
-    if (isBottomDomain() || (trackInitialization_ &&
-                             !mayBeInitialized(addressInitialization_.value(variable))))
+    if (isBottomDomain() ||
+        (trackInitialization_ &&
+         !mayBeInitialized(addressInitialization_.value(variable))))
         return AddressSet::bottom();
     return addresses_.addressSet(variable);
 }
@@ -172,9 +172,9 @@ void BoxAddressDomain::setInterval(Variable variable, const Interval& value)
     else
         numerical_->assignBound(variable, value);
     if (trackInitialization_)
-        numericalInitialization_.assign(variable, value.isBottom()
-                                        ? InitializationState::Uninitialized
-                                        : InitializationState::Initialized);
+        numericalInitialization_.assign(
+            variable, value.isBottom() ? InitializationState::Uninitialized
+                                       : InitializationState::Initialized);
 }
 
 void BoxAddressDomain::setAddressSet(Variable variable, const AddressSet& value)
@@ -188,9 +188,9 @@ void BoxAddressDomain::setAddressSet(Variable variable, const AddressSet& value)
     else
         addresses_.assign(variable, value);
     if (trackInitialization_)
-        addressInitialization_.assign(variable, value.isBottom()
-                                      ? InitializationState::Uninitialized
-                                      : InitializationState::Initialized);
+        addressInitialization_.assign(
+            variable, value.isBottom() ? InitializationState::Uninitialized
+                                       : InitializationState::Initialized);
 }
 
 void BoxAddressDomain::assignValueFrom(Variable target,
@@ -255,8 +255,10 @@ void BoxAddressDomain::resetValue(Variable variable)
     addresses_.forget(variable);
     if (trackInitialization_)
     {
-        numericalInitialization_.assign(variable, numericalInitialization_.defaultState());
-        addressInitialization_.assign(variable, addressInitialization_.defaultState());
+        numericalInitialization_.assign(
+            variable, numericalInitialization_.defaultState());
+        addressInitialization_.assign(variable,
+                                      addressInitialization_.defaultState());
     }
 }
 
@@ -274,12 +276,12 @@ std::vector<Variable> BoxAddressDomain::initializedVariablesBefore(
     if (!trackInitialization_)
         return {};
     return mergedVariables(
-               numericalInitialization_.nonDefaultVariablesBefore(upperBound),
-               addressInitialization_.nonDefaultVariablesBefore(upperBound));
+        numericalInitialization_.nonDefaultVariablesBefore(upperBound),
+        addressInitialization_.nonDefaultVariablesBefore(upperBound));
 }
 
-void BoxAddressDomain::combineInitialized(
-    const BoxAddressDomain& other, Combination operation)
+void BoxAddressDomain::combineInitialized(const BoxAddressDomain& other,
+                                          Combination operation)
 {
     const bool intersect = operation == Combination::Meet;
     if (isBottomDomain() || other.isBottomDomain())
@@ -297,13 +299,15 @@ void BoxAddressDomain::combineInitialized(
     BoxAddressDomain result(*this);
     if (intersect)
     {
-        result.numericalInitialization_.meetWith(other.numericalInitialization_);
+        result.numericalInitialization_.meetWith(
+            other.numericalInitialization_);
         result.addressInitialization_.meetWith(other.addressInitialization_);
         result.lifetimes_.meetWith(other.lifetimes_);
     }
     else
     {
-        result.numericalInitialization_.joinWith(other.numericalInitialization_);
+        result.numericalInitialization_.joinWith(
+            other.numericalInitialization_);
         result.addressInitialization_.joinWith(other.addressInitialization_);
         result.lifetimes_.joinWith(other.lifetimes_);
     }
@@ -320,7 +324,7 @@ void BoxAddressDomain::combineInitialized(
         else
         {
             if (operation == Combination::Widen && !number.isBottom() &&
-                    !nextNumber.isBottom())
+                !nextNumber.isBottom())
                 number.widenWith(nextNumber);
             else
                 number.joinWith(nextNumber);
@@ -332,16 +336,19 @@ void BoxAddressDomain::combineInitialized(
             result.numerical_->forget(variable);
             if (intersect)
             {
-                const auto guard = result.numericalInitialization_.value(variable);
-                result.numericalInitialization_.assign(variable,
-                                                       static_cast<InitializationState>(static_cast<unsigned>(guard) & 1U));
+                const auto guard =
+                    result.numericalInitialization_.value(variable);
+                result.numericalInitialization_.assign(
+                    variable, static_cast<InitializationState>(
+                                  static_cast<unsigned>(guard) & 1U));
             }
         }
         else if (number != numerical_->bound(variable))
             result.numerical_->assignBound(variable, number);
     }
-    const auto pointers = mergedVariables(addresses_.nonDefaultVariables(),
-                                          other.addresses_.nonDefaultVariables());
+    const auto pointers =
+        mergedVariables(addresses_.nonDefaultVariables(),
+                        other.addresses_.nonDefaultVariables());
     for (Variable variable : pointers)
     {
         if (result.isBottomDomain())
@@ -357,9 +364,11 @@ void BoxAddressDomain::combineInitialized(
             result.addresses_.forget(variable);
             if (intersect)
             {
-                const auto guard = result.addressInitialization_.value(variable);
-                result.addressInitialization_.assign(variable,
-                                                     static_cast<InitializationState>(static_cast<unsigned>(guard) & 1U));
+                const auto guard =
+                    result.addressInitialization_.value(variable);
+                result.addressInitialization_.assign(
+                    variable, static_cast<InitializationState>(
+                                  static_cast<unsigned>(guard) & 1U));
             }
         }
         else if (addresses != addresses_.addressSet(variable))
@@ -370,9 +379,11 @@ void BoxAddressDomain::combineInitialized(
 
 bool BoxAddressDomain::initializedSubsetOf(const BoxAddressDomain& other) const
 {
-    if (numericalInitialization_.isSubsetOf(other.numericalInitialization_) != CheckResult::True ||
-            addressInitialization_.isSubsetOf(other.addressInitialization_) != CheckResult::True ||
-            lifetimes_.isSubsetOf(other.lifetimes_) != CheckResult::True)
+    if (numericalInitialization_.isSubsetOf(other.numericalInitialization_) !=
+            CheckResult::True ||
+        addressInitialization_.isSubsetOf(other.addressInitialization_) !=
+            CheckResult::True ||
+        lifetimes_.isSubsetOf(other.lifetimes_) != CheckResult::True)
         return false;
     // Native inclusion is sufficient once guards are included. This restores
     // shared-page fast paths, without confusing inactive payload Top with an
@@ -382,15 +393,16 @@ bool BoxAddressDomain::initializedSubsetOf(const BoxAddressDomain& other) const
     {
         for (Variable variable : other.numerical_->supportVariables())
             if (mayBeInitialized(numericalInitialization_.value(variable)) &&
-                    !numerical_->bound(variable).isSubsetOf(
-                        other.numerical_->bound(variable)))
+                !numerical_->bound(variable).isSubsetOf(
+                    other.numerical_->bound(variable)))
                 return false;
     }
     if (addresses_.isSubsetOf(other.addresses_) != CheckResult::True)
     {
         for (Variable variable : other.addresses_.nonDefaultVariables())
             if (mayBeInitialized(addressInitialization_.value(variable)) &&
-                    !addresses_.addressSet(variable).isSubsetOf(other.addresses_.addressSet(variable)))
+                !addresses_.addressSet(variable).isSubsetOf(
+                    other.addresses_.addressSet(variable)))
                 return false;
     }
     return true;
@@ -406,14 +418,12 @@ LifetimeDomain LifetimeDomain::bottom()
     return LifetimeDomain(false);
 }
 
-
 std::unique_ptr<AbstractDomain> LifetimeDomain::clone() const
 {
     return std::make_unique<LifetimeDomain>(*this);
 }
 
-std::shared_ptr<LifetimeDomain::LocationIDs>
-LifetimeDomain::emptyLocationIDs()
+std::shared_ptr<LifetimeDomain::LocationIDs> LifetimeDomain::emptyLocationIDs()
 {
     static const auto empty = std::make_shared<LocationIDs>();
     return empty;
@@ -436,8 +446,7 @@ bool LifetimeDomain::mayBeFreed(Location location) const
 
 bool LifetimeDomain::mayBeFreed(std::uint32_t locationID) const
 {
-    return defaultMayBeFreed_ !=
-           (exceptions_->count(locationID) != 0);
+    return defaultMayBeFreed_ != (exceptions_->count(locationID) != 0);
 }
 
 bool LifetimeDomain::hasCompatibleDomain(const AbstractDomain& other) const
@@ -449,8 +458,8 @@ void LifetimeDomain::joinDomain(const AbstractDomain& other)
 {
     const auto& state = static_cast<const LifetimeDomain&>(other);
     if (defaultMayBeFreed_ == state.defaultMayBeFreed_ &&
-            (exceptions_ == state.exceptions_ ||
-             *exceptions_ == *state.exceptions_))
+        (exceptions_ == state.exceptions_ ||
+         *exceptions_ == *state.exceptions_))
         return;
     if (state.isBottomDomain())
         return;
@@ -473,8 +482,8 @@ void LifetimeDomain::meetDomain(const AbstractDomain& other)
 {
     const auto& state = static_cast<const LifetimeDomain&>(other);
     if (defaultMayBeFreed_ == state.defaultMayBeFreed_ &&
-            (exceptions_ == state.exceptions_ ||
-             *exceptions_ == *state.exceptions_))
+        (exceptions_ == state.exceptions_ ||
+         *exceptions_ == *state.exceptions_))
         return;
     if (state.isTopDomain())
         return;
@@ -517,8 +526,8 @@ bool LifetimeDomain::leqDomain(const AbstractDomain& other) const
 {
     const auto& state = static_cast<const LifetimeDomain&>(other);
     if (defaultMayBeFreed_ == state.defaultMayBeFreed_ &&
-            (exceptions_ == state.exceptions_ ||
-             *exceptions_ == *state.exceptions_))
+        (exceptions_ == state.exceptions_ ||
+         *exceptions_ == *state.exceptions_))
         return true;
     if (defaultMayBeFreed_ && !state.defaultMayBeFreed_)
         return false;
@@ -530,8 +539,8 @@ bool LifetimeDomain::leqDomain(const AbstractDomain& other) const
     }
     for (std::uint32_t locationID : *state.exceptions_)
     {
-        if (exceptions_->count(locationID) == 0 &&
-                mayBeFreed(locationID) && !state.mayBeFreed(locationID))
+        if (exceptions_->count(locationID) == 0 && mayBeFreed(locationID) &&
+            !state.mayBeFreed(locationID))
             return false;
     }
     return true;
@@ -539,12 +548,12 @@ bool LifetimeDomain::leqDomain(const AbstractDomain& other) const
 
 std::string LifetimeDomain::domainToString() const
 {
-    std::vector<std::uint32_t> locations(
-        exceptions_->begin(), exceptions_->end());
+    std::vector<std::uint32_t> locations(exceptions_->begin(),
+                                         exceptions_->end());
     std::sort(locations.begin(), locations.end());
     std::ostringstream output;
-    output << "default="
-           << (defaultMayBeFreed_ ? "may-freed" : "not-freed") << " {";
+    output << "default=" << (defaultMayBeFreed_ ? "may-freed" : "not-freed")
+           << " {";
     bool first = true;
     for (std::uint32_t locationID : locations)
     {
@@ -560,8 +569,7 @@ std::string LifetimeDomain::domainToString() const
 
 void LifetimeDomain::setMayBeFreed(Location location, bool mayBeFreedValue)
 {
-    const bool differsFromDefault =
-        mayBeFreedValue != defaultMayBeFreed_;
+    const bool differsFromDefault = mayBeFreedValue != defaultMayBeFreed_;
     const bool stored = exceptions_->count(location.id()) != 0;
     if (differsFromDefault == stored)
         return;
@@ -571,19 +579,17 @@ void LifetimeDomain::setMayBeFreed(Location location, bool mayBeFreedValue)
         writableExceptions().erase(location.id());
 }
 
-void LifetimeDomain::combineWith(
-    const LifetimeDomain& other, bool join)
+void LifetimeDomain::combineWith(const LifetimeDomain& other, bool join)
 {
-    const bool nextDefault = join
-                             ? defaultMayBeFreed_ || other.defaultMayBeFreed_
-                             : defaultMayBeFreed_ && other.defaultMayBeFreed_;
+    const bool nextDefault =
+        join ? defaultMayBeFreed_ || other.defaultMayBeFreed_
+             : defaultMayBeFreed_ && other.defaultMayBeFreed_;
     LocationIDs next;
     next.reserve(exceptions_->size() + other.exceptions_->size());
-    const auto addIfExceptional = [&](std::uint32_t locationID)
-    {
-        const bool value = join
-                           ? mayBeFreed(locationID) || other.mayBeFreed(locationID)
-                           : mayBeFreed(locationID) && other.mayBeFreed(locationID);
+    const auto addIfExceptional = [&](std::uint32_t locationID) {
+        const bool value =
+            join ? mayBeFreed(locationID) || other.mayBeFreed(locationID)
+                 : mayBeFreed(locationID) && other.mayBeFreed(locationID);
         if (value != nextDefault)
             next.insert(locationID);
     };
@@ -621,8 +627,8 @@ void MemoryLayout::extend(Location location, Variable content)
             "location already has a different content symbol");
 }
 
-void BoxAddressDomain::restoreMissingMemoryFrom(
-    const BoxAddressDomain& caller, Variable content)
+void BoxAddressDomain::restoreMissingMemoryFrom(const BoxAddressDomain& caller,
+                                                Variable content)
 {
     if (isBottom() || caller.isBottom())
         return;
@@ -631,7 +637,8 @@ void BoxAddressDomain::restoreMissingMemoryFrom(
         if (!mayBeInitialized(numericalInitialization_.value(content)))
         {
             setInterval(content, caller.interval(content));
-            numericalInitialization_.assign(content, caller.numericalInitialization_.value(content));
+            numericalInitialization_.assign(
+                content, caller.numericalInitialization_.value(content));
         }
         restoreMissingAddressFrom(caller, content);
         return;
@@ -645,8 +652,8 @@ void BoxAddressDomain::restoreMissingMemoryFrom(
     restoreMissingAddressFrom(caller, content);
 }
 
-void BoxAddressDomain::restoreMissingAddressFrom(
-    const BoxAddressDomain& caller, Variable content)
+void BoxAddressDomain::restoreMissingAddressFrom(const BoxAddressDomain& caller,
+                                                 Variable content)
 {
     if (isBottom() || caller.isBottom())
         return;
@@ -655,7 +662,8 @@ void BoxAddressDomain::restoreMissingAddressFrom(
         if (!mayBeInitialized(addressInitialization_.value(content)))
         {
             setAddressSet(content, caller.addressSet(content));
-            addressInitialization_.assign(content, caller.addressInitialization_.value(content));
+            addressInitialization_.assign(
+                content, caller.addressInitialization_.value(content));
         }
         return;
     }

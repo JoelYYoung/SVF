@@ -3,10 +3,10 @@
 #ifndef OPTIONS_H_
 #define OPTIONS_H_
 
-#include "Util/CommandLine.h"
-#include "Util/SVFStat.h"
 #include "MemoryModel/PTATY.h"
+#include "Util/CommandLine.h"
 #include "Util/NodeIDAllocator.h"
+#include "Util/SVFStat.h"
 
 namespace SVF
 {
@@ -21,9 +21,10 @@ public:
 
     /// If set, only return the clock when getClk is called as getClk(true).
     /// Retrieving the clock is slow but it should be fine for a few calls.
-    /// This is good for benchmarking when we don't need to know how long processLoad
-    /// takes, for example (many calls), but want to know things like total solve time.
-    /// Should be used only to affect getClk, not CLOCK_IN_MS.
+    /// This is good for benchmarking when we don't need to know how long
+    /// processLoad takes, for example (many calls), but want to know things
+    /// like total solve time. Should be used only to affect getClk, not
+    /// CLOCK_IN_MS.
     static const Option<bool> MarkedClocksOnly;
 
     /// Allocation strategy to be used by the node ID allocator.
@@ -33,7 +34,8 @@ public:
     /// Maximum number of field derivations for an object.
     static const Option<u32_t> MaxFieldLimit;
 
-    /// Whether to stage Andersen's with Steensgaard and cluster based on that data.
+    /// Whether to stage Andersen's with Steensgaard and cluster based on that
+    /// data.
     static const Option<bool> ClusterAnder;
 
     /// Whether to cluster FS or VFS with the auxiliary Andersen's.
@@ -46,9 +48,11 @@ public:
     static const OptionMap<PointsTo::Type> PtType;
 
     /// Clustering method for ClusterFs/ClusterAnder.
-    /// TODO: we can separate it into two options, and make Clusterer::cluster take in a method
-    ///       argument rather than plugging Options::ClusterMethod *inside* Clusterer::cluster
-    ///       directly, but it seems we will always want single anyway, and this is for testing.
+    /// TODO: we can separate it into two options, and make Clusterer::cluster
+    /// take in a method
+    ///       argument rather than plugging Options::ClusterMethod *inside*
+    ///       Clusterer::cluster directly, but it seems we will always want
+    ///       single anyway, and this is for testing.
     static const OptionMap<u32_t> ClusterMethod;
 
     /// Cluster partitions separately.
@@ -222,8 +226,8 @@ public:
     static const Option<std::string> CFLGraph;
     static const Option<bool> PrintCFL;
     static const Option<bool> FlexSymMap;
-    static const Option<bool>  PEGTransfer;
-    static const Option<bool>  CFLSVFG;
+    static const Option<bool> PEGTransfer;
+    static const Option<bool> CFLSVFG;
     static const Option<bool> POCRAlias;
     static const Option<bool> POCRHybrid;
     static const Option<bool> Customized;
@@ -253,14 +257,18 @@ public:
     static const Option<bool> FileCheck;
     /// double free checker, Default: false
     static const Option<bool> DFreeCheck;
-    /// MTA: flow-sensitive (FSAM) main analysis; false = Andersen flow-insensitive base, Default: true
+    /// MTA: flow-sensitive (FSAM) main analysis; false = Andersen
+    /// flow-insensitive base, Default: true
     static const Option<bool> MTFlowSensitive;
-    /// MTA: dump the pointer-analysis and thread call graphs (ptacg/tcg.dot), Default: false
+    /// MTA: dump the pointer-analysis and thread call graphs (ptacg/tcg.dot),
+    /// Default: false
     static const Option<bool> DumpMTAGraphs;
 
-    /// MTA slicing: slice before the FSAM main analysis (false = whole-program baseline), Default: true
+    /// MTA slicing: slice before the FSAM main analysis (false = whole-program
+    /// baseline), Default: true
     static const Option<bool> MTAEnableSlicing;
-    /// MTA slicing: one unified slice for ILA + FSPTA (single-pass baseline), Default: false
+    /// MTA slicing: one unified slice for ILA + FSPTA (single-pass baseline),
+    /// Default: false
     static const Option<bool> MTASingleStageSlicing;
     /// if the access index of gepstmt is unknown, skip it, Default: false
     static const Option<bool> GepUnknownIdx;
@@ -274,6 +282,6 @@ public:
     // GraphWriter.h
     static const Option<u32_t> MaxNodeLabelLength;
 };
-}  // namespace SVF
+} // namespace SVF
 
-#endif  // ifdef OPTIONS_H_
+#endif // ifdef OPTIONS_H_

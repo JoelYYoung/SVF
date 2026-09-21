@@ -49,20 +49,19 @@ static std::vector<const ICFGEdge*> orderedIncomingEdges(const ICFGNode* node)
     std::vector<const ICFGEdge*> edges(node->getInEdges().begin(),
                                        node->getInEdges().end());
     std::sort(edges.begin(), edges.end(),
-              [](const ICFGEdge* lhs, const ICFGEdge* rhs)
-    {
-        return std::make_tuple(lhs->getSrcID(),
-                               lhs->getEdgeKindWithoutMask()) <
-               std::make_tuple(rhs->getSrcID(),
-                               rhs->getEdgeKindWithoutMask());
-    });
+              [](const ICFGEdge* lhs, const ICFGEdge* rhs) {
+                  return std::make_tuple(lhs->getSrcID(),
+                                         lhs->getEdgeKindWithoutMask()) <
+                         std::make_tuple(rhs->getSrcID(),
+                                         rhs->getEdgeKindWithoutMask());
+              });
     return edges;
 }
 
 AD::AddressSet AbstractInterpretation::blackHoleAddressSet() const
 {
-    const auto* object = SVFUtil::dyn_cast<ObjVar>(
-                             svfir->getGNode(IRGraph::BlackHole));
+    const auto* object =
+        SVFUtil::dyn_cast<ObjVar>(svfir->getGNode(IRGraph::BlackHole));
     if (!object)
         throw std::runtime_error("SVFIR has no BlackHole object");
     return AD::AddressSet::singleton(adapter_.location(*object));
@@ -76,14 +75,14 @@ void AbstractInterpretation::handleGlobalNode()
         handleSVFStatement(statement);
 
     if (const auto* variable = SVFUtil::dyn_cast<ValVar>(
-                                   svfir->getGNode(PAG::getPAG()->getBlkPtr())))
-        updateValue(variable, AD::Interval::top(),
-                    blackHoleAddressSet(), node);
+            svfir->getGNode(PAG::getPAG()->getBlkPtr())))
+        updateValue(variable, AD::Interval::top(), blackHoleAddressSet(), node);
 }
 
-void AbstractInterpretation::initializeObjectValue(
-    const ObjVar* object, AD::Interval& interval, AD::AddressSet& addresses,
-    const ICFGNode* node)
+void AbstractInterpretation::initializeObjectValue(const ObjVar* object,
+                                                   AD::Interval& interval,
+                                                   AD::AddressSet& addresses,
+                                                   const ICFGNode* node)
 {
     interval = AD::Interval::bottom();
     addresses = AD::AddressSet::bottom();
@@ -100,7 +99,8 @@ void AbstractInterpretation::initializeObjectValue(
         denseState.resetValue(adapter_.contentVariable(*object));
         for (NodeID fieldId : svfir->getAllFieldsObjVars(base->getId()))
         {
-            const auto* field = SVFUtil::dyn_cast<ObjVar>(svfir->getGNode(fieldId));
+            const auto* field =
+                SVFUtil::dyn_cast<ObjVar>(svfir->getGNode(fieldId));
             if (field)
                 denseState.resetValue(adapter_.contentVariable(*field));
         }
@@ -111,7 +111,7 @@ void AbstractInterpretation::initializeObjectValue(
         return;
     }
     if (base->isConstDataOrConstGlobal() || base->isConstantArray() ||
-            base->isConstantStruct())
+        base->isConstantStruct())
     {
         if (const auto* integer = SVFUtil::dyn_cast<ConstIntObjVar>(object))
             interval =
@@ -129,7 +129,6 @@ void AbstractInterpretation::initializeObjectValue(
     addresses = AD::AddressSet::singleton(adapter_.location(*object));
 }
 
-
 void AbstractInterpretation::runOnModule()
 {
     stat->startClk();
@@ -141,12 +140,12 @@ void AbstractInterpretation::runOnModule()
     if (unknownTargetTelemetryEnabled_)
     {
         const UnknownTargetTelemetry& telemetry = unknownTargetTelemetry_;
-        SVFUtil::outs()
-                << "AE_UNKNOWN_TARGET_STATS loads=" << telemetry.loads
-                << " stores=" << telemetry.stores
-                << " store_cells_visited=" << telemetry.storeCellsVisited
-                << " sparse_definition_cells_visited="
-                << telemetry.sparseDefinitionCellsVisited << '\n';
+        SVFUtil::outs() << "AE_UNKNOWN_TARGET_STATS loads=" << telemetry.loads
+                        << " stores=" << telemetry.stores
+                        << " store_cells_visited="
+                        << telemetry.storeCellsVisited
+                        << " sparse_definition_cells_visited="
+                        << telemetry.sparseDefinitionCellsVisited << '\n';
     }
     utils->checkPointAllSet();
     stat->endClk();
@@ -180,10 +179,9 @@ AbstractInterpretation& AbstractInterpretation::getAEInstance()
     // Keep the singleton alive until process exit. Several owned analysis
     // objects refer to process-global SVF state whose destruction order is
     // outside AE's control.
-    static AbstractInterpretation* instance = []() -> AbstractInterpretation*
-    {
+    static AbstractInterpretation* instance = []() -> AbstractInterpretation* {
         if (Options::AESparsity() == AESparsity::Sparse &&
-                Options::AEDomain() != AENumericalDomain::Box)
+            Options::AEDomain() != AENumericalDomain::Box)
             throw std::invalid_argument(
                 "relational numerical domains currently support dense and "
                 "semi-sparse AE only");
@@ -281,8 +279,8 @@ FIFOWorkList<const FunObjVar*> AbstractInterpretation::collectProgEntryFuns()
     if (mainEntry && entryFunctions.empty())
     {
         SVFUtil::errs() << SVFUtil::errMsg(
-                            "AE -ae-fun-entry=main requires a program entry function, but "
-                            "main/svf.main was not found.\n");
+            "AE -ae-fun-entry=main requires a program entry function, but "
+            "main/svf.main was not found.\n");
         assert(false &&
                "No program entry function found for -ae-fun-entry=main");
         abort();
@@ -370,16 +368,15 @@ static const LoadStmt* findBackingLoad(const SVFVar* var)
 /// [6, +inf). On the false branch (succ=0), %a is constrained to (-inf, 5].
 /// The result is used to narrow the ObjVar behind %a's load.
 static AD::Interval computeCmpConstraint(s32_t predicate, s64_t succ,
-        bool isLHS, const AD::Interval& self,
-        const AD::Interval& other)
+                                         bool isLHS, const AD::Interval& self,
+                                         const AD::Interval& other)
 {
     // Normalize: always reason from the LHS perspective.
     // If we are the RHS operand, swap the predicate direction.
     if (!isLHS)
     {
         // a > b from b's perspective: b < a
-        static const Map<s32_t, s32_t> swapPred =
-        {
+        static const Map<s32_t, s32_t> swapPred = {
             {CmpStmt::ICMP_EQ, CmpStmt::ICMP_EQ},
             {CmpStmt::ICMP_NE, CmpStmt::ICMP_NE},
             {CmpStmt::ICMP_SGT, CmpStmt::ICMP_SLT},
@@ -412,8 +409,7 @@ static AD::Interval computeCmpConstraint(s32_t predicate, s64_t succ,
     // If false branch, negate the predicate.
     if (succ == 0)
     {
-        static const Map<s32_t, s32_t> negPred =
-        {
+        static const Map<s32_t, s32_t> negPred = {
             {CmpStmt::ICMP_EQ, CmpStmt::ICMP_NE},
             {CmpStmt::ICMP_NE, CmpStmt::ICMP_EQ},
             {CmpStmt::ICMP_SGT, CmpStmt::ICMP_SLE},
@@ -476,10 +472,9 @@ static AD::Interval computeCmpConstraint(s32_t predicate, s64_t succ,
     case CmpStmt::FCMP_UGE:
         if (!other.lower().isFinite())
             return result;
-        result.meetWith(
-            AD::Interval(AD::Bound::finite(other.lower().value(),
-                                           other.lower().isStrict()),
-                         AD::Bound::plusInfinity()));
+        result.meetWith(AD::Interval(
+            AD::Bound::finite(other.lower().value(), other.lower().isStrict()),
+            AD::Bound::plusInfinity()));
         break;
     case CmpStmt::ICMP_ULT:
     case CmpStmt::ICMP_SLT:
@@ -525,23 +520,20 @@ void AbstractInterpretation::collectBranchRefinement(
         s32_t predicate = cmpStmt->getPredicate();
 
         if (cmpStmt->getOpVarID(0) == IRGraph::NullPtr ||
-                cmpStmt->getOpVarID(1) == IRGraph::NullPtr)
+            cmpStmt->getOpVarID(1) == IRGraph::NullPtr)
         {
             // p == NULL / p != NULL: no interval obj to refine.
         }
         else
         {
             AD::Interval opVal[2] = {getInterval(cmpStmt->getOpVar(0), pred),
-                                     getInterval(cmpStmt->getOpVar(1), pred)
-                                    };
-            AD::AddressSet opAddr[2] =
-            {
+                                     getInterval(cmpStmt->getOpVar(1), pred)};
+            AD::AddressSet opAddr[2] = {
                 getAddressSet(cmpStmt->getOpVar(0), pred),
-                getAddressSet(cmpStmt->getOpVar(1), pred)
-            };
+                getAddressSet(cmpStmt->getOpVar(1), pred)};
 
             if ((opVal[0].isBottom() || opVal[1].isBottom()) &&
-                    (!opAddr[0].isBottom() || !opAddr[1].isBottom()))
+                (!opAddr[0].isBottom() || !opAddr[1].isBottom()))
             {
                 // Pointer-valued cmp: branch feasibility only.
             }
@@ -569,7 +561,7 @@ void AbstractInterpretation::collectBranchRefinement(
                     else
                     {
                         AD::Interval narrowed = computeCmpConstraint(
-                                                    predicate, succ, i == 0, opVal[i], opVal[other]);
+                            predicate, succ, i == 0, opVal[i], opVal[other]);
 
                         if (narrowed.isTop())
                         {
@@ -580,8 +572,7 @@ void AbstractInterpretation::collectBranchRefinement(
                             const ICFGNode* loadIcfg = load->getICFGNode();
                             const AD::AddressSet ptrVal =
                                 getAddressSet(load->getRHSVar(), loadIcfg);
-                            if (ptrVal.isBottom() ||
-                                    ptrVal.hasUnknownObject())
+                            if (ptrVal.isBottom() || ptrVal.hasUnknownObject())
                             {
                                 // Cannot map load p back to concrete ObjVars.
                             }
@@ -590,7 +581,7 @@ void AbstractInterpretation::collectBranchRefinement(
                                 for (const AD::Location location : ptrVal)
                                 {
                                     if (const ObjVar* object =
-                                                objectAt(location))
+                                            objectAt(location))
                                         recordBranchRefinement(
                                             object->getId(), narrowed, state,
                                             loadIcfg, succNode);
@@ -738,7 +729,7 @@ bool AbstractInterpretation::handleICFGNode(const ICFGNode* node)
  * visited once, and cycles are handled as whole components.
  */
 void AbstractInterpretation::handleFunction(const ICFGNode* funEntry,
-        const CallICFGNode* caller)
+                                            const CallICFGNode* caller)
 {
     auto it = preAnalysis->getFuncToWTO().find(funEntry->getFun());
     assert(it != preAnalysis->getFuncToWTO().end() &&
@@ -752,7 +743,7 @@ void AbstractInterpretation::handleFunction(const ICFGNode* funEntry,
         const ICFGWTOComp* comp = worklist.pop();
 
         if (const ICFGSingletonWTO* singleton =
-                    SVFUtil::dyn_cast<ICFGSingletonWTO>(comp))
+                SVFUtil::dyn_cast<ICFGSingletonWTO>(comp))
         {
             const ICFGNode* node = singleton->getICFGNode();
             if (mergeStatesFromPredecessors(node))
@@ -861,12 +852,11 @@ void AbstractInterpretation::handleFunCall(const CallICFGNode* callNode)
     {
         const auto& callees = callGraph->getIndCSCallees(callNode);
         std::vector<const FunObjVar*> orderedCallees(callees.begin(),
-                callees.end());
+                                                     callees.end());
         std::sort(orderedCallees.begin(), orderedCallees.end(),
-                  [](const FunObjVar* lhs, const FunObjVar* rhs)
-        {
-            return lhs->getId() < rhs->getId();
-        });
+                  [](const FunObjVar* lhs, const FunObjVar* rhs) {
+                      return lhs->getId() < rhs->getId();
+                  });
         for (const FunObjVar* callee : orderedCallees)
         {
             if (callee->isDeclaration())
@@ -879,18 +869,18 @@ void AbstractInterpretation::handleFunCall(const CallICFGNode* callNode)
     if (!analyzedCallee)
     {
         // Original's missing SSA result reads as numerical Top. This is an
-        // unresolved call, not an uninitialized object load (which stays Bottom).
+        // unresolved call, not an uninitialized object load (which stays
+        // Bottom).
         const SVFVar* result = retNode->getActualRet();
         if (result && getInterval(result, callNode).isBottom() &&
-                getAddressSet(result, callNode).isBottom())
+            getAddressSet(result, callNode).isBottom())
             updateInterval(result, AD::Interval::top(), callNode);
     }
     // Resume return node from caller's state (context-insensitive)
     copyAbstractState(callNode, retNode);
 }
 
-bool AbstractInterpretation::mergeStatesFromPredecessors(
-    const ICFGNode* node)
+bool AbstractInterpretation::mergeStatesFromPredecessors(const ICFGNode* node)
 {
     State merged = bottomState();
     bool hasFeasiblePredecessor = false;
@@ -1025,7 +1015,7 @@ void AbstractInterpretation::updateStateOnSelect(const SelectStmt* select)
     if (condition.isSingleton())
     {
         const SVFVar* selected = condition.isZero() ? select->getFalseValue()
-                                 : select->getTrueValue();
+                                                    : select->getTrueValue();
         interval = getInterval(selected, node);
         addresses = getAddressSet(selected, node);
     }
@@ -1042,9 +1032,9 @@ void AbstractInterpretation::updateStateOnSelect(const SelectStmt* select)
 void AbstractInterpretation::updateStateOnPhi(const PhiStmt* phi)
 {
     const ICFGNode* icfgNode = phi->getICFGNode();
-    const FunExitICFGNode* exit = icfgNode->getFun()
-                                  ? icfg->getFunExitICFGNode(icfgNode->getFun())
-                                  : nullptr;
+    const FunExitICFGNode* exit =
+        icfgNode->getFun() ? icfg->getFunExitICFGNode(icfgNode->getFun())
+                           : nullptr;
     const bool isFormalReturn = exit && exit->getFormalRet() == phi->getRes();
     AD::Interval interval = AD::Interval::bottom();
     AD::AddressSet addresses = AD::AddressSet::bottom();
@@ -1074,10 +1064,9 @@ void AbstractInterpretation::updateStateOnPhi(const PhiStmt* phi)
                 // return values.
                 interval.joinWith(
                     isFormalReturn
-                    ? getDefinedInterval(phi->getOpVar(i), opICFGNode)
-                    : getInterval(phi->getOpVar(i), opICFGNode));
-                addresses.joinWith(getAddressSet(phi->getOpVar(i),
-                                                 opICFGNode));
+                        ? getDefinedInterval(phi->getOpVar(i), opICFGNode)
+                        : getInterval(phi->getOpVar(i), opICFGNode));
+                addresses.joinWith(getAddressSet(phi->getOpVar(i), opICFGNode));
             }
         }
     }
@@ -1099,8 +1088,7 @@ void AbstractInterpretation::updateStateOnCall(const CallPE* callPE)
         if (hasAbsState(opICFGNode))
         {
             interval.joinWith(getInterval(callPE->getOpVar(i), opICFGNode));
-            addresses.joinWith(getAddressSet(callPE->getOpVar(i),
-                                             opICFGNode));
+            addresses.joinWith(getAddressSet(callPE->getOpVar(i), opICFGNode));
         }
     }
     updateValue(res, interval, addresses, node);
@@ -1196,14 +1184,13 @@ void AbstractInterpretation::updateStateOnCmp(const CmpStmt* cmp)
     const bool addressComparison = cmp->getOpVar(0)->isPointer();
     AD::Interval result =
         AD::Interval::closed(AD::Rational(0), AD::Rational(1));
-    const auto boolean = [](bool value)
-    {
+    const auto boolean = [](bool value) {
         return AD::Interval::singleton(AD::Rational(value ? 1 : 0));
     };
 
     const auto predicate = cmp->getPredicate();
     if (!addressComparison &&
-            (lhsInterval.isBottom() || rhsInterval.isBottom()))
+        (lhsInterval.isBottom() || rhsInterval.isBottom()))
     {
         // Original skips this transfer, then reads a never-defined SSA result
         // as Top. Preserve any existing result on subsequent loop iterations.
@@ -1221,29 +1208,26 @@ void AbstractInterpretation::updateStateOnCmp(const CmpStmt* cmp)
     }
     else if (addressComparison)
     {
-        const auto containsBlackHole = [&](const AD::AddressSet& addresses)
-        {
+        const auto containsBlackHole = [&](const AD::AddressSet& addresses) {
             if (!addresses.isFinite())
                 return true;
-            return std::any_of(addresses.begin(), addresses.end(),
-                               [&](AD::Location location)
-            {
-                const ObjVar* object = objectAt(location);
-                const BaseObjVar* base = object
-                                         ? svfir->getBaseObject(object->getId()) : nullptr;
-                return base && base->isBlackHoleObj();
-            });
+            return std::any_of(
+                addresses.begin(), addresses.end(), [&](AD::Location location) {
+                    const ObjVar* object = objectAt(location);
+                    const BaseObjVar* base =
+                        object ? svfir->getBaseObject(object->getId())
+                               : nullptr;
+                    return base && base->isBlackHoleObj();
+                });
         };
-        const bool unknownAddress = containsBlackHole(lhsAddresses) ||
-                                    containsBlackHole(rhsAddresses);
+        const bool unknownAddress =
+            containsBlackHole(lhsAddresses) || containsBlackHole(rhsAddresses);
         const bool exact = lhsAddresses.isSingleton() &&
                            rhsAddresses.isSingleton() && !unknownAddress;
-        const bool disjoint = lhsAddresses.isFinite() &&
-                              rhsAddresses.isFinite() &&
-                              !lhsAddresses.isBottom() &&
-                              !rhsAddresses.isBottom() &&
-                              !unknownAddress &&
-                              !lhsAddresses.hasIntersection(rhsAddresses);
+        const bool disjoint =
+            lhsAddresses.isFinite() && rhsAddresses.isFinite() &&
+            !lhsAddresses.isBottom() && !rhsAddresses.isBottom() &&
+            !unknownAddress && !lhsAddresses.hasIntersection(rhsAddresses);
         switch (predicate)
         {
         case CmpStmt::ICMP_EQ:
@@ -1366,8 +1350,7 @@ void AbstractInterpretation::updateStateOnCopy(const CopyStmt* copy)
     const SVFVar* lhsVar = copy->getLHSVar();
     const SVFVar* rhsVar = copy->getRHSVar();
 
-    auto getZExtValue = [&](const SVFVar* var)
-    {
+    auto getZExtValue = [&](const SVFVar* var) {
         const SVFType* type = var->getType();
         if (SVFUtil::isa<SVFIntegerType>(type))
         {
@@ -1384,26 +1367,25 @@ void AbstractInterpretation::updateStateOnCopy(const CopyStmt* copy)
             mpz_mul_2exp(modulus.get_mpz_t(), modulus.get_mpz_t(), bits);
             if (!value.singletonValue().isInteger())
                 return AD::Interval::closed(
-                           AD::Rational(0),
-                           AD::Rational::fromRaw(mpq_class(modulus - 1)));
+                    AD::Rational(0),
+                    AD::Rational::fromRaw(mpq_class(modulus - 1)));
 
             const mpz_class numeral = value.singletonValue().value().get_num();
             mpz_class residue;
             mpz_fdiv_r(residue.get_mpz_t(), numeral.get_mpz_t(),
                        modulus.get_mpz_t());
             return AD::Interval::singleton(
-                       AD::Rational::fromRaw(mpq_class(residue)));
+                AD::Rational::fromRaw(mpq_class(residue)));
         }
         return AD::Interval::top();
     };
 
-    auto getTruncValue = [&](const SVFVar* var, const SVFType* dstType)
-    {
+    auto getTruncValue = [&](const SVFVar* var, const SVFType* dstType) {
         const AD::Interval interval = getInterval(var, node);
         if (interval.isBottom() || !interval.lower().isFinite() ||
-                !interval.upper().isFinite())
+            !interval.upper().isFinite())
             return interval.isBottom() ? interval
-                   : utils->getRangeLimitFromType(dstType);
+                                       : utils->getRangeLimitFromType(dstType);
         s64_t int_lb = interval.lower().value().toInt64();
         s64_t int_ub = interval.upper().value().toInt64();
         u32_t dst_bits = dstType->getByteSize() * 8;
@@ -1461,19 +1443,19 @@ void AbstractInterpretation::updateStateOnCopy(const CopyStmt* copy)
     }
     else if (copy->getCopyKind() == CopyStmt::FPTOSI)
     {
-        updateInterval(
-            lhsVar,
-            AD::floatToInteger(rhsInterval,
-                               lhsVar->getType()->getByteSize() * 8, true),
-            node);
+        updateInterval(lhsVar,
+                       AD::floatToInteger(rhsInterval,
+                                          lhsVar->getType()->getByteSize() * 8,
+                                          true),
+                       node);
     }
     else if (copy->getCopyKind() == CopyStmt::FPTOUI)
     {
-        updateInterval(
-            lhsVar,
-            AD::floatToInteger(rhsInterval,
-                               lhsVar->getType()->getByteSize() * 8, false),
-            node);
+        updateInterval(lhsVar,
+                       AD::floatToInteger(rhsInterval,
+                                          lhsVar->getType()->getByteSize() * 8,
+                                          false),
+                       node);
     }
     else if (copy->getCopyKind() == CopyStmt::SITOFP)
     {
@@ -1498,8 +1480,8 @@ void AbstractInterpretation::updateStateOnCopy(const CopyStmt* copy)
         // addresses, but this interpreter deliberately leaves the address
         // component empty. Original's unmaterialized SSA result reads as
         // numerical Top, which must survive a later store of this value.
-        updateValue(lhsVar, AD::Interval::top(),
-                    AD::AddressSet::bottom(), node);
+        updateValue(lhsVar, AD::Interval::top(), AD::AddressSet::bottom(),
+                    node);
     }
     else if (copy->getCopyKind() == CopyStmt::PTRTOINT)
     {

@@ -75,9 +75,7 @@ public:
     explicit OctagonStorage(std::vector<NumericKind> variableKinds,
                             OctagonStorageKind kind, bool bottom = false)
         : dimensions(variableKinds.size()),
-          variableKinds(std::move(variableKinds)),
-          bottom(bottom),
-          kind_(kind)
+          variableKinds(std::move(variableKinds)), bottom(bottom), kind_(kind)
     {
         initializeCarrier();
         const std::size_t count = nodes();
@@ -88,8 +86,7 @@ public:
     OctagonStorage(std::vector<NumericKind> variableKinds,
                    OctagonStorageKind kind, ScratchMatrixTag)
         : dimensions(variableKinds.size()),
-          variableKinds(std::move(variableKinds)),
-          kind_(kind)
+          variableKinds(std::move(variableKinds)), kind_(kind)
     {
         initializeCarrier();
     }
@@ -131,11 +128,10 @@ public:
         {
         case OctagonStorageKind::DenseHalf:
             return dense_[matrixIndex(row, column)];
-        case OctagonStorageKind::SparseFinite:
-        {
+        case OctagonStorageKind::SparseFinite: {
             const auto found = sparse_.find(matrixIndex(row, column));
             return found == sparse_.end() ? implicit(row, column)
-                   : found->second;
+                                          : found->second;
         }
         case OctagonStorageKind::ComponentDense:
             return componentAt(row, column);
@@ -160,8 +156,7 @@ public:
         throw std::logic_error("unknown Octagon storage kind");
     }
 
-    bool tighten(std::size_t row, std::size_t column,
-                 const Bound& candidate)
+    bool tighten(std::size_t row, std::size_t column, const Bound& candidate)
     {
         if (!(candidate < at(row, column)))
             return false;
@@ -177,10 +172,8 @@ public:
     bool contains(const OctagonStorage& lhs) const
     {
         const auto accepts = [&](std::size_t row, std::size_t column,
-                                 const Bound& rhsBound)
-        {
-            return rhsBound.isPlusInfinity() ||
-                   lhs.at(row, column) <= rhsBound;
+                                 const Bound& rhsBound) {
+            return rhsBound.isPlusInfinity() || lhs.at(row, column) <= rhsBound;
         };
 
         switch (kind_)
@@ -207,13 +200,13 @@ public:
             {
                 const std::size_t localNodes = 2 * component.variables.size();
                 for (std::size_t localRow = 0; localRow < localNodes;
-                        ++localRow)
+                     ++localRow)
                     for (std::size_t localColumn = 0;
-                            localColumn <= (localRow | 1U); ++localColumn)
+                         localColumn <= (localRow | 1U); ++localColumn)
                     {
                         const Bound& rhsBound =
-                            (*component.matrix)[storedIndex(localRow,
-                                                            localColumn)];
+                            (*component
+                                  .matrix)[storedIndex(localRow, localColumn)];
                         if (rhsBound.isPlusInfinity())
                             continue;
                         const std::size_t row =
@@ -242,8 +235,7 @@ public:
         if (owner == noComponent())
             return true;
 
-        const std::vector<std::size_t> variables =
-            components_[owner].variables;
+        const std::vector<std::size_t> variables = components_[owner].variables;
         const std::size_t first = positiveNode(dimension);
         const std::size_t second = negativeNode(dimension);
         for (const std::size_t variable : variables)
@@ -269,18 +261,16 @@ public:
         const std::vector<std::optional<Dimension>>& newDimensions) const
     {
         const auto copy = [&](std::size_t row, std::size_t column,
-                              const Bound& value)
-        {
-            if (value.isPlusInfinity() ||
-                    (row == column && value == zero()))
+                              const Bound& value) {
+            if (value.isPlusInfinity() || (row == column && value == zero()))
                 return;
             const std::optional<Dimension> newRow = newDimensions[row / 2];
             const std::optional<Dimension> newColumn =
                 newDimensions[column / 2];
             if (!newRow || !newColumn)
                 return;
-            destination.set(2 * *newRow + row % 2,
-                            2 * *newColumn + column % 2, value);
+            destination.set(2 * *newRow + row % 2, 2 * *newColumn + column % 2,
+                            value);
         };
 
         switch (kind_)
@@ -302,9 +292,9 @@ public:
             {
                 const std::size_t localNodes = 2 * component.variables.size();
                 for (std::size_t localRow = 0; localRow < localNodes;
-                        ++localRow)
+                     ++localRow)
                     for (std::size_t localColumn = 0;
-                            localColumn <= (localRow | 1U); ++localColumn)
+                         localColumn <= (localRow | 1U); ++localColumn)
                     {
                         const std::size_t row =
                             2 * component.variables[localRow / 2] +
@@ -329,15 +319,13 @@ public:
                              OctagonStorage& destination) const
     {
         const auto copy = [&](std::size_t row, std::size_t column,
-                              const Bound& lhsBound)
-        {
+                              const Bound& lhsBound) {
             if (lhsBound.isPlusInfinity() ||
-                    (row == column && lhsBound == zero()))
+                (row == column && lhsBound == zero()))
                 return;
             const Bound& rhsBound = rhs.at(row, column);
             if (!rhsBound.isPlusInfinity())
-                destination.set(row, column,
-                                Bound::max(lhsBound, rhsBound));
+                destination.set(row, column, Bound::max(lhsBound, rhsBound));
         };
         switch (kind_)
         {
@@ -356,9 +344,9 @@ public:
             {
                 const std::size_t localNodes = 2 * component.variables.size();
                 for (std::size_t localRow = 0; localRow < localNodes;
-                        ++localRow)
+                     ++localRow)
                     for (std::size_t localColumn = 0;
-                            localColumn <= (localRow | 1U); ++localColumn)
+                         localColumn <= (localRow | 1U); ++localColumn)
                     {
                         const std::size_t row =
                             2 * component.variables[localRow / 2] +
@@ -402,8 +390,7 @@ public:
             return dense_.size();
         case OctagonStorageKind::SparseFinite:
             return sparse_.size();
-        case OctagonStorageKind::ComponentDense:
-        {
+        case OctagonStorageKind::ComponentDense: {
             std::size_t result = 0;
             for (const Component& component : components_)
                 result += component.matrix->size();
@@ -453,12 +440,12 @@ public:
             const std::size_t localNodes = 2 * component.variables.size();
             for (std::size_t localRow = 0; localRow < localNodes; ++localRow)
                 for (std::size_t localColumn = 0;
-                        localColumn <= (localRow | 1U); ++localColumn)
+                     localColumn <= (localRow | 1U); ++localColumn)
                 {
                     const Bound& value =
                         (*component.matrix)[storedIndex(localRow, localColumn)];
                     if (value.isPlusInfinity() ||
-                            (localRow == localColumn && value == zero()))
+                        (localRow == localColumn && value == zero()))
                         continue;
                     const std::size_t row =
                         2 * component.variables[localRow / 2] + localRow % 2;
@@ -503,7 +490,7 @@ private:
     static std::size_t matrixIndex(std::size_t row, std::size_t column)
     {
         return column > row ? storedIndex(opposite(column), opposite(row))
-               : storedIndex(row, column);
+                            : storedIndex(row, column);
     }
 
     static std::pair<std::size_t, std::size_t> storedCoordinates(
@@ -569,8 +556,7 @@ private:
         const std::size_t rowVariable = row / 2;
         const std::size_t columnVariable = column / 2;
         const std::size_t owner = componentOwner_[rowVariable];
-        if (owner == noComponent() ||
-                owner != componentOwner_[columnVariable])
+        if (owner == noComponent() || owner != componentOwner_[columnVariable])
             return implicit(row, column);
         const std::size_t localRow = 2 * componentLocal_[rowVariable] + row % 2;
         const std::size_t localColumn =
@@ -583,8 +569,7 @@ private:
         const std::size_t owner = components_.size();
         Component component;
         component.variables.push_back(variable);
-        component.matrix =
-            std::make_shared<std::vector<Bound>>(matrixSize(1));
+        component.matrix = std::make_shared<std::vector<Bound>>(matrixSize(1));
         (*component.matrix)[matrixIndex(0, 0)] = zero();
         (*component.matrix)[matrixIndex(1, 1)] = zero();
         components_.push_back(std::move(component));
@@ -605,7 +590,7 @@ private:
         if (lhsOwner == rhsOwner)
             return lhsOwner;
         if (components_[lhsOwner].variables.size() <
-                components_[rhsOwner].variables.size())
+            components_[rhsOwner].variables.size())
             std::swap(lhsOwner, rhsOwner);
 
         Component& lhs = components_[lhsOwner];
@@ -613,7 +598,7 @@ private:
         const std::size_t oldSize = lhs.variables.size();
         std::vector<Bound> merged(matrixSize(oldSize + rhs.variables.size()));
         for (std::size_t node = 0; node < 2 * (oldSize + rhs.variables.size());
-                ++node)
+             ++node)
             merged[matrixIndex(node, node)] = zero();
         for (std::size_t row = 0; row < 2 * oldSize; ++row)
             for (std::size_t column = 0; column < 2 * oldSize; ++column)
@@ -621,7 +606,7 @@ private:
                     (*lhs.matrix)[matrixIndex(row, column)];
         for (std::size_t row = 0; row < 2 * rhs.variables.size(); ++row)
             for (std::size_t column = 0; column < 2 * rhs.variables.size();
-                    ++column)
+                 ++column)
                 merged[matrixIndex(2 * oldSize + row, 2 * oldSize + column)] =
                     (*rhs.matrix)[matrixIndex(row, column)];
 
@@ -631,13 +616,12 @@ private:
             componentLocal_[variable] = lhs.variables.size();
             lhs.variables.push_back(variable);
         }
-        lhs.matrix =
-            std::make_shared<std::vector<Bound>>(std::move(merged));
+        lhs.matrix = std::make_shared<std::vector<Bound>>(std::move(merged));
 
         components_.erase(components_.begin() + rhsOwner);
         for (std::size_t variable = 0; variable < dimensions; ++variable)
             if (componentOwner_[variable] != noComponent() &&
-                    componentOwner_[variable] > rhsOwner)
+                componentOwner_[variable] > rhsOwner)
                 --componentOwner_[variable];
         return lhsOwner > rhsOwner ? lhsOwner - 1 : lhsOwner;
     }
@@ -650,7 +634,7 @@ private:
         {
             const std::size_t owner = componentOwner_[rowVariable];
             if (owner == noComponent() ||
-                    owner != componentOwner_[columnVariable])
+                owner != componentOwner_[columnVariable])
                 return;
             const std::size_t localRow =
                 2 * componentLocal_[rowVariable] + row % 2;
@@ -662,17 +646,17 @@ private:
             return;
         }
         if (row == column && value == zero() &&
-                componentOwner_[rowVariable] == noComponent())
+            componentOwner_[rowVariable] == noComponent())
             return;
         std::size_t rowOwner = ensureComponent(rowVariable);
         std::size_t columnOwner = ensureComponent(columnVariable);
         const std::size_t owner = mergeComponents(rowOwner, columnOwner);
-        const std::size_t localRow =
-            2 * componentLocal_[rowVariable] + row % 2;
+        const std::size_t localRow = 2 * componentLocal_[rowVariable] + row % 2;
         const std::size_t localColumn =
             2 * componentLocal_[columnVariable] + column % 2;
         ensureUniqueMatrix(owner);
-        (*components_[owner].matrix)[matrixIndex(localRow, localColumn)] = value;
+        (*components_[owner].matrix)[matrixIndex(localRow, localColumn)] =
+            value;
     }
 
     void ensureUniqueMatrix(std::size_t owner)
@@ -724,15 +708,13 @@ OctagonShape measureShape(const OctagonStorage& state)
     std::vector<std::size_t> componentSize(state.dimensions, 1);
     for (std::size_t dimension = 0; dimension < state.dimensions; ++dimension)
         parent[dimension] = dimension;
-    const auto rootOf = [&](std::size_t start)
-    {
+    const auto rootOf = [&](std::size_t start) {
         std::size_t root = start;
         while (parent[root] != root)
             root = parent[root];
         return root;
     };
-    const auto unite = [&](std::size_t lhs, std::size_t rhs)
-    {
+    const auto unite = [&](std::size_t lhs, std::size_t rhs) {
         lhs = rootOf(lhs);
         rhs = rootOf(rhs);
         if (lhs == rhs)
@@ -748,15 +730,15 @@ OctagonShape measureShape(const OctagonStorage& state)
         const std::size_t positive = positiveNode(lhs);
         const std::size_t negative = negativeNode(lhs);
         if (state.at(positive, negative).isFinite() ||
-                state.at(negative, positive).isFinite())
+            state.at(negative, positive).isFinite())
             ++result.unaryAnchors;
         for (std::size_t rhs = lhs + 1; rhs < state.dimensions; ++rhs)
         {
             bool related = false;
             for (std::size_t lhsSign = 0; lhsSign < 2 && !related; ++lhsSign)
                 for (std::size_t rhsSign = 0; rhsSign < 2; ++rhsSign)
-                    if (state.at(2 * lhs + lhsSign,
-                                 2 * rhs + rhsSign).isFinite())
+                    if (state.at(2 * lhs + lhsSign, 2 * rhs + rhsSign)
+                            .isFinite())
                     {
                         related = true;
                         break;
@@ -808,7 +790,7 @@ Bound tightenIntegerUnary(const Bound& bound)
     if (!bound.isFinite())
         return bound;
     Rational greatest = bound.isStrict() ? bound.value().ceil() - Rational(1)
-                        : bound.value().floor();
+                                         : bound.value().floor();
     Rational even = (greatest / Rational(2)).floor() * Rational(2);
     return Bound::finite(std::move(even));
 }
@@ -856,10 +838,7 @@ public:
     {
     }
 
-    Impl(const Impl& other)
-        : options_(other.options_), state_(other.state_)
-    {
-    }
+    Impl(const Impl& other) : options_(other.options_), state_(other.state_) {}
 
     const char* name() const
     {
@@ -900,10 +879,9 @@ public:
         {
             const auto& [source, coefficient] = *expression.terms().begin();
             if ((coefficient == Rational(1) || coefficient == Rational(-1)) &&
-                    layout.typeOf(source).kind != NumericKind::IEEEFloat)
+                layout.typeOf(source).kind != NumericKind::IEEEFloat)
             {
-                const Dimension sourceDimension =
-                    layout.dimensionOf(source);
+                const Dimension sourceDimension = layout.dimensionOf(source);
                 if (sourceDimension == targetDimension)
                 {
                     selfAssign(state, layout, targetDimension,
@@ -917,8 +895,8 @@ public:
                     addConstraint(state, layout,
                                   LinearConstraint(std::move(equality),
                                                    ConstraintKind::Equal));
-                    incrementalCloseWithIntegerTightening(
-                        state, targetDimension);
+                    incrementalCloseWithIntegerTightening(state,
+                                                          targetDimension);
                 }
                 return ApproximationKind::Exact;
             }
@@ -941,8 +919,7 @@ public:
         // is the general octagonal affine-image construction; it does not
         // depend on the number or values of the coefficients in E.
         normalize(state, layout);
-        const Interval assigned =
-            evaluateInterval(state, layout, expression);
+        const Interval assigned = evaluateInterval(state, layout, expression);
         struct RelationalImage
         {
             Variable variable;
@@ -956,28 +933,23 @@ public:
         {
             if (declaration.variable == target)
                 continue;
-            for (const int sign :
-                    {
-                        -1, 1
-                    })
+            for (const int sign : {-1, 1})
             {
                 LinearExpression positiveObjective = expression;
                 positiveObjective.setCoefficient(
                     declaration.variable,
                     positiveObjective.coefficient(declaration.variable) +
-                    Rational(sign));
+                        Rational(sign));
                 LinearExpression negativeObjective = -expression;
                 negativeObjective.setCoefficient(
                     declaration.variable,
                     negativeObjective.coefficient(declaration.variable) +
-                    Rational(sign));
+                        Rational(sign));
                 relationalImages.push_back(
-                {
-                    declaration.variable, sign,
-                    boundExpression(state, layout, positiveObjective)
-                    .upper(),
-                    boundExpression(state, layout, negativeObjective)
-                    .upper()});
+                    {declaration.variable, sign,
+                     boundExpression(state, layout, positiveObjective).upper(),
+                     boundExpression(state, layout, negativeObjective)
+                         .upper()});
             }
         }
 
@@ -1004,8 +976,8 @@ public:
                 LinearExpression upper(target);
                 upper.setCoefficient(image.variable, Rational(image.sign));
                 upper.setConstant(-image.targetUpper.value());
-                addLessEqual(state, layout, upper,
-                             image.targetUpper.isStrict(), false);
+                addLessEqual(state, layout, upper, image.targetUpper.isStrict(),
+                             false);
             }
             if (image.targetLower.isFinite())
             {
@@ -1013,8 +985,8 @@ public:
                 lower.setCoefficient(target, Rational(-1));
                 lower.setCoefficient(image.variable, Rational(image.sign));
                 lower.setConstant(-image.targetLower.value());
-                addLessEqual(state, layout, lower,
-                             image.targetLower.isStrict(), false);
+                addLessEqual(state, layout, lower, image.targetLower.isStrict(),
+                             false);
             }
         }
         incrementalCloseWithIntegerTightening(state, targetDimension);
@@ -1031,7 +1003,7 @@ public:
         const ApproximationKind approximation =
             addAssumption(state, layout, constraint, &touchedVariable);
         if (wasClosed && approximation == ApproximationKind::Exact &&
-                touchedVariable)
+            touchedVariable)
             incrementalCloseWithIntegerTightening(state, *touchedVariable);
         else
             normalize(state, layout);
@@ -1045,7 +1017,7 @@ public:
     {
         requireVariables(layout, constraint.expression());
         for (const auto& [variable, coefficient] :
-                constraint.expression().terms())
+             constraint.expression().terms())
         {
             (void)coefficient;
             // Unary rows describe finite value bounds, not floating-point
@@ -1053,14 +1025,14 @@ public:
             // Box projections, or a serialized DBM. Multi-variable IEEE
             // arithmetic still uses the explicit TreeExpression fallback.
             if (layout.typeOf(variable).kind == NumericKind::IEEEFloat &&
-                    constraint.expression().terms().size() != 1)
+                constraint.expression().terms().size() != 1)
                 return ApproximationKind::UnsupportedFallback;
         }
         const bool exact = addConstraint(state, layout, constraint);
         if (exact && touchedVariable)
         {
             for (const auto& [variable, coefficient] :
-                    constraint.expression().terms())
+                 constraint.expression().terms())
             {
                 if (!coefficient.isZero())
                 {
@@ -1070,7 +1042,7 @@ public:
             }
         }
         return exact ? ApproximationKind::Exact
-               : ApproximationKind::SoundOverApproximation;
+                     : ApproximationKind::SoundOverApproximation;
     }
 
     void forget(OctagonStorage& genericState, const DimensionLayout& layout,
@@ -1100,8 +1072,8 @@ public:
         if (lhs.kind() != OctagonStorageKind::DenseHalf)
         {
             auto result = std::make_unique<OctagonStorage>(
-                              lhs.variableKinds, lhs.kind(),
-                              OctagonStorage::ScratchMatrixTag{});
+                lhs.variableKinds, lhs.kind(),
+                OctagonStorage::ScratchMatrixTag{});
             lhs.copyFiniteMaximumTo(rhs, *result);
             result->stronglyClosed = true;
             return result;
@@ -1154,7 +1126,7 @@ public:
             return rhs.clone();
 
         auto result = std::make_unique<OctagonStorage>(
-                          lhs.variableKinds, lhs.kind(), OctagonStorage::ScratchMatrixTag{});
+            lhs.variableKinds, lhs.kind(), OctagonStorage::ScratchMatrixTag{});
         for (std::size_t row = 0; row < result->nodes(); ++row)
             for (std::size_t column = 0; column < result->nodes(); ++column)
             {
@@ -1178,7 +1150,7 @@ public:
         requireSameSize(current, next);
         if (current.bottom)
             return std::make_unique<OctagonStorage>(
-                       next.converted(current.kind()));
+                next.converted(current.kind()));
         if (next.bottom)
             return current.clone();
 
@@ -1186,8 +1158,8 @@ public:
         std::sort(thresholds.begin(), thresholds.end());
 
         auto result = std::make_unique<OctagonStorage>(
-                          current.variableKinds, current.kind(),
-                          OctagonStorage::ScratchMatrixTag{});
+            current.variableKinds, current.kind(),
+            OctagonStorage::ScratchMatrixTag{});
         for (std::size_t row = 0; row < result->nodes(); ++row)
         {
             for (std::size_t column = 0; column < result->nodes(); ++column)
@@ -1210,7 +1182,7 @@ public:
                     for (const Rational& threshold : thresholds)
                     {
                         Bound candidate = Bound::finite(
-                                              unary ? threshold * Rational(2) : threshold);
+                            unary ? threshold * Rational(2) : threshold);
                         if (nextBound <= candidate)
                         {
                             result->set(row, column, candidate);
@@ -1226,8 +1198,9 @@ public:
         return result;
     }
 
-    std::unique_ptr<OctagonStorage> narrow(const OctagonStorage& genericCurrent,
-                                           const OctagonStorage& genericNext) const
+    std::unique_ptr<OctagonStorage> narrow(
+        const OctagonStorage& genericCurrent,
+        const OctagonStorage& genericNext) const
     {
         std::optional<OctagonStorage> currentStorage;
         std::optional<OctagonStorage> nextStorage;
@@ -1243,7 +1216,7 @@ public:
         for (std::size_t row = 0; row < result->nodes(); ++row)
             for (std::size_t column = 0; column < result->nodes(); ++column)
                 if (current.at(row, column).isPlusInfinity() &&
-                        next.at(row, column).isFinite())
+                    next.at(row, column).isFinite())
                     result->set(row, column, next.at(row, column));
         result->stronglyClosed = false;
         return result;
@@ -1258,10 +1231,10 @@ public:
         if (source.bottom)
             return source.clone();
 
-        auto result = std::make_unique<OctagonStorage>(
-                          source.variableKinds, source.kind());
+        auto result = std::make_unique<OctagonStorage>(source.variableKinds,
+                                                       source.kind());
         for (Dimension dimension = 0; dimension < source.dimensions;
-                ++dimension)
+             ++dimension)
         {
             setCoherent(
                 *result, negativeNode(dimension), positiveNode(dimension),
@@ -1294,28 +1267,24 @@ public:
             throw std::invalid_argument(
                 "old layout does not match octagon dimensions");
         if (source.bottom)
-            return std::make_unique<OctagonStorage>(newLayout,
-                                                    source.kind(), true);
+            return std::make_unique<OctagonStorage>(newLayout, source.kind(),
+                                                    true);
 
-        auto result = std::make_unique<OctagonStorage>(newLayout,
-            source.kind());
-        std::vector<std::optional<Dimension>> newDimensions(
-            oldLayout.size());
-        for (Dimension oldDimension = 0;
-                oldDimension < oldLayout.size(); ++oldDimension)
+        auto result =
+            std::make_unique<OctagonStorage>(newLayout, source.kind());
+        std::vector<std::optional<Dimension>> newDimensions(oldLayout.size());
+        for (Dimension oldDimension = 0; oldDimension < oldLayout.size();
+             ++oldDimension)
         {
             const Variable variable = oldLayout.variableOf(oldDimension);
             if (!newLayout.contains(variable))
                 continue;
-            if (oldLayout.typeOf(variable) !=
-                    newLayout.typeOf(variable))
+            if (oldLayout.typeOf(variable) != newLayout.typeOf(variable))
                 throw std::invalid_argument(
                     "layout change cannot alter a variable's type");
-            newDimensions[oldDimension] =
-                newLayout.dimensionOf(variable);
+            newDimensions[oldDimension] = newLayout.dimensionOf(variable);
         }
         source.copyRemappedFiniteBoundsTo(*result, newDimensions);
-
 
         // The source is strongly closed. Restricting it to a principal
         // submatrix, permuting dimensions, and adding independent top
@@ -1350,7 +1319,8 @@ public:
         return true;
     }
 
-    bool leq(const OctagonStorage& genericLhs, const OctagonStorage& genericRhs) const
+    bool leq(const OctagonStorage& genericLhs,
+             const OctagonStorage& genericRhs) const
     {
         std::optional<OctagonStorage> lhsStorage;
         std::optional<OctagonStorage> rhsStorage;
@@ -1391,8 +1361,8 @@ public:
         if (doubledNegativeLower.isFinite())
         {
             lower = Bound::finite(
-                        -doubledNegativeLower.value().dividedByPowerOfTwo(1),
-                        doubledNegativeLower.isStrict());
+                -doubledNegativeLower.value().dividedByPowerOfTwo(1),
+                doubledNegativeLower.isStrict());
         }
         return Interval(std::move(lower), std::move(upper));
     }
@@ -1419,7 +1389,7 @@ public:
                 const std::size_t coherentColumn = opposite(row);
                 if (std::pair<std::size_t, std::size_t>(coherentRow,
                                                         coherentColumn) <
-                        std::pair<std::size_t, std::size_t>(row, column))
+                    std::pair<std::size_t, std::size_t>(row, column))
                     continue;
 
                 LinearExpression expression;
@@ -1428,8 +1398,8 @@ public:
                 expression.setConstant(-state.at(row, column).value());
                 result.emplace_back(std::move(expression),
                                     state.at(row, column).isStrict()
-                                    ? ConstraintKind::LessThan
-                                    : ConstraintKind::LessEqual);
+                                        ? ConstraintKind::LessThan
+                                        : ConstraintKind::LessEqual);
             }
         }
         return result;
@@ -1440,8 +1410,7 @@ public:
     {
         if (isBottom(genericState))
             return "bottom";
-        const LinearConstraintSet exported =
-            constraints(genericState, layout);
+        const LinearConstraintSet exported = constraints(genericState, layout);
         if (exported.empty())
             return "top";
         std::ostringstream output;
@@ -1462,9 +1431,8 @@ public:
     OctagonStorageStats storageStats() const
     {
         const OctagonShape shape = measureShape(state_);
-        return {state_.kind(), shape.dimensions, shape.finiteStored,
-                shape.allocatedSlots, shape.components,
-                shape.maximumComponent};
+        return {state_.kind(),        shape.dimensions, shape.finiteStored,
+                shape.allocatedSlots, shape.components, shape.maximumComponent};
     }
 
     void reconfigure(OctagonConfig options)
@@ -1494,9 +1462,8 @@ public:
         return assume(state_, layout, constraint);
     }
 
-    ApproximationKind assumeAllCurrent(
-        const DimensionLayout& layout,
-        const LinearConstraintSet& constraints)
+    ApproximationKind assumeAllCurrent(const DimensionLayout& layout,
+                                       const LinearConstraintSet& constraints)
     {
         const bool wasClosed = state_.stronglyClosed;
         ApproximationKind result = ApproximationKind::Exact;
@@ -1505,9 +1472,8 @@ public:
         for (const LinearConstraint& constraint : constraints)
         {
             std::optional<Dimension> currentTouchedVariable;
-            const ApproximationKind current =
-                addAssumption(state_, layout, constraint,
-                              &currentTouchedVariable);
+            const ApproximationKind current = addAssumption(
+                state_, layout, constraint, &currentTouchedVariable);
             if (!currentTouchedVariable)
                 commonTouchedVariable = false;
             else if (!touchedVariable)
@@ -1521,7 +1487,7 @@ public:
                 result = current;
         }
         if (wasClosed && result == ApproximationKind::Exact &&
-                commonTouchedVariable && touchedVariable)
+            commonTouchedVariable && touchedVariable)
             incrementalCloseWithIntegerTightening(state_, *touchedVariable);
         else
             normalize(state_, layout);
@@ -1533,8 +1499,8 @@ public:
         forget(state_, layout, variable);
     }
 
-    void assignIntervalCurrent(const DimensionLayout& layout,
-                               Variable target, const Interval& value)
+    void assignIntervalCurrent(const DimensionLayout& layout, Variable target,
+                               const Interval& value)
     {
         if (!layout.contains(target))
             throw std::invalid_argument(
@@ -1552,16 +1518,16 @@ public:
         {
             LinearExpression upper(target);
             upper.setConstant(-value.upper().value());
-            addLessEqual(state_, layout, upper,
-                         value.upper().isStrict(), false);
+            addLessEqual(state_, layout, upper, value.upper().isStrict(),
+                         false);
         }
         if (value.lower().isFinite())
         {
             LinearExpression lower;
             lower.setCoefficient(target, Rational(-1));
             lower.setConstant(value.lower().value());
-            addLessEqual(state_, layout, lower,
-                         value.lower().isStrict(), false);
+            addLessEqual(state_, layout, lower, value.lower().isStrict(),
+                         false);
         }
         strongCloseIndependentVariable(state_, dimension);
     }
@@ -1578,8 +1544,8 @@ public:
 
     std::unique_ptr<Impl> joined(const Impl& other) const
     {
-        return std::make_unique<Impl>(
-                   options_, std::move(*join(state_, other.state_)));
+        return std::make_unique<Impl>(options_,
+                                      std::move(*join(state_, other.state_)));
     }
 
     void meetCurrent(const Impl& other)
@@ -1589,8 +1555,8 @@ public:
 
     std::unique_ptr<Impl> met(const Impl& other) const
     {
-        return std::make_unique<Impl>(
-                   options_, std::move(*meet(state_, other.state_)));
+        return std::make_unique<Impl>(options_,
+                                      std::move(*meet(state_, other.state_)));
     }
 
     void widenCurrent(const Impl& other, const WideningPolicy& policy)
@@ -1598,11 +1564,11 @@ public:
         state_ = std::move(*widen(state_, other.state_, policy));
     }
 
-    std::unique_ptr<Impl> widened(
-        const Impl& other, const WideningPolicy& policy) const
+    std::unique_ptr<Impl> widened(const Impl& other,
+                                  const WideningPolicy& policy) const
     {
         return std::make_unique<Impl>(
-                   options_, std::move(*widen(state_, other.state_, policy)));
+            options_, std::move(*widen(state_, other.state_, policy)));
     }
 
     void narrowCurrent(const Impl& other)
@@ -1612,8 +1578,8 @@ public:
 
     std::unique_ptr<Impl> narrowed(const Impl& other) const
     {
-        return std::make_unique<Impl>(
-                   options_, std::move(*narrow(state_, other.state_)));
+        return std::make_unique<Impl>(options_,
+                                      std::move(*narrow(state_, other.state_)));
     }
 
     void projectLowerBoundsCurrent()
@@ -1623,15 +1589,14 @@ public:
 
     std::unique_ptr<Impl> projectedLowerBounds() const
     {
-        return std::make_unique<Impl>(
-                   options_, std::move(*projectLowerBounds(state_)));
+        return std::make_unique<Impl>(options_,
+                                      std::move(*projectLowerBounds(state_)));
     }
 
     void changeLayoutCurrent(const DimensionLayout& oldLayout,
                              const DimensionLayout& newLayout)
     {
-        state_ = std::move(*changeLayout(
-                               state_, oldLayout, newLayout));
+        state_ = std::move(*changeLayout(state_, oldLayout, newLayout));
     }
 
     bool isBottomCurrent() const
@@ -1655,15 +1620,13 @@ public:
         return bound(state_, layout, variable);
     }
 
-    Interval boundExpressionCurrent(
-        const DimensionLayout& layout,
-        const LinearExpression& expression) const
+    Interval boundExpressionCurrent(const DimensionLayout& layout,
+                                    const LinearExpression& expression) const
     {
         return boundExpression(state_, layout, expression);
     }
 
-    LinearConstraintSet constraintsCurrent(
-        const DimensionLayout& layout) const
+    LinearConstraintSet constraintsCurrent(const DimensionLayout& layout) const
     {
         return constraints(state_, layout);
     }
@@ -1674,10 +1637,11 @@ public:
     }
 
 private:
-    void requireSameSize(const OctagonStorage& lhs, const OctagonStorage& rhs) const
+    void requireSameSize(const OctagonStorage& lhs,
+                         const OctagonStorage& rhs) const
     {
         if (lhs.dimensions != rhs.dimensions ||
-                lhs.variableKinds != rhs.variableKinds)
+            lhs.variableKinds != rhs.variableKinds)
             throw std::invalid_argument("octagon state shapes do not match");
     }
 
@@ -1739,28 +1703,23 @@ private:
 
         switch (constraint.kind())
         {
-        case ConstraintKind::Equal:
-        {
-            const bool forward = addLessEqual(state, layout,
-                                              constraint.expression(), false);
-            const bool backward = addLessEqual(state, layout,
-                                               -constraint.expression(), false);
+        case ConstraintKind::Equal: {
+            const bool forward =
+                addLessEqual(state, layout, constraint.expression(), false);
+            const bool backward =
+                addLessEqual(state, layout, -constraint.expression(), false);
             return forward && backward;
         }
         case ConstraintKind::NotEqual:
             return handleConstantNotEqual(state, constraint.expression());
         case ConstraintKind::LessThan:
-            return addLessEqual(state, layout, constraint.expression(),
-                                true);
+            return addLessEqual(state, layout, constraint.expression(), true);
         case ConstraintKind::LessEqual:
-            return addLessEqual(state, layout, constraint.expression(),
-                                false);
+            return addLessEqual(state, layout, constraint.expression(), false);
         case ConstraintKind::GreaterThan:
-            return addLessEqual(state, layout, -constraint.expression(),
-                                true);
+            return addLessEqual(state, layout, -constraint.expression(), true);
         case ConstraintKind::GreaterEqual:
-            return addLessEqual(state, layout, -constraint.expression(),
-                                false);
+            return addLessEqual(state, layout, -constraint.expression(), false);
         }
         return false;
     }
@@ -1798,14 +1757,14 @@ private:
             Rational value = -expression.constant() / magnitude;
             bool storedStrict = strict;
             if (storedStrict && options_.integerTightening &&
-                    layout.typeOf(variable).kind == NumericKind::Integer)
+                layout.typeOf(variable).kind == NumericKind::Integer)
             {
                 value = value.ceil() - Rational(1);
                 storedStrict = false;
             }
             const std::size_t row = coefficient.sign() > 0
-                                    ? positiveNode(dimension)
-                                    : negativeNode(dimension);
+                                        ? positiveNode(dimension)
+                                        : negativeNode(dimension);
             const std::size_t column = opposite(row);
             setCoherent(state, row, column,
                         Bound::finite(value * Rational(2), storedStrict));
@@ -1822,7 +1781,7 @@ private:
             const Rational rhsCoefficient = it->second;
             const Rational lhsMagnitude = absolute(lhsCoefficient);
             if (lhsMagnitude != absolute(rhsCoefficient) ||
-                    lhsMagnitude.isZero())
+                lhsMagnitude.isZero())
             {
                 if (allowLinearization)
                     addLinearized(state, layout, expression, strict);
@@ -1832,16 +1791,16 @@ private:
             const Dimension lhsDimension = layout.dimensionOf(lhsVariable);
             const Dimension rhsDimension = layout.dimensionOf(rhsVariable);
             const std::size_t lhsNode = lhsCoefficient.sign() > 0
-                                        ? positiveNode(lhsDimension)
-                                        : negativeNode(lhsDimension);
+                                            ? positiveNode(lhsDimension)
+                                            : negativeNode(lhsDimension);
             const std::size_t negativeRhsNode =
                 rhsCoefficient.sign() > 0 ? negativeNode(rhsDimension)
-                : positiveNode(rhsDimension);
+                                          : positiveNode(rhsDimension);
             Rational value = -expression.constant() / lhsMagnitude;
             bool storedStrict = strict;
             if (storedStrict && options_.integerTightening &&
-                    layout.typeOf(lhsVariable).kind == NumericKind::Integer &&
-                    layout.typeOf(rhsVariable).kind == NumericKind::Integer)
+                layout.typeOf(lhsVariable).kind == NumericKind::Integer &&
+                layout.typeOf(rhsVariable).kind == NumericKind::Integer)
             {
                 value = value.ceil() - Rational(1);
                 storedStrict = false;
@@ -1896,9 +1855,9 @@ private:
             }
         }
         return Interval(lowFinite ? Bound::finite(low, lowStrict)
-                        : Bound::minusInfinity(),
+                                  : Bound::minusInfinity(),
                         highFinite ? Bound::finite(high, highStrict)
-                        : Bound::plusInfinity());
+                                   : Bound::plusInfinity());
     }
 
     Interval boundExpression(const OctagonStorage& state,
@@ -1918,43 +1877,40 @@ private:
         const Variable secondVariable = term->first;
         const Rational secondCoefficient = term->second;
         const Rational magnitude = absolute(firstCoefficient);
-        if (magnitude.isZero() ||
-                magnitude != absolute(secondCoefficient))
+        if (magnitude.isZero() || magnitude != absolute(secondCoefficient))
             return evaluateInterval(state, layout, expression);
 
         std::optional<OctagonStorage> normalizedStorage;
         const OctagonStorage& source = normalized(state, normalizedStorage);
-        const auto signedSumUpper = [&](bool negate) -> Bound
-        {
+        const auto signedSumUpper = [&](bool negate) -> Bound {
             const int firstSign =
-            (negate ? -firstCoefficient : firstCoefficient).sign();
+                (negate ? -firstCoefficient : firstCoefficient).sign();
             const int secondSign =
-            (negate ? -secondCoefficient : secondCoefficient).sign();
+                (negate ? -secondCoefficient : secondCoefficient).sign();
             const std::size_t row =
-            firstSign > 0
-            ? positiveNode(layout.dimensionOf(firstVariable))
-            : negativeNode(layout.dimensionOf(firstVariable));
+                firstSign > 0 ? positiveNode(layout.dimensionOf(firstVariable))
+                              : negativeNode(layout.dimensionOf(firstVariable));
             const std::size_t column =
-            secondSign > 0
-            ? negativeNode(layout.dimensionOf(secondVariable))
-            : positiveNode(layout.dimensionOf(secondVariable));
+                secondSign > 0
+                    ? negativeNode(layout.dimensionOf(secondVariable))
+                    : positiveNode(layout.dimensionOf(secondVariable));
             return source.at(row, column);
         };
 
         const Bound positive = signedSumUpper(false);
         const Bound negative = signedSumUpper(true);
-        const Bound lower = negative.isFinite()
-                            ? Bound::finite(
-                                expression.constant() -
-                                magnitude * negative.value(),
+        const Bound lower =
+            negative.isFinite()
+                ? Bound::finite(expression.constant() -
+                                    magnitude * negative.value(),
                                 negative.isStrict())
-                            : Bound::minusInfinity();
-        const Bound upper = positive.isFinite()
-                            ? Bound::finite(
-                                expression.constant() +
-                                magnitude * positive.value(),
+                : Bound::minusInfinity();
+        const Bound upper =
+            positive.isFinite()
+                ? Bound::finite(expression.constant() +
+                                    magnitude * positive.value(),
                                 positive.isStrict())
-                            : Bound::plusInfinity();
+                : Bound::plusInfinity();
         return Interval(lower, upper);
     }
 
@@ -1968,8 +1924,7 @@ private:
     /// Mine's interval linearization, restricted to the sub-expressions this
     /// domain represents exactly, and it is what makes a guard such as
     /// `2*i + 3*j <= 10` narrow anything at all here.
-    void addLinearized(OctagonStorage& state,
-                       const DimensionLayout& layout,
+    void addLinearized(OctagonStorage& state, const DimensionLayout& layout,
                        const LinearExpression& expression, bool strict) const
     {
         normalize(state, layout);
@@ -1993,8 +1948,7 @@ private:
 
         // Least value the terms outside `kept` can take.
         const auto restMinimum = [&](const std::vector<Variable>& kept,
-                                     Rational& total, bool& totalStrict)
-        {
+                                     Rational& total, bool& totalStrict) {
             total = Rational();
             totalStrict = false;
             for (const auto& [variable, coefficient] : expression.terms())
@@ -2005,8 +1959,8 @@ private:
                     continue;
                 const Interval& interval = intervals.at(variable);
                 const Bound& endpoint = coefficient.sign() > 0
-                                        ? interval.lower()
-                                        : interval.upper();
+                                            ? interval.lower()
+                                            : interval.upper();
                 if (!endpoint.isFinite())
                     return false;
                 total += endpoint.value() * coefficient;
@@ -2015,16 +1969,14 @@ private:
             return true;
         };
 
-        const auto applyUnary = [&](Variable kept)
-        {
+        const auto applyUnary = [&](Variable kept) {
             Rational rest;
             bool restStrict = false;
             if (!restMinimum({kept}, rest, restStrict))
                 return;
             LinearExpression reduced(expression.constant() + rest);
             reduced.setCoefficient(kept, expression.coefficient(kept));
-            addLessEqual(state, layout, reduced, strict || restStrict,
-                         false);
+            addLessEqual(state, layout, reduced, strict || restStrict, false);
         };
 
         // For a pair a*x+b*y, retain the largest common octagonal part
@@ -2033,13 +1985,11 @@ private:
         // handled previously.  Unequal magnitudes now produce the strongest
         // consequence available from this interval decomposition, and the
         // construction is invariant under positive scaling of the input row.
-        const auto applyPair = [&](Variable first, Variable second)
-        {
+        const auto applyPair = [&](Variable first, Variable second) {
             const Rational firstCoefficient = expression.coefficient(first);
             const Rational secondCoefficient = expression.coefficient(second);
-            const Rational common =
-                std::min(absolute(firstCoefficient),
-                         absolute(secondCoefficient));
+            const Rational common = std::min(absolute(firstCoefficient),
+                                             absolute(secondCoefficient));
             if (common.isZero())
                 return;
 
@@ -2055,9 +2005,8 @@ private:
                 if (remainder.isZero())
                     continue;
                 const Interval& interval = intervals.at(variable);
-                const Bound& endpoint = remainder.sign() > 0
-                                        ? interval.lower()
-                                        : interval.upper();
+                const Bound& endpoint =
+                    remainder.sign() > 0 ? interval.lower() : interval.upper();
                 if (!endpoint.isFinite())
                     return;
                 rest += remainder * endpoint.value();
@@ -2065,19 +2014,18 @@ private:
             }
 
             LinearExpression reduced(rest);
-            reduced.setCoefficient(
-                first, Rational(firstCoefficient.sign()) * common);
-            reduced.setCoefficient(
-                second, Rational(secondCoefficient.sign()) * common);
-            addLessEqual(state, layout, reduced, strict || restStrict,
-                         false);
+            reduced.setCoefficient(first,
+                                   Rational(firstCoefficient.sign()) * common);
+            reduced.setCoefficient(second,
+                                   Rational(secondCoefficient.sign()) * common);
+            addLessEqual(state, layout, reduced, strict || restStrict, false);
         };
 
         for (std::size_t first = 0; first < variables.size(); ++first)
         {
             applyUnary(variables[first]);
             for (std::size_t second = first + 1; second < variables.size();
-                    ++second)
+                 ++second)
                 applyPair(variables[first], variables[second]);
         }
     }
@@ -2092,16 +2040,14 @@ private:
         OctagonStorage result(old.variableKinds, old.kind(),
                               OctagonStorage::ScratchMatrixTag{});
 
-        auto oldNode = [target, sign](std::size_t newNode)
-        {
+        auto oldNode = [target, sign](std::size_t newNode) {
             if (newNode == positiveNode(target))
                 return sign > 0 ? positiveNode(target) : negativeNode(target);
             if (newNode == negativeNode(target))
                 return sign > 0 ? negativeNode(target) : positiveNode(target);
             return newNode;
         };
-        auto delta = [target, &constant](std::size_t newNode)
-        {
+        auto delta = [target, &constant](std::size_t newNode) {
             if (newNode == positiveNode(target))
                 return constant;
             if (newNode == negativeNode(target))
@@ -2119,7 +2065,7 @@ private:
                 else
                     result.set(row, column,
                                Bound::finite(oldBound.value() + delta(row) -
-                                             delta(column),
+                                                 delta(column),
                                              oldBound.isStrict()));
             }
         }
@@ -2223,7 +2169,7 @@ private:
         const std::size_t positive = positiveNode(dimension);
         const std::size_t negative = negativeNode(dimension);
         if (options_.integerTightening &&
-                state.variableKinds[dimension] == NumericKind::Integer)
+            state.variableKinds[dimension] == NumericKind::Integer)
         {
             state.set(positive, negative,
                       tightenIntegerUnary(state.at(positive, negative)));
@@ -2236,8 +2182,7 @@ private:
         {
             Bound candidate;
             const auto tightenStrong = [&](std::size_t row,
-                                           std::size_t column)
-            {
+                                           std::size_t column) {
                 const Bound& lhs = state.at(row, opposite(row));
                 const Bound& rhs = state.at(opposite(column), column);
                 if (lhs.isPlusInfinity() || rhs.isPlusInfinity())
@@ -2288,8 +2233,7 @@ private:
         const std::size_t last = negativeNode(variable);
         Bound candidate;
         const auto relax = [&](std::size_t row, std::size_t column,
-                               const Bound& lhs, const Bound& rhs)
-        {
+                               const Bound& lhs, const Bound& rhs) {
             if (lhs.isPlusInfinity() || rhs.isPlusInfinity())
                 return;
             candidate.assignSum(lhs, rhs);
@@ -2302,8 +2246,7 @@ private:
             for (std::size_t endpoint = first; endpoint <= last; ++endpoint)
             {
                 const Bound endpointPivot = state.at(endpoint, pivot);
-                const Bound endpointPaired =
-                    state.at(endpoint, pairedPivot);
+                const Bound endpointPaired = state.at(endpoint, pairedPivot);
                 for (const std::size_t column : nodes)
                 {
                     relax(endpoint, column, endpointPivot,
@@ -2325,12 +2268,11 @@ private:
                 // The carrier stores one coherent half-matrix cell for both
                 // (row,column) and (!column,!row). Visiting only the physical
                 // half avoids computing every relaxation twice.
-                for (std::size_t columnIndex = 0;
-                        columnIndex <= (rowIndex | 1); ++columnIndex)
+                for (std::size_t columnIndex = 0; columnIndex <= (rowIndex | 1);
+                     ++columnIndex)
                 {
                     const std::size_t column = nodes[columnIndex];
-                    relax(row, column, rowPivot,
-                          state.at(pivot, column));
+                    relax(row, column, rowPivot, state.at(pivot, column));
                     relax(row, column, rowPaired,
                           state.at(pairedPivot, column));
                 }
@@ -2341,16 +2283,15 @@ private:
             return;
         {
             if (options_.strongClosure)
-                for (std::size_t rowIndex = 0;
-                        rowIndex < nodes.size(); ++rowIndex)
+                for (std::size_t rowIndex = 0; rowIndex < nodes.size();
+                     ++rowIndex)
                     for (std::size_t columnIndex = 0;
-                            columnIndex <= (rowIndex | 1); ++columnIndex)
+                         columnIndex <= (rowIndex | 1); ++columnIndex)
                     {
                         const std::size_t row = nodes[rowIndex];
                         const std::size_t column = nodes[columnIndex];
                         const Bound& lhs = state.at(row, opposite(row));
-                        const Bound& rhs =
-                            state.at(opposite(column), column);
+                        const Bound& rhs = state.at(opposite(column), column);
                         if (lhs.isPlusInfinity() || rhs.isPlusInfinity())
                             continue;
                         candidate.assignSum(lhs, rhs).divideByTwoInPlace();
@@ -2364,7 +2305,7 @@ private:
     }
 
     void incrementalCloseWithIntegerTightening(OctagonStorage& state,
-            Dimension variable) const
+                                               Dimension variable) const
     {
         incrementalClose(state, variable);
         if (state.bottom)
@@ -2379,10 +2320,9 @@ private:
             for (const std::size_t node : affectedNodes)
                 affectedDimensions.push_back(node / 2);
             std::sort(affectedDimensions.begin(), affectedDimensions.end());
-            affectedDimensions.erase(
-                std::unique(affectedDimensions.begin(),
-                            affectedDimensions.end()),
-                affectedDimensions.end());
+            affectedDimensions.erase(std::unique(affectedDimensions.begin(),
+                                                 affectedDimensions.end()),
+                                     affectedDimensions.end());
 
             // Tightening a unary integer bound is another exact update
             // incident to that dimension. Repair it incrementally before
@@ -2404,7 +2344,7 @@ private:
                     const Bound lower =
                         tightenIntegerUnary(state.at(negative, positive));
                     if (!(upper < state.at(positive, negative)) &&
-                            !(lower < state.at(negative, positive)))
+                        !(lower < state.at(negative, positive)))
                         continue;
                     state.set(positive, negative, upper);
                     state.set(negative, positive, lower);
@@ -2487,7 +2427,7 @@ private:
         const Rational sign = node % 2 == 0 ? Rational(1) : Rational(-1);
         const Variable variable = layout.variableOf(dimension);
         expression.setCoefficient(variable, expression.coefficient(variable) +
-                                  sign * multiplier);
+                                                sign * multiplier);
     }
 
     OctagonConfig options_;
@@ -2519,8 +2459,7 @@ OctagonDomain OctagonDomain::bottom(const DimensionLayout& layout,
 }
 
 OctagonDomain OctagonDomain::fromConstraints(
-    const DimensionLayout& layout,
-    const LinearConstraintSet& constraints,
+    const DimensionLayout& layout, const LinearConstraintSet& constraints,
     const OctagonConfig& config)
 {
     OctagonDomain state = top(layout, config);
@@ -2546,7 +2485,8 @@ OctagonDomain& OctagonDomain::operator=(const OctagonDomain& other)
     return *this;
 }
 
-OctagonDomain& OctagonDomain::operator=(OctagonDomain&& other) noexcept = default;
+OctagonDomain& OctagonDomain::operator=(OctagonDomain&& other) noexcept =
+    default;
 
 OctagonDomain::~OctagonDomain() = default;
 
@@ -2561,8 +2501,8 @@ const char* OctagonDomain::name() const
 }
 
 void OctagonDomain::report(OperationKind operation,
-                           ApproximationKind approximation,
-                           std::string reason, bool best) const
+                           ApproximationKind approximation, std::string reason,
+                           bool best) const
 {
     recordOperation(operation, approximation, best, reason);
     DiagnosticSink* sink = diagnosticSink();
@@ -2570,20 +2510,19 @@ void OctagonDomain::report(OperationKind operation,
         sink->report({operation, approximation, std::move(reason)});
 }
 
-void OctagonDomain::assign(Variable target,
-                           const LinearExpression& expression)
+void OctagonDomain::assign(Variable target, const LinearExpression& expression)
 {
     ensureVariables({target});
     ensureExpression(expression);
 
     const ApproximationKind approximation = assignState(target, expression);
-    report(OperationKind::Assignment, approximation,
-           approximation == ApproximationKind::UnsupportedFallback
-           ? std::string(name()) +
-           " forgot a target assigned an unsupported linear expression"
-           : std::string(name()) +
-           " approximated a linear assignment",
-           approximation == ApproximationKind::Exact);
+    report(
+        OperationKind::Assignment, approximation,
+        approximation == ApproximationKind::UnsupportedFallback
+            ? std::string(name()) +
+                  " forgot a target assigned an unsupported linear expression"
+            : std::string(name()) + " approximated a linear assignment",
+        approximation == ApproximationKind::Exact);
 }
 
 void OctagonDomain::assign(Variable target, const TreeExpression& expression)
@@ -2595,10 +2534,9 @@ void OctagonDomain::assign(Variable target, const TreeExpression& expression)
     }
     const Interval value = evaluateTreeExpression(expression);
     assignInterval(target, value);
-    report(OperationKind::Assignment,
-           ApproximationKind::SoundOverApproximation,
+    report(OperationKind::Assignment, ApproximationKind::SoundOverApproximation,
            std::string(name()) +
-           " interval-linearized a nonlinear or finite IEEE assignment",
+               " interval-linearized a nonlinear or finite IEEE assignment",
            false);
 }
 
@@ -2608,8 +2546,7 @@ void OctagonDomain::substitute(Variable target,
     substituteParallel({{target, expression}});
 }
 
-void OctagonDomain::substituteParallel(
-    const LinearAssignmentList& assignments)
+void OctagonDomain::substituteParallel(const LinearAssignmentList& assignments)
 {
     std::vector<Variable> variables;
     std::set<Variable> targets;
@@ -2627,14 +2564,13 @@ void OctagonDomain::substituteParallel(
     for (const LinearAssignment& assignment : assignments)
     {
         if (!layout_.contains(assignment.target))
-            throw std::invalid_argument(
-                "substitution target is not in layout");
+            throw std::invalid_argument("substitution target is not in layout");
         if (!replacements.emplace(assignment.target, assignment.expression)
-                .second)
+                 .second)
             throw std::invalid_argument(
                 "parallel substitution contains a duplicate target");
         for (const auto& [variable, coefficient] :
-                assignment.expression.terms())
+             assignment.expression.terms())
         {
             (void)coefficient;
             if (!layout_.contains(variable))
@@ -2649,11 +2585,11 @@ void OctagonDomain::substituteParallel(
 
     LinearConstraintSet preimage;
     for (const LinearConstraint& constraint : toConstraints())
-        preimage.emplace_back(
-            constraint.expression().substituted(replacements),
-            constraint.kind());
+        preimage.emplace_back(constraint.expression().substituted(replacements),
+                              constraint.kind());
     *this = fromConstraints(layout_, preimage, config());
-    recordOperation(OperationKind::Substitution, ApproximationKind::SoundOverApproximation, false);
+    recordOperation(OperationKind::Substitution,
+                    ApproximationKind::SoundOverApproximation, false);
 }
 
 void OctagonDomain::assume(const LinearConstraint& constraint)
@@ -2663,7 +2599,7 @@ void OctagonDomain::assume(const LinearConstraint& constraint)
     const ApproximationKind approximation = assumeState(constraint);
     report(OperationKind::Assumption, approximation,
            std::string(name()) +
-           " ignored or approximated an unsupported constraint",
+               " ignored or approximated an unsupported constraint",
            approximation == ApproximationKind::Exact);
 }
 
@@ -2692,8 +2628,7 @@ void OctagonDomain::assumeAll(const LinearConstraintSet& constraints)
     // construction into constraints-times-cubic work. Constraints requiring
     // interval linearization still iterate to the same fixed point as the
     // generic implementation, while exact rows within a pass share closure.
-    const std::size_t limit =
-        constraints.size() * (layout_.size() + 1) + 1;
+    const std::size_t limit = constraints.size() * (layout_.size() + 1) + 1;
     for (std::size_t pass = 0; pass < limit; ++pass)
     {
         const std::unique_ptr<AbstractDomain> before = clone();
@@ -2701,10 +2636,10 @@ void OctagonDomain::assumeAll(const LinearConstraintSet& constraints)
             impl_->assumeAllCurrent(layout_, constraints);
         report(OperationKind::Assumption, approximation,
                std::string(name()) +
-               " ignored or approximated an unsupported constraint",
+                   " ignored or approximated an unsupported constraint",
                approximation == ApproximationKind::Exact);
         if (approximation == ApproximationKind::Exact || isBottom() ||
-                isEquivalentTo(*before) == CheckResult::True)
+            isEquivalentTo(*before) == CheckResult::True)
             return;
     }
 }
@@ -2719,13 +2654,12 @@ void OctagonDomain::assume(const TreeConstraint& constraint)
     const LinearConstraintSet consequences =
         treeConstraintConsequences(constraint);
     assumeAll(consequences);
-    report(OperationKind::Assumption,
-           ApproximationKind::SoundOverApproximation,
+    report(OperationKind::Assumption, ApproximationKind::SoundOverApproximation,
            consequences.empty()
-           ? std::string(name()) +
-           " found no affine consequence for a nonlinear or finite IEEE guard"
-           : std::string(name()) +
-           " reduced a nonlinear guard to sound affine consequences",
+               ? std::string(name()) + " found no affine consequence for a "
+                                       "nonlinear or finite IEEE guard"
+               : std::string(name()) +
+                     " reduced a nonlinear guard to sound affine consequences",
            false);
 }
 
@@ -2761,12 +2695,12 @@ void OctagonDomain::changeLayout(const DimensionLayout& layout)
     const DimensionLayout oldLayout = layout_;
     changeLayoutState(oldLayout, layout);
     layout_ = layout;
-    recordOperation(OperationKind::Canonicalization,
-                    ApproximationKind::Exact, true);
+    recordOperation(OperationKind::Canonicalization, ApproximationKind::Exact,
+                    true);
 }
 
-void OctagonDomain::expandDimensions(
-    Variable source, const std::vector<DimensionEntry>& copies)
+void OctagonDomain::expandDimensions(Variable source,
+                                     const std::vector<DimensionEntry>& copies)
 {
     if (!layout_.contains(source))
         throw std::invalid_argument("expanded variable is not in layout");
@@ -2774,7 +2708,7 @@ void OctagonDomain::expandDimensions(
     for (const DimensionEntry& copy : copies)
     {
         if (layout_.contains(copy.variable) ||
-                !seen.insert(copy.variable).second)
+            !seen.insert(copy.variable).second)
             throw std::invalid_argument(
                 "expanded variables must be new and unique");
         if (copy.variable.type() != layout_.typeOf(source))
@@ -2795,8 +2729,7 @@ void OctagonDomain::expandDimensions(
     {
         if (relational)
         {
-            std::map<Variable, LinearExpression> replacement
-            {
+            std::map<Variable, LinearExpression> replacement{
                 {source, LinearExpression(copy.variable)}};
             LinearConstraintSet duplicated;
             duplicated.reserve(original.size());
@@ -2813,13 +2746,12 @@ void OctagonDomain::expandDimensions(
     }
     recordOperation(OperationKind::Expand,
                     relational ? ApproximationKind::Exact
-                    : ApproximationKind::SoundOverApproximation,
+                               : ApproximationKind::SoundOverApproximation,
                     relational,
                     relational ? "" : "IEEE expand retained finite bounds");
 }
 
-void OctagonDomain::fold(Variable target,
-                         const std::vector<Variable>& folded)
+void OctagonDomain::fold(Variable target, const std::vector<Variable>& folded)
 {
     std::vector<Variable> variables = folded;
     variables.push_back(target);
@@ -2832,7 +2764,7 @@ void OctagonDomain::fold(Variable target,
     for (Variable variable : folded)
     {
         if (variable == target || !layout_.contains(variable) ||
-                !seen.insert(variable).second)
+            !seen.insert(variable).second)
             throw std::invalid_argument(
                 "folded variables must be distinct non-target dimensions");
         if (layout_.typeOf(variable) != layout_.typeOf(target))
@@ -2864,7 +2796,7 @@ void OctagonDomain::fold(Variable target,
     *this = std::move(result);
     recordOperation(OperationKind::Fold,
                     relational ? ApproximationKind::Exact
-                    : ApproximationKind::SoundOverApproximation,
+                               : ApproximationKind::SoundOverApproximation,
                     relational,
                     relational ? "" : "IEEE fold retained finite hull bounds");
 }
@@ -2874,9 +2806,9 @@ CheckResult OctagonDomain::entails(const LinearConstraint& constraint) const
     if (constraint.kind() == ConstraintKind::Equal)
     {
         const CheckResult le = entails(LinearConstraint(
-                                           constraint.expression(), ConstraintKind::LessEqual));
+            constraint.expression(), ConstraintKind::LessEqual));
         const CheckResult ge = entails(LinearConstraint(
-                                           constraint.expression(), ConstraintKind::GreaterEqual));
+            constraint.expression(), ConstraintKind::GreaterEqual));
         if (le == CheckResult::True && ge == CheckResult::True)
             return CheckResult::True;
         if (le == CheckResult::False || ge == CheckResult::False)
@@ -2887,8 +2819,8 @@ CheckResult OctagonDomain::entails(const LinearConstraint& constraint) const
     if (constraint.kind() == ConstraintKind::NotEqual)
     {
         OctagonDomain witness(*this);
-        witness.assume(LinearConstraint(constraint.expression(),
-                                        ConstraintKind::Equal));
+        witness.assume(
+            LinearConstraint(constraint.expression(), ConstraintKind::Equal));
         return witness.isBottom() ? CheckResult::True : CheckResult::False;
     }
 
@@ -2912,8 +2844,7 @@ CheckResult OctagonDomain::entails(const LinearConstraint& constraint) const
         throw std::logic_error("equality entailment was not normalized");
     }
     OctagonDomain counterexample(*this);
-    counterexample.assume(
-        LinearConstraint(constraint.expression(), negated));
+    counterexample.assume(LinearConstraint(constraint.expression(), negated));
     return counterexample.isBottom() ? CheckResult::True : CheckResult::False;
 }
 
@@ -2945,8 +2876,8 @@ LinearConstraintSet OctagonDomain::toConstraints() const
 
 void OctagonDomain::close()
 {
-    recordOperation(OperationKind::TopologicalClosure,
-                    ApproximationKind::Exact, true);
+    recordOperation(OperationKind::TopologicalClosure, ApproximationKind::Exact,
+                    true);
     if (isBottom())
         return;
     LinearConstraintSet closed;
@@ -2960,14 +2891,15 @@ void OctagonDomain::close()
         closed.emplace_back(constraint.expression(), kind);
     }
     *this = fromConstraints(layout_, closed, config());
-    recordOperation(OperationKind::TopologicalClosure, ApproximationKind::Exact, true);
+    recordOperation(OperationKind::TopologicalClosure, ApproximationKind::Exact,
+                    true);
 }
 
 void OctagonDomain::canonicalize()
 {
     impl_->canonicalizeCurrent();
-    recordOperation(OperationKind::Canonicalization,
-                    ApproximationKind::Exact, true);
+    recordOperation(OperationKind::Canonicalization, ApproximationKind::Exact,
+                    true);
 }
 
 const OctagonConfig& OctagonDomain::config() const
@@ -3001,8 +2933,7 @@ OctagonDomain OctagonDomain::join(const OctagonDomain& other) const
     }
 
     OctagonDomain result(layout(), impl_->joined(*other.impl_));
-    result.recordOperation(OperationKind::Join, ApproximationKind::Exact,
-                           true);
+    result.recordOperation(OperationKind::Join, ApproximationKind::Exact, true);
     return result;
 }
 
@@ -3020,13 +2951,12 @@ OctagonDomain OctagonDomain::meet(const OctagonDomain& other) const
     }
 
     OctagonDomain result(layout(), impl_->met(*other.impl_));
-    result.recordOperation(OperationKind::Meet, ApproximationKind::Exact,
-                           true);
+    result.recordOperation(OperationKind::Meet, ApproximationKind::Exact, true);
     return result;
 }
 
-OctagonDomain OctagonDomain::widen(
-    const OctagonDomain& next, const WideningPolicy& policy) const
+OctagonDomain OctagonDomain::widen(const OctagonDomain& next,
+                                   const WideningPolicy& policy) const
 {
     requireCompatible(next);
     if (layout_ != next.layout_)
@@ -3043,7 +2973,7 @@ OctagonDomain OctagonDomain::widen(
     for (const LinearConstraint& threshold : policy.linearThresholds)
     {
         if (entails(threshold) == CheckResult::True &&
-                next.entails(threshold) == CheckResult::True)
+            next.entails(threshold) == CheckResult::True)
             result.assume(threshold);
     }
     result.recordOperation(OperationKind::Widening,
@@ -3068,8 +2998,8 @@ OctagonDomain OctagonDomain::narrow(const OctagonDomain& next) const
         throw std::invalid_argument(
             "narrowing requires next to be included in current");
     OctagonDomain result(layout(), impl_->narrowed(*next.impl_));
-    result.recordOperation(OperationKind::Narrowing,
-                           ApproximationKind::Exact, true);
+    result.recordOperation(OperationKind::Narrowing, ApproximationKind::Exact,
+                           true);
     return result;
 }
 
@@ -3087,8 +3017,8 @@ const OctagonDomain& OctagonDomain::requireOctagon(
     const AbstractDomain& other) const
 {
     const auto* octagon = other.isDomain<OctagonDomain>()
-                          ? &static_cast<const OctagonDomain&>(other)
-                          : nullptr;
+                              ? &static_cast<const OctagonDomain&>(other)
+                              : nullptr;
     if (!octagon)
         throw std::invalid_argument("relational state is not an OctagonDomain");
     return *octagon;
@@ -3097,20 +3027,18 @@ const OctagonDomain& OctagonDomain::requireOctagon(
 bool OctagonDomain::hasCompatibleDomain(const AbstractDomain& other) const
 {
     const auto* octagon = other.isDomain<OctagonDomain>()
-                          ? &static_cast<const OctagonDomain&>(other)
-                          : nullptr;
-    return octagon &&
-           config().operationCompatible(octagon->config());
+                              ? &static_cast<const OctagonDomain&>(other)
+                              : nullptr;
+    return octagon && config().operationCompatible(octagon->config());
 }
 
-ApproximationKind OctagonDomain::assignState(
-    Variable target, const LinearExpression& expression)
+ApproximationKind OctagonDomain::assignState(Variable target,
+                                             const LinearExpression& expression)
 {
     return impl_->assignCurrent(layout(), target, expression);
 }
 
-ApproximationKind OctagonDomain::assumeState(
-    const LinearConstraint& constraint)
+ApproximationKind OctagonDomain::assumeState(const LinearConstraint& constraint)
 {
     return impl_->assumeCurrent(layout(), constraint);
 }
@@ -3173,8 +3101,8 @@ void OctagonDomain::projectLowerBoundsState()
     impl_->projectLowerBoundsCurrent();
 }
 
-void OctagonDomain::changeLayoutState(
-    const DimensionLayout& oldLayout, const DimensionLayout& newLayout)
+void OctagonDomain::changeLayoutState(const DimensionLayout& oldLayout,
+                                      const DimensionLayout& newLayout)
 {
     impl_->changeLayoutCurrent(oldLayout, newLayout);
 }
@@ -3231,23 +3159,27 @@ OctagonDomain OctagonDomain::bottom(const OctagonConfig& config)
     return bottom(DimensionLayout(), config);
 }
 
-OctagonDomain OctagonDomain::fromConstraints(const LinearConstraintSet& constraints, const OctagonConfig& config)
+OctagonDomain OctagonDomain::fromConstraints(
+    const LinearConstraintSet& constraints, const OctagonConfig& config)
 {
     auto result = top(config);
     result.assumeAll(constraints);
     return result;
 }
 
-OctagonDomain OctagonDomain::fromBox(const BoxDomain& box, const OctagonConfig& config)
+OctagonDomain OctagonDomain::fromBox(const BoxDomain& box,
+                                     const OctagonConfig& config)
 {
-    return box.isBottom() ? bottom(config) : fromConstraints(box.toConstraints(), config);
+    return box.isBottom() ? bottom(config)
+                          : fromConstraints(box.toConstraints(), config);
 }
 
 BoxDomain OctagonDomain::toBox() const
 {
     BoxSemanticConfig options;
     options.integerTightening = config().integerTightening;
-    auto result = isBottom() ? BoxDomain::bottom(options) : BoxDomain::top(options);
+    auto result =
+        isBottom() ? BoxDomain::bottom(options) : BoxDomain::top(options);
     if (!isBottom())
         for (const auto& entry : layout_.variables())
         {
@@ -3255,12 +3187,14 @@ BoxDomain OctagonDomain::toBox() const
             const LinearExpression variable(entry.variable);
             if (value.lower().isFinite())
                 result.assume(LinearConstraint(
-                                  variable - LinearExpression(value.lower().value()),
-                                  value.lower().isStrict() ? ConstraintKind::GreaterThan : ConstraintKind::GreaterEqual));
+                    variable - LinearExpression(value.lower().value()),
+                    value.lower().isStrict() ? ConstraintKind::GreaterThan
+                                             : ConstraintKind::GreaterEqual));
             if (value.upper().isFinite())
                 result.assume(LinearConstraint(
-                                  variable - LinearExpression(value.upper().value()),
-                                  value.upper().isStrict() ? ConstraintKind::LessThan : ConstraintKind::LessEqual));
+                    variable - LinearExpression(value.upper().value()),
+                    value.upper().isStrict() ? ConstraintKind::LessThan
+                                             : ConstraintKind::LessEqual));
         }
     return result;
 }
@@ -3311,8 +3245,10 @@ void OctagonDomain::expand(Variable source, const std::vector<Variable>& copies)
 {
     std::set<Variable> seen;
     for (Variable variable : copies)
-        if (variable == source || variable.type() != source.type() || !seen.insert(variable).second)
-            throw std::invalid_argument("expand requires distinct, same-type copies");
+        if (variable == source || variable.type() != source.type() ||
+            !seen.insert(variable).second)
+            throw std::invalid_argument(
+                "expand requires distinct, same-type copies");
     // Copies are overwritten, just as in Box. A coordinate retained after a
     // previous forget must not change the meaning of a fresh expansion.
     changeLayout(layout_.remove(copies));
@@ -3348,11 +3284,13 @@ void OctagonDomain::assignParallel(const LinearAssignmentList& assignments)
     {
         std::uint64_t id = 0;
         while (id <= std::numeric_limits<std::uint32_t>::max() &&
-                occupied.count(Variable(static_cast<std::uint32_t>(id), assignment.target.type())))
+               occupied.count(Variable(static_cast<std::uint32_t>(id),
+                                       assignment.target.type())))
             ++id;
         if (id > std::numeric_limits<std::uint32_t>::max())
             throw std::length_error("no temporary variable available");
-        const Variable temporary(static_cast<std::uint32_t>(id), assignment.target.type());
+        const Variable temporary(static_cast<std::uint32_t>(id),
+                                 assignment.target.type());
         temporaries.push_back(temporary);
         occupied.insert(temporary);
     }
@@ -3362,8 +3300,9 @@ void OctagonDomain::assignParallel(const LinearAssignmentList& assignments)
     for (std::size_t i = 0; i < assignments.size(); ++i)
         assign(assignments[i].target, LinearExpression(temporaries[i]));
     changeLayout(original);
-    recordOperation(OperationKind::Assignment, ApproximationKind::SoundOverApproximation, false,
-                    "simultaneous octagonal abstraction through fresh coordinates");
+    recordOperation(
+        OperationKind::Assignment, ApproximationKind::SoundOverApproximation,
+        false, "simultaneous octagonal abstraction through fresh coordinates");
 }
 
 } // namespace SVF::AbstractDomain

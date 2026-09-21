@@ -61,8 +61,7 @@ private:
     using LocationIDs = std::unordered_set<std::uint32_t>;
 
     explicit LifetimeDomain(bool defaultMayBeFreed)
-        : defaultMayBeFreed_(defaultMayBeFreed),
-          exceptions_(emptyLocationIDs())
+        : defaultMayBeFreed_(defaultMayBeFreed), exceptions_(emptyLocationIDs())
     {
     }
 
@@ -146,8 +145,8 @@ public:
     }
 
     BoxAddressDomain(std::unique_ptr<NumericalDomain> numerical,
-                     MemoryLayout memoryLayout,
-                     AddressDomain addresses, LifetimeDomain lifetimes);
+                     MemoryLayout memoryLayout, AddressDomain addresses,
+                     LifetimeDomain lifetimes);
     BoxAddressDomain(BoxDomain numerical, MemoryLayout memoryLayout,
                      AddressDomain addresses, LifetimeDomain lifetimes)
         : BoxAddressDomain(std::make_unique<BoxDomain>(std::move(numerical)),
@@ -251,7 +250,8 @@ public:
         numerical_->assign(target, expression);
         if (trackInitialization_)
         {
-            numericalInitialization_.assign(target, InitializationState::Initialized);
+            numericalInitialization_.assign(target,
+                                            InitializationState::Initialized);
             setAddressSet(target, AddressSet::bottom());
         }
         else
@@ -265,7 +265,8 @@ public:
         {
             if (trackInitialization_)
             {
-                numericalInitialization_.assign(assignment.target, InitializationState::Initialized);
+                numericalInitialization_.assign(
+                    assignment.target, InitializationState::Initialized);
                 setAddressSet(assignment.target, AddressSet::bottom());
             }
             else
@@ -280,7 +281,8 @@ public:
         {
             if (trackInitialization_)
             {
-                numericalInitialization_.assign(assignment.target, InitializationState::Initialized);
+                numericalInitialization_.assign(
+                    assignment.target, InitializationState::Initialized);
                 setAddressSet(assignment.target, AddressSet::bottom());
             }
             else
@@ -307,7 +309,8 @@ public:
         if (pointees.hasUnknownObject() || pointees.isBottom())
         {
             setInterval(target, pointees.hasUnknownObject()
-                        ? Interval::top() : Interval::bottom());
+                                    ? Interval::top()
+                                    : Interval::bottom());
             if (pointees.hasUnknownObject())
                 setAddressSet(target, AddressSet::top());
             else
@@ -388,9 +391,10 @@ private:
     bool hasCompatibleDomain(const AbstractDomain& other) const override
     {
         const auto* product = other.isDomain<BoxAddressDomain>()
-                              ? &static_cast<const BoxAddressDomain&>(other)
-                              : nullptr;
-        return product && trackInitialization_ == product->trackInitialization_ &&
+                                  ? &static_cast<const BoxAddressDomain&>(other)
+                                  : nullptr;
+        return product &&
+               trackInitialization_ == product->trackInitialization_ &&
                memoryLayout_ == product->memoryLayout_ &&
                numerical_->isCompatibleWith(*product->numerical_);
     }
@@ -502,7 +506,8 @@ private:
             return false;
         if (trackInitialization_)
             return initializedSubsetOf(product);
-        return numerical_->isSubsetOf(*product.numerical_) == CheckResult::True &&
+        return numerical_->isSubsetOf(*product.numerical_) ==
+                   CheckResult::True &&
                addresses_.isSubsetOf(product.addresses_) == CheckResult::True &&
                lifetimes_.isSubsetOf(product.lifetimes_) == CheckResult::True;
     }
@@ -513,8 +518,9 @@ private:
                ", addresses=" + addresses_.toString() +
                ", lifetimes=" + lifetimes_.toString() +
                (trackInitialization_
-                ? ", numeric-init=" + numericalInitialization_.toString() +
-                ", address-init=" + addressInitialization_.toString() : "");
+                    ? ", numeric-init=" + numericalInitialization_.toString() +
+                          ", address-init=" + addressInitialization_.toString()
+                    : "");
     }
 
     const BoxAddressDomain& requireProduct(const AbstractDomain& other) const
@@ -539,8 +545,14 @@ private:
     MemoryLayout memoryLayout_;
     AddressDomain addresses_;
     LifetimeDomain lifetimes_;
-    enum class Combination { Join, Meet, Widen };
-    void combineInitialized(const BoxAddressDomain& other, Combination operation);
+    enum class Combination
+    {
+        Join,
+        Meet,
+        Widen
+    };
+    void combineInitialized(const BoxAddressDomain& other,
+                            Combination operation);
     bool initializedSubsetOf(const BoxAddressDomain& other) const;
     bool trackInitialization_ = false;
     InitializationDomain numericalInitialization_ =

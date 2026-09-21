@@ -452,8 +452,9 @@ public:
     /// Diagnostic sinks are observational and are not serialized.
     RawBuffer serializeRaw() const;
 
-    /// Restore a Box, Octagon, or Convex Polyhedra property from serializeRaw().
-    /// Malformed, truncated, corrupt, or unsupported data is rejected.
+    /// Restore a Box, Octagon, or Convex Polyhedra property from
+    /// serializeRaw(). Malformed, truncated, corrupt, or unsupported data is
+    /// rejected.
     static std::unique_ptr<NumericalDomain> deserializeRaw(
         const RawBuffer& buffer);
 
@@ -622,8 +623,7 @@ public:
     /// stricter than the analysis-wide Top default. This is a storage
     /// observation for sparse scheduling; absence never means undefined.
     std::vector<Variable> constrainedVariables() const;
-    std::vector<Variable> constrainedVariablesBefore(
-        Variable upperBound) const;
+    std::vector<Variable> constrainedVariablesBefore(Variable upperBound) const;
     std::vector<Variable> supportVariables() const override
     {
         return constrainedVariables();

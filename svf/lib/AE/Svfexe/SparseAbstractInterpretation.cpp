@@ -50,13 +50,13 @@ std::vector<AD::Variable> nonDefaultVariables(
     const auto pointers = state.addresses().nonDefaultVariables();
     std::vector<AD::Variable> payloads;
     payloads.reserve(numbers.size() + pointers.size());
-    std::set_union(numbers.begin(), numbers.end(), pointers.begin(), pointers.end(),
-                   std::back_inserter(payloads));
+    std::set_union(numbers.begin(), numbers.end(), pointers.begin(),
+                   pointers.end(), std::back_inserter(payloads));
     const auto initialized = state.initializedVariables();
     std::vector<AD::Variable> variables;
     variables.reserve(payloads.size() + initialized.size());
-    std::set_union(payloads.begin(), payloads.end(), initialized.begin(), initialized.end(),
-                   std::back_inserter(variables));
+    std::set_union(payloads.begin(), payloads.end(), initialized.begin(),
+                   initialized.end(), std::back_inserter(variables));
     return variables;
 }
 
@@ -67,15 +67,15 @@ SemiSparseAbstractInterpretation::SemiSparseAbstractInterpretation()
     this->preAnalysis->initCycleValVars();
 }
 
-SemiSparseAbstractInterpretation::State
-SemiSparseAbstractInterpretation::flowState(bool bottom) const
+SemiSparseAbstractInterpretation::State SemiSparseAbstractInterpretation::
+    flowState(bool bottom) const
 {
     return State(this->makeNumericalDomain(bottom),
                  this->adapter_.memoryLayout(), true);
 }
 
-SemiSparseAbstractInterpretation::State&
-SemiSparseAbstractInterpretation::scalarState()
+SemiSparseAbstractInterpretation::State& SemiSparseAbstractInterpretation::
+    scalarState()
 {
     if (!scalarState_)
         scalarState_.emplace(flowState());
@@ -89,7 +89,7 @@ SemiSparseAbstractInterpretation::findScalarState() const
 }
 
 const AD::AbstractDomain* SemiSparseAbstractInterpretation::
-getScalarAbstractState() const
+    getScalarAbstractState() const
 {
     return findScalarState();
 }
@@ -100,16 +100,16 @@ void SemiSparseAbstractInterpretation::handleGlobalNode()
     finalizeAbstractState(this->icfg->getGlobalICFGNode());
 }
 
-AD::Interval SemiSparseAbstractInterpretation::getInterval(
-    const ValVar* value, const ICFGNode* node)
+AD::Interval SemiSparseAbstractInterpretation::getInterval(const ValVar* value,
+                                                           const ICFGNode* node)
 {
     const AD::Interval result = getDefinedInterval(value, node);
     if (!value || !this->adapter_.contains(*value))
         return result;
     const State& scalars = scalarState();
-    return scalars.numericalMayBeUninitialized(
-               this->adapter_.variable(*value))
-           ? AD::Interval::top() : result;
+    return scalars.numericalMayBeUninitialized(this->adapter_.variable(*value))
+               ? AD::Interval::top()
+               : result;
 }
 
 AD::Interval SemiSparseAbstractInterpretation::getDefinedInterval(
@@ -122,7 +122,7 @@ AD::Interval SemiSparseAbstractInterpretation::getDefinedInterval(
     if (!value)
         return AD::Interval::top();
     if (value->getId() == this->svfir->getBlkPtr() ||
-            SVFUtil::isa<BlackHoleValVar>(value))
+        SVFUtil::isa<BlackHoleValVar>(value))
         return Base::getDefinedInterval(value, node);
     if (!this->adapter_.contains(*value))
         return AD::Interval::top();
@@ -139,7 +139,7 @@ AD::Interval SemiSparseAbstractInterpretation::getDefinedInterval(
     // A forward reference in a global initializer has not executed its
     // AddrStmt yet. Match the unresolved-symbol policy of the dense reader.
     if ((SVFUtil::isa<FunValVar>(value) || SVFUtil::isa<GlobalValVar>(value)) &&
-            !scalars.hasValue(variable))
+        !scalars.hasValue(variable))
         return AD::Interval::top();
     AD::Interval result = scalars.interval(variable);
     // Conditional-edge refinement is intentionally local to the ICFG state.
@@ -168,10 +168,10 @@ AD::AddressSet SemiSparseAbstractInterpretation::getAddressSet(
     if (!value)
         return AD::AddressSet::top();
     if (value->getId() == IRGraph::NullPtr ||
-            SVFUtil::isa<ConstNullPtrValVar>(value))
+        SVFUtil::isa<ConstNullPtrValVar>(value))
         return AD::AddressSet::singleton(AD::Location::null());
     if (value->getId() == this->svfir->getBlkPtr() ||
-            SVFUtil::isa<BlackHoleValVar>(value))
+        SVFUtil::isa<BlackHoleValVar>(value))
         return this->blackHoleAddressSet();
     if (SVFUtil::isa<DummyValVar>(value))
         return AD::AddressSet::bottom();
@@ -182,12 +182,12 @@ AD::AddressSet SemiSparseAbstractInterpretation::getAddressSet(
     return scalars.addressSet(variable);
 }
 
-bool SemiSparseAbstractInterpretation::hasAbsValue(
-    const ValVar* value, const ICFGNode* node) const
+bool SemiSparseAbstractInterpretation::hasAbsValue(const ValVar* value,
+                                                   const ICFGNode* node) const
 {
     (void)node;
     if (SVFUtil::isa<ConstIntValVar>(value) ||
-            SVFUtil::isa<ConstFPValVar>(value))
+        SVFUtil::isa<ConstFPValVar>(value))
         return true;
     return value && this->adapter_.contains(*value);
 }
@@ -219,8 +219,7 @@ void SemiSparseAbstractInterpretation::copyAbstractState(
     this->stateTrace_.insert_or_assign(destination, this->state(source));
 }
 
-void SemiSparseAbstractInterpretation::resetAbstractState(
-    const ICFGNode* node)
+void SemiSparseAbstractInterpretation::resetAbstractState(const ICFGNode* node)
 {
     this->stateTrace_.insert_or_assign(node, flowState());
 }
@@ -238,12 +237,13 @@ void SemiSparseAbstractInterpretation::forgetActiveScalarValues(
     const AD::Variable contentBegin =
         this->adapter_.firstObjectContentVariable();
     for (AD::Variable variable :
-            denseState.numerical().supportVariablesBefore(contentBegin))
+         denseState.numerical().supportVariablesBefore(contentBegin))
         denseState.numerical().forget(variable);
     for (AD::Variable variable :
-            denseState.addresses().nonDefaultVariablesBefore(contentBegin))
+         denseState.addresses().nonDefaultVariablesBefore(contentBegin))
         denseState.addresses().forget(variable);
-    for (AD::Variable variable : denseState.initializedVariablesBefore(contentBegin))
+    for (AD::Variable variable :
+         denseState.initializedVariablesBefore(contentBegin))
         denseState.resetValue(variable);
 }
 
@@ -271,14 +271,13 @@ void SemiSparseAbstractInterpretation::restoreCallerFrameAfterSharedCallee(
     {
         if (!SVFUtil::isa<RetCFGEdge>(edge) || !edge->getSrcNode()->getFun())
             continue;
-        const ICFGNode* entry = this->icfg->getFunEntryICFGNode(
-                                    edge->getSrcNode()->getFun());
+        const ICFGNode* entry =
+            this->icfg->getFunEntryICFGNode(edge->getSrcNode()->getFun());
         const std::size_t callers = std::count_if(
-                                        entry->getInEdges().begin(), entry->getInEdges().end(),
-                                        [](const ICFGEdge* incoming)
-        {
-            return SVFUtil::isa<CallCFGEdge>(incoming);
-        });
+            entry->getInEdges().begin(), entry->getInEdges().end(),
+            [](const ICFGEdge* incoming) {
+                return SVFUtil::isa<CallCFGEdge>(incoming);
+            });
         sharedCallee |= callers > 1;
     }
     if (!sharedCallee)
@@ -287,8 +286,7 @@ void SemiSparseAbstractInterpretation::restoreCallerFrameAfterSharedCallee(
     const State& caller = this->state(call);
     NodeBS exposedBases;
     bool exposesAllObjects = false;
-    auto expose = [&](const ObjVar* object)
-    {
+    auto expose = [&](const ObjVar* object) {
         if (object)
             exposedBases.set(
                 this->svfir->getBaseObject(object->getId())->getId());
@@ -298,15 +296,14 @@ void SemiSparseAbstractInterpretation::restoreCallerFrameAfterSharedCallee(
         if (!actual || !actual->isPointer())
             continue;
         for (NodeID objectId :
-                this->preAnalysis->getPointerAnalysis()->getPts(actual->getId()))
+             this->preAnalysis->getPointerAnalysis()->getPts(actual->getId()))
         {
-            expose(SVFUtil::dyn_cast<ObjVar>(
-                       this->svfir->getGNode(objectId)));
+            expose(SVFUtil::dyn_cast<ObjVar>(this->svfir->getGNode(objectId)));
         }
         if (!this->adapter_.contains(*actual))
             continue;
-        const AD::AddressSet addresses = caller.addressSet(
-                                             this->adapter_.variable(*actual));
+        const AD::AddressSet addresses =
+            caller.addressSet(this->adapter_.variable(*actual));
         if (addresses.hasUnknownObject())
         {
             exposesAllObjects = true;
@@ -316,15 +313,14 @@ void SemiSparseAbstractInterpretation::restoreCallerFrameAfterSharedCallee(
             expose(this->objectAt(location));
     }
 
-    auto restore = [&](AD::Variable content)
-    {
+    auto restore = [&](AD::Variable content) {
         const ObjVar* object = this->adapter_.contentObject(content);
-        const BaseObjVar* base = object
-                                 ? this->svfir->getBaseObject(object->getId()) : nullptr;
+        const BaseObjVar* base =
+            object ? this->svfir->getBaseObject(object->getId()) : nullptr;
         if (!base)
             return;
         if (base->isStack() && !exposesAllObjects &&
-                !exposedBases.test(base->getId()))
+            !exposedBases.test(base->getId()))
             denseState.restoreMissingMemoryFrom(caller, content);
         else
             denseState.restoreMissingAddressFrom(caller, content);
@@ -347,8 +343,9 @@ void SemiSparseAbstractInterpretation::applyScalarRefinement(
     }
 }
 
-void SemiSparseAbstractInterpretation::materializeValue(
-    State& denseState, const ValVar* value, const ICFGNode* node)
+void SemiSparseAbstractInterpretation::materializeValue(State& denseState,
+                                                        const ValVar* value,
+                                                        const ICFGNode* node)
 {
     if (!value || !this->adapter_.contains(*value))
         return;
@@ -367,11 +364,10 @@ void SemiSparseAbstractInterpretation::materializeValue(
 
 void SemiSparseAbstractInterpretation::loadValue(
     const ValVar* pointer, AD::Interval& interval, AD::AddressSet& addresses,
-    bool& numericalMayBeUninitialized,
-    const ICFGNode* node)
+    bool& numericalMayBeUninitialized, const ICFGNode* node)
 {
-    Base::loadValue(pointer, interval, addresses,
-                    numericalMayBeUninitialized, node);
+    Base::loadValue(pointer, interval, addresses, numericalMayBeUninitialized,
+                    node);
     if (pointer && this->adapter_.contains(*pointer))
         this->forgetValue(this->ensureState(node),
                           this->adapter_.variable(*pointer));
@@ -434,9 +430,9 @@ bool SemiSparseAbstractInterpretation::mergeStatesFromPredecessors(
         if (needsRefinement)
         {
             refinement = refinementIterator != refinementTrace_.end()
-                         ? refinementIterator->second
-                         : State(this->makeNumericalDomain(false),
-                                 this->adapter_.memoryLayout());
+                             ? refinementIterator->second
+                             : State(this->makeNumericalDomain(false),
+                                     this->adapter_.memoryLayout());
             if (hasConditional)
                 this->assumeBranch(conditional, *refinement);
             if (refinement->isBottom())
@@ -467,8 +463,8 @@ bool SemiSparseAbstractInterpretation::mergeStatesFromPredecessors(
 
     if (!hasFeasiblePredecessor)
         return false;
-    restoreCallerFrameAfterSharedCallee(
-        merged, SVFUtil::dyn_cast<RetICFGNode>(node));
+    restoreCallerFrameAfterSharedCallee(merged,
+                                        SVFUtil::dyn_cast<RetICFGNode>(node));
     if (mergedRefinement && !refinementIsTop && !mergedRefinement->isTop())
     {
         refinementTrace_.insert_or_assign(node, *mergedRefinement);
@@ -483,7 +479,7 @@ bool SemiSparseAbstractInterpretation::mergeStatesFromPredecessors(
 }
 
 std::unique_ptr<AD::AbstractDomain> SemiSparseAbstractInterpretation::
-cloneCycleHeadState(const ICFGCycleWTO* cycle)
+    cloneCycleHeadState(const ICFGCycleWTO* cycle)
 {
     const ICFGNode* head = cycle->head()->getICFGNode();
     State snapshot = this->state(head);
@@ -505,8 +501,7 @@ void SemiSparseAbstractInterpretation::scatterCycleValues(
         if (!value || !this->adapter_.contains(*value))
             continue;
         const AD::Variable variable = this->adapter_.variable(*value);
-        updateValue(value,
-                    cycleState.interval(variable),
+        updateValue(value, cycleState.interval(variable),
                     cycleState.addressSet(variable),
                     cycle->head()->getICFGNode());
     }
@@ -543,7 +538,7 @@ bool hasRedefinitionOf(const ICFGNode* node, const IndirectSVFGEdge* edge)
     for (const VFGNode* valueFlowNode : node->getVFGNodes())
     {
         if (SVFUtil::isa<StoreVFGNode>(valueFlowNode) &&
-                valueFlowNode->getDefSVFVars().intersects(edge->getPointsTo()))
+            valueFlowNode->getDefSVFVars().intersects(edge->getPointsTo()))
             return true;
     }
     return false;
@@ -557,8 +552,7 @@ FullSparseAbstractInterpretation::FullSparseAbstractInterpretation()
     svfgBuilder_->buildFullSVFG(this->preAnalysis->getPointerAnalysis());
 }
 
-FullSparseAbstractInterpretation::
-~FullSparseAbstractInterpretation() = default;
+FullSparseAbstractInterpretation::~FullSparseAbstractInterpretation() = default;
 
 void FullSparseAbstractInterpretation::filterPropagatedState(
     State& denseState) const
@@ -568,7 +562,7 @@ void FullSparseAbstractInterpretation::filterPropagatedState(
     {
         const ObjVar* object = this->adapter_.contentObject(variable);
         if (object && !SVFUtil::isa<GepObjVar>(object) &&
-                !denseMemoryVariables_.count(variable))
+            !denseMemoryVariables_.count(variable))
             this->forgetValue(denseState, variable);
     }
 }
@@ -594,7 +588,7 @@ void FullSparseAbstractInterpretation::storeValue(
     const AD::AddressSet addresses = Base::getAddressSet(pointer, node);
     auto refinement = memoryRefinementTrace_.find(node);
     if (refinement != memoryRefinementTrace_.end() &&
-            !addresses.hasUnknownObject())
+        !addresses.hasUnknownObject())
     {
         for (AD::Location location : addresses)
             if (const ObjVar* object = this->objectAt(location))
@@ -607,10 +601,9 @@ void FullSparseAbstractInterpretation::storeValue(
 void FullSparseAbstractInterpretation::recordMemoryDefinition(
     const ICFGNode* node, const AD::AddressSet& targets)
 {
-    auto record = [&](AD::Location location)
-    {
+    auto record = [&](AD::Location location) {
         if (location.isNull() ||
-                !this->adapter_.memoryLayout().contains(location))
+            !this->adapter_.memoryLayout().contains(location))
             return;
         const ObjVar* object = this->objectAt(location);
         if (!object)
@@ -619,12 +612,13 @@ void FullSparseAbstractInterpretation::recordMemoryDefinition(
         // object named by this MemorySSA edge. Do not invent a definition for
         // that original object merely because its payload slot is absent.
         if (this->memoryVariable(*object, this->state(node)) !=
-                this->adapter_.contentVariable(*object))
+            this->adapter_.contentVariable(*object))
         {
             const auto definitions = memoryDefinitionSupport_.find(node);
             if (definitions != memoryDefinitionSupport_.end())
             {
-                definitions->second.erase(this->adapter_.contentVariable(*object));
+                definitions->second.erase(
+                    this->adapter_.contentVariable(*object));
                 if (definitions->second.empty())
                     memoryDefinitionSupport_.erase(definitions);
             }
@@ -639,11 +633,10 @@ void FullSparseAbstractInterpretation::recordMemoryDefinition(
     if (targets.hasUnknownObject())
     {
         for (const auto& [location, content] :
-                this->adapter_.memoryLayout().cells())
+             this->adapter_.memoryLayout().cells())
         {
             if (this->unknownTargetTelemetryEnabled())
-                ++this->unknownTargetTelemetry()
-                .sparseDefinitionCellsVisited;
+                ++this->unknownTargetTelemetry().sparseDefinitionCellsVisited;
             (void)content;
             record(location);
         }
@@ -670,8 +663,7 @@ void FullSparseAbstractInterpretation::updateMemoryValue(
     if (!location.isNull())
     {
         const ObjVar& object = this->adapter_.object(location);
-        denseMemoryVariables_.insert(
-            this->adapter_.contentVariable(object));
+        denseMemoryVariables_.insert(this->adapter_.contentVariable(object));
     }
     Base::updateMemoryValue(location, interval, addresses, node);
 }
@@ -683,7 +675,7 @@ bool FullSparseAbstractInterpretation::mergeStatesFromPredecessors(
     previousMemoryDefinitionSupport_.erase(node);
     const auto oldSupport = memoryDefinitionSupport_.find(node);
     if (oldSupport != memoryDefinitionSupport_.end() &&
-            !oldSupport->second.empty())
+        !oldSupport->second.empty())
     {
         previousMemoryDefinitionSupport_.emplace(node, oldSupport->second);
     }
@@ -720,8 +712,7 @@ bool FullSparseAbstractInterpretation::widenCycleState(
     const bool supportFixpoint = support == oldSupport;
     if (support.empty())
         memoryDefinitionSupport_.erase(head);
-    return Base::widenCycleState(previous, current, cycle) &&
-           supportFixpoint;
+    return Base::widenCycleState(previous, current, cycle) && supportFixpoint;
 }
 
 bool FullSparseAbstractInterpretation::narrowCycleState(
@@ -736,8 +727,7 @@ bool FullSparseAbstractInterpretation::narrowCycleState(
     const bool supportFixpoint =
         (oldEmpty && nextEmpty) ||
         (!oldEmpty && !nextEmpty && old->second == next->second);
-    return Base::narrowCycleState(previous, current, cycle) &&
-           supportFixpoint;
+    return Base::narrowCycleState(previous, current, cycle) && supportFixpoint;
 }
 
 void FullSparseAbstractInterpretation::pullObjectValueFlows(
@@ -756,12 +746,12 @@ void FullSparseAbstractInterpretation::pullObjectValueFlows(
     for (const VFGNode* valueFlowNode : node->getVFGNodes())
     {
         for (auto edgeIterator = valueFlowNode->InEdgeBegin();
-                edgeIterator != valueFlowNode->InEdgeEnd(); ++edgeIterator)
+             edgeIterator != valueFlowNode->InEdgeEnd(); ++edgeIterator)
         {
             const auto* indirect =
                 SVFUtil::dyn_cast<IndirectSVFGEdge>(*edgeIterator);
             if (!indirect ||
-                    !isIndirectSVFGEdgeFeasible(indirect, valueFlowNode))
+                !isIndirectSVFGEdgeFeasible(indirect, valueFlowNode))
                 continue;
 
             const auto* sourceNode =
@@ -788,7 +778,7 @@ void FullSparseAbstractInterpretation::pullObjectValueFlows(
                     if (denseLocalObjects.test(fieldId))
                         continue;
                     const auto* object = SVFUtil::dyn_cast<ObjVar>(
-                                             this->svfir->getGNode(fieldId));
+                        this->svfir->getGNode(fieldId));
                     if (!object)
                         continue;
                     const AD::Variable content =
@@ -797,17 +787,21 @@ void FullSparseAbstractInterpretation::pullObjectValueFlows(
                     // Keep their ICFG value, even when both facets are Top.
                     if (denseMemoryVariables_.count(content))
                         continue;
-                    const bool hasDefinition = Base::hasAbsValue(object, source) ||
-                                               hasMemoryDefinition(source, content);
+                    const bool hasDefinition =
+                        Base::hasAbsValue(object, source) ||
+                        hasMemoryDefinition(source, content);
                     // MemorySSA roots a local stack object's initial contents
                     // at FormalIN, not at its AddrStmt. Decode that initial
                     // definition using AE's uninitialized-memory policy.
                     bool initialStackDefinition = false;
-                    if (!hasDefinition && SVFUtil::isa<FormalINSVFGNode>(sourceNode))
+                    if (!hasDefinition &&
+                        SVFUtil::isa<FormalINSVFGNode>(sourceNode))
                     {
-                        const BaseObjVar* base = this->svfir->getBaseObject(fieldId);
-                        initialStackDefinition = base->isStack() &&
-                                                 base->getFunction() == source->getFun();
+                        const BaseObjVar* base =
+                            this->svfir->getBaseObject(fieldId);
+                        initialStackDefinition =
+                            base->isStack() &&
+                            base->getFunction() == source->getFun();
                     }
                     if (!hasDefinition && !initialStackDefinition)
                         continue;
@@ -824,7 +818,8 @@ void FullSparseAbstractInterpretation::pullObjectValueFlows(
                         destination.assignValueFrom(destinationContent,
                                                     sourceState, sourceContent);
                     if (!Base::hasAbsValue(object, node) &&
-                            this->memoryVariable(*object, this->state(node)) == content)
+                        this->memoryVariable(*object, this->state(node)) ==
+                            content)
                         memoryDefinitionSupport_[node].insert(content);
                     pulledObjects.set(fieldId);
                 }
@@ -882,7 +877,7 @@ bool FullSparseAbstractInterpretation::isIndirectSVFGEdgeFeasible(
             const auto* intra = SVFUtil::dyn_cast<IntraCFGEdge>(cfgEdge);
             const ICFGNode* successor = intra ? intra->getDstNode() : nullptr;
             if (!successor || successor->getFun() != function ||
-                    !isIntraEdgeBranchFeasible(intra, current))
+                !isIntraEdgeBranchFeasible(intra, current))
                 continue;
             if (successor == target)
                 return true;

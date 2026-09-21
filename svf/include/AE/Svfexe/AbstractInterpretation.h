@@ -150,22 +150,22 @@ public:
     /// All three overloads are virtual so full-sparse can route ObjVar
     /// reads through the SVFG.
     virtual AbstractDomain::Interval getInterval(const ValVar* var,
-            const ICFGNode* node);
+                                                 const ICFGNode* node);
     /// Return the numerical payload conditional on the value being
     /// initialized. Ordinary reads use getInterval(), which applies AE's
     /// uninitialized-read policy.
-    virtual AbstractDomain::Interval getDefinedInterval(
-        const ValVar* var, const ICFGNode* node);
+    virtual AbstractDomain::Interval getDefinedInterval(const ValVar* var,
+                                                        const ICFGNode* node);
     virtual AbstractDomain::Interval getInterval(const ObjVar* var,
-            const ICFGNode* node);
+                                                 const ICFGNode* node);
     virtual AbstractDomain::Interval getInterval(const SVFVar* var,
-            const ICFGNode* node);
+                                                 const ICFGNode* node);
     virtual AbstractDomain::AddressSet getAddressSet(const ValVar* var,
-            const ICFGNode* node);
+                                                     const ICFGNode* node);
     virtual AbstractDomain::AddressSet getAddressSet(const ObjVar* var,
-            const ICFGNode* node);
+                                                     const ICFGNode* node);
     virtual AbstractDomain::AddressSet getAddressSet(const SVFVar* var,
-            const ICFGNode* node);
+                                                     const ICFGNode* node);
 
     /// Side-effect-free check that the node state is reachable and the value
     /// belongs to the typed analysis vocabulary. A supported but unconstrained
@@ -188,8 +188,8 @@ public:
                              const AbstractDomain::Interval& interval,
                              const AbstractDomain::AddressSet& addresses,
                              const ICFGNode* node);
-    virtual void addUninitializedNumericalAlternative(
-        const ValVar* var, const ICFGNode* node);
+    virtual void addUninitializedNumericalAlternative(const ValVar* var,
+                                                      const ICFGNode* node);
 
     void updateInterval(const SVFVar* var,
                         const AbstractDomain::Interval& interval,
@@ -226,7 +226,7 @@ public:
     /// implementation separates ValVars from ICFG memory states. Other
     /// implementations return nullptr.
     virtual const AbstractDomain::AbstractDomain* getScalarAbstractState()
-    const;
+        const;
 
     virtual bool hasAbsState(const ICFGNode* node) const;
 
@@ -410,7 +410,7 @@ protected:
     const FunObjVar* getCallee(const CallICFGNode* callNode);
 
     Set<const ICFGNode*>
-    allAnalyzedNodes; // All nodes ever analyzed (across all entry points)
+        allAnalyzedNodes; // All nodes ever analyzed (across all entry points)
 
     std::vector<std::unique_ptr<AEDetector>> detectors;
     AbsExtAPI* utils;
@@ -443,8 +443,7 @@ protected:
     void assignValue(State& state, AbstractDomain::Variable variable,
                      const AbstractDomain::Interval& interval,
                      const AbstractDomain::AddressSet& addresses);
-    void assignMemoryValue(State& state,
-                           AbstractDomain::Variable content,
+    void assignMemoryValue(State& state, AbstractDomain::Variable content,
                            const AbstractDomain::Interval& interval,
                            const AbstractDomain::AddressSet& addresses);
     AbstractDomain::Variable memoryVariable(const ObjVar& object,
@@ -455,8 +454,7 @@ protected:
                            const AbstractDomain::Interval& interval);
     virtual void materializeValue(State& state, const ValVar* value,
                                   const ICFGNode* node);
-    void forgetValue(State& state,
-                     AbstractDomain::Variable variable) const;
+    void forgetValue(State& state, AbstractDomain::Variable variable) const;
     void assumeBranch(const IntraCFGEdge* edge, State& state);
 
     SVFIR* svfir{nullptr};
