@@ -23,9 +23,18 @@
 
 #include "AE/Core/AbstractDomain.h"
 
+#ifdef SVF_BOX_OPERATION_MEMOIZATION
+#    include "AE/Core/BoxAddressDomain.h"
+#endif
+
 #ifdef SVF_BOX_STORAGE_TELEMETRY
 #    include <atomic>
 #    include <chrono>
+#endif
+#ifdef SVF_BOX_OPERATION_MEMOIZATION
+#    include <algorithm>
+#    include <list>
+#    include <unordered_map>
 #endif
 #include <stdexcept>
 
@@ -66,6 +75,157 @@ void emitOperation(AbstractOperationEventSink sink,
 } // namespace
 #endif
 
+#ifdef SVF_BOX_OPERATION_MEMOIZATION
+namespace
+{
+constexpr std::size_t OperationCacheCapacity = 256;
+
+enum class MemoOperation : unsigned char
+{
+    Join,
+    Meet,
+    Widen,
+    Narrow
+};
+
+bool isCommutative(MemoOperation operation)
+{
+    return operation == MemoOperation::Join ||
+           operation == MemoOperation::Meet;
+}
+
+void combineMemoHash(std::uint64_t& seed, std::uint64_t value)
+{
+    seed ^= value + 0x9e3779b97f4a7c15ULL + (seed << 6U) + (seed >> 2U);
+}
+
+std::uint64_t memoDigest(MemoOperation operation,
+                         const BoxAddressDomain& left,
+                         const BoxAddressDomain& right)
+{
+    std::uint64_t leftHash = left.semanticHash();
+    std::uint64_t rightHash = right.semanticHash();
+    if (isCommutative(operation) && rightHash < leftHash)
+        std::swap(leftHash, rightHash);
+    std::uint64_t seed = static_cast<unsigned>(operation);
+    combineMemoHash(seed, leftHash);
+    combineMemoHash(seed, rightHash);
+    return seed;
+}
+
+class ProductOperationCache
+{
+public:
+    bool probe(MemoOperation operation, const BoxAddressDomain& left,
+               const BoxAddressDomain& right, BoxAddressDomain& destination)
+    {
+        ++lookups_;
+        const std::uint64_t digest = memoDigest(operation, left, right);
+        const auto range = index_.equal_range(digest);
+        for (auto found = range.first; found != range.second; ++found)
+        {
+            const auto entry = found->second;
+            const bool sameOrder =
+                left.semanticEquivalent(entry->left) &&
+                right.semanticEquivalent(entry->right);
+            const bool reverseOrder = isCommutative(operation) &&
+                                      left.semanticEquivalent(entry->right) &&
+                                      right.semanticEquivalent(entry->left);
+            if (entry->operation != operation ||
+                    (!sameOrder && !reverseOrder))
+            {
+                ++exactMismatches_;
+                continue;
+            }
+            order_.splice(order_.begin(), order_, entry);
+            destination = entry->result;
+            ++hits_;
+            return true;
+        }
+        return false;
+    }
+
+    void remember(MemoOperation operation, BoxAddressDomain left,
+                  BoxAddressDomain right, BoxAddressDomain result)
+    {
+        const std::uint64_t digest = memoDigest(operation, left, right);
+        (void)result.semanticHash();
+        order_.push_front({operation, digest, std::move(left),
+                           std::move(right), std::move(result)});
+        index_.emplace(digest, order_.begin());
+        if (order_.size() <= OperationCacheCapacity)
+            return;
+        const auto removed = std::prev(order_.end());
+        const auto range = index_.equal_range(removed->digest);
+        const auto indexed = std::find_if(
+                                 range.first, range.second,
+                                 [removed](const auto& item)
+        {
+            return item.second == removed;
+        });
+        if (indexed == range.second)
+            throw std::runtime_error("missing Box operation cache index");
+        index_.erase(indexed);
+        order_.erase(removed);
+    }
+
+    OperationMemoizationStats stats() const noexcept
+    {
+        return {lookups_, hits_, exactMismatches_, order_.size()};
+    }
+
+    void reset() noexcept
+    {
+        index_.clear();
+        order_.clear();
+        lookups_ = 0;
+        hits_ = 0;
+        exactMismatches_ = 0;
+    }
+
+private:
+    struct Entry
+    {
+        MemoOperation operation;
+        std::uint64_t digest;
+        BoxAddressDomain left;
+        BoxAddressDomain right;
+        BoxAddressDomain result;
+    };
+
+    std::list<Entry> order_;
+    std::unordered_multimap<std::uint64_t,
+        std::list<Entry>::iterator> index_;
+    std::uint64_t lookups_ = 0;
+    std::uint64_t hits_ = 0;
+    std::uint64_t exactMismatches_ = 0;
+};
+
+thread_local ProductOperationCache productOperationCache;
+
+template <typename Operation>
+void applyMemoized(MemoOperation operation, AbstractDomain& left,
+                   const AbstractDomain& right, Operation&& apply)
+{
+    if (!left.isDomain<BoxAddressDomain>())
+    {
+        apply();
+        return;
+    }
+    auto& leftProduct = static_cast<BoxAddressDomain&>(left);
+    const auto& rightProduct = static_cast<const BoxAddressDomain&>(right);
+    if (productOperationCache.probe(operation, leftProduct, rightProduct,
+                                    leftProduct))
+        return;
+    BoxAddressDomain leftSnapshot(leftProduct);
+    BoxAddressDomain rightSnapshot(rightProduct);
+    apply();
+    productOperationCache.remember(operation, std::move(leftSnapshot),
+                                   std::move(rightSnapshot), leftProduct);
+}
+} // namespace
+#endif
+
 const char* toString(CheckResult result)
 {
     switch (result)
@@ -90,6 +250,18 @@ void AbstractDomain::setOperationEventSink(
 }
 #endif
 
+#ifdef SVF_BOX_OPERATION_MEMOIZATION
+OperationMemoizationStats AbstractDomain::operationMemoizationStats() noexcept
+{
+    return productOperationCache.stats();
+}
+
+void AbstractDomain::resetOperationMemoization() noexcept
+{
+    productOperationCache.reset();
+}
+#endif
+
 void AbstractDomain::requireCompatible(const AbstractDomain& other) const
 {
     if (!hasCompatibleDomain(other))
@@ -108,7 +280,15 @@ void AbstractDomain::joinWith(const AbstractDomain& other)
         sink ? OperationClock::now() : OperationClock::time_point{};
 #endif
     requireCompatible(other);
+#ifdef SVF_BOX_OPERATION_MEMOIZATION
+    applyMemoized(MemoOperation::Join, *this, other,
+                  [this, &other]()
+    {
+        joinDomain(other);
+    });
+#else
     joinDomain(other);
+#endif
 #ifdef SVF_BOX_STORAGE_TELEMETRY
     if (sink)
         emitOperation(sink, AbstractOperationKind::Join,
@@ -128,7 +308,15 @@ void AbstractDomain::meetWith(const AbstractDomain& other)
         sink ? OperationClock::now() : OperationClock::time_point{};
 #endif
     requireCompatible(other);
+#ifdef SVF_BOX_OPERATION_MEMOIZATION
+    applyMemoized(MemoOperation::Meet, *this, other,
+                  [this, &other]()
+    {
+        meetDomain(other);
+    });
+#else
     meetDomain(other);
+#endif
 #ifdef SVF_BOX_STORAGE_TELEMETRY
     if (sink)
         emitOperation(sink, AbstractOperationKind::Meet,
@@ -148,7 +336,15 @@ void AbstractDomain::widenWith(const AbstractDomain& next)
         sink ? OperationClock::now() : OperationClock::time_point{};
 #endif
     requireCompatible(next);
+#ifdef SVF_BOX_OPERATION_MEMOIZATION
+    applyMemoized(MemoOperation::Widen, *this, next,
+                  [this, &next]()
+    {
+        widenDomain(next);
+    });
+#else
     widenDomain(next);
+#endif
 #ifdef SVF_BOX_STORAGE_TELEMETRY
     if (sink)
         emitOperation(sink, AbstractOperationKind::Widen,
@@ -171,7 +367,15 @@ void AbstractDomain::narrowWith(const AbstractDomain& next)
     if (!next.leqDomain(*this))
         throw std::invalid_argument(
             "narrowing requires next to be included in current");
+#ifdef SVF_BOX_OPERATION_MEMOIZATION
+    applyMemoized(MemoOperation::Narrow, *this, next,
+                  [this, &next]()
+    {
+        narrowDomain(next);
+    });
+#else
     narrowDomain(next);
+#endif
 #ifdef SVF_BOX_STORAGE_TELEMETRY
     if (sink)
         emitOperation(sink, AbstractOperationKind::Narrow,

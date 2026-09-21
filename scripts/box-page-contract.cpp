@@ -741,6 +741,55 @@ void interningContract()
     std::cout << "interning_contract=pass policies=2 collision=forced budget=bounded weak_reclaim=pass\n";
 }
 #endif
+
+#ifdef SVF_BOX_OPERATION_MEMOIZATION
+void operationMemoizationContract()
+{
+    const Variable x(1);
+    const Variable y(2);
+    const MemoryLayout layout;
+    BoxAddressDomain left(BoxDomain::top(), layout, true);
+    BoxAddressDomain right(BoxDomain::top(), layout, true);
+    left.setInterval(x, Interval::singleton(Rational(1)));
+    right.setInterval(x, Interval::singleton(Rational(2)));
+
+    BoxAddressDomain expected = left;
+    expected.joinWith(right);
+    AbstractDomain::resetOperationMemoization();
+
+    BoxAddressDomain first = left;
+    first.joinWith(right);
+    BoxAddressDomain second = left;
+    second.joinWith(right);
+    auto stats = AbstractDomain::operationMemoizationStats();
+    check(first.semanticEquivalent(expected) &&
+          second.semanticEquivalent(expected),
+          "memoized Product join changed semantics");
+    check(stats.lookups == 2 && stats.hits == 1 && stats.entries == 1,
+          "memoized Product join did not reuse an exact input");
+
+    second.setInterval(y, Interval::singleton(Rational(9)));
+    BoxAddressDomain third = left;
+    third.joinWith(right);
+    stats = AbstractDomain::operationMemoizationStats();
+    check(stats.hits == 2 && third.semanticEquivalent(expected),
+          "memoized Product result did not retain COW isolation");
+
+    AbstractDomain::resetOperationMemoization();
+    for (unsigned value = 0; value < 300; ++value)
+    {
+        BoxAddressDomain varying = right;
+        varying.setInterval(x, Interval::singleton(Rational(value + 3)));
+        BoxAddressDomain result = left;
+        result.joinWith(varying);
+    }
+    stats = AbstractDomain::operationMemoizationStats();
+    check(stats.lookups == 300 && stats.entries == 256,
+          "Product operation cache exceeded its fixed capacity");
+    std::cout << "operation_memoization_contract=pass capacity=256"
+              << " exact=checked cow=checked\n";
+}
+#endif
 }
 
 int main(int argc, char** argv)
@@ -771,6 +820,9 @@ int main(int argc, char** argv)
 #endif
 #ifdef SVF_BOX_PAGE_INTERNING
         interningContract();
+#endif
+#ifdef SVF_BOX_OPERATION_MEMOIZATION
+        operationMemoizationContract();
 #endif
     }
 }

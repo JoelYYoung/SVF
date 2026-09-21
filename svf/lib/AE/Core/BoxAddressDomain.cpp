@@ -71,6 +71,45 @@ static std::vector<Variable> mergedVariables(
     return result;
 }
 
+#ifdef SVF_BOX_OPERATION_MEMOIZATION
+static void combineSemanticHash(std::uint64_t& seed, std::uint64_t value)
+{
+    seed ^= value + 0x9e3779b97f4a7c15ULL + (seed << 6U) + (seed >> 2U);
+}
+
+static void combineVariableHash(std::uint64_t& seed, Variable variable)
+{
+    combineSemanticHash(seed, variable.id());
+    combineSemanticHash(seed,
+                        static_cast<unsigned>(variable.type().kind));
+    combineSemanticHash(seed, variable.type().floatFormat.exponentBits);
+    combineSemanticHash(seed, variable.type().floatFormat.significandBits);
+}
+
+static void combineAddressHash(std::uint64_t& seed,
+                               const AddressSet& addresses)
+{
+    combineSemanticHash(seed, addresses.hasUnknownObject());
+    combineSemanticHash(seed, addresses.mayContainRawAddress());
+    combineSemanticHash(seed, addresses.contains(Location::null()));
+    if (addresses.hasUnknownObject())
+        return;
+    for (Location location : addresses.locations())
+        combineSemanticHash(seed, location.id());
+}
+
+static void combineInitializationHash(std::uint64_t& seed,
+                                      const InitializationDomain& state)
+{
+    combineSemanticHash(seed, static_cast<unsigned>(state.defaultState()));
+    for (Variable variable : state.nonDefaultVariables())
+    {
+        combineVariableHash(seed, variable);
+        combineSemanticHash(seed, static_cast<unsigned>(state.value(variable)));
+    }
+}
+#endif
+
 Interval BoxAddressDomain::interval(Variable variable) const
 {
     if (isBottomDomain() || (trackInitialization_ &&
@@ -87,9 +126,7 @@ bool BoxAddressDomain::numericalMayBeUninitialized(Variable variable) const
 
 void BoxAddressDomain::addUninitializedNumericalAlternative(Variable variable)
 {
-#ifdef SVF_BOX_STORAGE_TELEMETRY
-    touchOperationVersion();
-#endif
+    touchState();
     if (!trackInitialization_ || isBottomDomain())
         return;
     numericalInitialization_.assign(
@@ -117,11 +154,42 @@ bool BoxAddressDomain::hasValue(Variable variable) const
            !addresses_.addressSet(variable).isTop();
 }
 
+#ifdef SVF_BOX_OPERATION_MEMOIZATION
+std::uint64_t BoxAddressDomain::semanticHash() const
+{
+    if (semanticHashValid_)
+        return semanticHash_;
+
+    std::uint64_t seed = numerical_.hash();
+    combineSemanticHash(seed, trackInitialization_);
+    combineSemanticHash(seed, addresses_.isBottom());
+    for (Variable variable : addresses_.nonDefaultVariables())
+    {
+        combineVariableHash(seed, variable);
+        combineAddressHash(seed, addresses_.addressSet(variable));
+    }
+    combineSemanticHash(seed, lifetimes_.semanticHash());
+    if (trackInitialization_)
+    {
+        combineInitializationHash(seed, numericalInitialization_);
+        combineInitializationHash(seed, addressInitialization_);
+    }
+    semanticHash_ = seed;
+    semanticHashValid_ = true;
+    return seed;
+}
+
+bool BoxAddressDomain::semanticEquivalent(
+    const BoxAddressDomain& other) const
+{
+    return hasCompatibleDomain(other) && leqDomain(other) &&
+           other.leqDomain(*this);
+}
+#endif
+
 void BoxAddressDomain::setInterval(Variable variable, const Interval& value)
 {
-#ifdef SVF_BOX_STORAGE_TELEMETRY
-    touchOperationVersion();
-#endif
+    touchState();
     if (isBottomDomain())
         return;
     if (value.isBottom())
@@ -136,9 +204,7 @@ void BoxAddressDomain::setInterval(Variable variable, const Interval& value)
 
 void BoxAddressDomain::setAddressSet(Variable variable, const AddressSet& value)
 {
-#ifdef SVF_BOX_STORAGE_TELEMETRY
-    touchOperationVersion();
-#endif
+    touchState();
     if (isBottomDomain())
         return;
     // No payload is needed for an uninitialized facet. Full Top also has no
@@ -157,9 +223,7 @@ void BoxAddressDomain::assignValueFrom(Variable target,
                                        const BoxAddressDomain& sourceState,
                                        Variable source)
 {
-#ifdef SVF_BOX_STORAGE_TELEMETRY
-    touchOperationVersion();
-#endif
+    touchState();
     if (trackInitialization_ != sourceState.trackInitialization_)
         throw std::invalid_argument("incompatible initialization tracking");
 
@@ -185,9 +249,7 @@ void BoxAddressDomain::joinValueFrom(Variable target,
                                      const BoxAddressDomain& sourceState,
                                      Variable source)
 {
-#ifdef SVF_BOX_STORAGE_TELEMETRY
-    touchOperationVersion();
-#endif
+    touchState();
     if (trackInitialization_ != sourceState.trackInitialization_)
         throw std::invalid_argument("incompatible initialization tracking");
 
@@ -217,9 +279,7 @@ void BoxAddressDomain::joinValueFrom(Variable target,
 
 void BoxAddressDomain::resetValue(Variable variable)
 {
-#ifdef SVF_BOX_STORAGE_TELEMETRY
-    touchOperationVersion();
-#endif
+    touchState();
     numerical_.forget(variable);
     addresses_.forget(variable);
     if (trackInitialization_)
@@ -401,6 +461,24 @@ bool LifetimeDomain::mayBeFreed(Location location) const
 {
     return mayBeFreed(location.id());
 }
+
+#ifdef SVF_BOX_OPERATION_MEMOIZATION
+std::uint64_t LifetimeDomain::semanticHash() const noexcept
+{
+    std::uint64_t seed = defaultMayBeFreed_ ? 1U : 0U;
+    std::uint64_t unordered = 0;
+    for (std::uint32_t location : *exceptions_)
+    {
+        std::uint64_t value = location + 0x9e3779b97f4a7c15ULL;
+        value = (value ^ (value >> 30U)) * 0xbf58476d1ce4e5b9ULL;
+        value = (value ^ (value >> 27U)) * 0x94d049bb133111ebULL;
+        unordered ^= value ^ (value >> 31U);
+    }
+    combineSemanticHash(seed, exceptions_->size());
+    combineSemanticHash(seed, unordered);
+    return seed;
+}
+#endif
 
 bool LifetimeDomain::mayBeFreed(std::uint32_t locationID) const
 {
@@ -592,9 +670,7 @@ void MemoryLayout::extend(Location location, Variable content)
 void BoxAddressDomain::restoreMissingMemoryFrom(
     const BoxAddressDomain& caller, Variable content)
 {
-#ifdef SVF_BOX_STORAGE_TELEMETRY
-    touchOperationVersion();
-#endif
+    touchState();
     if (isBottom() || caller.isBottom())
         return;
     if (trackInitialization_)
@@ -619,9 +695,7 @@ void BoxAddressDomain::restoreMissingMemoryFrom(
 void BoxAddressDomain::restoreMissingAddressFrom(
     const BoxAddressDomain& caller, Variable content)
 {
-#ifdef SVF_BOX_STORAGE_TELEMETRY
-    touchOperationVersion();
-#endif
+    touchState();
     if (isBottom() || caller.isBottom())
         return;
     if (trackInitialization_)

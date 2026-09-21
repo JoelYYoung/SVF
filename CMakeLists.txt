@@ -102,6 +102,7 @@ option(SVF_BOX_PACKED_PAGES "Build experimental bitmap-ranked packed Box pages" 
 option(SVF_BOX_ADAPTIVE_PAGES "Build experimental density-adaptive Box pages" OFF)
 option(SVF_BOX_GROUP_CONTENTS "Group numerical object contents by function and base object" OFF)
 option(SVF_BOX_WHOLE_DIRECTORY "Use the whole-directory COW experimental control" OFF)
+option(SVF_BOX_OPERATION_MEMOIZATION "Memoize complete Box product lattice operations" OFF)
 set(SVF_BOX_PAGE_INTERNING "OFF" CACHE STRING "Experimental Box page pool: OFF, WRITE, or PUBLISH")
 set_property(CACHE SVF_BOX_PAGE_INTERNING PROPERTY STRINGS OFF WRITE PUBLISH)
 if(NOT SVF_BOX_PAGE_INTERNING MATCHES "^(OFF|WRITE|PUBLISH)$")

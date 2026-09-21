@@ -85,6 +85,16 @@ struct AbstractOperationEvent
 using AbstractOperationEventSink = void (*)(const AbstractOperationEvent&);
 #endif
 
+#ifdef SVF_BOX_OPERATION_MEMOIZATION
+struct OperationMemoizationStats
+{
+    std::uint64_t lookups = 0;
+    std::uint64_t hits = 0;
+    std::uint64_t exactMismatches = 0;
+    std::size_t entries = 0;
+};
+#endif
+
 const char* toString(CheckResult result);
 
 /// Common interface implemented by every self-contained abstract property.
@@ -114,6 +124,10 @@ public:
 
 #ifdef SVF_BOX_STORAGE_TELEMETRY
     static void setOperationEventSink(AbstractOperationEventSink sink) noexcept;
+#endif
+#ifdef SVF_BOX_OPERATION_MEMOIZATION
+    static OperationMemoizationStats operationMemoizationStats() noexcept;
+    static void resetOperationMemoization() noexcept;
 #endif
 
     /// RTTI-free concrete-state query. SVF is commonly built with -fno-rtti,

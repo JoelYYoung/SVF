@@ -56,6 +56,9 @@ public:
     void allocate(Location location);
     void release(Location location);
     bool mayBeFreed(Location location) const;
+#ifdef SVF_BOX_OPERATION_MEMOIZATION
+    std::uint64_t semanticHash() const noexcept;
+#endif
 
 private:
     using LocationIDs = std::unordered_set<std::uint32_t>;
@@ -163,9 +166,7 @@ public:
 
     BoxDomain& numerical()
     {
-#ifdef SVF_BOX_STORAGE_TELEMETRY
-        touchOperationVersion();
-#endif
+        touchState();
         return numerical_;
     }
     const BoxDomain& numerical() const
@@ -174,9 +175,7 @@ public:
     }
     AddressDomain& addresses()
     {
-#ifdef SVF_BOX_STORAGE_TELEMETRY
-        touchOperationVersion();
-#endif
+        touchState();
         return addresses_;
     }
     const AddressDomain& addresses() const
@@ -185,9 +184,7 @@ public:
     }
     LifetimeDomain& lifetimes()
     {
-#ifdef SVF_BOX_STORAGE_TELEMETRY
-        touchOperationVersion();
-#endif
+        touchState();
         return lifetimes_;
     }
     const LifetimeDomain& lifetimes() const
@@ -208,6 +205,12 @@ public:
     {
         return operationVersion_;
     }
+#endif
+#ifdef SVF_BOX_OPERATION_MEMOIZATION
+    /// A cached semantic fingerprint used only to select memoization
+    /// candidates. A hit is always confirmed with semanticEquivalent().
+    std::uint64_t semanticHash() const;
+    bool semanticEquivalent(const BoxAddressDomain& other) const;
 #endif
 
     /// AE's legacy value has independently defined numerical/address facets.
@@ -259,9 +262,7 @@ public:
 
     void assignNumeric(Variable target, const LinearExpression& expression)
     {
-#ifdef SVF_BOX_STORAGE_TELEMETRY
-        touchOperationVersion();
-#endif
+        touchState();
         numerical_.assign(target, expression);
         if (trackInitialization_)
         {
@@ -274,9 +275,7 @@ public:
 
     void assignNumericParallel(const LinearAssignmentList& assignments)
     {
-#ifdef SVF_BOX_STORAGE_TELEMETRY
-        touchOperationVersion();
-#endif
+        touchState();
         numerical_.assignParallel(assignments);
         for (const LinearAssignment& assignment : assignments)
         {
@@ -292,9 +291,7 @@ public:
 
     void assignNumericParallel(const TreeAssignmentList& assignments)
     {
-#ifdef SVF_BOX_STORAGE_TELEMETRY
-        touchOperationVersion();
-#endif
+        touchState();
         numerical_.assignParallel(assignments);
         for (const TreeAssignment& assignment : assignments)
         {
@@ -310,9 +307,7 @@ public:
 
     void assume(const LinearConstraint& constraint)
     {
-#ifdef SVF_BOX_STORAGE_TELEMETRY
-        touchOperationVersion();
-#endif
+        touchState();
         if (trackInitialization_)
         {
             for (const auto& term : constraint.expression().terms())
@@ -326,9 +321,7 @@ public:
 
     void load(Variable target, Variable pointer)
     {
-#ifdef SVF_BOX_STORAGE_TELEMETRY
-        touchOperationVersion();
-#endif
+        touchState();
         const AddressSet pointees = addressSet(pointer);
         if (pointees.hasUnknownObject() || pointees.isBottom())
         {
@@ -374,9 +367,7 @@ public:
     /// Overwrite one interpreter-selected memory target.
     void assignMemory(Location location, Variable source)
     {
-#ifdef SVF_BOX_STORAGE_TELEMETRY
-        touchOperationVersion();
-#endif
+        touchState();
         if (memoryLayout_.contains(location))
             strongStore(memoryLayout_.contentOf(location), source);
     }
@@ -384,26 +375,20 @@ public:
     /// Join into one interpreter-selected memory target.
     void joinMemory(Location location, Variable source)
     {
-#ifdef SVF_BOX_STORAGE_TELEMETRY
-        touchOperationVersion();
-#endif
+        touchState();
         if (memoryLayout_.contains(location))
             weakStore(memoryLayout_.contentOf(location), source);
     }
 
     void allocate(Location location)
     {
-#ifdef SVF_BOX_STORAGE_TELEMETRY
-        touchOperationVersion();
-#endif
+        touchState();
         lifetimes_.allocate(location);
     }
 
     void release(Variable pointer)
     {
-#ifdef SVF_BOX_STORAGE_TELEMETRY
-        touchOperationVersion();
-#endif
+        touchState();
         const AddressSet pointees = addressSet(pointer);
         if (pointees.hasUnknownObject())
         {
@@ -436,9 +421,7 @@ private:
 
     void joinDomain(const AbstractDomain& other) override
     {
-#ifdef SVF_BOX_STORAGE_TELEMETRY
-        touchOperationVersion();
-#endif
+        touchState();
         const BoxAddressDomain& product = requireProduct(other);
         if (product.isBottomDomain())
             return;
@@ -459,9 +442,7 @@ private:
 
     void meetDomain(const AbstractDomain& other) override
     {
-#ifdef SVF_BOX_STORAGE_TELEMETRY
-        touchOperationVersion();
-#endif
+        touchState();
         const BoxAddressDomain& product = requireProduct(other);
         if (trackInitialization_)
         {
@@ -482,9 +463,7 @@ private:
 
     void widenDomain(const AbstractDomain& next) override
     {
-#ifdef SVF_BOX_STORAGE_TELEMETRY
-        touchOperationVersion();
-#endif
+        touchState();
         const BoxAddressDomain& product = requireProduct(next);
         if (product.isBottomDomain())
             return;
@@ -505,9 +484,7 @@ private:
 
     void narrowDomain(const AbstractDomain& next) override
     {
-#ifdef SVF_BOX_STORAGE_TELEMETRY
-        touchOperationVersion();
-#endif
+        touchState();
         const BoxAddressDomain& product = requireProduct(next);
         if (trackInitialization_)
         {
@@ -598,13 +575,22 @@ private:
         InitializationDomain::uniform(InitializationState::Uninitialized);
     InitializationDomain addressInitialization_ =
         InitializationDomain::uniform(InitializationState::Uninitialized);
+    void touchState() noexcept
+    {
+#ifdef SVF_BOX_STORAGE_TELEMETRY
+        operationVersion_ = nextOperationVersion();
+#endif
+#ifdef SVF_BOX_OPERATION_MEMOIZATION
+        semanticHashValid_ = false;
+#endif
+    }
 #ifdef SVF_BOX_STORAGE_TELEMETRY
     static std::uint64_t nextOperationVersion() noexcept;
-    void touchOperationVersion() noexcept
-    {
-        operationVersion_ = nextOperationVersion();
-    }
     std::uint64_t operationVersion_ = nextOperationVersion();
+#endif
+#ifdef SVF_BOX_OPERATION_MEMOIZATION
+    mutable std::uint64_t semanticHash_ = 0;
+    mutable bool semanticHashValid_ = false;
 #endif
 };
 
