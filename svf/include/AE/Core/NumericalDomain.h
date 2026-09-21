@@ -583,6 +583,9 @@ struct BoxStorageEvent
     std::size_t pageIndex = 0;
     std::size_t occupiedSlots = 0;
     std::size_t directoryEntries = 0;
+    /// Zero outside a logical Box mutation observed by BoxMutationEventSink.
+    std::uint64_t mutationEpoch = 0;
+    std::uint64_t stateId = 0;
 };
 
 struct BoxStoragePageSnapshot
@@ -646,9 +649,90 @@ struct BoxStorageWorkEvent
     std::size_t allocatedSlotBytes;
     std::size_t overlappingSlotBytes;
     bool directIndexed;
+    /// Filled by emitStorageWork when slot work occurs inside a mutation.
+    std::uint64_t mutationEpoch = 0;
+    std::uint64_t stateId = 0;
 };
 
 using BoxStorageWorkSink = void (*)(const BoxStorageWorkEvent&);
+
+enum class BoxMutationKind
+{
+    Assignment,
+    ParallelAssignment,
+    Substitution,
+    Assumption,
+    Forget,
+    Expand,
+    Fold,
+    Close,
+    Canonicalize,
+    Join,
+    Meet,
+    Widen,
+    Narrow,
+    DirectSet,
+    DirectErase,
+    Count
+};
+
+enum class BoxMutationPhase
+{
+    Begin,
+    End
+};
+
+/// One diagnostic logical-mutation epoch. Nested operations on the same Box
+/// are folded into their outer epoch. On End, changedVariables points to
+/// callback-lifetime storage and lists exactly the typed variables whose
+/// interval changed; it is never a physical-page approximation.
+struct BoxMutationEvent
+{
+    BoxMutationKind kind;
+    BoxMutationPhase phase;
+    std::uint64_t sequence;
+    std::uint64_t epoch;
+    std::uint64_t stateId;
+    std::uint64_t relatedStateId;
+    bool beforeBottom;
+    bool afterBottom;
+    const Variable* changedVariables;
+    /// Parallel callback-lifetime array: nonzero means the changed variable
+    /// remains explicitly constrained after the epoch.
+    const std::uint8_t* changedVariablesConstrainedAfter;
+    std::size_t changedVariableCount;
+    /// Variables on which the implementation attempted a physical update,
+    /// including semantic no-ops. This is a superset of changedVariables.
+    const Variable* touchedVariables;
+    std::size_t touchedVariableCount;
+};
+
+using BoxMutationEventSink = void (*)(const BoxMutationEvent&);
+
+enum class BoxStateEventKind
+{
+    Create,
+    CopyConstruct,
+    MoveConstruct,
+    CopyAssign,
+    MoveAssign,
+    Destroy
+};
+
+/// Lifecycle and COW-sharing event. IDs are monotone within one process run;
+/// sourceStateId is nonzero for copy/move construction and assignment.
+struct BoxStateEvent
+{
+    BoxStateEventKind kind;
+    std::uint64_t sequence;
+    std::uint64_t stateId;
+    std::uint64_t sourceStateId;
+    /// Nonzero only when an assignment replaces the active mutation's state.
+    std::uint64_t mutationEpoch;
+    bool bottom;
+};
+
+using BoxStateEventSink = void (*)(const BoxStateEvent&);
 #endif
 
 /// Non-relational numerical property with finite non-Top support over stable
@@ -703,9 +787,19 @@ public:
                                      const BoxSemanticConfig& config = {});
 
     BoxDomain(const BoxDomain& other);
+#ifdef SVF_BOX_STORAGE_TELEMETRY
+    BoxDomain(BoxDomain&& other) noexcept;
+    ~BoxDomain() override;
+#else
     BoxDomain(BoxDomain&& other) noexcept = default;
+#endif
+#ifdef SVF_BOX_STORAGE_TELEMETRY
+    BoxDomain& operator=(const BoxDomain& other);
+    BoxDomain& operator=(BoxDomain&& other) noexcept;
+#else
     BoxDomain& operator=(const BoxDomain& other) = default;
     BoxDomain& operator=(BoxDomain&& other) noexcept = default;
+#endif
 
     DomainKind kind() const noexcept override
     {
@@ -748,6 +842,8 @@ public:
     /// must keep it valid until replacing it with nullptr.
     static void setStorageEventSink(BoxStorageEventSink sink) noexcept;
     static void setStorageWorkSink(BoxStorageWorkSink sink) noexcept;
+    static void setMutationEventSink(BoxMutationEventSink sink) noexcept;
+    static void setStateEventSink(BoxStateEventSink sink) noexcept;
     BoxStorageSnapshot storageSnapshot() const;
 #endif
 
@@ -1076,6 +1172,34 @@ private:
     void internAfterWrite();
 #endif
 #ifdef SVF_BOX_STORAGE_TELEMETRY
+    class MutationScope
+    {
+    public:
+        MutationScope(BoxDomain& state, BoxMutationKind kind,
+                      const BoxDomain* related = nullptr);
+        ~MutationScope();
+
+        MutationScope(const MutationScope&) = delete;
+        MutationScope& operator=(const MutationScope&) = delete;
+
+        static void recordBefore(BoxDomain& state, Variable variable);
+        static void recordReplacement(BoxDomain& state,
+                                      const BoxDomain& replacement);
+        static std::uint64_t activeEpoch() noexcept;
+        static const BoxDomain* activeState() noexcept;
+
+    private:
+        BoxDomain* state_ = nullptr;
+        BoxMutationEventSink sink_ = nullptr;
+        BoxMutationKind kind_ = BoxMutationKind::DirectSet;
+        std::uint64_t epoch_ = 0;
+        std::uint64_t relatedStateId_ = 0;
+        bool beforeBottom_ = false;
+        std::map<Variable, Interval> initialValues_;
+
+        static thread_local std::vector<MutationScope*> active_;
+    };
+
     static std::shared_ptr<BoundPage> allocatePage(std::size_t pageIndex);
     static std::shared_ptr<BoundPage> clonePage(const BoundPage& source,
             BoxStorageEventKind reason);
@@ -1085,6 +1209,8 @@ private:
     static void emitDirectoryDetach(std::size_t directoryEntries) noexcept;
     static void emitDirectoryChunkDetach(std::size_t pageEntries) noexcept;
     static void emitStorageWork(const BoxStorageWorkEvent& event) noexcept;
+    static void emitStateEvent(BoxStateEventKind kind, const BoxDomain& state,
+                               const BoxDomain* source = nullptr) noexcept;
     static std::size_t occupiedSlots(const BoundPage& page) noexcept;
 #endif
     void eraseBound(Variable variable);
@@ -1103,6 +1229,9 @@ private:
     /// only the root, affected chunk, and affected page that remain shared.
     std::shared_ptr<BoundPageDirectory> boundPages_;
     bool bottom_ = false;
+#ifdef SVF_BOX_STORAGE_TELEMETRY
+    std::uint64_t telemetryStateId_ = 0;
+#endif
 #ifdef SVF_BOX_PAGE_INTERNING
     std::vector<std::size_t> dirtyPages_;
 #endif

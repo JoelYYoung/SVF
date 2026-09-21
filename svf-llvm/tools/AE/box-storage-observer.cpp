@@ -25,6 +25,7 @@
 #include <string_view>
 #ifdef SVF_BOX_STORAGE_TELEMETRY
 #include <array>
+#include <fstream>
 #include <iterator>
 #include <limits>
 #include <map>
@@ -42,6 +43,159 @@ namespace
 using namespace SVF::AbstractDomain;
 
 using OccupancyHistogram = std::map<std::size_t, std::uint64_t>;
+
+struct CowriteCensus
+{
+    std::ofstream trace;
+    std::uint64_t epochs = 0;
+    std::uint64_t noops = 0;
+    std::uint64_t changedVariables = 0;
+    std::uint64_t touchedVariables = 0;
+    std::uint64_t copyConstructs = 0;
+    std::uint64_t copyAssignments = 0;
+    std::uint64_t moveConstructs = 0;
+    std::uint64_t moveAssignments = 0;
+    std::uint64_t stateCreates = 0;
+    std::uint64_t stateDestroys = 0;
+    std::uint64_t contextualDetaches = 0;
+    std::uint64_t contextualClonedSlots = 0;
+    std::size_t maxChangedVariables = 0;
+    std::map<std::size_t, std::uint64_t> changedHistogram;
+
+    void open(const char *path)
+    {
+        trace.open(path, std::ios::out | std::ios::trunc);
+        if (!trace)
+            throw std::runtime_error(
+                std::string("cannot open Box co-write trace: ") + path);
+        trace << "# box-cowrite-trace-v1\n"
+              << "# M sequence epoch kind state related_state before_bottom "
+                 "after_bottom changed_count +/-id:type:exponent:significand... "
+                 "T touched_count id:type:exponent:significand...\n"
+              << "# S sequence kind state source_state mutation_epoch bottom\n"
+              << "# D sequence epoch state page_index occupied_slots\n"
+              << "# W epoch state copied_slots occupied_slots\n";
+    }
+
+    bool enabled() const
+    {
+        return trace.is_open();
+    }
+
+    void mutation(const BoxMutationEvent &event)
+    {
+        if (event.phase != BoxMutationPhase::End)
+            return;
+        ++epochs;
+        noops += event.changedVariableCount == 0 &&
+                 event.beforeBottom == event.afterBottom;
+        changedVariables += event.changedVariableCount;
+        touchedVariables += event.touchedVariableCount;
+        maxChangedVariables =
+            std::max(maxChangedVariables, event.changedVariableCount);
+        ++changedHistogram[event.changedVariableCount];
+        if (!enabled())
+            return;
+        trace << "M " << event.sequence << ' ' << event.epoch << ' '
+              << static_cast<unsigned>(event.kind) << ' ' << event.stateId
+              << ' ' << event.relatedStateId << ' ' << event.beforeBottom
+              << ' ' << event.afterBottom << ' ' << event.changedVariableCount;
+        for (std::size_t index = 0; index < event.changedVariableCount; ++index)
+        {
+            const Variable variable = event.changedVariables[index];
+            const NumericType &type = variable.type();
+            trace << ' '
+                  << (event.changedVariablesConstrainedAfter[index] ? '+' : '-')
+                  << variable.id() << ':'
+                  << static_cast<unsigned>(type.kind) << ':'
+                  << type.floatFormat.exponentBits << ':'
+                  << type.floatFormat.significandBits;
+        }
+        trace << " T " << event.touchedVariableCount;
+        for (std::size_t index = 0; index < event.touchedVariableCount; ++index)
+        {
+            const Variable variable = event.touchedVariables[index];
+            const NumericType &type = variable.type();
+            trace << ' ' << variable.id() << ':'
+                  << static_cast<unsigned>(type.kind) << ':'
+                  << type.floatFormat.exponentBits << ':'
+                  << type.floatFormat.significandBits;
+        }
+        trace << '\n';
+    }
+
+    void stateEvent(const BoxStateEvent &event)
+    {
+        stateCreates += event.kind == BoxStateEventKind::Create;
+        copyConstructs += event.kind == BoxStateEventKind::CopyConstruct;
+        moveConstructs += event.kind == BoxStateEventKind::MoveConstruct;
+        copyAssignments += event.kind == BoxStateEventKind::CopyAssign;
+        moveAssignments += event.kind == BoxStateEventKind::MoveAssign;
+        stateDestroys += event.kind == BoxStateEventKind::Destroy;
+        if (enabled())
+            trace << "S " << event.sequence << ' '
+                  << static_cast<unsigned>(event.kind) << ' '
+                  << event.stateId << ' ' << event.sourceStateId << ' '
+                  << event.mutationEpoch << ' ' << event.bottom
+                  << '\n';
+    }
+
+    void storage(const BoxStorageEvent &event)
+    {
+        if (event.mutationEpoch == 0 ||
+                (event.kind != BoxStorageEventKind::PageDetach &&
+                 event.kind != BoxStorageEventKind::JoinMaterializedPage))
+            return;
+        ++contextualDetaches;
+        if (enabled())
+            trace << "D " << event.sequence << ' ' << event.mutationEpoch
+                  << ' ' << event.stateId << ' ' << event.pageIndex << ' '
+                  << event.occupiedSlots << '\n';
+    }
+
+    void work(const BoxStorageWorkEvent &event)
+    {
+        if (event.mutationEpoch == 0 ||
+                event.kind != BoxStorageWorkKind::Clone)
+            return;
+        contextualClonedSlots += event.copiedSlots;
+        if (enabled())
+            trace << "W " << event.mutationEpoch << ' ' << event.stateId
+                  << ' ' << event.copiedSlots << ' ' << event.occupiedSlots
+                  << '\n';
+    }
+
+    void print() const
+    {
+        SVFUtil::outs() << "BOX_COWRITE_CENSUS epochs=" << epochs
+                        << " noops=" << noops
+                        << " changed_variables=" << changedVariables
+                        << " touched_variables=" << touchedVariables
+                        << " max_changed_variables=" << maxChangedVariables
+                        << " copy_constructs=" << copyConstructs
+                        << " copy_assignments=" << copyAssignments
+                        << " move_constructs=" << moveConstructs
+                        << " move_assignments=" << moveAssignments
+                        << " state_creates=" << stateCreates
+                        << " state_destroys=" << stateDestroys
+                        << " contextual_detaches=" << contextualDetaches
+                        << " contextual_cloned_slots="
+                        << contextualClonedSlots;
+        for (const auto &[changed, count] : changedHistogram)
+            SVFUtil::outs() << " changed" << changed << '=' << count;
+        SVFUtil::outs() << '\n';
+    }
+} cowriteCensus;
+
+void collectMutationEvent(const BoxMutationEvent &event)
+{
+    cowriteCensus.mutation(event);
+}
+
+void collectStateEvent(const BoxStateEvent &event)
+{
+    cowriteCensus.stateEvent(event);
+}
 
 void printOccupancy(const char *scope, const char *name,
                     const OccupancyHistogram &histogram)
@@ -80,6 +234,7 @@ std::array<StorageWork, static_cast<std::size_t>(BoxStorageWorkKind::Count)> sto
 
 void collectStorageWork(const BoxStorageWorkEvent &event)
 {
+    cowriteCensus.work(event);
     auto &work = storageWork[static_cast<std::size_t>(event.kind)];
     ++work.count;
     work.direct += event.directIndexed;
@@ -117,6 +272,7 @@ std::size_t eventIndex(BoxStorageEventKind kind)
 
 void collectStorageEvent(const BoxStorageEvent &event)
 {
+    cowriteCensus.storage(event);
     ++storageEvents.counts[eventIndex(event.kind)];
     if (event.kind != BoxStorageEventKind::DirectoryDetach &&
             event.kind != BoxStorageEventKind::DirectoryChunkDetach)
@@ -472,8 +628,16 @@ int main(int argc, char **argv)
     const char *operationCensusValue = std::getenv("BOX_OPERATION_CENSUS");
     const bool operationCensusEnabled = operationCensusValue &&
                                         std::string_view(operationCensusValue) != "0";
+    const char *cowriteCensusPath = std::getenv("BOX_COWRITE_CENSUS_PATH");
+    const bool cowriteCensusEnabled = cowriteCensusPath && *cowriteCensusPath;
     BoxDomain::setStorageEventSink(collectStorageEvent);
     BoxDomain::setStorageWorkSink(collectStorageWork);
+    if (cowriteCensusEnabled)
+    {
+        cowriteCensus.open(cowriteCensusPath);
+        BoxDomain::setMutationEventSink(collectMutationEvent);
+        BoxDomain::setStateEventSink(collectStateEvent);
+    }
     if (operationCensusEnabled)
         SVF::AbstractDomain::AbstractDomain::setOperationEventSink(
             BoxOperationCensus::collect);
@@ -483,6 +647,8 @@ int main(int argc, char **argv)
         testStorageOccupancy();
         BoxDomain::setStorageEventSink(nullptr);
         BoxDomain::setStorageWorkSink(nullptr);
+        BoxDomain::setMutationEventSink(nullptr);
+        BoxDomain::setStateEventSink(nullptr);
         SVF::AbstractDomain::AbstractDomain::setOperationEventSink(nullptr);
         return 0;
     }
@@ -593,6 +759,8 @@ int main(int argc, char **argv)
     for (std::size_t index = 0; index < eventNames.size(); ++index)
         printOccupancy("event", eventNames[index], storageEvents.occupancy[index]);
     printStorageWork();
+    if (cowriteCensusEnabled)
+        cowriteCensus.print();
     if (operationCensusEnabled)
         BoxOperationCensus::print();
 #endif
@@ -705,6 +873,8 @@ int main(int argc, char **argv)
 #ifdef SVF_BOX_STORAGE_TELEMETRY
     BoxDomain::setStorageEventSink(nullptr);
     BoxDomain::setStorageWorkSink(nullptr);
+    BoxDomain::setMutationEventSink(nullptr);
+    BoxDomain::setStateEventSink(nullptr);
     SVF::AbstractDomain::AbstractDomain::setOperationEventSink(nullptr);
 #endif
     return 0;

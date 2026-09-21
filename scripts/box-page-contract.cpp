@@ -401,6 +401,150 @@ void collectOperation(const AbstractOperationEvent& event)
                                 event.elapsedNanoseconds, event.result});
 }
 
+struct MutationRecord
+{
+    BoxMutationKind kind;
+    BoxMutationPhase phase;
+    std::uint64_t epoch;
+    std::uint64_t stateId;
+    std::uint64_t relatedStateId;
+    std::vector<Variable> changed;
+    std::vector<std::uint8_t> constrainedAfter;
+    std::vector<Variable> touched;
+};
+
+std::vector<MutationRecord> mutationRecords;
+std::vector<BoxStorageEvent> contextualStorageEvents;
+std::vector<BoxStorageWorkEvent> contextualWorkEvents;
+std::vector<BoxStateEvent> stateEvents;
+
+void collectMutation(const BoxMutationEvent& event)
+{
+    MutationRecord record{event.kind, event.phase, event.epoch, event.stateId,
+                          event.relatedStateId, {}, {}, {}};
+    if (event.changedVariables)
+    {
+        record.changed.assign(event.changedVariables,
+                              event.changedVariables +
+                              event.changedVariableCount);
+        record.constrainedAfter.assign(
+            event.changedVariablesConstrainedAfter,
+            event.changedVariablesConstrainedAfter +
+            event.changedVariableCount);
+    }
+    if (event.touchedVariables)
+        record.touched.assign(event.touchedVariables,
+                              event.touchedVariables +
+                              event.touchedVariableCount);
+    mutationRecords.push_back(std::move(record));
+}
+
+void collectContextualStorage(const BoxStorageEvent& event)
+{
+    contextualStorageEvents.push_back(event);
+}
+
+void collectContextualWork(const BoxStorageWorkEvent& event)
+{
+    contextualWorkEvents.push_back(event);
+}
+
+void collectStateEvent(const BoxStateEvent& event)
+{
+    stateEvents.push_back(event);
+}
+
+void mutationEventContract()
+{
+    const Variable first(1);
+    const Variable ninth(9);
+    mutationRecords.clear();
+    contextualStorageEvents.clear();
+    contextualWorkEvents.clear();
+    stateEvents.clear();
+    BoxDomain::setMutationEventSink(collectMutation);
+    BoxDomain::setStorageEventSink(collectContextualStorage);
+    BoxDomain::setStorageWorkSink(collectContextualWork);
+    BoxDomain::setStateEventSink(collectStateEvent);
+
+    BoxDomain box = BoxDomain::top();
+    box.assign(first, LinearExpression(Rational(1)));
+    check(mutationRecords.size() == 2 &&
+          mutationRecords[0].phase == BoxMutationPhase::Begin &&
+          mutationRecords[1].phase == BoxMutationPhase::End &&
+          mutationRecords[0].epoch == mutationRecords[1].epoch &&
+          mutationRecords[1].changed == std::vector<Variable> {first},
+          "mutation assignment epoch");
+    check(mutationRecords[1].constrainedAfter ==
+          std::vector<std::uint8_t> {1}, "assignment support result");
+
+    mutationRecords.clear();
+    box.assign(first, LinearExpression(Rational(1)));
+    check(mutationRecords.size() == 2 && mutationRecords[1].changed.empty() &&
+          mutationRecords[1].touched == std::vector<Variable> {first},
+          "mutation no-op was reported as a change");
+
+    mutationRecords.clear();
+    box.assignParallel({{first, LinearExpression(Rational(2))},
+        {ninth, LinearExpression(Rational(3))}});
+    check(mutationRecords.size() == 2 &&
+          mutationRecords[0].kind == BoxMutationKind::ParallelAssignment &&
+          mutationRecords[1].changed ==
+          (std::vector<Variable> {first, ninth}),
+          "parallel mutation was split or page-biased");
+
+    const std::size_t eventsBeforeCopy = stateEvents.size();
+    BoxDomain copy = box;
+    check(stateEvents.size() == eventsBeforeCopy + 1 &&
+          stateEvents.back().kind == BoxStateEventKind::CopyConstruct &&
+          stateEvents.back().sourceStateId != stateEvents.back().stateId,
+          "state copy edge missing");
+
+    mutationRecords.clear();
+    contextualStorageEvents.clear();
+    contextualWorkEvents.clear();
+    copy.forget(first);
+    check(mutationRecords.size() == 2 &&
+          mutationRecords[1].changed == std::vector<Variable> {first},
+          "forget mutation variables");
+    check(mutationRecords[1].constrainedAfter ==
+          std::vector<std::uint8_t> {0}, "forget support result");
+    const std::uint64_t forgetEpoch = mutationRecords[1].epoch;
+    check(std::any_of(contextualStorageEvents.begin(),
+                      contextualStorageEvents.end(),
+                      [forgetEpoch](const BoxStorageEvent& event)
+    {
+        return event.kind == BoxStorageEventKind::PageDetach &&
+               event.mutationEpoch == forgetEpoch && event.stateId != 0;
+    }), "page detach lacks mutation context");
+    check(std::any_of(contextualWorkEvents.begin(), contextualWorkEvents.end(),
+                      [forgetEpoch](const BoxStorageWorkEvent& event)
+    {
+        return event.kind == BoxStorageWorkKind::Clone &&
+               event.mutationEpoch == forgetEpoch && event.stateId != 0;
+    }), "slot-copy work lacks mutation context");
+
+    BoxDomain left = BoxDomain::top();
+    left.assign(first, LinearExpression(Rational(2)));
+    left.assign(ninth, LinearExpression(Rational(3)));
+    BoxDomain right = BoxDomain::top();
+    right.assign(first, LinearExpression(Rational(2)));
+    mutationRecords.clear();
+    left.joinWith(right);
+    check(mutationRecords.size() == 2 &&
+          mutationRecords[0].kind == BoxMutationKind::Join &&
+          mutationRecords[0].relatedStateId != 0 &&
+          mutationRecords[1].changed == std::vector<Variable> {ninth},
+          "join bypass was not captured exactly");
+
+    BoxDomain::setStateEventSink(nullptr);
+    BoxDomain::setStorageWorkSink(nullptr);
+    BoxDomain::setStorageEventSink(nullptr);
+    BoxDomain::setMutationEventSink(nullptr);
+    std::cout << "mutation_event_contract=pass exact_changes=checked "
+                 "cross_page=checked detach_context=checked copy_edge=checked\n";
+}
+
 void operationEventContract()
 {
     operationRecords.clear();
@@ -765,6 +909,7 @@ int main(int argc, char** argv)
         storageWorkContract();
         directoryContract();
         operationEventContract();
+        mutationEventContract();
 #endif
 #ifdef SVF_BOX_ADAPTIVE_PAGES
         adaptiveContract();

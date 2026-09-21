@@ -55,8 +55,12 @@ namespace
 {
 std::atomic<BoxStorageEventSink> boxStorageEventSink{nullptr};
 std::atomic<BoxStorageWorkSink> boxStorageWorkSink{nullptr};
+std::atomic<BoxMutationEventSink> boxMutationEventSink{nullptr};
+std::atomic<BoxStateEventSink> boxStateEventSink{nullptr};
 std::atomic<std::uint64_t> nextBoxStoragePageId{1};
 std::atomic<std::uint64_t> nextBoxStorageSequence{1};
+std::atomic<std::uint64_t> nextBoxMutationEpoch{1};
+std::atomic<std::uint64_t> nextBoxStateId{1};
 } // namespace
 #endif
 
@@ -2466,17 +2470,89 @@ std::shared_ptr<BoxDomain::BoundPageDirectory> BoxDomain::emptyPageDirectory()
 BoxDomain::BoxDomain(BoxSemanticConfig config, bool bottom)
     : config_(std::move(config)), boundPages_(emptyPageDirectory()),
       bottom_(bottom)
+#ifdef SVF_BOX_STORAGE_TELEMETRY
+      , telemetryStateId_(
+          nextBoxStateId.fetch_add(1, std::memory_order_relaxed))
+#endif
 {
+#ifdef SVF_BOX_STORAGE_TELEMETRY
+    emitStateEvent(BoxStateEventKind::Create, *this);
+#endif
 }
 
 BoxDomain::BoxDomain(const BoxDomain& other)
     : NumericalDomain(other), config_(other.config_),
       boundPages_(other.boundPages_), bottom_(other.bottom_)
+#ifdef SVF_BOX_STORAGE_TELEMETRY
+      , telemetryStateId_(
+          nextBoxStateId.fetch_add(1, std::memory_order_relaxed))
+#endif
 {
 #ifdef SVF_BOX_PAGE_INTERNING
     dirtyPages_ = other.dirtyPages_;
 #endif
+#ifdef SVF_BOX_STORAGE_TELEMETRY
+    emitStateEvent(BoxStateEventKind::CopyConstruct, *this, &other);
+#endif
 }
+
+#ifdef SVF_BOX_STORAGE_TELEMETRY
+BoxDomain::BoxDomain(BoxDomain&& other) noexcept
+    : NumericalDomain(std::move(other)), config_(std::move(other.config_)),
+      boundPages_(std::move(other.boundPages_)), bottom_(other.bottom_),
+      telemetryStateId_(
+          nextBoxStateId.fetch_add(1, std::memory_order_relaxed))
+{
+#ifdef SVF_BOX_PAGE_INTERNING
+    dirtyPages_ = std::move(other.dirtyPages_);
+#endif
+    emitStateEvent(BoxStateEventKind::MoveConstruct, *this, &other);
+}
+
+BoxDomain::~BoxDomain()
+{
+    emitStateEvent(BoxStateEventKind::Destroy, *this);
+}
+
+BoxDomain& BoxDomain::operator=(const BoxDomain& other)
+{
+    if (this == &other)
+        return *this;
+    MutationScope::recordReplacement(*this, other);
+    NumericalDomain::operator=(other);
+    config_ = other.config_;
+    boundPages_ = other.boundPages_;
+    bottom_ = other.bottom_;
+#ifdef SVF_BOX_PAGE_INTERNING
+    dirtyPages_ = other.dirtyPages_;
+#endif
+    emitStateEvent(BoxStateEventKind::CopyAssign, *this, &other);
+    return *this;
+}
+
+BoxDomain& BoxDomain::operator=(BoxDomain&& other) noexcept
+{
+    if (this == &other)
+        return *this;
+    try
+    {
+        MutationScope::recordReplacement(*this, other);
+    }
+    catch (...)
+    {
+        // Telemetry must not change the production move contract.
+    }
+    NumericalDomain::operator=(std::move(other));
+    config_ = std::move(other.config_);
+    boundPages_ = std::move(other.boundPages_);
+    bottom_ = other.bottom_;
+#ifdef SVF_BOX_PAGE_INTERNING
+    dirtyPages_ = std::move(other.dirtyPages_);
+#endif
+    emitStateEvent(BoxStateEventKind::MoveAssign, *this, &other);
+    return *this;
+}
+#endif
 
 const char* BoxDomain::pageInterningPolicy() noexcept
 {
@@ -2768,10 +2844,153 @@ void BoxDomain::setStorageWorkSink(BoxStorageWorkSink sink) noexcept
     boxStorageWorkSink.store(sink, std::memory_order_release);
 }
 
+void BoxDomain::setMutationEventSink(BoxMutationEventSink sink) noexcept
+{
+    boxMutationEventSink.store(sink, std::memory_order_release);
+}
+
+void BoxDomain::setStateEventSink(BoxStateEventSink sink) noexcept
+{
+    boxStateEventSink.store(sink, std::memory_order_release);
+}
+
 void BoxDomain::emitStorageWork(const BoxStorageWorkEvent& event) noexcept
 {
     if (const auto sink = boxStorageWorkSink.load(std::memory_order_acquire))
-        sink(event);
+    {
+        BoxStorageWorkEvent contextual = event;
+        if (const BoxDomain* state = MutationScope::activeState())
+        {
+            contextual.mutationEpoch = MutationScope::activeEpoch();
+            contextual.stateId = state->telemetryStateId_;
+        }
+        sink(contextual);
+    }
+}
+
+thread_local std::vector<BoxDomain::MutationScope*>
+BoxDomain::MutationScope::active_;
+
+void BoxDomain::MutationScope::recordBefore(BoxDomain& state,
+        Variable variable)
+{
+    const auto scope = std::find_if(active_.rbegin(), active_.rend(),
+                                    [&state](const MutationScope* candidate)
+    {
+        return candidate->state_ == &state;
+    });
+    if (scope != active_.rend())
+        (*scope)->initialValues_.emplace(variable, state.boundAt(variable));
+}
+
+void BoxDomain::MutationScope::recordReplacement(
+    BoxDomain& state, const BoxDomain& replacement)
+{
+    const auto scope = std::find_if(active_.rbegin(), active_.rend(),
+                                    [&state](const MutationScope* candidate)
+    {
+        return candidate->state_ == &state;
+    });
+    if (scope == active_.rend())
+        return;
+    for (Variable variable : state.boundedVariables())
+        (*scope)->initialValues_.emplace(variable, state.boundAt(variable));
+    for (Variable variable : replacement.boundedVariables())
+        (*scope)->initialValues_.emplace(variable, state.boundAt(variable));
+}
+
+std::uint64_t BoxDomain::MutationScope::activeEpoch() noexcept
+{
+    return active_.empty() ? 0 : active_.back()->epoch_;
+}
+
+const BoxDomain* BoxDomain::MutationScope::activeState() noexcept
+{
+    return active_.empty() ? nullptr : active_.back()->state_;
+}
+
+BoxDomain::MutationScope::MutationScope(BoxDomain& state, BoxMutationKind kind,
+                                       const BoxDomain* related)
+    : state_(&state),
+      sink_(boxMutationEventSink.load(std::memory_order_acquire)), kind_(kind),
+      relatedStateId_(related ? related->telemetryStateId_ : 0)
+{
+    if (!sink_)
+    {
+        state_ = nullptr;
+        return;
+    }
+    const auto nested = std::find_if(active_.rbegin(), active_.rend(),
+                                     [&state](const MutationScope* mutation)
+    {
+        return mutation->state_ == &state;
+    });
+    if (nested != active_.rend())
+    {
+        state_ = nullptr;
+        return;
+    }
+
+    epoch_ = nextBoxMutationEpoch.fetch_add(1, std::memory_order_relaxed);
+    beforeBottom_ = state.bottom_;
+    active_.push_back(this);
+    sink_({kind_, BoxMutationPhase::Begin,
+           nextBoxStorageSequence.fetch_add(1, std::memory_order_relaxed),
+           epoch_, state.telemetryStateId_, relatedStateId_, beforeBottom_,
+           beforeBottom_, nullptr, nullptr, 0, nullptr, 0});
+}
+
+BoxDomain::MutationScope::~MutationScope()
+{
+    if (!state_)
+        return;
+    try
+    {
+        const bool afterBottom = state_->bottom_;
+        std::vector<Variable> changed;
+        std::vector<std::uint8_t> constrainedAfter;
+        std::vector<Variable> touched;
+        changed.reserve(initialValues_.size());
+        constrainedAfter.reserve(initialValues_.size());
+        touched.reserve(initialValues_.size());
+        for (const auto& [variable, initial] : initialValues_)
+        {
+            touched.push_back(variable);
+            if (initial != state_->boundAt(variable))
+            {
+                changed.push_back(variable);
+                constrainedAfter.push_back(!state_->boundAt(variable).isTop());
+            }
+        }
+        if (!active_.empty() && active_.back() == this)
+            active_.pop_back();
+        sink_({kind_, BoxMutationPhase::End,
+               nextBoxStorageSequence.fetch_add(1, std::memory_order_relaxed),
+               epoch_, state_->telemetryStateId_, relatedStateId_,
+               beforeBottom_, afterBottom, changed.data(),
+               constrainedAfter.data(), changed.size(), touched.data(),
+               touched.size()});
+    }
+    catch (...)
+    {
+        if (!active_.empty() && active_.back() == this)
+            active_.pop_back();
+    }
+}
+
+void BoxDomain::emitStateEvent(BoxStateEventKind kind, const BoxDomain& state,
+                               const BoxDomain* source) noexcept
+{
+    if (const auto sink = boxStateEventSink.load(std::memory_order_acquire))
+    {
+        const BoxDomain* active = MutationScope::activeState();
+        sink({kind,
+              nextBoxStorageSequence.fetch_add(1, std::memory_order_relaxed),
+              state.telemetryStateId_,
+              source ? source->telemetryStateId_ : 0,
+              active == &state ? MutationScope::activeEpoch() : 0,
+              state.bottom_});
+    }
 }
 
 std::size_t BoxDomain::occupiedSlots(const BoundPage& page) noexcept
@@ -2787,9 +3006,12 @@ void BoxDomain::emitStorageEvent(BoxStorageEventKind kind,
         boxStorageEventSink.load(std::memory_order_acquire);
     if (!sink)
         return;
+    const BoxDomain* state = MutationScope::activeState();
     sink({kind, nextBoxStorageSequence.fetch_add(1, std::memory_order_relaxed),
           page.storageId, parentPageId, page.storageIndex,
-          occupiedSlots(page), 0});
+          occupiedSlots(page), 0,
+          MutationScope::activeEpoch(),
+          state ? state->telemetryStateId_ : 0});
 }
 
 void BoxDomain::emitDirectoryDetach(std::size_t directoryEntries) noexcept
@@ -2798,9 +3020,12 @@ void BoxDomain::emitDirectoryDetach(std::size_t directoryEntries) noexcept
         boxStorageEventSink.load(std::memory_order_acquire);
     if (!sink)
         return;
+    const BoxDomain* state = MutationScope::activeState();
     sink({BoxStorageEventKind::DirectoryDetach,
           nextBoxStorageSequence.fetch_add(1, std::memory_order_relaxed),
-          0, 0, 0, 0, directoryEntries});
+          0, 0, 0, 0, directoryEntries,
+          MutationScope::activeEpoch(),
+          state ? state->telemetryStateId_ : 0});
 }
 
 void BoxDomain::emitDirectoryChunkDetach(std::size_t pageEntries) noexcept
@@ -2809,9 +3034,12 @@ void BoxDomain::emitDirectoryChunkDetach(std::size_t pageEntries) noexcept
         boxStorageEventSink.load(std::memory_order_acquire);
     if (!sink)
         return;
+    const BoxDomain* state = MutationScope::activeState();
     sink({BoxStorageEventKind::DirectoryChunkDetach,
           nextBoxStorageSequence.fetch_add(1, std::memory_order_relaxed),
-          0, 0, 0, 0, pageEntries});
+          0, 0, 0, 0, pageEntries,
+          MutationScope::activeEpoch(),
+          state ? state->telemetryStateId_ : 0});
 }
 
 std::shared_ptr<BoxDomain::BoundPage> BoxDomain::allocatePage(
@@ -2986,6 +3214,9 @@ std::unique_ptr<AbstractDomain> BoxDomain::clone() const
 
 void BoxDomain::assign(Variable target, const LinearExpression& expression)
 {
+#ifdef SVF_BOX_STORAGE_TELEMETRY
+    MutationScope mutation(*this, BoxMutationKind::Assignment);
+#endif
     recordOperation(OperationKind::Assignment, ApproximationKind::Exact, true);
     if (bottom_)
         return;
@@ -2994,6 +3225,9 @@ void BoxDomain::assign(Variable target, const LinearExpression& expression)
 
 void BoxDomain::assign(Variable target, const TreeExpression& expression)
 {
+#ifdef SVF_BOX_STORAGE_TELEMETRY
+    MutationScope mutation(*this, BoxMutationKind::Assignment);
+#endif
     const std::optional<LinearExpression> linear = expression.asLinear();
     if (linear)
     {
@@ -3010,6 +3244,9 @@ void BoxDomain::assign(Variable target, const TreeExpression& expression)
 
 void BoxDomain::assignParallel(const LinearAssignmentList& assignments)
 {
+#ifdef SVF_BOX_STORAGE_TELEMETRY
+    MutationScope mutation(*this, BoxMutationKind::ParallelAssignment);
+#endif
     std::set<Variable> targets;
     for (const LinearAssignment& assignment : assignments)
     {
@@ -3032,11 +3269,17 @@ void BoxDomain::assignParallel(const LinearAssignmentList& assignments)
 
 void BoxDomain::substitute(Variable target, const LinearExpression& expression)
 {
+#ifdef SVF_BOX_STORAGE_TELEMETRY
+    MutationScope mutation(*this, BoxMutationKind::Substitution);
+#endif
     substituteParallel({{target, expression}});
 }
 
 void BoxDomain::substituteParallel(const LinearAssignmentList& assignments)
 {
+#ifdef SVF_BOX_STORAGE_TELEMETRY
+    MutationScope mutation(*this, BoxMutationKind::Substitution);
+#endif
     std::map<Variable, LinearExpression> replacements;
     for (const LinearAssignment& assignment : assignments)
     {
@@ -3059,6 +3302,9 @@ void BoxDomain::substituteParallel(const LinearAssignmentList& assignments)
 
 void BoxDomain::assume(const LinearConstraint& constraint)
 {
+#ifdef SVF_BOX_STORAGE_TELEMETRY
+    MutationScope mutation(*this, BoxMutationKind::Assumption);
+#endif
     recordOperation(OperationKind::Assumption, ApproximationKind::Exact, true);
     if (bottom_)
         return;
@@ -3138,6 +3384,9 @@ void BoxDomain::assume(const LinearConstraint& constraint)
 
 void BoxDomain::assume(const TreeConstraint& constraint)
 {
+#ifdef SVF_BOX_STORAGE_TELEMETRY
+    MutationScope mutation(*this, BoxMutationKind::Assumption);
+#endif
     const std::optional<LinearExpression> linear =
         constraint.expression().asLinear();
     if (linear)
@@ -3157,6 +3406,9 @@ void BoxDomain::assume(const TreeConstraint& constraint)
 
 void BoxDomain::assumeAll(const LinearConstraintSet& constraints)
 {
+#ifdef SVF_BOX_STORAGE_TELEMETRY
+    MutationScope mutation(*this, BoxMutationKind::Assumption);
+#endif
     if (constraints.empty())
     {
         NumericalDomain::assumeAll(constraints);
@@ -3180,6 +3432,9 @@ void BoxDomain::assumeAll(const LinearConstraintSet& constraints)
 
 void BoxDomain::forget(Variable variable)
 {
+#ifdef SVF_BOX_STORAGE_TELEMETRY
+    MutationScope mutation(*this, BoxMutationKind::Forget);
+#endif
     if (!bottom_)
         eraseBound(variable);
 #ifdef SVF_BOX_PAGE_INTERNING
@@ -3206,6 +3461,9 @@ std::vector<Variable> BoxDomain::constrainedVariablesBefore(
 
 void BoxDomain::expand(Variable source, const std::vector<Variable>& copies)
 {
+#ifdef SVF_BOX_STORAGE_TELEMETRY
+    MutationScope mutation(*this, BoxMutationKind::Expand);
+#endif
     std::set<Variable> seen;
     for (Variable copy : copies)
     {
@@ -3230,6 +3488,9 @@ void BoxDomain::expand(Variable source, const std::vector<Variable>& copies)
 
 void BoxDomain::fold(Variable target, const std::vector<Variable>& folded)
 {
+#ifdef SVF_BOX_STORAGE_TELEMETRY
+    MutationScope mutation(*this, BoxMutationKind::Fold);
+#endif
     std::set<Variable> seen;
     std::vector<Variable> sources{target};
     for (Variable variable : folded)
@@ -3358,6 +3619,9 @@ LinearConstraintSet BoxDomain::toConstraints() const
 
 void BoxDomain::close()
 {
+#ifdef SVF_BOX_STORAGE_TELEMETRY
+    MutationScope mutation(*this, BoxMutationKind::Close);
+#endif
     recordOperation(OperationKind::TopologicalClosure, ApproximationKind::Exact,
                     true, "topological closure");
     if (bottom_)
@@ -3377,6 +3641,9 @@ void BoxDomain::close()
 
 void BoxDomain::canonicalize()
 {
+#ifdef SVF_BOX_STORAGE_TELEMETRY
+    MutationScope mutation(*this, BoxMutationKind::Canonicalize);
+#endif
     for (Variable variable : boundedVariables())
         canonicalize(variable);
 #ifdef SVF_BOX_PAGE_INTERNING
@@ -3507,6 +3774,9 @@ bool BoxDomain::hasCompatibleDomain(const AbstractDomain& other) const
 void BoxDomain::joinDomain(const AbstractDomain& other)
 {
     const BoxDomain& box = requireBox(other);
+#ifdef SVF_BOX_STORAGE_TELEMETRY
+    MutationScope mutation(*this, BoxMutationKind::Join, &box);
+#endif
     if (box.bottom_)
         return;
     if (bottom_)
@@ -3537,6 +3807,11 @@ void BoxDomain::joinDomain(const AbstractDomain& other)
                 otherPage->index != entry.index)
         {
             // Missing slots denote Top, so this entire page joins to Top.
+#ifdef SVF_BOX_STORAGE_TELEMETRY
+            for (std::size_t slot = 0; slot < BoundsPerPage; ++slot)
+                if (const BoundSlot* value = entry.page->bounds.find(slot))
+                    MutationScope::recordBefore(*this, value->variable);
+#endif
             continue;
         }
         if (entry.page == otherPage->page)
@@ -3557,6 +3832,11 @@ void BoxDomain::joinDomain(const AbstractDomain& other)
 #endif
 #ifdef SVF_BOX_PAGE_INTERNING
         joined->internedScope = 0;
+#endif
+#ifdef SVF_BOX_STORAGE_TELEMETRY
+        for (std::size_t slot = 0; slot < BoundsPerPage; ++slot)
+            if (const BoundSlot* value = entry.page->bounds.find(slot))
+                MutationScope::recordBefore(*this, value->variable);
 #endif
         for (std::size_t slot = 0; slot < BoundsPerPage; ++slot)
         {
@@ -3589,6 +3869,9 @@ void BoxDomain::joinDomain(const AbstractDomain& other)
 void BoxDomain::meetDomain(const AbstractDomain& other)
 {
     const BoxDomain& box = requireBox(other);
+#ifdef SVF_BOX_STORAGE_TELEMETRY
+    MutationScope mutation(*this, BoxMutationKind::Meet, &box);
+#endif
     if (bottom_ || box.bottom_)
     {
         makeBottom();
@@ -3605,12 +3888,20 @@ void BoxDomain::meetDomain(const AbstractDomain& other)
 
 void BoxDomain::widenDomain(const AbstractDomain& next)
 {
-    *this = widen(requireBox(next));
+    const BoxDomain& box = requireBox(next);
+#ifdef SVF_BOX_STORAGE_TELEMETRY
+    MutationScope mutation(*this, BoxMutationKind::Widen, &box);
+#endif
+    *this = widen(box);
 }
 
 void BoxDomain::narrowDomain(const AbstractDomain& next)
 {
-    *this = narrow(requireBox(next));
+    const BoxDomain& box = requireBox(next);
+#ifdef SVF_BOX_STORAGE_TELEMETRY
+    MutationScope mutation(*this, BoxMutationKind::Narrow, &box);
+#endif
+    *this = narrow(box);
 }
 
 bool BoxDomain::isBottomDomain() const
@@ -3687,6 +3978,9 @@ void BoxDomain::canonicalize(Variable variable)
 {
     if (bottom_)
         return;
+#ifdef SVF_BOX_STORAGE_TELEMETRY
+    MutationScope::recordBefore(*this, variable);
+#endif
     Interval interval = boundAt(variable);
     if (config_.integerTightening &&
             variable.type().kind == NumericKind::Integer)
@@ -3709,6 +4003,10 @@ void BoxDomain::canonicalize(Variable variable)
 
 void BoxDomain::setBound(Variable variable, Interval interval)
 {
+#ifdef SVF_BOX_STORAGE_TELEMETRY
+    MutationScope mutation(*this, BoxMutationKind::DirectSet);
+    MutationScope::recordBefore(*this, variable);
+#endif
     // A stable ID denotes one typed variable for the lifetime of an analysis.
     // Detect accidental ID reuse before touching the physical slot.
     (void)boundAt(variable);
@@ -3831,6 +4129,10 @@ BoxDomain::BoundPage& BoxDomain::writablePage(std::size_t pageIndex)
 
 void BoxDomain::eraseBound(Variable variable)
 {
+#ifdef SVF_BOX_STORAGE_TELEMETRY
+    MutationScope mutation(*this, BoxMutationKind::DirectErase);
+    MutationScope::recordBefore(*this, variable);
+#endif
     const std::size_t pageIndex = variable.id() / BoundsPerPage;
 #ifdef SVF_BOX_WHOLE_DIRECTORY
     const auto& currentDirectory = pageDirectory();
@@ -3996,6 +4298,10 @@ std::vector<Variable> BoxDomain::boundedVariablesBefore(
 
 void BoxDomain::makeBottom()
 {
+#ifdef SVF_BOX_STORAGE_TELEMETRY
+    for (Variable variable : boundedVariables())
+        MutationScope::recordBefore(*this, variable);
+#endif
     bottom_ = true;
     boundPages_ = emptyPageDirectory();
 #ifdef SVF_BOX_PAGE_INTERNING
