@@ -163,6 +163,9 @@ public:
 
     BoxDomain& numerical()
     {
+#ifdef SVF_BOX_STORAGE_TELEMETRY
+        touchOperationVersion();
+#endif
         return numerical_;
     }
     const BoxDomain& numerical() const
@@ -171,6 +174,9 @@ public:
     }
     AddressDomain& addresses()
     {
+#ifdef SVF_BOX_STORAGE_TELEMETRY
+        touchOperationVersion();
+#endif
         return addresses_;
     }
     const AddressDomain& addresses() const
@@ -179,6 +185,9 @@ public:
     }
     LifetimeDomain& lifetimes()
     {
+#ifdef SVF_BOX_STORAGE_TELEMETRY
+        touchOperationVersion();
+#endif
         return lifetimes_;
     }
     const LifetimeDomain& lifetimes() const
@@ -189,6 +198,17 @@ public:
     {
         return memoryLayout_;
     }
+
+#ifdef SVF_BOX_STORAGE_TELEMETRY
+    /// Diagnostic-only identity for testing whether ordinary state copying
+    /// exposes a cheap exact memoization key. Copies retain the identity;
+    /// every potentially mutating Product operation replaces it. It is not a
+    /// semantic hash and must never be serialized or exposed as analysis data.
+    std::uint64_t operationVersion() const noexcept
+    {
+        return operationVersion_;
+    }
+#endif
 
     /// AE's legacy value has independently defined numerical/address facets.
     /// These guards describe facet definedness, not LLVM poison or C lifetime.
@@ -239,6 +259,9 @@ public:
 
     void assignNumeric(Variable target, const LinearExpression& expression)
     {
+#ifdef SVF_BOX_STORAGE_TELEMETRY
+        touchOperationVersion();
+#endif
         numerical_.assign(target, expression);
         if (trackInitialization_)
         {
@@ -251,6 +274,9 @@ public:
 
     void assignNumericParallel(const LinearAssignmentList& assignments)
     {
+#ifdef SVF_BOX_STORAGE_TELEMETRY
+        touchOperationVersion();
+#endif
         numerical_.assignParallel(assignments);
         for (const LinearAssignment& assignment : assignments)
         {
@@ -266,6 +292,9 @@ public:
 
     void assignNumericParallel(const TreeAssignmentList& assignments)
     {
+#ifdef SVF_BOX_STORAGE_TELEMETRY
+        touchOperationVersion();
+#endif
         numerical_.assignParallel(assignments);
         for (const TreeAssignment& assignment : assignments)
         {
@@ -281,6 +310,9 @@ public:
 
     void assume(const LinearConstraint& constraint)
     {
+#ifdef SVF_BOX_STORAGE_TELEMETRY
+        touchOperationVersion();
+#endif
         if (trackInitialization_)
         {
             for (const auto& term : constraint.expression().terms())
@@ -294,6 +326,9 @@ public:
 
     void load(Variable target, Variable pointer)
     {
+#ifdef SVF_BOX_STORAGE_TELEMETRY
+        touchOperationVersion();
+#endif
         const AddressSet pointees = addressSet(pointer);
         if (pointees.hasUnknownObject() || pointees.isBottom())
         {
@@ -339,6 +374,9 @@ public:
     /// Overwrite one interpreter-selected memory target.
     void assignMemory(Location location, Variable source)
     {
+#ifdef SVF_BOX_STORAGE_TELEMETRY
+        touchOperationVersion();
+#endif
         if (memoryLayout_.contains(location))
             strongStore(memoryLayout_.contentOf(location), source);
     }
@@ -346,17 +384,26 @@ public:
     /// Join into one interpreter-selected memory target.
     void joinMemory(Location location, Variable source)
     {
+#ifdef SVF_BOX_STORAGE_TELEMETRY
+        touchOperationVersion();
+#endif
         if (memoryLayout_.contains(location))
             weakStore(memoryLayout_.contentOf(location), source);
     }
 
     void allocate(Location location)
     {
+#ifdef SVF_BOX_STORAGE_TELEMETRY
+        touchOperationVersion();
+#endif
         lifetimes_.allocate(location);
     }
 
     void release(Variable pointer)
     {
+#ifdef SVF_BOX_STORAGE_TELEMETRY
+        touchOperationVersion();
+#endif
         const AddressSet pointees = addressSet(pointer);
         if (pointees.hasUnknownObject())
         {
@@ -389,6 +436,9 @@ private:
 
     void joinDomain(const AbstractDomain& other) override
     {
+#ifdef SVF_BOX_STORAGE_TELEMETRY
+        touchOperationVersion();
+#endif
         const BoxAddressDomain& product = requireProduct(other);
         if (product.isBottomDomain())
             return;
@@ -409,6 +459,9 @@ private:
 
     void meetDomain(const AbstractDomain& other) override
     {
+#ifdef SVF_BOX_STORAGE_TELEMETRY
+        touchOperationVersion();
+#endif
         const BoxAddressDomain& product = requireProduct(other);
         if (trackInitialization_)
         {
@@ -429,6 +482,9 @@ private:
 
     void widenDomain(const AbstractDomain& next) override
     {
+#ifdef SVF_BOX_STORAGE_TELEMETRY
+        touchOperationVersion();
+#endif
         const BoxAddressDomain& product = requireProduct(next);
         if (product.isBottomDomain())
             return;
@@ -449,6 +505,9 @@ private:
 
     void narrowDomain(const AbstractDomain& next) override
     {
+#ifdef SVF_BOX_STORAGE_TELEMETRY
+        touchOperationVersion();
+#endif
         const BoxAddressDomain& product = requireProduct(next);
         if (trackInitialization_)
         {
@@ -539,6 +598,14 @@ private:
         InitializationDomain::uniform(InitializationState::Uninitialized);
     InitializationDomain addressInitialization_ =
         InitializationDomain::uniform(InitializationState::Uninitialized);
+#ifdef SVF_BOX_STORAGE_TELEMETRY
+    static std::uint64_t nextOperationVersion() noexcept;
+    void touchOperationVersion() noexcept
+    {
+        operationVersion_ = nextOperationVersion();
+    }
+    std::uint64_t operationVersion_ = nextOperationVersion();
+#endif
 };
 
 } // namespace SVF::AbstractDomain

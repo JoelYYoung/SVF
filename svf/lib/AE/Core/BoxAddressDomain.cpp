@@ -24,12 +24,23 @@
 #include "AE/Core/BoxAddressDomain.h"
 
 #include <algorithm>
+#ifdef SVF_BOX_STORAGE_TELEMETRY
+#    include <atomic>
+#endif
 #include <iterator>
 #include <sstream>
 #include <stdexcept>
 
 namespace SVF::AbstractDomain
 {
+
+#ifdef SVF_BOX_STORAGE_TELEMETRY
+std::uint64_t BoxAddressDomain::nextOperationVersion() noexcept
+{
+    static std::atomic<std::uint64_t> next{1};
+    return next.fetch_add(1, std::memory_order_relaxed);
+}
+#endif
 
 static bool mayBeInitialized(InitializationState state)
 {
@@ -76,6 +87,9 @@ bool BoxAddressDomain::numericalMayBeUninitialized(Variable variable) const
 
 void BoxAddressDomain::addUninitializedNumericalAlternative(Variable variable)
 {
+#ifdef SVF_BOX_STORAGE_TELEMETRY
+    touchOperationVersion();
+#endif
     if (!trackInitialization_ || isBottomDomain())
         return;
     numericalInitialization_.assign(
@@ -105,6 +119,9 @@ bool BoxAddressDomain::hasValue(Variable variable) const
 
 void BoxAddressDomain::setInterval(Variable variable, const Interval& value)
 {
+#ifdef SVF_BOX_STORAGE_TELEMETRY
+    touchOperationVersion();
+#endif
     if (isBottomDomain())
         return;
     if (value.isBottom())
@@ -119,6 +136,9 @@ void BoxAddressDomain::setInterval(Variable variable, const Interval& value)
 
 void BoxAddressDomain::setAddressSet(Variable variable, const AddressSet& value)
 {
+#ifdef SVF_BOX_STORAGE_TELEMETRY
+    touchOperationVersion();
+#endif
     if (isBottomDomain())
         return;
     // No payload is needed for an uninitialized facet. Full Top also has no
@@ -137,6 +157,9 @@ void BoxAddressDomain::assignValueFrom(Variable target,
                                        const BoxAddressDomain& sourceState,
                                        Variable source)
 {
+#ifdef SVF_BOX_STORAGE_TELEMETRY
+    touchOperationVersion();
+#endif
     if (trackInitialization_ != sourceState.trackInitialization_)
         throw std::invalid_argument("incompatible initialization tracking");
 
@@ -162,6 +185,9 @@ void BoxAddressDomain::joinValueFrom(Variable target,
                                      const BoxAddressDomain& sourceState,
                                      Variable source)
 {
+#ifdef SVF_BOX_STORAGE_TELEMETRY
+    touchOperationVersion();
+#endif
     if (trackInitialization_ != sourceState.trackInitialization_)
         throw std::invalid_argument("incompatible initialization tracking");
 
@@ -191,6 +217,9 @@ void BoxAddressDomain::joinValueFrom(Variable target,
 
 void BoxAddressDomain::resetValue(Variable variable)
 {
+#ifdef SVF_BOX_STORAGE_TELEMETRY
+    touchOperationVersion();
+#endif
     numerical_.forget(variable);
     addresses_.forget(variable);
     if (trackInitialization_)
@@ -563,6 +592,9 @@ void MemoryLayout::extend(Location location, Variable content)
 void BoxAddressDomain::restoreMissingMemoryFrom(
     const BoxAddressDomain& caller, Variable content)
 {
+#ifdef SVF_BOX_STORAGE_TELEMETRY
+    touchOperationVersion();
+#endif
     if (isBottom() || caller.isBottom())
         return;
     if (trackInitialization_)
@@ -587,6 +619,9 @@ void BoxAddressDomain::restoreMissingMemoryFrom(
 void BoxAddressDomain::restoreMissingAddressFrom(
     const BoxAddressDomain& caller, Variable content)
 {
+#ifdef SVF_BOX_STORAGE_TELEMETRY
+    touchOperationVersion();
+#endif
     if (isBottom() || caller.isBottom())
         return;
     if (trackInitialization_)

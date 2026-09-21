@@ -145,6 +145,8 @@ struct Stats
     std::uint64_t resultCanonicalBytes = 0;
     std::array<std::uint64_t, Capacities.size()> hits{};
     std::array<std::uint64_t, Capacities.size()> hitNanoseconds{};
+    std::array<std::uint64_t, Capacities.size()> versionHits{};
+    std::array<std::uint64_t, Capacities.size()> versionHitNanoseconds{};
 };
 
 struct Pending
@@ -152,15 +154,21 @@ struct Pending
     AbstractOperationKind operation;
     std::optional<OperationKey> key;
     std::array<bool, Capacities.size()> hits{};
+    OperationKey versionKey;
+    std::array<bool, Capacities.size()> versionHits{};
 };
 
 std::array<Stats, static_cast<std::size_t>(AbstractOperationKind::Count)> stats;
 std::array<Lru, Capacities.size()> caches{
     {Lru(64), Lru(256), Lru(1024), Lru(4096)}};
+std::array<Lru, Capacities.size()> versionCaches{
+    {Lru(64), Lru(256), Lru(1024), Lru(4096)}};
 std::vector<Pending> pending;
 std::unordered_map<std::string, std::uint64_t> stateIds;
+std::unordered_map<std::uint64_t, std::string> versionStates;
 std::uint64_t nextStateId = 1;
 std::size_t stateBytes = 0;
+std::uint64_t versionCollisions = 0;
 
 std::size_t stateBudget()
 {
@@ -236,13 +244,32 @@ void collect(const AbstractOperationEvent& event)
         const auto start = std::chrono::steady_clock::now();
         const auto& left = static_cast<const BoxAddressDomain&>(*event.left);
         const auto& right = static_cast<const BoxAddressDomain&>(*event.right);
-        const auto leftId = intern(canonical(left));
-        const auto rightId = intern(canonical(right));
+        std::string leftCanonical = canonical(left);
+        std::string rightCanonical = canonical(right);
+        const auto validateVersion = [](std::uint64_t version,
+                                        const std::string& state)
+        {
+            const auto [iterator, inserted] =
+                versionStates.emplace(version, state);
+            if (!inserted && iterator->second != state)
+                ++versionCollisions;
+        };
+        validateVersion(left.operationVersion(), leftCanonical);
+        validateVersion(right.operationVersion(), rightCanonical);
+        const auto leftId = intern(std::move(leftCanonical));
+        const auto rightId = intern(std::move(rightCanonical));
         current.normalizationNanoseconds += static_cast<std::uint64_t>(
             std::chrono::duration_cast<std::chrono::nanoseconds>(
                 std::chrono::steady_clock::now() - start)
                 .count());
-        Pending entry{event.operation, std::nullopt, {}};
+        OperationKey versionKey{event.operation, left.operationVersion(),
+                                right.operationVersion()};
+        if (commutative(event.operation) && versionKey.right < versionKey.left)
+            std::swap(versionKey.left, versionKey.right);
+        Pending entry{event.operation, std::nullopt, {}, versionKey, {}};
+        for (std::size_t cache = 0; cache < versionCaches.size(); ++cache)
+            entry.versionHits[cache] =
+                versionCaches[cache].probe(versionKey);
         if (leftId && rightId)
         {
             OperationKey key{event.operation, *leftId, *rightId};
@@ -291,6 +318,16 @@ void collect(const AbstractOperationEvent& event)
         else
             caches[cache].remember(*entry.key, resultBytes);
     }
+    for (std::size_t cache = 0; cache < versionCaches.size(); ++cache)
+    {
+        if (entry.versionHits[cache])
+        {
+            ++current.versionHits[cache];
+            current.versionHitNanoseconds[cache] += event.elapsedNanoseconds;
+        }
+        else
+            versionCaches[cache].remember(entry.versionKey, resultBytes);
+    }
 }
 
 void print()
@@ -309,11 +346,19 @@ void print()
                         << " result_canonical_bytes="
                         << current.resultCanonicalBytes << '\n';
         for (std::size_t cache = 0; cache < caches.size(); ++cache)
+        {
             SVFUtil::outs()
                 << "BOX_OPERATION_LRU op=" << name(kind)
                 << " capacity=" << Capacities[cache]
                 << " hits=" << current.hits[cache]
                 << " hit_elapsed_ns=" << current.hitNanoseconds[cache] << '\n';
+            SVFUtil::outs()
+                << "BOX_OPERATION_VERSION_LRU op=" << name(kind)
+                << " capacity=" << Capacities[cache]
+                << " hits=" << current.versionHits[cache]
+                << " hit_elapsed_ns="
+                << current.versionHitNanoseconds[cache] << '\n';
+        }
     }
     SVFUtil::outs() << "BOX_OPERATION_STATES unique=" << stateIds.size()
                     << " canonical_bytes=" << stateBytes
@@ -322,13 +367,25 @@ void print()
                     << stateIds.size() *
                            (sizeof(std::string) + sizeof(std::uint64_t))
                     << " pending=" << pending.size() << '\n';
+    SVFUtil::outs() << "BOX_OPERATION_VERSION_STATES identities="
+                    << versionStates.size()
+                    << " collisions=" << versionCollisions << '\n';
     for (std::size_t cache = 0; cache < caches.size(); ++cache)
+    {
         SVFUtil::outs() << "BOX_OPERATION_CACHE capacity=" << Capacities[cache]
                         << " entries=" << caches[cache].size()
                         << " peak_result_canonical_bytes="
                         << caches[cache].peakResultBytes()
                         << " key_shallow_bytes="
                         << caches[cache].size() * sizeof(OperationKey) << '\n';
+        SVFUtil::outs()
+            << "BOX_OPERATION_VERSION_CACHE capacity=" << Capacities[cache]
+            << " entries=" << versionCaches[cache].size()
+            << " peak_result_canonical_bytes="
+            << versionCaches[cache].peakResultBytes()
+            << " key_shallow_bytes="
+            << versionCaches[cache].size() * sizeof(OperationKey) << '\n';
+    }
 }
 
 } // namespace SVF::BoxOperationCensus

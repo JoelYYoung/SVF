@@ -238,6 +238,19 @@ void contract()
     const Variable real(100, NumericType::real());
     typed.assign(real, LinearExpression(Rational("1/3")));
     check(typed.bound(real) == Interval::singleton(Rational("1/3")), "rational lost");
+#ifdef SVF_BOX_STORAGE_TELEMETRY
+    BoxAddressDomain product(BoxDomain::top(), MemoryLayout(), true);
+    BoxAddressDomain copied = product;
+    check(copied.operationVersion() == product.operationVersion(),
+          "Product copy lost operation identity");
+    copied.setInterval(Variable(9), Interval::singleton(Rational(4)));
+    check(copied.operationVersion() != product.operationVersion(),
+          "Product mutation retained operation identity");
+    const std::uint64_t beforeJoin = product.operationVersion();
+    product.joinWith(product);
+    check(product.operationVersion() != beforeJoin,
+          "Product lattice operation retained operation identity");
+#endif
     std::cout << "contract=pass masks=256 mask_pairs=65536 random_steps=2000\n";
 }
 

@@ -24,12 +24,20 @@ def fixture(dropped=0):
             lines.append(
                 f"BOX_OPERATION_LRU op={operation} capacity={capacity} "
                 f"hits={hits} hit_elapsed_ns={hits * 5}")
+            lines.append(
+                f"BOX_OPERATION_VERSION_LRU op={operation} "
+                f"capacity={capacity} hits={hits} "
+                f"hit_elapsed_ns={hits * 5}")
     lines.append(
         "BOX_OPERATION_STATES unique=4 canonical_bytes=100 "
         "canonical_budget_bytes=1000 entry_shallow_bytes=160 pending=0")
+    lines.append("BOX_OPERATION_VERSION_STATES identities=5 collisions=0")
     for capacity in CENSUS.CAPACITIES:
         lines.append(
             f"BOX_OPERATION_CACHE capacity={capacity} entries=4 "
+            "peak_result_canonical_bytes=80 key_shallow_bytes=96")
+        lines.append(
+            f"BOX_OPERATION_VERSION_CACHE capacity={capacity} entries=4 "
             "peak_result_canonical_bytes=80 key_shallow_bytes=96")
     return "\n".join(lines)
 
@@ -40,6 +48,9 @@ class OperationCensusTest(unittest.TestCase):
         self.assertEqual(parsed["states"]["unique"], 4)
         self.assertEqual(
             parsed["ideal_removable_operation_cost"]["64"]["hits"], 6)
+        self.assertEqual(
+            parsed["version_ideal_removable_operation_cost"]["64"]["hits"],
+            6)
 
     def test_dropped_is_explicit(self):
         parsed = CENSUS.parse_operations(fixture(dropped=1))
@@ -54,6 +65,11 @@ class OperationCensusTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             CENSUS.parse_operations(fixture().replace(
                 "op=join capacity=256 hits=2", "op=join capacity=256 hits=0"))
+
+    def test_version_collision_rejected(self):
+        with self.assertRaises(ValueError):
+            CENSUS.parse_operations(
+                fixture().replace("collisions=0", "collisions=1"))
 
 
 if __name__ == "__main__":
