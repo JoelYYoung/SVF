@@ -307,38 +307,62 @@ void BoxAddressDomain::combineInitialized(
         result.addressInitialization_.joinWith(other.addressInitialization_);
         result.lifetimes_.joinWith(other.lifetimes_);
     }
-    const auto numbers = mergedVariables(numerical_->supportVariables(),
-                                         other.numerical_->supportVariables());
-    for (Variable variable : numbers)
+    // Box payloads need the per-coordinate conditional join below: an
+    // uninitialized alternative has no initialized payload and therefore must
+    // not contribute numerical Top to the conditional value. Relational
+    // payloads cannot be combined coordinate-by-coordinate -- doing so can
+    // retain a left-hand relation across a join with an incompatible relation
+    // whose unary bounds happen to be identical. Use the native relational
+    // lattice operation as a sound fallback. It may lose a relation when only
+    // one side has an initialized alternative, but it never invents one.
+    const bool relational = numerical_->kind() != DomainKind::Box;
+    if (relational)
     {
-        if (result.isBottomDomain())
-            break;
-        Interval number = interval(variable);
-        const Interval nextNumber = other.interval(variable);
         if (intersect)
-            number.meetWith(nextNumber);
+            result.numerical_->meetWith(*other.numerical_);
+        else if (operation == Combination::Widen)
+            result.numerical_->widenWith(*other.numerical_);
         else
+            result.numerical_->joinWith(*other.numerical_);
+    }
+    else
+    {
+        const auto numbers = mergedVariables(numerical_->supportVariables(),
+                                             other.numerical_->supportVariables());
+        for (Variable variable : numbers)
         {
-            if (operation == Combination::Widen && !number.isBottom() &&
-                    !nextNumber.isBottom())
-                number.widenWith(nextNumber);
-            else
-                number.joinWith(nextNumber);
-        }
-        if (number.isBottom())
-        {
-            // Clear even a latent raw constraint under an inactive guard:
-            // mutable domain access must not make it survive a combination.
-            result.numerical_->forget(variable);
+            if (result.isBottomDomain())
+                break;
+            Interval number = interval(variable);
+            const Interval nextNumber = other.interval(variable);
             if (intersect)
+                number.meetWith(nextNumber);
+            else
             {
-                const auto guard = result.numericalInitialization_.value(variable);
-                result.numericalInitialization_.assign(variable,
-                                                       static_cast<InitializationState>(static_cast<unsigned>(guard) & 1U));
+                if (operation == Combination::Widen && !number.isBottom() &&
+                        !nextNumber.isBottom())
+                    number.widenWith(nextNumber);
+                else
+                    number.joinWith(nextNumber);
             }
+            if (number.isBottom())
+            {
+                // Clear even a latent raw constraint under an inactive guard:
+                // mutable domain access must not make it survive a combination.
+                result.numerical_->forget(variable);
+                if (intersect)
+                {
+                    const auto guard =
+                        result.numericalInitialization_.value(variable);
+                    result.numericalInitialization_.assign(
+                        variable,
+                        static_cast<InitializationState>(
+                            static_cast<unsigned>(guard) & 1U));
+                }
+            }
+            else if (number != numerical_->bound(variable))
+                result.numerical_->assignBound(variable, number);
         }
-        else if (number != numerical_->bound(variable))
-            result.numerical_->assignBound(variable, number);
     }
     const auto pointers = mergedVariables(addresses_.nonDefaultVariables(),
                                           other.addresses_.nonDefaultVariables());
