@@ -197,10 +197,10 @@ def main() -> int:
                 base_coverage = coverage_text(base_row)
                 candidate_coverage = coverage_text(cand_row)
                 coverage_matches = coverage(base_row) == coverage(cand_row)
-                if regressions != 0:
-                    comparison_status = "regression"
-                elif not coverage_matches:
+                if not coverage_matches:
                     comparison_status = "coverage-mismatch"
+                elif regressions != 0:
+                    comparison_status = "regression"
                 else:
                     comparison_status = "pass"
                 check_rows.append({"program": program, "comparison": f"{sparsity}:box->{domain}",
