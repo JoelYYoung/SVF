@@ -1184,6 +1184,7 @@ void AbstractInterpretation::updateStateOnCall(const CallPE* callPE)
     const SVFVar* res = callPE->getRes();
     AD::Interval interval = AD::Interval::bottom();
     AD::AddressSet addresses = AD::AddressSet::bottom();
+    std::optional<State> relationalCall;
     for (u32_t i = 0; i < callPE->getOpVarNum(); i++)
     {
         const ICFGNode* opICFGNode = callPE->getOpCallICFGNode(i);
@@ -1192,9 +1193,50 @@ void AbstractInterpretation::updateStateOnCall(const CallPE* callPE)
             interval.joinWith(getInterval(callPE->getOpVar(i), opICFGNode));
             addresses.joinWith(getAddressSet(callPE->getOpVar(i),
                                              opICFGNode));
+            if (Options::AEDomain() != AENumericalDomain::Box)
+            {
+                const auto* target = SVFUtil::dyn_cast<ValVar>(res);
+                const auto* source =
+                    SVFUtil::dyn_cast<ValVar>(callPE->getOpVar(i));
+                if (target && source && adapter_.contains(*target) &&
+                        adapter_.contains(*source))
+                {
+                    State alternative = phiAlternativeState(opICFGNode);
+                    const AD::Variable sourceVariable =
+                        adapter_.variable(*source);
+                    if (!alternative.numericalMayBeUninitialized(
+                                sourceVariable))
+                    {
+                        const AD::Variable targetVariable =
+                            adapter_.variable(*target);
+                        alternative.assignNumeric(
+                            targetVariable,
+                            AD::LinearExpression(sourceVariable));
+                        alternative.setAddressSet(
+                            targetVariable,
+                            alternative.addressSet(sourceVariable));
+                        if (!relationalCall)
+                            relationalCall = std::move(alternative);
+                        else
+                            relationalCall->joinWith(alternative);
+                    }
+                }
+            }
         }
     }
     updateValue(res, interval, addresses, node);
+    if (relationalCall)
+    {
+        const auto* target = SVFUtil::dyn_cast<ValVar>(res);
+        if (target && adapter_.contains(*target))
+        {
+            const AD::Variable targetVariable = adapter_.variable(*target);
+            relationalCall->numerical().project(
+                relationalCall->numerical().relationalClosure({targetVariable}));
+            scalarTransferState(node).numerical().meetWith(
+                relationalCall->numerical());
+        }
+    }
 }
 
 void AbstractInterpretation::updateStateOnRet(const RetPE* retPE)
@@ -1203,6 +1245,18 @@ void AbstractInterpretation::updateStateOnRet(const RetPE* retPE)
     updateValue(retPE->getLHSVar(),
                 getDefinedInterval(retPE->getRHSVar(), node),
                 getAddressSet(retPE->getRHSVar(), node), node);
+    if (Options::AEDomain() == AENumericalDomain::Box)
+        return;
+    const auto* target = SVFUtil::dyn_cast<ValVar>(retPE->getLHSVar());
+    const auto* source = SVFUtil::dyn_cast<ValVar>(retPE->getRHSVar());
+    if (!target || !source || !adapter_.contains(*target) ||
+            !adapter_.contains(*source))
+        return;
+    State& transferState = scalarTransferState(node);
+    const AD::Variable sourceVariable = adapter_.variable(*source);
+    if (!transferState.numericalMayBeUninitialized(sourceVariable))
+        assignRelationalValue(target, AD::LinearExpression(sourceVariable),
+                              getAddressSet(source, node), node);
 }
 
 void AbstractInterpretation::updateStateOnAddr(const AddrStmt* addr)
