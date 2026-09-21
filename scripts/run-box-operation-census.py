@@ -129,7 +129,7 @@ def parse_operations(text):
             states["canonical_bytes"] > states["canonical_budget_bytes"]):
         raise ValueError("invalid operation state budget")
     if (version_states is None or set(version_states) !=
-            {"identities", "collisions"} or
+            {"identities", "values", "collisions"} or
             any(value < 0 for value in version_states.values()) or
             version_states["collisions"] != 0):
         raise ValueError("invalid operation version identities")

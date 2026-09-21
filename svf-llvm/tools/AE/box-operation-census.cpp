@@ -165,8 +165,10 @@ std::array<Lru, Capacities.size()> versionCaches{
     {Lru(64), Lru(256), Lru(1024), Lru(4096)}};
 std::vector<Pending> pending;
 std::unordered_map<std::string, std::uint64_t> stateIds;
-std::unordered_map<std::uint64_t, std::string> versionStates;
+std::unordered_map<std::string, std::uint64_t> valueStateIds;
+std::unordered_map<std::uint64_t, std::uint64_t> versionStates;
 std::uint64_t nextStateId = 1;
+std::uint64_t nextValueStateId = 1;
 std::size_t stateBytes = 0;
 std::uint64_t versionCollisions = 0;
 
@@ -256,9 +258,13 @@ void collect(const AbstractOperationEvent& event)
             // implicit-Top coordinates to every copy and does not mutate the
             // Product value represented by this version identity.
             const std::string value = state.substr(marker);
+            const auto [valueIterator, valueInserted] =
+                valueStateIds.emplace(value, nextValueStateId);
+            if (valueInserted)
+                ++nextValueStateId;
             const auto [iterator, inserted] =
-                versionStates.emplace(version, value);
-            if (!inserted && iterator->second != value)
+                versionStates.emplace(version, valueIterator->second);
+            if (!inserted && iterator->second != valueIterator->second)
                 ++versionCollisions;
         };
         validateVersion(left.operationVersion(), leftCanonical);
@@ -376,6 +382,7 @@ void print()
                     << " pending=" << pending.size() << '\n';
     SVFUtil::outs() << "BOX_OPERATION_VERSION_STATES identities="
                     << versionStates.size()
+                    << " values=" << valueStateIds.size()
                     << " collisions=" << versionCollisions << '\n';
     for (std::size_t cache = 0; cache < caches.size(); ++cache)
     {

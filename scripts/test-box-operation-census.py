@@ -31,7 +31,8 @@ def fixture(dropped=0):
     lines.append(
         "BOX_OPERATION_STATES unique=4 canonical_bytes=100 "
         "canonical_budget_bytes=1000 entry_shallow_bytes=160 pending=0")
-    lines.append("BOX_OPERATION_VERSION_STATES identities=5 collisions=0")
+    lines.append(
+        "BOX_OPERATION_VERSION_STATES identities=5 values=4 collisions=0")
     for capacity in CENSUS.CAPACITIES:
         lines.append(
             f"BOX_OPERATION_CACHE capacity={capacity} entries=4 "
