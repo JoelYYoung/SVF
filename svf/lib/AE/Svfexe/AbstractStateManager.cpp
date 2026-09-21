@@ -8,6 +8,8 @@
 #include "Util/Options.h"
 
 #include <algorithm>
+#include <cstdlib>
+#include <iostream>
 
 namespace SVF
 {
@@ -684,6 +686,17 @@ bool AbstractInterpretation::hasAbsValue(const SVFVar* var,
     return false;
 }
 
+bool AbstractInterpretation::numericalValueMayBeUninitialized(
+    const ValVar* var, const ICFGNode* node) const
+{
+    if (!var || !adapter_.contains(*var))
+        return true;
+    const auto stateIterator = stateTrace_.find(node);
+    return stateIterator == stateTrace_.end() ||
+           stateIterator->second.numericalMayBeUninitialized(
+               adapter_.variable(*var));
+}
+
 void AbstractInterpretation::updateValue(const ValVar* var,
         const AD::Interval& interval,
         const AD::AddressSet& addresses,
@@ -993,13 +1006,17 @@ void AbstractInterpretation::assumeBranch(const IntraCFGEdge* edge,
                 }
                 if (std::getenv("SVF_AE_TRACE_PHI_RELATIONS"))
                     SVFUtil::outs()
-                        << "AE_BRANCH_BEFORE predicate=" << predicate
+                        << "AE_BRANCH_BEFORE source="
+                        << edge->getSrcNode()->getId()
+                        << " predicate=" << predicate
                         << " taken=" << taken << " state="
                         << denseState.numerical().toString() << '\n';
                 denseState.assume(AD::LinearConstraint(*lhs - *rhs, kind));
                 if (std::getenv("SVF_AE_TRACE_PHI_RELATIONS"))
                     SVFUtil::outs()
-                        << "AE_BRANCH_AFTER predicate=" << predicate
+                        << "AE_BRANCH_AFTER source="
+                        << edge->getSrcNode()->getId()
+                        << " predicate=" << predicate
                         << " taken=" << taken << " state="
                         << denseState.numerical().toString() << '\n';
             }

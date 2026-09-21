@@ -110,8 +110,10 @@ bool isEquationEdge(
         return true;
     if (!SVFUtil::isa<RetCFGEdge>(edge))
         return false;
-    if (Options::HandleRecur() == AbstractInterpretation::TOP)
-        return true;
+    // A context-insensitive callee exit may be reachable through a different
+    // call site.  Its other return edges are not feasible unless their own
+    // call sites are reachable; treating every return edge as an equation
+    // under the TOP recursion policy fabricates caller continuations.
     const auto* returnSite = SVFUtil::dyn_cast<RetICFGNode>(edge->getDstNode());
     return returnSite && reachable.count(returnSite->getCallICFGNode()) != 0;
 }
@@ -223,14 +225,24 @@ Map<const ICFGNode*, std::set<AD::Variable>> computeAvailability(
                 std::set<AD::Variable> edgeAvailable =
                     available.at(predecessor);
                 // RetPE needs the callee formal-return ghosts while the caller
-                // frame also remains live. The node definitions add the actual
-                // return value after these two inputs are combined.
+                // frame also remains live. Other callee locals are out of
+                // scope. The node definitions add the actual return value.
                 if (const auto* ret = SVFUtil::dyn_cast<RetCFGEdge>(edge))
                 {
+                    edgeAvailable.clear();
                     const auto caller = available.find(ret->getCallSite());
                     if (caller != available.end())
-                        edgeAvailable.insert(caller->second.begin(),
-                                             caller->second.end());
+                        edgeAvailable = caller->second;
+                    for (const SVFStmt* statement : node->getSVFStmts())
+                    {
+                        const auto* binding =
+                            SVFUtil::dyn_cast<RetPE>(statement);
+                        const auto* formal = binding
+                            ? SVFUtil::dyn_cast<ValVar>(binding->getRHSVar())
+                            : nullptr;
+                        if (formal && adapter.contains(*formal))
+                            edgeAvailable.insert(adapter.variable(*formal));
+                    }
                 }
                 if (first)
                 {
@@ -299,6 +311,11 @@ AbstractInterpretation::State AbstractInterpretation::reconstructPostState(
 
 void AbstractInterpretation::normalizePostReplayState(
     State&, const std::set<AD::Variable>&) const
+{
+}
+
+void AbstractInterpretation::preparePostReplayState(
+    State&, const ICFGNode*, const std::set<AD::Variable>&) const
 {
 }
 
@@ -428,8 +445,33 @@ void AbstractInterpretation::verifyPostFixpoint()
     }
 
     const Map<const ICFGNode*, State> storedStates = stateTrace_;
-    const auto availability =
+    auto availability =
         computeAvailability(icfg, *svfir, adapter_, storedStates, roots);
+    // Phi transfer reads each operand at its annotated predecessor program
+    // point. Keep those coordinates observable in the predecessor's Post
+    // state even when the ordinary CFG availability recurrence does not carry
+    // them into that node's own statements.
+    for (auto nodeIterator = icfg->begin();
+            Options::AEDomain() == AENumericalDomain::Box &&
+            nodeIterator != icfg->end(); ++nodeIterator)
+    {
+        for (const SVFStmt* statement : nodeIterator->second->getSVFStmts())
+        {
+            const auto* phi = SVFUtil::dyn_cast<PhiStmt>(statement);
+            if (!phi)
+                continue;
+            for (u32_t index = 0; index < phi->getOpVarNum(); ++index)
+            {
+                const ICFGNode* operandNode = phi->getOpICFGNode(index);
+                const auto point = availability.find(operandNode);
+                const auto* operand =
+                    SVFUtil::dyn_cast<ValVar>(phi->getOpVar(index));
+                if (point != availability.end() && operand &&
+                        adapter_.contains(*operand))
+                    point->second.insert(adapter_.variable(*operand));
+            }
+        }
+    }
     Map<const ICFGNode*, State> finalStates;
     for (const auto& [node, stored] : storedStates)
     {
@@ -603,6 +645,15 @@ void AbstractInterpretation::verifyPostFixpoint()
             continue;
         }
         State incoming = sourceFinal->second;
+        const auto targetAvailability = availability.find(target);
+        if (targetAvailability != availability.end())
+        {
+            std::set<AD::Variable> targetInputs =
+                targetAvailability->second;
+            for (AD::Variable definition : definedScalars(target, adapter_))
+                targetInputs.erase(definition);
+            preparePostReplayState(incoming, target, targetInputs);
+        }
         if (const auto* ret = SVFUtil::dyn_cast<RetCFGEdge>(edge))
         {
             const CallICFGNode* call = ret->getCallSite();
@@ -643,9 +694,20 @@ void AbstractInterpretation::verifyPostFixpoint()
         const bool included =
             replayed.isSubsetOf(targetFinal->second) == AD::CheckResult::True;
         if (!included)
+        {
+            if (std::getenv("SVF_AE_TRACE_POST_FAILURE"))
+            {
+                std::cerr << "AE Post source node: " << source->toString()
+                          << "\nAE Post target node: " << target->toString()
+                          << '\n';
+                for (const SVFStmt* statement : target->getSVFStmts())
+                    std::cerr << "AE Post target statement: "
+                              << statement->toString() << '\n';
+            }
             traceFailure(kind + ":" + std::to_string(source->getId()) + ":" +
                              std::to_string(target->getId()),
                          replayed, targetFinal->second);
+        }
         addRecord(kind, source->getId(), target->getId(),
                   included ? EquationStatus::Pass : EquationStatus::Fail,
                   included ? "replayed transfer is covered"

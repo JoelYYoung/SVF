@@ -429,16 +429,7 @@ void AbsExtAPI::handleExtAPI(const CallICFGNode* call)
         }
         else
         {
-            if (const SVFVar* ret = call->getRetICFGNode()->getActualRet())
-            {
-                // Pointer returns retain the address fact established by the
-                // SVF call/value-flow edges (commonly the BlackHole summary
-                // object). This matches Original AE's policy and avoids
-                // replacing a useful points-to fact with object-top.
-                if (!ret->isPointer() || ae->getAddressSet(ret, call).isBottom())
-                    ae->updateInterval(ret, AD::Interval::top(), call);
-            }
-            return;
+            // The common result fallback below handles unknown functions too.
         }
     }
     // 1. memcpy functions like memcpy_chk, strncpy, annotate("MEMCPY"),
@@ -470,6 +461,23 @@ void AbsExtAPI::handleExtAPI(const CallICFGNode* call)
     }
     else
     {
+    }
+
+    const RetICFGNode* returnSite = call->getRetICFGNode();
+    const SVFVar* rawReturn = returnSite ? returnSite->getActualRet() : nullptr;
+    if (const auto* ret = rawReturn
+            ? SVFUtil::dyn_cast<ValVar>(rawReturn) : nullptr)
+    {
+        // Every normally returning non-void call defines its SSA result. A
+        // named model may describe only side effects (for example fread) and
+        // leave that result otherwise absent. Define it as initialized Top,
+        // but never overwrite a precise numerical result or a pointer address
+        // fact established by the handler/SVF value-flow edges.
+        const bool pointerFact =
+            ret->isPointer() && !ae->getAddressSet(ret, call).isBottom();
+        if (!pointerFact &&
+            ae->numericalValueMayBeUninitialized(ret, call))
+            ae->updateInterval(ret, AD::Interval::top(), call);
     }
     return;
 }

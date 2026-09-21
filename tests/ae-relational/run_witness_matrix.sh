@@ -29,6 +29,7 @@ witnesses=(
   MultiAliasKillWitness
   RecursiveCallWitness
   MachineInteger8Witness
+  ExternalReturnWitness
 )
 modes=(dense semi-sparse)
 domains=(box octagon polyhedra)

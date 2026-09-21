@@ -197,6 +197,13 @@ public:
     virtual bool hasAbsValue(const ObjVar* var, const ICFGNode* node) const;
     virtual bool hasAbsValue(const SVFVar* var, const ICFGNode* node) const;
 
+    /// Whether the numerical facet still includes the absent/uninitialized
+    /// alternative. External-call fallback uses this to define an otherwise
+    /// unmodelled non-void result as initialized Top without overwriting a
+    /// handler's precise result.
+    virtual bool numericalValueMayBeUninitialized(
+        const ValVar* var, const ICFGNode* node) const;
+
     /// Write both scalar facets without constructing an intermediate value
     /// object. Sparse subclasses re-route ValVar writes to the def-site.
     virtual void updateValue(const ValVar* var,
@@ -539,6 +546,9 @@ protected:
     virtual void normalizePostReplayState(
         State& state,
         const std::set<AbstractDomain::Variable>& availableScalars) const;
+    virtual void preparePostReplayState(
+        State& state, const ICFGNode* target,
+        const std::set<AbstractDomain::Variable>& inputScalars) const;
     virtual void restorePostReplayCallerFrame(
         State& state, const RetICFGNode* returnSite,
         const State& callerState,

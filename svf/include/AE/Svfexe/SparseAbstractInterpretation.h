@@ -64,6 +64,8 @@ protected:
     using Base::getInterval;
     bool hasAbsValue(const ValVar* var, const ICFGNode* node) const override;
     using Base::hasAbsValue;
+    bool numericalValueMayBeUninitialized(
+        const ValVar* var, const ICFGNode* node) const override;
     void updateValue(const ValVar* var,
                      const AbstractDomain::Interval& interval,
                      const AbstractDomain::AddressSet& addresses,
@@ -83,6 +85,9 @@ protected:
     void normalizePostReplayState(State& state,
                                   const std::set<AbstractDomain::Variable>&
                                       availableScalars) const override;
+    void preparePostReplayState(
+        State& state, const ICFGNode* target,
+        const std::set<AbstractDomain::Variable>& inputScalars) const override;
     void restorePostReplayCallerFrame(
         State& state, const RetICFGNode* returnSite,
         const State& callerState,
@@ -141,6 +146,7 @@ protected:
     void restoreCallerFrameAfterSharedCallee(
         State& state, const RetICFGNode* returnSite,
         const State* callerOverride = nullptr) const;
+    bool isSharedCalleeReturn(const RetICFGNode* returnSite) const;
     void applyScalarRefinement(State& state, const State& checkpoint);
     void scatterCycleValues(const ICFGCycleWTO* cycle, const State& state);
     void initializeScalarAvailability();
@@ -159,6 +165,7 @@ protected:
     std::map<AbstractDomain::Variable, std::pair<const ICFGNode*, State>>
         pendingDefinitionHistory_;
     std::optional<State> scalarState_;
+    std::optional<State> globalScalarSnapshot_;
 };
 
 /// Full-sparse AE backed by BoxAddressDomain. Scalar SSA values share the same

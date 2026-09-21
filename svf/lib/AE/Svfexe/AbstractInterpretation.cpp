@@ -390,13 +390,49 @@ void AbstractInterpretation::writeQueryLedger() const
     output << "query_id\tinput_id\tdetector\tfunction\tsource_location\t"
               "icfg_node\toperand\tquery_kind\toutcome\treason\n";
     const std::string input = escapeQueryField(Options::AEQueryInputID());
+    std::vector<const QueryRecord*> records;
+    records.reserve(queryLedger_.size());
     for (const auto& [key, record] : queryLedger_)
     {
+        (void)key;
+        records.push_back(&record);
+    }
+    // SVF NodeIDs are allocation-order diagnostics, not stable program
+    // identities: parsing the same module in two processes can shift all IDs
+    // in one external function.  Order equal semantic sites by their local
+    // ICFG order, then name them by a source/function group occurrence.  The
+    // raw IDs remain in dedicated diagnostic columns.
+    std::sort(records.begin(), records.end(),
+              [](const QueryRecord* left, const QueryRecord* right) {
+                  return std::make_tuple(
+                             left->detector, left->function,
+                             left->sourceLocation, left->queryKind,
+                             left->icfgNode, left->operand) <
+                         std::make_tuple(
+                             right->detector, right->function,
+                             right->sourceLocation, right->queryKind,
+                             right->icfgNode, right->operand);
+              });
+    std::tuple<AEDetector::DetectorKind, std::string, std::string,
+               std::string> previousGroup;
+    bool first = true;
+    std::size_t occurrence = 0;
+    for (const QueryRecord* recordPointer : records)
+    {
+        const QueryRecord& record = *recordPointer;
+        const auto group = std::make_tuple(record.detector, record.function,
+                                           record.sourceLocation,
+                                           record.queryKind);
+        if (first || group != previousGroup)
+            occurrence = 0;
+        else
+            ++occurrence;
+        previousGroup = group;
+        first = false;
         const std::string detector = queryDetectorName(record.detector);
         const std::string identity = input + ':' + detector + ':' +
-            escapeQueryField(record.function) + ':' +
-            std::to_string(record.icfgNode) + ':' +
-            std::to_string(record.operand) + ':' + record.queryKind;
+            record.function + ':' + record.sourceLocation + ':' +
+            record.queryKind + ':' + std::to_string(occurrence);
         output << escapeQueryField(identity) << '\t' << input << '\t'
                << detector << '\t' << escapeQueryField(record.function)
                << '\t' << escapeQueryField(record.sourceLocation) << '\t'
@@ -1141,6 +1177,13 @@ void AbstractInterpretation::handleFunCall(const CallICFGNode* callNode)
         handleFunction(calleeEntry, callNode);
         const RetICFGNode* retNode = callNode->getRetICFGNode();
         copyAbstractState(callNode, retNode);
+        // The caller WTO can place a continuation before this return node.
+        // Propagate the freshly enlarged context-insensitive callee summary
+        // immediately; otherwise the continuation may retain a transiently
+        // stronger state even though the return state changes later in the
+        // same whole-function pass.
+        if (mergeStatesFromPredecessors(retNode))
+            handleICFGNode(retNode);
         return;
     }
 
@@ -1177,6 +1220,8 @@ void AbstractInterpretation::handleFunCall(const CallICFGNode* callNode)
     }
     // Resume return node from caller's state (context-insensitive)
     copyAbstractState(callNode, retNode);
+    if (analyzedCallee && mergeStatesFromPredecessors(retNode))
+        handleICFGNode(retNode);
 }
 
 bool AbstractInterpretation::mergeStatesFromPredecessors(
@@ -1201,14 +1246,13 @@ bool AbstractInterpretation::mergeStatesFromPredecessors(
         }
         else if (SVFUtil::isa<RetCFGEdge>(edge))
         {
-            shouldMerge = Options::HandleRecur() == TOP;
-            if (!shouldMerge)
-            {
-                const auto* returnSite = SVFUtil::dyn_cast<RetICFGNode>(node);
-                shouldMerge =
-                    returnSite &&
-                    stateTrace_.count(returnSite->getCallICFGNode()) != 0;
-            }
+            const auto* returnSite = SVFUtil::dyn_cast<RetICFGNode>(node);
+            // A shared callee exit can be reachable through another caller.
+            // Preserve call/return matching even when recursive calls use a
+            // TOP summary; the summary resumes through copyAbstractState().
+            shouldMerge =
+                returnSite &&
+                stateTrace_.count(returnSite->getCallICFGNode()) != 0;
         }
         if (!shouldMerge)
             continue;
@@ -1477,6 +1521,22 @@ void AbstractInterpretation::updateStateOnPhi(const PhiStmt* phi)
             << "AE_PHI_INTERVAL target="
             << adapter_.variable(*SVFUtil::cast<ValVar>(phi->getRes())).id()
             << " interval=" << interval.toString() << '\n';
+    // Phi operands are read from their predecessor program points rather than
+    // solely from the immediate incoming state. Preserve the preceding
+    // iterate when a later predecessor has grown; otherwise a phi split across
+    // sequential ICFG nodes can remain one iteration behind the backedge and
+    // violate its transfer equation. Widening here treats every split phi as
+    // part of the enclosing loop header and guarantees termination even when
+    // it is not the WTO component's first ICFG node.
+    if (const auto* result = SVFUtil::dyn_cast<ValVar>(phi->getRes()))
+    {
+        AD::Interval previous = getDefinedInterval(result, icfgNode);
+        previous.widenWith(interval);
+        interval = std::move(previous);
+        AD::AddressSet previousAddresses = getAddressSet(result, icfgNode);
+        previousAddresses.joinWith(addresses);
+        addresses = std::move(previousAddresses);
+    }
     updateValue(phi->getRes(), interval, addresses, icfgNode);
     if (relationalPhi)
     {

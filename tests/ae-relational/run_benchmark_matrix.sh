@@ -15,6 +15,7 @@ warmups=$6
 timeout_seconds=${SVF_AE_BENCHMARK_TIMEOUT_SECONDS:-300}
 memory_kib=${SVF_AE_BENCHMARK_MEMORY_KIB:-16777216}
 cpu=${SVF_AE_BENCHMARK_CPU:-8}
+model_arrays=${SVF_AE_BENCHMARK_MODEL_ARRAYS:-true}
 
 if [[ -n ${SVF_AE_BENCHMARK_PROGRAMS:-} ]]; then
   read -r -a programs <<< "$SVF_AE_BENCHMARK_PROGRAMS"
@@ -53,6 +54,7 @@ printf 'program\tinput_sha256\tphase\trun\tsparsity\tdomain\tstatus\ttermination
   printf 'timeout_seconds=%s\n' "$timeout_seconds"
   printf 'memory_kib=%s\n' "$memory_kib"
   printf 'cpu=%s\n' "$cpu"
+  printf 'model_arrays=%s\n' "$model_arrays"
   printf 'measured_runs=%s\n' "$measured_runs"
   printf 'warmups=%s\n' "$warmups"
   printf 'domain_stats=%s\n' "${SVF_AE_DOMAIN_STATS:-0}"
@@ -111,7 +113,7 @@ run_one()
         -ae-sparsity="$sparsity" \
         -handle-recur=top \
         -model-consts=true \
-        -model-arrays=true \
+        -model-arrays="$model_arrays" \
         -pre-field-sensitive=false \
         -stat=true \
         -overflow=true \
