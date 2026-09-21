@@ -958,7 +958,17 @@ void AbstractInterpretation::assumeBranch(const IntraCFGEdge* edge,
                 default:
                     break;
                 }
+                if (std::getenv("SVF_AE_TRACE_PHI_RELATIONS"))
+                    SVFUtil::outs()
+                        << "AE_BRANCH_BEFORE predicate=" << predicate
+                        << " taken=" << taken << " state="
+                        << denseState.numerical().toString() << '\n';
                 denseState.assume(AD::LinearConstraint(*lhs - *rhs, kind));
+                if (std::getenv("SVF_AE_TRACE_PHI_RELATIONS"))
+                    SVFUtil::outs()
+                        << "AE_BRANCH_AFTER predicate=" << predicate
+                        << " taken=" << taken << " state="
+                        << denseState.numerical().toString() << '\n';
             }
         }
     }
