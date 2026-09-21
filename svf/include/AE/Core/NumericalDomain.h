@@ -519,6 +519,11 @@ public:
     /// unconstrained, never undefined. The result is sorted and unique.
     virtual std::vector<Variable> supportVariables() const = 0;
     std::vector<Variable> supportVariablesBefore(Variable upperBound) const;
+    /// Return the transitive variable component connected to `seeds` by the
+    /// represented linear constraints. This is used when a semi-sparse client
+    /// must materialize a complete relation rather than unary projections.
+    std::vector<Variable> relationalClosure(
+        const std::vector<Variable>& seeds) const;
     /// Strongly replace one coordinate by an interval while forgetting its
     /// previous relations. This is the public product-domain entry point for
     /// an interval-valued transfer.

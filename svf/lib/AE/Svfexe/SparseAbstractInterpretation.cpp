@@ -394,7 +394,8 @@ void SemiSparseAbstractInterpretation::materializeRelations(
     if (Options::AEDomain() == AENumericalDomain::Box || variables.empty())
         return;
     State projected = scalarState();
-    projected.numerical().project(variables);
+    projected.numerical().project(
+        projected.numerical().relationalClosure(variables));
     denseState.numerical().meetWith(projected.numerical());
 }
 

@@ -53,6 +53,42 @@ std::vector<Variable> NumericalDomain::supportVariablesBefore(
     return variables;
 }
 
+std::vector<Variable> NumericalDomain::relationalClosure(
+    const std::vector<Variable>& seeds) const
+{
+    std::map<Variable, std::set<Variable>> adjacency;
+    for (const LinearConstraint& constraint : toConstraints())
+    {
+        std::vector<Variable> variables;
+        variables.reserve(constraint.expression().terms().size());
+        for (const auto& [variable, coefficient] :
+                constraint.expression().terms())
+        {
+            (void)coefficient;
+            variables.push_back(variable);
+        }
+        for (Variable lhs : variables)
+            for (Variable rhs : variables)
+                if (lhs != rhs)
+                    adjacency[lhs].insert(rhs);
+    }
+
+    std::set<Variable> closure(seeds.begin(), seeds.end());
+    std::vector<Variable> worklist(seeds.begin(), seeds.end());
+    while (!worklist.empty())
+    {
+        const Variable variable = worklist.back();
+        worklist.pop_back();
+        const auto neighbors = adjacency.find(variable);
+        if (neighbors == adjacency.end())
+            continue;
+        for (Variable neighbor : neighbors->second)
+            if (closure.insert(neighbor).second)
+                worklist.push_back(neighbor);
+    }
+    return std::vector<Variable>(closure.begin(), closure.end());
+}
+
 Integer::Integer() : value_(0) {}
 
 Integer::Integer(std::int64_t value)
