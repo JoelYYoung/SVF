@@ -1152,10 +1152,23 @@ void AbstractInterpretation::updateStateOnPhi(const PhiStmt* phi)
                                 alternative.addressSet(sourceVariable));
                             if (sourceVariable != targetVariable)
                                 alternative.numerical().forget(sourceVariable);
+                            if (std::getenv("SVF_AE_TRACE_PHI_RELATIONS"))
+                                SVFUtil::outs()
+                                    << "AE_PHI_ALTERNATIVE target="
+                                    << targetVariable.id() << " source="
+                                    << sourceVariable.id() << " state="
+                                    << alternative.numerical().toString()
+                                    << '\n';
                             if (!relationalPhi)
                                 relationalPhi = std::move(alternative);
                             else
                                 relationalPhi->joinWith(alternative);
+                            if (std::getenv("SVF_AE_TRACE_PHI_RELATIONS"))
+                                SVFUtil::outs()
+                                    << "AE_PHI_JOIN target="
+                                    << targetVariable.id() << " state="
+                                    << relationalPhi->numerical().toString()
+                                    << '\n';
                         }
                     }
                 }
