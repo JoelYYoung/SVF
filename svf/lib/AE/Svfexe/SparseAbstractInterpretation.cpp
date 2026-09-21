@@ -88,6 +88,12 @@ SemiSparseAbstractInterpretation::findScalarState() const
     return scalarState_ ? &*scalarState_ : nullptr;
 }
 
+SemiSparseAbstractInterpretation::State&
+SemiSparseAbstractInterpretation::scalarTransferState(const ICFGNode*)
+{
+    return scalarState();
+}
+
 const AD::AbstractDomain* SemiSparseAbstractInterpretation::
 getScalarAbstractState() const
 {

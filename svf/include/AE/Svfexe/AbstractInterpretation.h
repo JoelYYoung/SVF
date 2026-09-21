@@ -435,6 +435,10 @@ protected:
 
     State& ensureState(const ICFGNode* node);
     const State& state(const ICFGNode* node) const;
+    /// State that owns SSA numerical relations created by a transfer. Dense
+    /// AE uses the current ICFG state; semi-sparse AE overrides this with its
+    /// module-wide SSA carrier.
+    virtual State& scalarTransferState(const ICFGNode* node);
     State topState() const;
     State bottomState() const;
     std::unique_ptr<AbstractDomain::NumericalDomain> makeNumericalDomain(

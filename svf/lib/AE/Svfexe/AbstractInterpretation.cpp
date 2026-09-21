@@ -516,8 +516,12 @@ void AbstractInterpretation::collectBranchRefinement(
     const ICFGNode* succNode = edge->getDstNode();
     s64_t succ = edge->getSuccessorCondValue();
 
-    assert(!cond->getInEdges().empty() &&
-           "branch condition has no defining edge?");
+    // Some frontends leave synthetic branch conditions without a defining
+    // SVF statement. Assertions are disabled in benchmark builds, so do not
+    // dereference the empty edge set; there is simply no sound refinement to
+    // collect in this case.
+    if (cond->getInEdges().empty())
+        return;
     const SVFStmt* condDef = *cond->getInEdges().begin();
 
     if (const CmpStmt* cmpStmt = SVFUtil::dyn_cast<CmpStmt>(condDef))
@@ -1183,6 +1187,64 @@ void AbstractInterpretation::updateStateOnBinary(const BinaryOPStmt* binary)
     default:
         assert(false && "undefined binary: ");
     }
+
+    // Keep an affine equality when the LLVM integer operation cannot wrap
+    // under the incoming bounds. This is the point where Octagon and
+    // Polyhedra gain information beyond the interval baseline. Floating-point
+    // operations retain interval semantics because rounding/NaN behavior is
+    // not affine over rationals.
+    if (Options::AEDomain() != AENumericalDomain::Box &&
+            SVFUtil::isa<SVFIntegerType>(binary->getRes()->getType()) &&
+            !result.isBottom() &&
+            result.isSubsetOf(
+                utils->getRangeLimitFromType(binary->getRes()->getType())))
+    {
+        State& transferState = scalarTransferState(node);
+        const auto expressionFor = [&](const SVFVar* operand)
+            -> std::optional<AD::LinearExpression>
+        {
+            if (const auto* value = SVFUtil::dyn_cast<ValVar>(operand))
+            {
+                if (adapter_.contains(*value))
+                {
+                    const AD::Variable variable = adapter_.variable(*value);
+                    if (transferState.numericalMayBeUninitialized(variable))
+                        return std::nullopt;
+                    return AD::LinearExpression(variable);
+                }
+            }
+            const AD::Interval constant = getInterval(operand, node);
+            if (constant.isSingleton())
+                return AD::LinearExpression(constant.singletonValue());
+            return std::nullopt;
+        };
+
+        const auto lhsExpression = expressionFor(binary->getOpVar(0));
+        const auto rhsExpression = expressionFor(binary->getOpVar(1));
+        std::optional<AD::LinearExpression> affine;
+        if (lhsExpression && rhsExpression)
+        {
+            if (binary->getOpcode() == BinaryOPStmt::Add)
+                affine = *lhsExpression + *rhsExpression;
+            else if (binary->getOpcode() == BinaryOPStmt::Sub)
+                affine = *lhsExpression - *rhsExpression;
+            else if (binary->getOpcode() == BinaryOPStmt::Mul)
+            {
+                if (lhs.isSingleton())
+                    affine = lhs.singletonValue() * *rhsExpression;
+                else if (rhs.isSingleton())
+                    affine = rhs.singletonValue() * *lhsExpression;
+            }
+        }
+        const auto* resultValue =
+            SVFUtil::dyn_cast<ValVar>(binary->getRes());
+        if (affine && resultValue && adapter_.contains(*resultValue))
+        {
+            transferState.assignNumeric(adapter_.variable(*resultValue),
+                                        *affine);
+            return;
+        }
+    }
     updateInterval(binary->getRes(), result, node);
 }
 
@@ -1446,6 +1508,34 @@ void AbstractInterpretation::updateStateOnCopy(const CopyStmt* copy)
 
     const AD::Interval rhsInterval = getInterval(rhsVar, node);
     const AD::AddressSet rhsAddresses = getAddressSet(rhsVar, node);
+
+    const bool exactAffineCopy =
+        Options::AEDomain() != AENumericalDomain::Box &&
+        (copy->getCopyKind() == CopyStmt::COPYVAL ||
+         copy->getCopyKind() == CopyStmt::SEXT) &&
+        SVFUtil::isa<SVFIntegerType>(lhsVar->getType()) &&
+        SVFUtil::isa<SVFIntegerType>(rhsVar->getType()) &&
+        !rhsInterval.isBottom() &&
+        rhsInterval.isSubsetOf(utils->getRangeLimitFromType(lhsVar->getType()));
+    if (exactAffineCopy)
+    {
+        const auto* lhsValue = SVFUtil::dyn_cast<ValVar>(lhsVar);
+        const auto* rhsValue = SVFUtil::dyn_cast<ValVar>(rhsVar);
+        State& transferState = scalarTransferState(node);
+        if (lhsValue && rhsValue && adapter_.contains(*lhsValue) &&
+                adapter_.contains(*rhsValue))
+        {
+            const AD::Variable source = adapter_.variable(*rhsValue);
+            if (!transferState.numericalMayBeUninitialized(source))
+            {
+                transferState.assignNumeric(
+                    adapter_.variable(*lhsValue), AD::LinearExpression(source));
+                transferState.setAddressSet(adapter_.variable(*lhsValue),
+                                            rhsAddresses);
+                return;
+            }
+        }
+    }
 
     if (copy->getCopyKind() == CopyStmt::COPYVAL)
     {

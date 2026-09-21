@@ -401,6 +401,12 @@ state(const ICFGNode* node) const
     return iterator->second;
 }
 
+AbstractInterpretation::State& AbstractInterpretation::
+scalarTransferState(const ICFGNode* node)
+{
+    return ensureState(node);
+}
+
 void AbstractInterpretation::resetAbstractState(const ICFGNode* node)
 {
     stateTrace_.insert_or_assign(node, topState());
@@ -850,6 +856,85 @@ void AbstractInterpretation::assumeBranch(const IntraCFGEdge* edge,
                               AD::LinearExpression(adapter_.variable(*value)),
                               AD::LinearExpression(AD::Rational(edge->getSuccessorCondValue()))));
         return;
+    }
+
+    // Preserve the established Box baseline. Relational domains additionally
+    // consume the source-level comparison itself, as in a conventional
+    // numerical abstract interpreter, instead of refining only its Boolean
+    // SSA result. IEEE and unsigned comparisons need dedicated bit-vector/
+    // NaN semantics and therefore keep the conservative legacy behavior.
+    if (Options::AEDomain() != AENumericalDomain::Box &&
+            !comparison->getOpVar(0)->isPointer())
+    {
+        const s32_t predicate = comparison->getPredicate();
+        const bool supported =
+            predicate == CmpStmt::ICMP_EQ ||
+            predicate == CmpStmt::ICMP_NE ||
+            predicate == CmpStmt::ICMP_SLT ||
+            predicate == CmpStmt::ICMP_SLE ||
+            predicate == CmpStmt::ICMP_SGT ||
+            predicate == CmpStmt::ICMP_SGE;
+        if (supported)
+        {
+            const ICFGNode* source = edge->getSrcNode();
+            const auto expressionFor = [&](const SVFVar* operand)
+                -> std::optional<AD::LinearExpression>
+            {
+                if (const auto* value = SVFUtil::dyn_cast<ValVar>(operand))
+                {
+                    if (adapter_.contains(*value))
+                    {
+                        materializeValue(denseState, value, source);
+                        const AD::Variable variable = adapter_.variable(*value);
+                        if (denseState.numericalMayBeUninitialized(variable))
+                            return std::nullopt;
+                        return AD::LinearExpression(variable);
+                    }
+                }
+                const AD::Interval constant = getInterval(operand, source);
+                if (constant.isSingleton())
+                    return AD::LinearExpression(constant.singletonValue());
+                return std::nullopt;
+            };
+
+            const auto lhs = expressionFor(comparison->getOpVar(0));
+            const auto rhs = expressionFor(comparison->getOpVar(1));
+            if (lhs && rhs)
+            {
+                const bool taken = edge->getSuccessorCondValue() != 0;
+                AD::ConstraintKind kind = AD::ConstraintKind::Equal;
+                switch (predicate)
+                {
+                case CmpStmt::ICMP_EQ:
+                    kind = taken ? AD::ConstraintKind::Equal
+                           : AD::ConstraintKind::NotEqual;
+                    break;
+                case CmpStmt::ICMP_NE:
+                    kind = taken ? AD::ConstraintKind::NotEqual
+                           : AD::ConstraintKind::Equal;
+                    break;
+                case CmpStmt::ICMP_SLT:
+                    kind = taken ? AD::ConstraintKind::LessThan
+                           : AD::ConstraintKind::GreaterEqual;
+                    break;
+                case CmpStmt::ICMP_SLE:
+                    kind = taken ? AD::ConstraintKind::LessEqual
+                           : AD::ConstraintKind::GreaterThan;
+                    break;
+                case CmpStmt::ICMP_SGT:
+                    kind = taken ? AD::ConstraintKind::GreaterThan
+                           : AD::ConstraintKind::LessEqual;
+                    break;
+                case CmpStmt::ICMP_SGE:
+                    kind = taken ? AD::ConstraintKind::GreaterEqual
+                           : AD::ConstraintKind::LessThan;
+                    break;
+                default:
+                    break;
+                }
+                denseState.assume(AD::LinearConstraint(*lhs - *rhs, kind));
+            }
+        }
     }
 
     // Original checks only the Boolean result for feasibility. It neither
