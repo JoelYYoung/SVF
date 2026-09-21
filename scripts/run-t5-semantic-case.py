@@ -13,7 +13,10 @@ import hashlib
 import json
 from pathlib import Path
 import re
+import runpy
 import subprocess
+
+PROCESS = runpy.run_path(str(Path(__file__).with_name("experiment_process.py")))
 
 
 def digest(path):
@@ -81,11 +84,15 @@ def run_variant(executable, extapi, bitcode, cap, directory, sparsity="semi-spar
     ]
     wrapped = [
         "/usr/bin/time", "-v", "-o", str(timing),
-        "timeout", "--signal=TERM", str(cap), *command,
+        *command,
     ]
     with log.open("w") as stream:
-        completed = subprocess.run(wrapped, stdout=stream,
-                                   stderr=subprocess.STDOUT)
+        completed = PROCESS["run_managed"](
+            wrapped,
+            stdout=stream,
+            stderr=subprocess.STDOUT,
+            timeout_seconds=cap,
+        )
     log_text = log.read_text(errors="replace")
     time_text = timing.read_text(errors="replace") if timing.exists() else ""
     records = None
