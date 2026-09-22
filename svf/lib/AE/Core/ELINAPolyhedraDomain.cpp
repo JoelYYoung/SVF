@@ -298,6 +298,9 @@ public:
 
     Impl(const Impl& other) : Impl(false)
     {
+        // The fixed ELINA opt_pk_copy corrupts heap ownership for some
+        // degenerate components (duplicate equalities reproduce it in Release).
+        // Re-import the complete H representation into an independent manager.
         ELINARoundingScope rounding;
         variables = other.variables;
         resetResult(other.manager);
