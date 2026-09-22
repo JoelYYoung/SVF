@@ -120,5 +120,27 @@ for witness in "${witnesses[@]}"; do
   done
 done
 
+# Semantic witnesses, not just count/coverage checks:
+# - local affine relations eliminate the impossible branch;
+# - through-call propagation eliminates the call witness while the Eva-default
+#   intraprocedural boundary conservatively leaves it May;
+# - caller-local relations survive either call policy.
+if ! awk -F '\t' '
+  NR == 1 { next }
+  $3 == "octagon" && $1 == "RelationalWitness" && $16 != 1 { bad = 1 }
+  $3 == "octagon" && $1 == "RelationalCallWitness" &&
+      $5 == "through" && $16 != 1 { bad = 1 }
+  $3 == "octagon" && $1 == "RelationalCallWitness" &&
+      $5 == "intraprocedural" && $15 != 1 { bad = 1 }
+  $3 == "octagon" && $1 == "RelationalCallerFrameWitness" && $16 != 1 {
+    bad = 1
+  }
+  $3 == "octagon" && $4 != "whole" && ($21 == "" || $21 == 0) { bad = 1 }
+  END { exit bad }
+' "$summary"; then
+  echo "Octagon strategy semantic witness gate failed" >&2
+  failed=1
+fi
+
 echo "$summary"
 exit "$failed"

@@ -364,7 +364,8 @@ void AbstractInterpretation::initializeRelationalPolicy()
     std::size_t recognizedPairs = 0;
     const auto integerValue = [&](const ValVar* value) {
         return value && adapter_.contains(*value) && !value->isPointer() &&
-               value->getType()->getKind() == SVFType::SVFIntegerTy;
+               adapter_.variable(*value).type().kind ==
+                   AD::NumericKind::Integer;
     };
     const auto addCandidate = [&](const ValVar* value) {
         if (integerValue(value) && evaSeen.insert(value->getId()).second)
