@@ -81,8 +81,17 @@ static void check_bound(elina_manager_t* manager, elina_abstract0_t* value,
     }
 }
 
+static void reset_manager_result(elina_manager_t* manager)
+{
+    elina_manager_clear_exclog(manager);
+    manager->result.exn = ELINA_EXC_NONE;
+    manager->result.flag_exact = false;
+    manager->result.flag_best = false;
+}
+
 static void check_integer_strict_guard(elina_manager_t* manager,
-                                       const char* domain)
+                                       const char* domain,
+                                       bool require_support)
 {
     elina_abstract0_t* top = elina_abstract0_top(manager, 1, 0);
     elina_lincons0_array_t constraints = elina_lincons0_array_make(1);
@@ -90,7 +99,18 @@ static void check_integer_strict_guard(elina_manager_t* manager,
         ELINA_CONS_SUP, expression(1, 0, 0, 1, -1, 0), NULL);
     elina_abstract0_t* guarded = elina_abstract0_meet_lincons_array(
         manager, false, top, &constraints);
-    check_no_exception(manager, domain, "integer strict guard");
+    if (manager->result.exn != ELINA_EXC_NONE || guarded == NULL)
+    {
+        printf("UNSUPPORTED %s operation=integer-strict-guard exception=%s\n",
+               domain, elina_name_of_exception[manager->result.exn]);
+        check(!require_support, domain, "integer strict guard unsupported");
+        if (guarded != NULL)
+            elina_abstract0_free(manager, guarded);
+        elina_abstract0_free(manager, top);
+        elina_lincons0_array_clear(&constraints);
+        reset_manager_result(manager);
+        return;
+    }
     elina_interval_t* interval =
         elina_abstract0_bound_dimension(manager, guarded, 0);
     check_no_exception(manager, domain, "integer strict lower bound");
@@ -223,6 +243,8 @@ static void exercise_domain(elina_manager_t* manager, const char* domain,
           "closure changed a closed point");
     check_no_exception(manager, domain, "closure equality");
 
+    check_integer_strict_guard(manager, domain, !octagon);
+
     if (octagon)
     {
         elina_abstract0_minimize(manager, point);
@@ -231,7 +253,7 @@ static void exercise_domain(elina_manager_t* manager, const char* domain,
         printf("EXPECTED_UNSUPPORTED %s operation=minimize exception=%s\n",
                domain,
                elina_name_of_exception[manager->result.exn]);
-        elina_manager_clear_exclog(manager);
+        reset_manager_result(manager);
     }
     else
     {
@@ -240,8 +262,6 @@ static void exercise_domain(elina_manager_t* manager, const char* domain,
         elina_abstract0_canonicalize(manager, point);
         check_no_exception(manager, domain, "Polyhedra canonicalize");
     }
-
-    check_integer_strict_guard(manager, domain);
 
     elina_abstract0_free(manager, closed);
     elina_abstract0_free(manager, joined);
@@ -270,6 +290,7 @@ static elina_manager_t* make_polyhedra(void)
 
 int main(void)
 {
+    setvbuf(stdout, NULL, _IONBF, 0);
     exercise_domain(make_octagon(), "octagon", true);
     exercise_domain(make_polyhedra(), "polyhedra-loose", false);
     if (failures != 0)
