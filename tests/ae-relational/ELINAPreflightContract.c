@@ -240,12 +240,21 @@ static void exercise_domain(elina_manager_t* manager, const char* domain,
            elina_manager_get_flag_best(manager) ? 1 : 0,
            elina_name_of_exception[manager->result.exn]);
 
-    elina_abstract0_t* closed =
-        elina_abstract0_closure(manager, false, point);
-    check_no_exception(manager, domain, "topological closure");
-    check(elina_abstract0_is_eq(manager, point, closed), domain,
-          "closure changed a closed point");
-    check_no_exception(manager, domain, "closure equality");
+    elina_abstract0_t* closed = NULL;
+    if (octagon)
+    {
+        closed = elina_abstract0_closure(manager, false, point);
+        check_no_exception(manager, domain, "topological closure");
+        check(elina_abstract0_is_eq(manager, point, closed), domain,
+              "closure changed a closed point");
+        check_no_exception(manager, domain, "closure equality");
+    }
+    else
+    {
+        /* This manager leaves ELINA_FUNID_CLOSURE unregistered. */
+        printf("UNSUPPORTED %s operation=topological-closure registration=none\n",
+               domain);
+    }
 
     check_integer_strict_guard(manager, domain, true, octagon);
 
@@ -267,7 +276,8 @@ static void exercise_domain(elina_manager_t* manager, const char* domain,
         check_no_exception(manager, domain, "Polyhedra canonicalize");
     }
 
-    elina_abstract0_free(manager, closed);
+    if (closed != NULL)
+        elina_abstract0_free(manager, closed);
     elina_abstract0_free(manager, joined);
     elina_abstract0_free(manager, reduced);
     elina_abstract0_free(manager, z_assigned);
