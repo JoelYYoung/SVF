@@ -61,6 +61,10 @@ struct OctagonConfig
     bool strongClosure = true;
     bool integerTightening = true;
     OctagonStorageKind storage = OctagonStorageKind::DenseHalf;
+    /// ComponentDense only: share component matrices across abstract-state
+    /// copies until the first write. Disabling this keeps identical abstract
+    /// semantics but moves the matrix-copy cost from mutation to clone.
+    bool componentCopyOnWrite = true;
     std::shared_ptr<DiagnosticSink> diagnostics;
 
     /// Diagnostics affect observation only, not abstract-state semantics.

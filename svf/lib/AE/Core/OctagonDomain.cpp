@@ -94,9 +94,16 @@ public:
         initializeCarrier();
     }
 
-    std::unique_ptr<OctagonStorage> clone() const
+    std::unique_ptr<OctagonStorage> clone(
+        bool componentCopyOnWrite = true) const
     {
-        return std::make_unique<OctagonStorage>(*this);
+        auto result = std::make_unique<OctagonStorage>(*this);
+        if (kind_ == OctagonStorageKind::ComponentDense &&
+                !componentCopyOnWrite)
+            for (Component& component : result->components_)
+                component.matrix =
+                    std::make_shared<std::vector<Bound>>(*component.matrix);
+        return result;
     }
 
     std::size_t nodes() const
@@ -376,10 +383,11 @@ public:
         throw std::logic_error("unknown Octagon storage kind");
     }
 
-    OctagonStorage converted(OctagonStorageKind kind) const
+    OctagonStorage converted(OctagonStorageKind kind,
+                             bool componentCopyOnWrite = true) const
     {
         if (kind == kind_)
-            return *this;
+            return std::move(*clone(componentCopyOnWrite));
         OctagonStorage result(variableKinds, kind, ScratchMatrixTag{});
         for (std::size_t row = 0; row < nodes(); ++row)
             for (std::size_t column = 0; column < nodes(); ++column)
@@ -916,7 +924,9 @@ public:
     }
 
     Impl(const Impl& other)
-        : options_(other.options_), state_(other.state_)
+        : options_(other.options_),
+          state_(std::move(*other.state_.clone(
+                               other.options_.componentCopyOnWrite)))
     {
     }
 
@@ -1152,9 +1162,10 @@ public:
             normalized(asOctagon(genericRhs), rhsStorage);
         requireSameSize(lhs, rhs);
         if (lhs.bottom)
-            return std::make_unique<OctagonStorage>(rhs.converted(lhs.kind()));
+            return std::make_unique<OctagonStorage>(rhs.converted(
+                        lhs.kind(), options_.componentCopyOnWrite));
         if (rhs.bottom)
-            return lhs.clone();
+            return lhs.clone(options_.componentCopyOnWrite);
 
         if (lhs.kind() != OctagonStorageKind::DenseHalf)
         {
@@ -1168,7 +1179,7 @@ public:
 
         // Dense half matrices retain copy-on-write behavior by starting from
         // lhs and replacing only cells for which rhs is looser.
-        auto result = lhs.clone();
+        auto result = lhs.clone(options_.componentCopyOnWrite);
         bool removedFiniteRelation = false;
         for (std::size_t row = 0; row < result->nodes(); ++row)
             for (std::size_t column = 0; column <= (row | 1); ++column)
@@ -1208,9 +1219,9 @@ public:
             normalized(asOctagon(genericRhs), rhsStorage);
         requireSameSize(lhs, rhs);
         if (lhs.bottom)
-            return lhs.clone();
+            return lhs.clone(options_.componentCopyOnWrite);
         if (rhs.bottom)
-            return rhs.clone();
+            return rhs.clone(options_.componentCopyOnWrite);
 
         auto result = std::make_unique<OctagonStorage>(
                           lhs.variableKinds, lhs.kind(), OctagonStorage::ScratchMatrixTag{});
@@ -1237,9 +1248,10 @@ public:
         requireSameSize(current, next);
         if (current.bottom)
             return std::make_unique<OctagonStorage>(
-                       next.converted(current.kind()));
+                       next.converted(current.kind(),
+                                      options_.componentCopyOnWrite));
         if (next.bottom)
-            return current.clone();
+            return current.clone(options_.componentCopyOnWrite);
 
         std::vector<Rational> thresholds = policy.thresholds;
         std::sort(thresholds.begin(), thresholds.end());
@@ -1296,9 +1308,9 @@ public:
             normalized(asOctagon(genericNext), nextStorage);
         requireSameSize(current, next);
         if (current.bottom || next.bottom)
-            return next.clone();
+            return next.clone(options_.componentCopyOnWrite);
 
-        auto result = std::make_unique<OctagonStorage>(current);
+        auto result = current.clone(options_.componentCopyOnWrite);
         for (std::size_t row = 0; row < result->nodes(); ++row)
             for (std::size_t column = 0; column < result->nodes(); ++column)
                 if (current.at(row, column).isPlusInfinity() &&
@@ -1315,7 +1327,7 @@ public:
         const OctagonStorage& source =
             normalized(asOctagon(genericState), sourceStorage);
         if (source.bottom)
-            return source.clone();
+            return source.clone(options_.componentCopyOnWrite);
 
         auto result = std::make_unique<OctagonStorage>(
                           source.variableKinds, source.kind());
@@ -1529,7 +1541,8 @@ public:
     void reconfigure(OctagonConfig options)
     {
         if (state_.kind() != options.storage)
-            state_ = state_.converted(options.storage);
+            state_ = state_.converted(options.storage,
+                                      options.componentCopyOnWrite);
         options_ = std::move(options);
         // A matrix marked closed under a weaker policy must be normalized
         // again when stronger integer/strong closure is enabled.
@@ -2549,7 +2562,8 @@ private:
     {
         if (state.bottom || state.stronglyClosed)
             return state;
-        normalizedStorage.emplace(state);
+        normalizedStorage.emplace(
+            std::move(*state.clone(options_.componentCopyOnWrite)));
         normalize(*normalizedStorage);
         return *normalizedStorage;
     }

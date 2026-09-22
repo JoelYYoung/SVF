@@ -287,13 +287,14 @@ Snapshot readSnapshot(const std::string& encoded)
 
 std::unique_ptr<AD::NumericalDomain> makeState(
     const Snapshot& snapshot, AD::NumericalBackendKind backend,
-    AD::OctagonStorageKind octagonStorage)
+    AD::OctagonStorageKind octagonStorage, bool componentCopyOnWrite)
 {
     if (!AD::numericalBackendAvailable(snapshot.kind, backend))
         throw std::invalid_argument(
             "selected backend is unavailable for a traced domain");
     AD::OctagonConfig octagonConfig;
     octagonConfig.storage = octagonStorage;
+    octagonConfig.componentCopyOnWrite = componentCopyOnWrite;
     std::unique_ptr<AD::NumericalDomain> state = AD::makeNumericalDomain(
         snapshot.kind, snapshot.bottom, backend, octagonConfig);
     if (!snapshot.bottom)
@@ -489,12 +490,16 @@ AD::NumericalBackendKind parseBackend(const std::string& name)
     throw std::invalid_argument("backend must be native or elina");
 }
 
-const char* replayCarrierName(AD::NumericalBackendKind backend,
-                              AD::OctagonStorageKind storage)
+std::string replayCarrierName(AD::NumericalBackendKind backend,
+                              AD::OctagonStorageKind storage,
+                              bool componentCopyOnWrite)
 {
-    return backend == AD::NumericalBackendKind::Native
-        ? AD::octagonStorageKindName(storage)
-        : "external";
+    if (backend != AD::NumericalBackendKind::Native)
+        return "external";
+    if (storage == AD::OctagonStorageKind::ComponentDense)
+        return componentCopyOnWrite ? "component-dense-cow"
+               : "component-dense-eager";
+    return AD::octagonStorageKindName(storage);
 }
 
 const char* domainName(AD::DomainKind kind)
@@ -516,19 +521,28 @@ const char* domainName(AD::DomainKind kind)
 
 int main(int argc, char** argv)
 {
-    if (argc != 3 && argc != 4)
+    if (argc < 3 || argc > 5)
     {
         std::cerr << "usage: " << argv[0]
                   << " TRACE.tsv native|elina [dense-half|sparse-finite|"
-                     "component-dense]\n";
+                     "component-dense] [cow|eager]\n";
         return 2;
     }
     try
     {
         const AD::NumericalBackendKind backend = parseBackend(argv[2]);
-        const AD::OctagonStorageKind octagonStorage = argc == 4
+        const AD::OctagonStorageKind octagonStorage = argc >= 4
             ? AD::octagonStorageKindFromName(argv[3])
             : AD::OctagonStorageKind::DenseHalf;
+        if (argc == 5 && octagonStorage != AD::OctagonStorageKind::ComponentDense)
+            throw std::invalid_argument(
+                "cow/eager applies only to component-dense storage");
+        const bool componentCopyOnWrite = argc != 5 ||
+            std::string(argv[4]) == "cow";
+        if (argc == 5 && std::string(argv[4]) != "cow" &&
+                std::string(argv[4]) != "eager")
+            throw std::invalid_argument(
+                "component copy policy must be cow or eager");
         std::ifstream input(argv[1]);
         if (!input)
             throw std::runtime_error("cannot open numerical operation trace");
@@ -560,11 +574,12 @@ int main(int argc, char** argv)
                     backend == AD::NumericalBackendKind::Elina)
                 continue;
             std::unique_ptr<AD::NumericalDomain> state =
-                makeState(before, backend, octagonStorage);
+                makeState(before, backend, octagonStorage,
+                          componentCopyOnWrite);
             std::unique_ptr<AD::NumericalDomain> rhs;
             if (!row[7].empty())
                 rhs = makeState(readSnapshot(row[7]), backend,
-                                octagonStorage);
+                                octagonStorage, componentCopyOnWrite);
 
             std::uint64_t checksum = 0;
             const char* validation = "NA";
@@ -594,13 +609,15 @@ int main(int argc, char** argv)
             if (!row[8].empty() && event == "operation")
             {
                 std::unique_ptr<AD::NumericalDomain> expected =
-                    makeState(readSnapshot(row[8]), backend, octagonStorage);
+                    makeState(readSnapshot(row[8]), backend, octagonStorage,
+                              componentCopyOnWrite);
                 const Relation comparison = compareStates(*state, *expected);
                 validation = comparison.validation;
                 relation = comparison.name;
             }
             std::cout << sequence << '\t' << AD::numericalBackendName(backend)
-                      << '\t' << replayCarrierName(backend, octagonStorage)
+                      << '\t' << replayCarrierName(
+                          backend, octagonStorage, componentCopyOnWrite)
                       << '\t' << domainName(before.kind) << '\t'
                       << event << '\t'
                       << (event == "clone" ? "clone" : operation) << '\t'

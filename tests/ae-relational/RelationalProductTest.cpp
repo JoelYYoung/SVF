@@ -292,6 +292,47 @@ void octagonIndexedClosure()
     }
 }
 
+void octagonComponentCopyPolicies()
+{
+    const AD::Variable x(65);
+    const AD::Variable y(66);
+    std::vector<AD::LinearConstraintSet> results;
+    for (const bool copyOnWrite : {true, false})
+    {
+        AD::OctagonConfig config;
+        config.storage = AD::OctagonStorageKind::ComponentDense;
+        config.componentCopyOnWrite = copyOnWrite;
+        AD::OctagonDomain original = AD::OctagonDomain::top(config);
+        original.assign(y, AD::LinearExpression(x) +
+                           AD::LinearExpression(AD::Rational(1)));
+        AD::OctagonDomain copy(original);
+        copy.assign(y, AD::LinearExpression(x) +
+                       AD::LinearExpression(AD::Rational(2)));
+        if (original.entails(AD::equal(
+                AD::LinearExpression(y),
+                AD::LinearExpression(x) +
+                    AD::LinearExpression(AD::Rational(1)))) !=
+                AD::CheckResult::True)
+            fail("component copy mutation changed its source state");
+        if (copy.entails(AD::equal(
+                AD::LinearExpression(y),
+                AD::LinearExpression(x) +
+                    AD::LinearExpression(AD::Rational(2)))) !=
+                AD::CheckResult::True)
+            fail("component copy policy changed assignment semantics");
+        results.push_back(copy.toConstraints());
+    }
+    AD::OctagonConfig config;
+    config.storage = AD::OctagonStorageKind::ComponentDense;
+    AD::OctagonDomain cow = AD::OctagonDomain::fromConstraints(
+        results.front(), config);
+    AD::OctagonDomain eager = AD::OctagonDomain::fromConstraints(
+        results.back(), config);
+    if (cow.isSubsetOf(eager) != AD::CheckResult::True ||
+            eager.isSubsetOf(cow) != AD::CheckResult::True)
+        fail("component COW and eager-copy results disagree");
+}
+
 void partialRelationalClosureDelegation()
 {
     const AD::Variable x(71);
@@ -328,6 +369,7 @@ void partialRelationalClosureDelegation()
 }
 int main()
 {
+    octagonComponentCopyPolicies();
     const AD::Variable x(1);
     const AD::Variable y(2);
     const AD::Variable z(3);
