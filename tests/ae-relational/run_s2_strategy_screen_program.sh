@@ -39,7 +39,7 @@ row=$(awk -F '\t' -v program="$program" 'NR > 1 && $1 == program { print; exit }
 IFS=$'\t' read -r selected_program relative input_id instructions functions <<< "$row"
 input=$dataset_root/$relative
 test "$(sha256sum "$input" | cut -d' ' -f1)" = "$input_id" || exit 6
-ordinal=$(awk -F '\t' -v program="$program" 'NR > 1 { index++ } $1 == program { print index; exit }' "$cohort")
+ordinal=$(awk -F '\t' -v program="$program" 'NR > 1 { row_index++ } $1 == program { print row_index; exit }' "$cohort")
 cpu=$((7 + ordinal))
 
 configs=(
