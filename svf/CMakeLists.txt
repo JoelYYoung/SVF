@@ -101,12 +101,17 @@ if(SVF_ENABLE_ELINA)
     message(FATAL_ERROR
             "SVF_ENABLE_ELINA requires fixed Octagon/Polyhedra headers and libraries under ELINA_ROOT")
   endif()
-  target_sources(AbstractDomainCore PRIVATE
-                 ${CMAKE_CURRENT_LIST_DIR}/lib/AE/Core/ElinaOctagonDomain.cpp
-                 ${CMAKE_CURRENT_LIST_DIR}/lib/AE/Core/ELINAPolyhedraDomain.cpp)
+  set(ELINA_DOMAIN_CORE_SOURCES
+      ${CMAKE_CURRENT_LIST_DIR}/lib/AE/Core/ElinaOctagonDomain.cpp
+      ${CMAKE_CURRENT_LIST_DIR}/lib/AE/Core/ELINAPolyhedraDomain.cpp)
+  set(ELINA_DOMAIN_CORE_HEADERS
+      ${CMAKE_CURRENT_LIST_DIR}/include/AE/Core/ElinaOctagonDomain.h
+      ${CMAKE_CURRENT_LIST_DIR}/include/AE/Core/ELINAPolyhedraDomain.h)
+  list(APPEND ABSTRACT_DOMAIN_CORE_SOURCES ${ELINA_DOMAIN_CORE_SOURCES})
+  list(APPEND ABSTRACT_DOMAIN_CORE_HEADERS ${ELINA_DOMAIN_CORE_HEADERS})
+  target_sources(AbstractDomainCore PRIVATE ${ELINA_DOMAIN_CORE_SOURCES})
   target_sources(AbstractDomainCore PUBLIC FILE_SET HEADERS FILES
-                 ${CMAKE_CURRENT_LIST_DIR}/include/AE/Core/ElinaOctagonDomain.h
-                 ${CMAKE_CURRENT_LIST_DIR}/include/AE/Core/ELINAPolyhedraDomain.h)
+                 ${ELINA_DOMAIN_CORE_HEADERS})
   target_compile_definitions(AbstractDomainCore PUBLIC SVF_HAVE_ELINA=1
                                                        SVF_HAS_ELINA_POLYHEDRA=1)
   target_include_directories(AbstractDomainCore SYSTEM PRIVATE
