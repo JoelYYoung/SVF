@@ -372,7 +372,29 @@ void AbstractInterpretation::initializeRelationalPolicy()
             evaCandidates.push_back(adapter_.variable(*value));
     };
     const auto addPair = [&](const ValVar* left, const ValVar* right) {
-        if (!integerValue(left) || !integerValue(right) || left == right)
+        const bool leftInteger = integerValue(left);
+        const bool rightInteger = integerValue(right);
+        if (std::getenv("SVF_AE_TRACE_RELATIONAL_POLICY"))
+        {
+            const auto printValue = [&](const ValVar* value,
+                                        bool accepted) {
+                std::cerr << (value ? value->getId() : 0) << ':'
+                          << accepted << ':'
+                          << (value && adapter_.contains(*value)) << ':'
+                          << (value && value->isPointer()) << ':';
+                if (value && adapter_.contains(*value))
+                    std::cerr << static_cast<unsigned>(
+                        adapter_.variable(*value).type().kind);
+                else
+                    std::cerr << '-';
+            };
+            std::cerr << "AE_RELATIONAL_PAIR=";
+            printValue(left, leftInteger);
+            std::cerr << ',';
+            printValue(right, rightInteger);
+            std::cerr << '\n';
+        }
+        if (!leftInteger || !rightInteger || left == right)
             return;
         ++recognizedPairs;
         addCandidate(left);
