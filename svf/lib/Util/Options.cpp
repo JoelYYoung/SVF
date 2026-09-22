@@ -802,6 +802,20 @@ const OptionMap<u32_t> Options::AEDomain(
         "General convex linear constraints."
     }
 });
+const OptionMap<u32_t> Options::AEBackend(
+    "ae-backend",
+    "Numerical-domain implementation backend (Default: native)",
+    AbstractInterpretation::AENumericalBackend::NativeBackend,
+{
+    {
+        AbstractInterpretation::AENumericalBackend::NativeBackend, "native",
+        "Use SVF's native numerical-domain implementation."
+    },
+    {
+        AbstractInterpretation::AENumericalBackend::ELINABackend, "elina",
+        "Use the configured fixed ELINA implementation."
+    }
+});
 const OptionMap<u32_t> Options::AERelationalPolicy(
     "ae-relational-policy",
     "Relational-domain activation policy (Default: whole)",

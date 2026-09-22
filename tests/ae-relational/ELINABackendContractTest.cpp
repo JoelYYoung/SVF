@@ -1,5 +1,11 @@
 #include "AE/Core/ELINABackendContract.h"
 #include "AE/Core/NumericalDomainFactory.h"
+#include "AE/Core/PartialRelationalDomain.h"
+#include "AE/Core/ConvexPolyhedraDomain.h"
+#include "AE/Core/OctagonDomain.h"
+#if defined(SVF_HAVE_ELINA)
+#    include "AE/Core/ElinaOctagonDomain.h"
+#endif
 #if defined(SVF_HAS_ELINA_POLYHEDRA)
 #    include "AE/Core/ELINAPolyhedraDomain.h"
 #endif
@@ -7,6 +13,7 @@
 #include <cfenv>
 #include <cstdlib>
 #include <iostream>
+#include <memory>
 #include <stdexcept>
 
 namespace AD = SVF::AbstractDomain;
@@ -72,6 +79,46 @@ int main()
         AD::makeNumericalDomain(AD::DomainKind::ConvexPolyhedra, false,
                                 AD::NumericalBackendKind::Native);
     expect(native->isTop(), "native factory did not preserve B0 top");
+
+    AD::OctagonConfig denseConfig;
+    denseConfig.storage = AD::OctagonStorageKind::ComponentDense;
+    auto nativeOctagon = AD::makeNumericalDomain(
+        AD::DomainKind::Octagon, false, AD::NumericalBackendKind::Native,
+        denseConfig);
+    expect(nativeOctagon->isDomain<AD::OctagonDomain>() &&
+               static_cast<const AD::OctagonDomain&>(*nativeOctagon)
+                       .config().storage ==
+                   AD::OctagonStorageKind::ComponentDense,
+           "factory lost AE's dense Octagon storage configuration");
+
+    auto vocabulary = std::make_shared<
+        const AD::PartialRelationalDomain::Vocabulary>(
+            AD::PartialRelationalDomain::Vocabulary{integer});
+    AD::PartialRelationalDomain nativePartialOctagon =
+        AD::PartialRelationalDomain::top(
+            AD::DomainKind::Octagon, vocabulary,
+            AD::NumericalBackendKind::Native);
+    expect(nativePartialOctagon.backend() ==
+               AD::NumericalBackendKind::Native &&
+               nativePartialOctagon.relational().isDomain<AD::OctagonDomain>(),
+           "partial Octagon did not use the selected native backend");
+    AD::PartialRelationalDomain nativePartialPolyhedra =
+        AD::PartialRelationalDomain::top(
+            AD::DomainKind::ConvexPolyhedra, vocabulary,
+            AD::NumericalBackendKind::Native);
+    expect(nativePartialPolyhedra.relational()
+               .isDomain<AD::ConvexPolyhedraDomain>(),
+           "partial Polyhedra did not use the selected native backend");
+
+    try
+    {
+        (void)AD::makeNumericalDomain(AD::DomainKind::Box, false,
+                                      AD::NumericalBackendKind::ELINA);
+        fail("Box silently accepted the ELINA backend");
+    }
+    catch (const std::invalid_argument&)
+    {
+    }
 
 #if defined(SVF_HAS_ELINA_POLYHEDRA)
     expect(AD::numericalBackendAvailable(AD::DomainKind::ConvexPolyhedra,
@@ -203,6 +250,25 @@ int main()
            "ELINA meet-based narrowing did not retain the next state");
     expect(std::fegetround() == originalRounding,
            "ELINA backend leaked its rounding mode");
+
+    AD::PartialRelationalDomain elinaPartialPolyhedra =
+        AD::PartialRelationalDomain::top(
+            AD::DomainKind::ConvexPolyhedra, vocabulary,
+            AD::NumericalBackendKind::ELINA);
+    expect(elinaPartialPolyhedra.backend() ==
+               AD::NumericalBackendKind::ELINA &&
+               elinaPartialPolyhedra.relational()
+                   .isDomain<AD::ELINAPolyhedraDomain>(),
+           "partial Polyhedra did not use the selected ELINA backend");
+#if defined(SVF_HAVE_ELINA)
+    AD::PartialRelationalDomain elinaPartialOctagon =
+        AD::PartialRelationalDomain::top(
+            AD::DomainKind::Octagon, vocabulary,
+            AD::NumericalBackendKind::ELINA);
+    expect(elinaPartialOctagon.relational()
+               .isDomain<AD::ElinaOctagonDomain>(),
+           "partial Octagon did not use the selected ELINA backend");
+#endif
 #else
     expect(!AD::numericalBackendAvailable(AD::DomainKind::ConvexPolyhedra,
                                           AD::NumericalBackendKind::ELINA),
@@ -212,6 +278,16 @@ int main()
         (void)AD::makeNumericalDomain(AD::DomainKind::ConvexPolyhedra, false,
                                       AD::NumericalBackendKind::ELINA);
         fail("unconfigured ELINA factory did not fail explicitly");
+    }
+    catch (const std::invalid_argument&)
+    {
+    }
+    try
+    {
+        (void)AD::PartialRelationalDomain::top(
+            AD::DomainKind::ConvexPolyhedra, vocabulary,
+            AD::NumericalBackendKind::ELINA);
+        fail("partial domain silently replaced unavailable ELINA");
     }
     catch (const std::invalid_argument&)
     {

@@ -235,6 +235,7 @@ public:
     // Abstract Execution
     static const OptionMap<u32_t> AESparsity;
     static const OptionMap<u32_t> AEDomain;
+    static const OptionMap<u32_t> AEBackend;
     static const OptionMap<u32_t> AERelationalPolicy;
     static const Option<u32_t> AERelationalMaxVars;
     /// Optional complete abstract-execution query ledger (TSV).
