@@ -383,53 +383,70 @@ void AbstractInterpretation::initializeRelationalPolicy()
     {
         const bool throughCalls =
             Options::AERelationalCallPolicy() == ThroughCalls;
-        for (auto iterator = icfg->begin(); iterator != icfg->end(); ++iterator)
+        // Function-return phis and a few other semantic edges are attached to
+        // SVF values but are not guaranteed to appear in an ICFG node's local
+        // statement list. Walk the canonical SVF def edges instead, then sort
+        // by stable edge identity for a deterministic bounded vocabulary.
+        std::vector<const SVFStmt*> statements;
+        for (auto iterator = svfir->begin(); iterator != svfir->end();
+                ++iterator)
         {
-            for (const SVFStmt* statement : iterator->second->getSVFStmts())
+            const auto* value = SVFUtil::dyn_cast<ValVar>(iterator->second);
+            if (!value)
+                continue;
+            statements.insert(statements.end(), value->getInEdges().begin(),
+                              value->getInEdges().end());
+        }
+        std::sort(statements.begin(), statements.end(),
+                  [](const SVFStmt* left, const SVFStmt* right) {
+                      return left->getEdgeID() < right->getEdgeID();
+                  });
+        statements.erase(std::unique(statements.begin(), statements.end()),
+                         statements.end());
+        for (const SVFStmt* statement : statements)
+        {
+            if (const auto* binary =
+                    SVFUtil::dyn_cast<BinaryOPStmt>(statement))
             {
-                if (const auto* binary =
-                        SVFUtil::dyn_cast<BinaryOPStmt>(statement))
-                {
-                    if (binary->getOpcode() == BinaryOPStmt::Add ||
-                            binary->getOpcode() == BinaryOPStmt::Sub)
-                        for (const ValVar* operand : binary->getOpndVars())
-                            addPair(binary->getRes(), operand);
-                }
-                else if (const auto* compare =
-                             SVFUtil::dyn_cast<CmpStmt>(statement))
-                {
-                    if (compare->getOpVarNum() == 2)
-                        addPair(compare->getOpVar(0), compare->getOpVar(1));
-                }
-                else if (const auto* phi =
-                             SVFUtil::dyn_cast<PhiStmt>(statement))
-                {
-                    for (const ValVar* operand : phi->getOpndVars())
-                        addPair(phi->getRes(), operand);
-                }
-                else if (const auto* select =
-                             SVFUtil::dyn_cast<SelectStmt>(statement))
-                {
-                    for (const ValVar* operand : select->getOpndVars())
-                        addPair(select->getRes(), operand);
-                }
-                else if (throughCalls)
-                {
-                    if (const auto* call =
-                            SVFUtil::dyn_cast<CallPE>(statement))
-                        for (const ValVar* operand : call->getOpndVars())
-                            addPair(call->getRes(), operand);
-                    else if (const auto* ret =
-                                 SVFUtil::dyn_cast<RetPE>(statement))
-                        addPair(ret->getLHSVar(), ret->getRHSVar());
-                    else if (const auto* copy =
-                                 SVFUtil::dyn_cast<CopyStmt>(statement))
-                        addPair(copy->getLHSVar(), copy->getRHSVar());
-                }
+                if (binary->getOpcode() == BinaryOPStmt::Add ||
+                        binary->getOpcode() == BinaryOPStmt::Sub)
+                    for (const ValVar* operand : binary->getOpndVars())
+                        addPair(binary->getRes(), operand);
+            }
+            else if (const auto* compare =
+                         SVFUtil::dyn_cast<CmpStmt>(statement))
+            {
+                if (compare->getOpVarNum() == 2)
+                    addPair(compare->getOpVar(0), compare->getOpVar(1));
+            }
+            else if (const auto* phi =
+                         SVFUtil::dyn_cast<PhiStmt>(statement))
+            {
+                for (const ValVar* operand : phi->getOpndVars())
+                    addPair(phi->getRes(), operand);
+            }
+            else if (const auto* select =
+                         SVFUtil::dyn_cast<SelectStmt>(statement))
+            {
+                for (const ValVar* operand : select->getOpndVars())
+                    addPair(select->getRes(), operand);
+            }
+            else if (throughCalls)
+            {
+                if (const auto* call =
+                        SVFUtil::dyn_cast<CallPE>(statement))
+                    for (const ValVar* operand : call->getOpndVars())
+                        addPair(call->getRes(), operand);
+                else if (const auto* ret =
+                             SVFUtil::dyn_cast<RetPE>(statement))
+                    addPair(ret->getLHSVar(), ret->getRHSVar());
                 else if (const auto* copy =
                              SVFUtil::dyn_cast<CopyStmt>(statement))
                     addPair(copy->getLHSVar(), copy->getRHSVar());
             }
+            else if (const auto* copy =
+                         SVFUtil::dyn_cast<CopyStmt>(statement))
+                addPair(copy->getLHSVar(), copy->getRHSVar());
         }
     }
 
