@@ -30,7 +30,7 @@ static void check(bool condition, const char* domain, const char* message)
 static void check_no_exception(elina_manager_t* manager, const char* domain,
                                const char* operation)
 {
-    const elina_exc_t exception = elina_manager_get_exception(manager);
+    const elina_exc_t exception = manager->result.exn;
     if (exception != ELINA_EXC_NONE)
     {
         fprintf(stderr, "FAIL [%s] %s raised %s\n", domain, operation,
@@ -214,7 +214,7 @@ static void exercise_domain(elina_manager_t* manager, const char* domain,
            top_leq_point ? 1 : 0,
            elina_manager_get_flag_exact(manager) ? 1 : 0,
            elina_manager_get_flag_best(manager) ? 1 : 0,
-           elina_name_of_exception[elina_manager_get_exception(manager)]);
+           elina_name_of_exception[manager->result.exn]);
 
     elina_abstract0_t* closed =
         elina_abstract0_closure(manager, false, point);
@@ -226,11 +226,11 @@ static void exercise_domain(elina_manager_t* manager, const char* domain,
     if (octagon)
     {
         elina_abstract0_minimize(manager, point);
-        check(elina_manager_get_exception(manager) == ELINA_EXC_NOT_IMPLEMENTED,
+        check(manager->result.exn == ELINA_EXC_NOT_IMPLEMENTED,
               domain, "Octagon minimize must be treated as unsupported");
         printf("EXPECTED_UNSUPPORTED %s operation=minimize exception=%s\n",
                domain,
-               elina_name_of_exception[elina_manager_get_exception(manager)]);
+               elina_name_of_exception[manager->result.exn]);
         elina_manager_clear_exclog(manager);
     }
     else
