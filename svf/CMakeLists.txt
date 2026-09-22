@@ -8,6 +8,7 @@ set(ABSTRACT_DOMAIN_CORE_HEADERS
     ${CMAKE_CURRENT_LIST_DIR}/include/AE/Core/Variable.h
     ${CMAKE_CURRENT_LIST_DIR}/include/AE/Core/Expression.h
     ${CMAKE_CURRENT_LIST_DIR}/include/AE/Core/NumericalDomain.h
+    ${CMAKE_CURRENT_LIST_DIR}/include/AE/Core/NumericalDomainFactory.h
     ${CMAKE_CURRENT_LIST_DIR}/include/AE/Core/PartialRelationalDomain.h
     ${CMAKE_CURRENT_LIST_DIR}/include/AE/Core/AddressDomain.h
     ${CMAKE_CURRENT_LIST_DIR}/include/AE/Core/InitializationDomain.h
@@ -22,6 +23,7 @@ set(ABSTRACT_DOMAIN_CORE_SOURCES
     ${CMAKE_CURRENT_LIST_DIR}/lib/AE/Core/BoxAddressDomain.cpp
     ${CMAKE_CURRENT_LIST_DIR}/lib/AE/Core/Expression.cpp
     ${CMAKE_CURRENT_LIST_DIR}/lib/AE/Core/NumericalDomain.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/lib/AE/Core/NumericalDomainFactory.cpp
     ${CMAKE_CURRENT_LIST_DIR}/lib/AE/Core/PartialRelationalDomain.cpp
 )
 add_library(AbstractDomainCore)
@@ -39,6 +41,46 @@ target_include_directories(
   $<BUILD_INTERFACE:${CMAKE_CURRENT_LIST_DIR}/include>
 )
 target_link_libraries(AbstractDomainCore PUBLIC GMP::GMPXX MPFR::MPFR)
+
+option(SVF_ENABLE_ELINA "Build optional ELINA numerical-domain backends" OFF)
+set(ELINA_ROOT "" CACHE PATH "Fixed ELINA installation/source root")
+if(SVF_ENABLE_ELINA)
+  find_path(ELINA_AUX_INCLUDE_DIR elina_abstract0.h
+            HINTS ${ELINA_ROOT} PATH_SUFFIXES include elina_auxiliary)
+  find_path(ELINA_OCT_INCLUDE_DIR opt_oct.h
+            HINTS ${ELINA_ROOT} PATH_SUFFIXES include elina_oct)
+  find_path(ELINA_LINEARIZE_INCLUDE_DIR elina_generic.h
+            HINTS ${ELINA_ROOT} PATH_SUFFIXES include elina_linearize)
+  find_path(ELINA_PARTITIONS_INCLUDE_DIR comp_list.h
+            HINTS ${ELINA_ROOT} PATH_SUFFIXES include partitions_api)
+  find_library(ELINA_OCT_LIBRARY NAMES optoct liboptoct
+               HINTS ${ELINA_ROOT} PATH_SUFFIXES lib elina_oct)
+  find_library(ELINA_AUX_LIBRARY NAMES elinaux libelinaux
+               HINTS ${ELINA_ROOT} PATH_SUFFIXES lib elina_auxiliary)
+  find_library(ELINA_LINEARIZE_LIBRARY NAMES elinalinearize libelinalinearize
+               HINTS ${ELINA_ROOT} PATH_SUFFIXES lib elina_linearize)
+  find_library(ELINA_PARTITIONS_LIBRARY NAMES partitions libpartitions
+               HINTS ${ELINA_ROOT} PATH_SUFFIXES lib partitions_api)
+  if(NOT ELINA_AUX_INCLUDE_DIR OR NOT ELINA_OCT_INCLUDE_DIR OR
+     NOT ELINA_LINEARIZE_INCLUDE_DIR OR NOT ELINA_PARTITIONS_INCLUDE_DIR OR
+     NOT ELINA_OCT_LIBRARY OR NOT ELINA_AUX_LIBRARY OR
+     NOT ELINA_LINEARIZE_LIBRARY OR NOT ELINA_PARTITIONS_LIBRARY)
+    message(FATAL_ERROR
+            "SVF_ENABLE_ELINA requires the fixed ELINA headers and Octagon, auxiliary, linearize, and partitions libraries under ELINA_ROOT")
+  endif()
+  target_sources(AbstractDomainCore PRIVATE
+                 ${CMAKE_CURRENT_LIST_DIR}/lib/AE/Core/ElinaOctagonDomain.cpp)
+  target_sources(AbstractDomainCore PUBLIC FILE_SET HEADERS FILES
+                 ${CMAKE_CURRENT_LIST_DIR}/include/AE/Core/ElinaOctagonDomain.h)
+  target_compile_definitions(AbstractDomainCore PUBLIC SVF_HAVE_ELINA=1)
+  target_include_directories(AbstractDomainCore SYSTEM PRIVATE
+                             ${ELINA_AUX_INCLUDE_DIR} ${ELINA_OCT_INCLUDE_DIR}
+                             ${ELINA_LINEARIZE_INCLUDE_DIR}
+                             ${ELINA_PARTITIONS_INCLUDE_DIR})
+  target_link_libraries(AbstractDomainCore PRIVATE
+                        ${ELINA_OCT_LIBRARY} ${ELINA_PARTITIONS_LIBRARY}
+                        ${ELINA_AUX_LIBRARY} ${ELINA_LINEARIZE_LIBRARY})
+endif()
 set_target_properties(
   AbstractDomainCore PROPERTIES
   VERSION ${SVF_VERSION}
