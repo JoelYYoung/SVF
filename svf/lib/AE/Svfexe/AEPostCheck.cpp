@@ -485,10 +485,23 @@ void AbstractInterpretation::verifyPostFixpoint()
     // equations are checked. Reuse the exact symbol mapping so reconstructed
     // states and replay states remain lattice-compatible.
     // Post validation replays equations through a separate interpreter, but it
-    // is not part of the measured production-domain workload.  In particular,
-    // it must not reopen and truncate the analysis trace while the live writer
-    // still owns an older file offset.
+    // is not part of the measured production-domain workload.  Share the live
+    // writer so replay states keep the same decorator type as stored states,
+    // but suppress its rows and never reopen/truncate the trace path.
+    struct TraceResume final
+    {
+        std::shared_ptr<AD::NumericalOperationTraceWriter> writer;
+        ~TraceResume()
+        {
+            if (writer)
+                writer->resume();
+        }
+    };
+    if (numericalOperationTrace_)
+        numericalOperationTrace_->suspend();
+    TraceResume traceResume{numericalOperationTrace_};
     AbstractInterpretation replay(false);
+    replay.numericalOperationTrace_ = numericalOperationTrace_;
     replay.adapter_ = adapter_;
     replay.relationalVocabulary_ = relationalVocabulary_;
     replay.relationalSeedCount_ = relationalSeedCount_;

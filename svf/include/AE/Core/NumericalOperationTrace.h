@@ -25,6 +25,12 @@ public:
     explicit NumericalOperationTraceWriter(const std::string& path);
     ~NumericalOperationTraceWriter();
 
+    /// Temporarily suppress rows while preserving the tracing decorator type.
+    /// This is used by semantic validation replays, whose operations are not
+    /// part of the measured production workload.
+    void suspend();
+    void resume();
+
     NumericalOperationTraceWriter(const NumericalOperationTraceWriter&) =
         delete;
     NumericalOperationTraceWriter& operator=(
@@ -55,6 +61,7 @@ private:
     std::mutex mutex_;
     std::uint64_t nextSequence_ = 1;
     std::uint64_t nextState_ = 1;
+    unsigned suspensionDepth_ = 0;
 };
 
 /// Wrap a domain with complete interpreter-facing operation tracing. The

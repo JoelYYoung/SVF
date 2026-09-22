@@ -593,6 +593,20 @@ NumericalOperationTraceWriter::~NumericalOperationTraceWriter()
     output_.flush();
 }
 
+void NumericalOperationTraceWriter::suspend()
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    ++suspensionDepth_;
+}
+
+void NumericalOperationTraceWriter::resume()
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (suspensionDepth_ == 0)
+        throw std::logic_error("numerical operation trace is not suspended");
+    --suspensionDepth_;
+}
+
 std::uint64_t NumericalOperationTraceWriter::allocateState()
 {
     std::lock_guard<std::mutex> lock(mutex_);
@@ -640,6 +654,8 @@ void NumericalOperationTraceWriter::writeRow(
     const OperationMetadata* metadata)
 {
     std::lock_guard<std::mutex> lock(mutex_);
+    if (suspensionDepth_ != 0)
+        return;
     output_ << nextSequence_++ << '\t' << event << '\t' << state << '\t' << rhs
             << '\t' << operation << '\t' << payload << '\t' << before << '\t'
             << rhsSnapshot << '\t' << after << '\t' << result << '\t';
