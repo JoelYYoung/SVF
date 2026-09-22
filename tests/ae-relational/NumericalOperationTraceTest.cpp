@@ -3,6 +3,7 @@
 #include "AE/Core/NumericalDomainFactory.h"
 
 #include <chrono>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -29,24 +30,41 @@ std::unique_ptr<AD::NumericalDomain> cloneNumerical(
         static_cast<AD::NumericalDomain*>(clone.release()));
 }
 
+AD::DomainKind requestedDomain()
+{
+    const char* requested = std::getenv("SVF_TRACE_TEST_DOMAIN");
+    if (!requested || std::string(requested) == "box")
+        return AD::DomainKind::Box;
+    if (std::string(requested) == "octagon")
+        return AD::DomainKind::Octagon;
+    if (std::string(requested) == "polyhedra")
+        return AD::DomainKind::ConvexPolyhedra;
+    throw std::invalid_argument(
+        "SVF_TRACE_TEST_DOMAIN must be box, octagon, or polyhedra");
+}
+
 } // namespace
 
 int main()
 {
     const auto stamp =
         std::chrono::steady_clock::now().time_since_epoch().count();
-    const std::filesystem::path path =
-        std::filesystem::temp_directory_path() /
-        ("svf-ae-numerical-trace-" + std::to_string(stamp) + ".tsv");
+    const char* requestedPath = std::getenv("SVF_TRACE_TEST_OUTPUT");
+    const bool preserve = requestedPath && *requestedPath;
+    const std::filesystem::path path = preserve
+        ? std::filesystem::path(requestedPath)
+        : std::filesystem::temp_directory_path() /
+              ("svf-ae-numerical-trace-" + std::to_string(stamp) + ".tsv");
 
     try
     {
+        const AD::DomainKind domain = requestedDomain();
         {
             auto writer = std::make_shared<AD::NumericalOperationTraceWriter>(
                 path.string());
             std::unique_ptr<AD::NumericalDomain> state =
                 AD::traceNumericalDomain(
-                    AD::makeNumericalDomain(AD::DomainKind::Box, false),
+                    AD::makeNumericalDomain(domain, false),
                     writer);
             const AD::Variable x(1);
             state->assign(x, AD::LinearExpression(AD::Rational(7)));
@@ -81,13 +99,15 @@ int main()
                 "trace binary lattice event is missing");
         require(contents.find("\tbound-variable\t") != std::string::npos,
                 "trace query event is missing");
-        std::filesystem::remove(path);
+        if (!preserve)
+            std::filesystem::remove(path);
         std::cout << "NumericalOperationTraceTest: PASS\n";
         return 0;
     }
     catch (const std::exception& error)
     {
-        std::filesystem::remove(path);
+        if (!preserve)
+            std::filesystem::remove(path);
         std::cerr << "NumericalOperationTraceTest: FAIL: " << error.what()
                   << '\n';
         return 1;

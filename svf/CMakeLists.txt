@@ -136,6 +136,11 @@ if(BUILD_TESTING)
   add_test(NAME ae-relational/NumericalOperationTraceTest
            COMMAND NumericalOperationTraceTest)
   add_executable(
+    NumericalOperationTraceReplay
+    ${CMAKE_CURRENT_LIST_DIR}/../tests/ae-relational/NumericalOperationTraceReplay.cpp
+  )
+  target_link_libraries(NumericalOperationTraceReplay PRIVATE AbstractDomainCore)
+  add_executable(
     NumericalDomainOperationBenchmark
     ${CMAKE_CURRENT_LIST_DIR}/../tests/ae-relational/NumericalDomainOperationBenchmark.cpp
   )
