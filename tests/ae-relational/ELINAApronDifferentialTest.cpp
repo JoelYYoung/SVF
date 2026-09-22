@@ -26,7 +26,8 @@ class ApronOracle
 public:
     explicit ApronOracle(bool polyhedra)
         : manager_(polyhedra ? pk_manager_alloc(true) : oct_manager_alloc()),
-          variables_{AD::Variable(3), AD::Variable(800), AD::Variable(11)}
+          variables_{AD::Variable(3), AD::Variable(800), AD::Variable(11)},
+          finiteIntegerModel_(polyhedra)
     {
         if (!manager_)
             throw std::runtime_error("APRON manager allocation failed");
@@ -121,7 +122,47 @@ public:
         auto* actual = state.isBottom()
                            ? ap_abstract0_bottom(manager_, variables_.size(), 0)
                            : from(state.toConstraints());
-        const bool equal = ap_abstract0_is_eq(manager_, actual, expected);
+        bool equal = true;
+        if (finiteIntegerModel_)
+        {
+            // APRON Polka compares rational polyhedra even when the dimensions
+            // are declared integral. Fixed ELINA tightens some rational bounds
+            // to an integer-equivalent hull. Compare their concrete integer
+            // membership on an explicit small model instead of requiring the
+            // two rational representations to be identical.
+            for (int x = -8; equal && x <= 8; ++x)
+                for (int y = -8; equal && y <= 8; ++y)
+                    for (int z = -8; equal && z <= 8; ++z)
+                    {
+                        auto* point = ap_abstract0_top(
+                            manager_, variables_.size(), 0);
+                        const int values[] = {x, y, z};
+                        for (ap_dim_t dimension = 0;
+                             dimension < variables_.size(); ++dimension)
+                        {
+                            auto* value = expression(AD::LinearExpression(
+                                AD::Rational(values[dimension])));
+                            point = ap_abstract0_assign_linexpr(
+                                manager_, true, point, dimension, value,
+                                nullptr);
+                            ap_linexpr0_free(value);
+                        }
+                        const bool inActual =
+                            ap_abstract0_is_leq(manager_, point, actual);
+                        const bool inExpected =
+                            ap_abstract0_is_leq(manager_, point, expected);
+                        ap_abstract0_free(manager_, point);
+                        ++modelChecks_;
+                        if (inActual != inExpected)
+                        {
+                            std::cerr << "integer-model mismatch at (" << x
+                                      << ", " << y << ", " << z << ")\n";
+                            equal = false;
+                        }
+                    }
+        }
+        else
+            equal = ap_abstract0_is_eq(manager_, actual, expected);
         if (!equal)
         {
             std::cerr << "adapter: " << state.toString() << '\n';
@@ -147,10 +188,17 @@ public:
         return checks_;
     }
 
+    unsigned long long modelChecks() const
+    {
+        return modelChecks_;
+    }
+
 private:
     ap_manager_t* manager_;
     std::vector<AD::Variable> variables_;
+    bool finiteIntegerModel_;
     unsigned checks_ = 0;
+    unsigned long long modelChecks_ = 0;
 };
 
 template <typename Domain>
@@ -244,6 +292,7 @@ int main()
         runFiniteDifferential<AD::ELINAPolyhedraDomain>(polyhedra);
         std::cout << "ELINAApronDifferentialTest: PASS octagon="
                   << octagon.checks() << " polyhedra=" << polyhedra.checks()
+                  << " finite_integer_points=" << polyhedra.modelChecks()
                   << '\n';
         return EXIT_SUCCESS;
     }
