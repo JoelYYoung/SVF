@@ -43,8 +43,34 @@ target_include_directories(
 target_link_libraries(AbstractDomainCore PUBLIC GMP::GMPXX MPFR::MPFR)
 
 option(SVF_ENABLE_ELINA "Build optional ELINA numerical-domain backends" OFF)
-set(ELINA_ROOT "" CACHE PATH "Fixed ELINA installation/source root")
+set(ELINA_ROOT "" CACHE PATH "Fixed ELINA installation root")
+set(ELINA_SOURCE_ROOT "${ELINA_ROOT}" CACHE PATH
+    "Fixed ELINA source checkout used to verify the pinned commit")
 if(SVF_ENABLE_ELINA)
+  set(SVF_ELINA_REQUIRED_COMMIT
+      "f524156d292ac3a6f3cd676e2d2e7db6629e2b6f")
+  if(NOT ELINA_ROOT OR NOT ELINA_SOURCE_ROOT)
+    message(FATAL_ERROR
+            "SVF_ENABLE_ELINA requires ELINA_ROOT and the fixed "
+            "ELINA_SOURCE_ROOT checkout")
+  endif()
+  find_package(Git REQUIRED)
+  execute_process(
+    COMMAND "${GIT_EXECUTABLE}" -C "${ELINA_SOURCE_ROOT}" rev-parse HEAD
+    RESULT_VARIABLE ELINA_GIT_RESULT
+    OUTPUT_VARIABLE ELINA_GIT_COMMIT
+    ERROR_VARIABLE ELINA_GIT_ERROR
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+  )
+  if(NOT ELINA_GIT_RESULT EQUAL 0)
+    message(FATAL_ERROR
+            "ELINA_SOURCE_ROOT must be the fixed ELINA Git checkout: ${ELINA_GIT_ERROR}")
+  endif()
+  if(NOT ELINA_GIT_COMMIT STREQUAL SVF_ELINA_REQUIRED_COMMIT)
+    message(FATAL_ERROR
+            "ELINA source mismatch: expected ${SVF_ELINA_REQUIRED_COMMIT}, "
+            "found ${ELINA_GIT_COMMIT}")
+  endif()
   find_path(ELINA_AUX_INCLUDE_DIR elina_abstract0.h
             HINTS ${ELINA_ROOT} PATH_SUFFIXES include elina_auxiliary)
   find_path(ELINA_OCT_INCLUDE_DIR opt_oct.h
@@ -80,6 +106,16 @@ if(SVF_ENABLE_ELINA)
   target_link_libraries(AbstractDomainCore PRIVATE
                         ${ELINA_OCT_LIBRARY} ${ELINA_PARTITIONS_LIBRARY}
                         ${ELINA_AUX_LIBRARY} ${ELINA_LINEARIZE_LIBRARY})
+endif()
+
+if(BUILD_TESTING)
+  add_executable(
+    ELINAOctagonAdapterTest
+    ${CMAKE_CURRENT_LIST_DIR}/../tests/ae-relational/ELINAOctagonAdapterTest.cpp
+  )
+  target_link_libraries(ELINAOctagonAdapterTest PRIVATE AbstractDomainCore)
+  add_test(NAME ae-relational/ELINAOctagonAdapterTest
+           COMMAND ELINAOctagonAdapterTest)
 endif()
 set_target_properties(
   AbstractDomainCore PROPERTIES
