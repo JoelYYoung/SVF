@@ -299,12 +299,41 @@ public:
     Impl(const Impl& other) : Impl(false)
     {
         ELINARoundingScope rounding;
-        elina_abstract0_free(manager, state);
         variables = other.variables;
+        resetResult(other.manager);
+        const bool bottom =
+            elina_abstract0_is_bottom(other.manager, other.state);
+        if (other.manager->result.exn != ELINA_EXC_NONE)
+            throw std::runtime_error(
+                "ELINA Polyhedra copy bottom check failed");
+        elina_abstract0_free(manager, state);
+        state = nullptr;
         resetResult(manager);
-        state = elina_abstract0_copy(manager, other.state);
+        state = bottom ? elina_abstract0_bottom(manager, variables.size(), 0)
+                       : elina_abstract0_top(manager, variables.size(), 0);
         if (!state || manager->result.exn != ELINA_EXC_NONE)
-            throw std::runtime_error("ELINA Polyhedra copy failed");
+            throw std::runtime_error(
+                "ELINA Polyhedra copy state allocation failed");
+        if (bottom)
+            return;
+
+        resetResult(other.manager);
+        elina_lincons0_array_t constraints =
+            elina_abstract0_to_lincons_array(other.manager, other.state);
+        if (other.manager->result.exn != ELINA_EXC_NONE)
+        {
+            elina_lincons0_array_clear(&constraints);
+            throw std::runtime_error(
+                "ELINA Polyhedra copy constraint export failed");
+        }
+        resetResult(manager);
+        elina_abstract0_t* imported = elina_abstract0_meet_lincons_array(
+            manager, false, state, &constraints);
+        elina_lincons0_array_clear(&constraints);
+        const ELINAStatus status = adopt(imported);
+        if (!status.ok)
+            throw std::runtime_error("ELINA Polyhedra copy import failed: " +
+                                     status.exception);
     }
 
     ~Impl()
@@ -360,7 +389,8 @@ ELINAPolyhedraDomain ELINAPolyhedraDomain::bottom(
 
 ELINAPolyhedraDomain::ELINAPolyhedraDomain(const ELINAPolyhedraDomain& other)
     : NumericalDomain(other), config_(other.config_),
-      impl_(std::make_unique<Impl>(*other.impl_)),
+      impl_(other.fallback_ ? std::make_unique<Impl>(false)
+                            : std::make_unique<Impl>(*other.impl_)),
       fallback_(other.fallback_
                     ? std::make_unique<ConvexPolyhedraDomain>(*other.fallback_)
                     : nullptr)
@@ -375,12 +405,17 @@ ELINAPolyhedraDomain& ELINAPolyhedraDomain::operator=(
 {
     if (this == &other)
         return *this;
+    std::unique_ptr<Impl> copiedImpl =
+        other.fallback_ ? std::make_unique<Impl>(false)
+                        : std::make_unique<Impl>(*other.impl_);
+    std::unique_ptr<ConvexPolyhedraDomain> copiedFallback =
+        other.fallback_
+            ? std::make_unique<ConvexPolyhedraDomain>(*other.fallback_)
+            : nullptr;
     NumericalDomain::operator=(other);
     config_ = other.config_;
-    impl_ = std::make_unique<Impl>(*other.impl_);
-    fallback_ = other.fallback_
-                    ? std::make_unique<ConvexPolyhedraDomain>(*other.fallback_)
-                    : nullptr;
+    impl_ = std::move(copiedImpl);
+    fallback_ = std::move(copiedFallback);
     return *this;
 }
 

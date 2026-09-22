@@ -15,6 +15,7 @@
 #include <iostream>
 #include <memory>
 #include <stdexcept>
+#include <vector>
 
 namespace AD = SVF::AbstractDomain;
 
@@ -181,6 +182,42 @@ int main()
                projected.supportVariables().size() == 1 &&
                projected.supportVariables().front() == y,
            "ELINA project retained a removed dimension");
+
+    std::vector<AD::Variable> degenerateVariables;
+    AD::ELINAPolyhedraDomain degenerate = AD::ELINAPolyhedraDomain::top();
+    for (std::size_t index = 0; index < 16; ++index)
+    {
+        const AD::Variable variable(index + 20, AD::NumericType::integer());
+        degenerateVariables.push_back(variable);
+        degenerate.assume(AD::greaterEqual(
+            AD::LinearExpression(variable),
+            AD::LinearExpression(AD::Rational(0))));
+        degenerate.assume(AD::lessEqual(
+            AD::LinearExpression(variable),
+            AD::LinearExpression(AD::Rational(10))));
+    }
+    for (std::size_t index = 1; index < degenerateVariables.size(); ++index)
+    {
+        const AD::LinearConstraint equality = AD::equal(
+            AD::LinearExpression(degenerateVariables[index]),
+            AD::LinearExpression(degenerateVariables.front()));
+        degenerate.assume(equality);
+        degenerate.assume(equality);
+    }
+    for (std::size_t repetition = 0; repetition < 3; ++repetition)
+    {
+        AD::ELINAPolyhedraDomain isolated(degenerate);
+        isolated.assign(
+            degenerateVariables.back(),
+            AD::LinearExpression(degenerateVariables.front()) +
+                AD::LinearExpression(AD::Rational(1)));
+        expect(isolated.bound(degenerateVariables.back()) ==
+                   AD::Interval::closed(AD::Rational(1), AD::Rational(11)),
+               "ELINA degenerate copy/assign returned the wrong bound");
+    }
+    expect(degenerate.bound(degenerateVariables.front()) ==
+               AD::Interval::closed(AD::Rational(0), AD::Rational(10)),
+           "ELINA copy/assign mutated the degenerate source state");
 
     AD::ELINAPolyhedraDomain substituted = AD::ELINAPolyhedraDomain::top();
     substituted.assume(AD::equal(AD::LinearExpression(integer),
