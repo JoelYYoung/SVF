@@ -116,7 +116,9 @@ AD::NumericType readType(Reader& reader)
 
 AD::Variable readVariable(Reader& reader)
 {
-    return AD::Variable(reader.u32(), readType(reader));
+    const std::uint32_t identifier = reader.u32();
+    const AD::NumericType type = readType(reader);
+    return AD::Variable(identifier, type);
 }
 
 AD::LinearExpression readExpression(Reader& reader)
@@ -124,8 +126,11 @@ AD::LinearExpression readExpression(Reader& reader)
     AD::LinearExpression expression(AD::Rational(reader.string()));
     const std::uint32_t terms = reader.u32();
     for (std::uint32_t index = 0; index < terms; ++index)
-        expression.setCoefficient(readVariable(reader),
-                                  AD::Rational(reader.string()));
+    {
+        const AD::Variable variable = readVariable(reader);
+        const AD::Rational coefficient(reader.string());
+        expression.setCoefficient(variable, coefficient);
+    }
     return expression;
 }
 
@@ -215,7 +220,9 @@ AD::Bound readBound(Reader& reader)
 
 AD::Interval readInterval(Reader& reader)
 {
-    return AD::Interval(readBound(reader), readBound(reader));
+    const AD::Bound lower = readBound(reader);
+    const AD::Bound upper = readBound(reader);
+    return AD::Interval(lower, upper);
 }
 
 std::vector<AD::Variable> readVariables(Reader& reader)
@@ -234,7 +241,11 @@ AD::LinearAssignmentList readLinearAssignments(Reader& reader)
     const std::uint32_t count = reader.u32();
     assignments.reserve(count);
     for (std::uint32_t index = 0; index < count; ++index)
-        assignments.push_back({readVariable(reader), readExpression(reader)});
+    {
+        const AD::Variable target = readVariable(reader);
+        AD::LinearExpression expression = readExpression(reader);
+        assignments.push_back({target, std::move(expression)});
+    }
     return assignments;
 }
 
@@ -244,7 +255,11 @@ AD::TreeAssignmentList readTreeAssignments(Reader& reader)
     const std::uint32_t count = reader.u32();
     assignments.reserve(count);
     for (std::uint32_t index = 0; index < count; ++index)
-        assignments.push_back({readVariable(reader), readTree(reader)});
+    {
+        const AD::Variable target = readVariable(reader);
+        AD::TreeExpression expression = readTree(reader);
+        assignments.push_back({target, std::move(expression)});
+    }
     return assignments;
 }
 
