@@ -22,9 +22,18 @@ namespace
 
 using Clock = std::chrono::steady_clock;
 
-const std::vector<std::string> OperationNames = {
-    "assign", "assume", "bound",   "copy",    "join",        "meet",
-    "widen",  "forget", "project", "closure", "canonicalize"};
+const std::vector<std::string> OperationNames = {"construct/import",
+                                                 "assign",
+                                                 "assume",
+                                                 "bound",
+                                                 "copy",
+                                                 "join",
+                                                 "meet",
+                                                 "widen",
+                                                 "forget",
+                                                 "project",
+                                                 "closure",
+                                                 "canonicalize"};
 
 struct Options
 {
@@ -293,6 +302,39 @@ Measurement measureMutation(
     return result;
 }
 
+Measurement measureConstruct(AD::DomainKind domain,
+                             AD::NumericalBackendKind backend,
+                             const AD::LinearConstraintSet& constraints,
+                             std::size_t iterations)
+{
+    Measurement result;
+    try
+    {
+        for (std::size_t iteration = 0; iteration < iterations; ++iteration)
+        {
+            const Clock::time_point start = Clock::now();
+            std::unique_ptr<AD::NumericalDomain> state =
+                AD::makeNumericalDomain(domain, false, backend);
+            state->assumeAll(constraints);
+            const Clock::time_point finish = Clock::now();
+            result.elapsedNanoseconds += static_cast<std::uint64_t>(
+                std::chrono::duration_cast<std::chrono::nanoseconds>(finish -
+                                                                     start)
+                    .count());
+            result.metadata = state->lastOperation();
+            result.hasMetadata = true;
+            result.checksum ^=
+                static_cast<std::uint64_t>(state->isBottom()) + iteration + 1;
+        }
+    }
+    catch (const std::exception& error)
+    {
+        result.status = "error";
+        result.error = error.what();
+    }
+    return result;
+}
+
 Measurement measureBound(const AD::NumericalDomain& base,
                          const AD::LinearExpression& expression,
                          std::size_t iterations)
@@ -440,12 +482,17 @@ void runCase(AD::NumericalBackendKind backend, AD::DomainKind domain,
     }
 
     const std::vector<AD::Variable> variables = makeVariables(dimension);
+    bool constructPrinted = false;
     try
     {
         const AD::LinearConstraintSet baseConstraints =
             makeConstraints(domain, variables, shape, 10);
         const AD::LinearConstraintSet nextConstraints =
             makeConstraints(domain, variables, shape, 20);
+        printMeasurement(
+            backend, domain, dimension, shape, "construct/import", iterations,
+            measureConstruct(domain, backend, baseConstraints, iterations));
+        constructPrinted = true;
         std::unique_ptr<AD::NumericalDomain> base =
             makeState(domain, backend, baseConstraints);
         std::unique_ptr<AD::NumericalDomain> next =
@@ -515,6 +562,8 @@ void runCase(AD::NumericalBackendKind backend, AD::DomainKind domain,
     {
         for (const std::string& operation : OperationNames)
         {
+            if (constructPrinted && operation == "construct/import")
+                continue;
             Measurement result;
             result.status = "setup-error";
             result.error = error.what();
@@ -603,6 +652,7 @@ int main(int argc, char** argv)
     try
     {
         const Options options = parseOptions(argc, argv);
+        std::cout << std::unitbuf;
         printHeader();
         if (options.headerOnly)
             return EXIT_SUCCESS;
