@@ -666,6 +666,7 @@ void AbstractInterpretation::verifyPostFixpoint()
             continue;
         }
         State incoming = sourceFinal->second;
+        replay.applyRelationalCallBoundary(incoming, edge, target);
         const auto targetAvailability = availability.find(target);
         if (targetAvailability != availability.end())
         {

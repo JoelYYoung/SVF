@@ -485,6 +485,19 @@ void AbstractInterpretation::initializeRelationalPolicy()
             << " selected=" << relationalVocabulary_->size()
             << " dropped=" << relationalDroppedCount_
             << " max=" << Options::AERelationalMaxVars() << '\n';
+    if (std::getenv("SVF_AE_TRACE_RELATIONAL_POLICY"))
+    {
+        const auto printVariables = [](const char* label,
+                                       const std::vector<AD::Variable>& values) {
+            std::cerr << label << '=';
+            for (AD::Variable variable : values)
+                std::cerr << variable.id() << ',';
+            std::cerr << '\n';
+        };
+        printVariables("AE_RELATIONAL_QUERY_CLOSURE", queryClosure);
+        printVariables("AE_RELATIONAL_EVA_CANDIDATES", evaCandidates);
+        printVariables("AE_RELATIONAL_SELECTED", *relationalVocabulary_);
+    }
 }
 
 
