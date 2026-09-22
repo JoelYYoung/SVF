@@ -961,7 +961,8 @@ public:
             addConstraint(
                 state, layout,
                 LinearConstraint(std::move(equality), ConstraintKind::Equal));
-            strongCloseIndependentVariable(state, targetDimension);
+            closeAfterSingleVariableUpdate(
+                state, layout, targetDimension, true);
             return ApproximationKind::Exact;
         }
 
@@ -986,8 +987,8 @@ public:
                     addConstraint(state, layout,
                                   LinearConstraint(std::move(equality),
                                                    ConstraintKind::Equal));
-                    incrementalCloseWithIntegerTightening(
-                        state, targetDimension);
+                    closeAfterSingleVariableUpdate(
+                        state, layout, targetDimension, false);
                 }
                 return ApproximationKind::Exact;
             }
@@ -1086,7 +1087,8 @@ public:
                              image.targetLower.isStrict(), false);
             }
         }
-        incrementalCloseWithIntegerTightening(state, targetDimension);
+        closeAfterSingleVariableUpdate(
+            state, layout, targetDimension, false);
         return ApproximationKind::SoundOverApproximation;
     }
 
@@ -1101,7 +1103,8 @@ public:
             addAssumption(state, layout, constraint, &touchedVariable);
         if (wasClosed && approximation == ApproximationKind::Exact &&
                 touchedVariable)
-            incrementalCloseWithIntegerTightening(state, *touchedVariable);
+            closeAfterSingleVariableUpdate(
+                state, layout, *touchedVariable, false);
         else
             normalize(state, layout);
         return approximation;
@@ -1594,7 +1597,8 @@ public:
         }
         if (wasClosed && result == ApproximationKind::Exact &&
                 commonTouchedVariable && touchedVariable)
-            incrementalCloseWithIntegerTightening(state_, *touchedVariable);
+            closeAfterSingleVariableUpdate(
+                state_, layout, *touchedVariable, false);
         else
             normalize(state_, layout);
         return result;
@@ -1635,7 +1639,7 @@ public:
             addLessEqual(state_, layout, lower,
                          value.lower().isStrict(), false);
         }
-        strongCloseIndependentVariable(state_, dimension);
+        closeAfterSingleVariableUpdate(state_, layout, dimension, true);
     }
 
     void canonicalizeCurrent()
@@ -2346,6 +2350,21 @@ private:
         }
         if (!detectBottom(state))
             state.stronglyClosed = true;
+    }
+
+    void closeAfterSingleVariableUpdate(
+        OctagonStorage& state, const DimensionLayout& layout,
+        Dimension dimension, bool independent) const
+    {
+        if (!options_.incrementalClosure)
+        {
+            normalize(state, layout);
+            return;
+        }
+        if (independent)
+            strongCloseIndependentVariable(state, dimension);
+        else
+            incrementalCloseWithIntegerTightening(state, dimension);
     }
 
     bool detectBottom(OctagonStorage& state) const

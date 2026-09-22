@@ -333,6 +333,41 @@ void octagonComponentCopyPolicies()
         fail("component COW and eager-copy results disagree");
 }
 
+void octagonClosurePolicies()
+{
+    const AD::Variable x(67);
+    const AD::Variable y(68);
+    const AD::Variable z(69);
+    std::vector<AD::LinearConstraintSet> results;
+    for (const bool incremental : {true, false})
+    {
+        AD::OctagonConfig config;
+        config.storage = AD::OctagonStorageKind::ComponentDense;
+        config.incrementalClosure = incremental;
+        AD::OctagonDomain state = AD::OctagonDomain::top(config);
+        state.assignInterval(
+            x, AD::Interval::closed(AD::Rational(-4), AD::Rational(4)));
+        state.assign(y, AD::LinearExpression(x) +
+                        AD::LinearExpression(AD::Rational(1)));
+        state.assign(z, AD::LinearExpression(y) -
+                        AD::LinearExpression(AD::Rational(2)));
+        state.assume(AD::lessEqual(
+            AD::LinearExpression(z), AD::LinearExpression(AD::Rational(2))));
+        state.assumeAll({AD::greaterEqual(
+            AD::LinearExpression(y), AD::LinearExpression(AD::Rational(-1)))});
+        results.push_back(state.toConstraints());
+    }
+    AD::OctagonConfig config;
+    config.storage = AD::OctagonStorageKind::ComponentDense;
+    AD::OctagonDomain incremental = AD::OctagonDomain::fromConstraints(
+        results.front(), config);
+    AD::OctagonDomain full = AD::OctagonDomain::fromConstraints(
+        results.back(), config);
+    if (incremental.isSubsetOf(full) != AD::CheckResult::True ||
+            full.isSubsetOf(incremental) != AD::CheckResult::True)
+        fail("incremental and full Octagon closure results disagree");
+}
+
 void partialRelationalClosureDelegation()
 {
     const AD::Variable x(71);
@@ -370,6 +405,7 @@ void partialRelationalClosureDelegation()
 int main()
 {
     octagonComponentCopyPolicies();
+    octagonClosurePolicies();
     const AD::Variable x(1);
     const AD::Variable y(2);
     const AD::Variable z(3);

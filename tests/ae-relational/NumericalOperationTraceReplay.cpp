@@ -287,7 +287,8 @@ Snapshot readSnapshot(const std::string& encoded)
 
 std::unique_ptr<AD::NumericalDomain> makeState(
     const Snapshot& snapshot, AD::NumericalBackendKind backend,
-    AD::OctagonStorageKind octagonStorage, bool componentCopyOnWrite)
+    AD::OctagonStorageKind octagonStorage, bool componentCopyOnWrite,
+    bool incrementalClosure)
 {
     if (!AD::numericalBackendAvailable(snapshot.kind, backend))
         throw std::invalid_argument(
@@ -295,6 +296,7 @@ std::unique_ptr<AD::NumericalDomain> makeState(
     AD::OctagonConfig octagonConfig;
     octagonConfig.storage = octagonStorage;
     octagonConfig.componentCopyOnWrite = componentCopyOnWrite;
+    octagonConfig.incrementalClosure = incrementalClosure;
     std::unique_ptr<AD::NumericalDomain> state = AD::makeNumericalDomain(
         snapshot.kind, snapshot.bottom, backend, octagonConfig);
     if (!snapshot.bottom)
@@ -492,13 +494,20 @@ AD::NumericalBackendKind parseBackend(const std::string& name)
 
 std::string replayCarrierName(AD::NumericalBackendKind backend,
                               AD::OctagonStorageKind storage,
-                              bool componentCopyOnWrite)
+                              bool componentCopyOnWrite,
+                              bool incrementalClosure,
+                              bool explicitClosurePolicy)
 {
     if (backend != AD::NumericalBackendKind::Native)
         return "external";
     if (storage == AD::OctagonStorageKind::ComponentDense)
-        return componentCopyOnWrite ? "component-dense-cow"
-               : "component-dense-eager";
+    {
+        std::string name = componentCopyOnWrite ? "component-dense-cow"
+                           : "component-dense-eager";
+        if (explicitClosurePolicy)
+            name += incrementalClosure ? "-incremental" : "-full";
+        return name;
+    }
     return AD::octagonStorageKindName(storage);
 }
 
@@ -521,11 +530,11 @@ const char* domainName(AD::DomainKind kind)
 
 int main(int argc, char** argv)
 {
-    if (argc < 3 || argc > 5)
+    if (argc < 3 || argc > 6)
     {
         std::cerr << "usage: " << argv[0]
                   << " TRACE.tsv native|elina [dense-half|sparse-finite|"
-                     "component-dense] [cow|eager]\n";
+                     "component-dense] [cow|eager] [incremental|full]\n";
         return 2;
     }
     try
@@ -534,15 +543,22 @@ int main(int argc, char** argv)
         const AD::OctagonStorageKind octagonStorage = argc >= 4
             ? AD::octagonStorageKindFromName(argv[3])
             : AD::OctagonStorageKind::DenseHalf;
-        if (argc == 5 && octagonStorage != AD::OctagonStorageKind::ComponentDense)
+        if (argc >= 5 &&
+                octagonStorage != AD::OctagonStorageKind::ComponentDense)
             throw std::invalid_argument(
                 "cow/eager applies only to component-dense storage");
-        const bool componentCopyOnWrite = argc != 5 ||
+        const bool componentCopyOnWrite = argc < 5 ||
             std::string(argv[4]) == "cow";
-        if (argc == 5 && std::string(argv[4]) != "cow" &&
+        if (argc >= 5 && std::string(argv[4]) != "cow" &&
                 std::string(argv[4]) != "eager")
             throw std::invalid_argument(
                 "component copy policy must be cow or eager");
+        const bool incrementalClosure = argc != 6 ||
+            std::string(argv[5]) == "incremental";
+        if (argc == 6 && std::string(argv[5]) != "incremental" &&
+                std::string(argv[5]) != "full")
+            throw std::invalid_argument(
+                "closure policy must be incremental or full");
         std::ifstream input(argv[1]);
         if (!input)
             throw std::runtime_error("cannot open numerical operation trace");
@@ -575,11 +591,12 @@ int main(int argc, char** argv)
                 continue;
             std::unique_ptr<AD::NumericalDomain> state =
                 makeState(before, backend, octagonStorage,
-                          componentCopyOnWrite);
+                          componentCopyOnWrite, incrementalClosure);
             std::unique_ptr<AD::NumericalDomain> rhs;
             if (!row[7].empty())
                 rhs = makeState(readSnapshot(row[7]), backend,
-                                octagonStorage, componentCopyOnWrite);
+                                octagonStorage, componentCopyOnWrite,
+                                incrementalClosure);
 
             std::uint64_t checksum = 0;
             const char* validation = "NA";
@@ -610,14 +627,15 @@ int main(int argc, char** argv)
             {
                 std::unique_ptr<AD::NumericalDomain> expected =
                     makeState(readSnapshot(row[8]), backend, octagonStorage,
-                              componentCopyOnWrite);
+                              componentCopyOnWrite, incrementalClosure);
                 const Relation comparison = compareStates(*state, *expected);
                 validation = comparison.validation;
                 relation = comparison.name;
             }
             std::cout << sequence << '\t' << AD::numericalBackendName(backend)
                       << '\t' << replayCarrierName(
-                          backend, octagonStorage, componentCopyOnWrite)
+                          backend, octagonStorage, componentCopyOnWrite,
+                          incrementalClosure, argc == 6)
                       << '\t' << domainName(before.kind) << '\t'
                       << event << '\t'
                       << (event == "clone" ? "clone" : operation) << '\t'

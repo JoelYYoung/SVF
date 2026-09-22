@@ -65,6 +65,9 @@ struct OctagonConfig
     /// copies until the first write. Disabling this keeps identical abstract
     /// semantics but moves the matrix-copy cost from mutation to clone.
     bool componentCopyOnWrite = true;
+    /// Use the quadratic single-variable closure repair where its precondition
+    /// holds. Disabling it computes the same canonical state with full closure.
+    bool incrementalClosure = true;
     std::shared_ptr<DiagnosticSink> diagnostics;
 
     /// Diagnostics affect observation only, not abstract-state semantics.
