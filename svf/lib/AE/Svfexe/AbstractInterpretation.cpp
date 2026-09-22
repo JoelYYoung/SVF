@@ -383,19 +383,30 @@ void AbstractInterpretation::initializeRelationalPolicy()
     {
         const bool throughCalls =
             Options::AERelationalCallPolicy() == ThroughCalls;
-        // Function-return phis and a few other semantic edges are attached to
-        // SVF values but are not guaranteed to appear in an ICFG node's local
-        // statement list. Walk the canonical SVF def edges instead, then sort
-        // by stable edge identity for a deterministic bounded vocabulary.
+        // Function-return phis and interprocedural edges are not guaranteed to
+        // appear in an ICFG node's local statement list. A RetPE is also an
+        // outgoing edge of the formal-return ghost, so walking only value
+        // definitions misses one endpoint. Collect the canonical statement
+        // sets for every recognized kind, then sort by stable edge identity
+        // for a deterministic bounded vocabulary.
         std::vector<const SVFStmt*> statements;
-        for (auto iterator = svfir->begin(); iterator != svfir->end();
-                ++iterator)
+        const auto addStatements = [&](SVFStmt::PEDGEK kind) {
+            const SVFStmt::SVFStmtSetTy& current =
+                svfir->getSVFStmtSet(kind);
+            statements.insert(statements.end(), current.begin(),
+                              current.end());
+        };
+        addStatements(SVFStmt::BinaryOp);
+        addStatements(SVFStmt::Cmp);
+        addStatements(SVFStmt::Phi);
+        addStatements(SVFStmt::Select);
+        addStatements(SVFStmt::Copy);
+        if (throughCalls)
         {
-            const auto* value = SVFUtil::dyn_cast<ValVar>(iterator->second);
-            if (!value)
-                continue;
-            statements.insert(statements.end(), value->getInEdges().begin(),
-                              value->getInEdges().end());
+            addStatements(SVFStmt::Call);
+            addStatements(SVFStmt::Ret);
+            addStatements(SVFStmt::ThreadFork);
+            addStatements(SVFStmt::ThreadJoin);
         }
         std::sort(statements.begin(), statements.end(),
                   [](const SVFStmt* left, const SVFStmt* right) {
