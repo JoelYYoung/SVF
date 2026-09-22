@@ -10,6 +10,7 @@ set(ABSTRACT_DOMAIN_CORE_HEADERS
     ${CMAKE_CURRENT_LIST_DIR}/include/AE/Core/Expression.h
     ${CMAKE_CURRENT_LIST_DIR}/include/AE/Core/NumericalDomain.h
     ${CMAKE_CURRENT_LIST_DIR}/include/AE/Core/NumericalDomainFactory.h
+    ${CMAKE_CURRENT_LIST_DIR}/include/AE/Core/NumericalOperationTrace.h
     ${CMAKE_CURRENT_LIST_DIR}/include/AE/Core/PartialRelationalDomain.h
     ${CMAKE_CURRENT_LIST_DIR}/include/AE/Core/AddressDomain.h
     ${CMAKE_CURRENT_LIST_DIR}/include/AE/Core/InitializationDomain.h
@@ -26,6 +27,7 @@ set(ABSTRACT_DOMAIN_CORE_SOURCES
     ${CMAKE_CURRENT_LIST_DIR}/lib/AE/Core/Expression.cpp
     ${CMAKE_CURRENT_LIST_DIR}/lib/AE/Core/NumericalDomain.cpp
     ${CMAKE_CURRENT_LIST_DIR}/lib/AE/Core/NumericalDomainFactory.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/lib/AE/Core/NumericalOperationTrace.cpp
     ${CMAKE_CURRENT_LIST_DIR}/lib/AE/Core/PartialRelationalDomain.cpp
 )
 add_library(AbstractDomainCore)
@@ -126,6 +128,13 @@ if(SVF_ENABLE_ELINA)
 endif()
 
 if(BUILD_TESTING)
+  add_executable(
+    NumericalOperationTraceTest
+    ${CMAKE_CURRENT_LIST_DIR}/../tests/ae-relational/NumericalOperationTraceTest.cpp
+  )
+  target_link_libraries(NumericalOperationTraceTest PRIVATE AbstractDomainCore)
+  add_test(NAME ae-relational/NumericalOperationTraceTest
+           COMMAND NumericalOperationTraceTest)
   add_executable(
     NumericalDomainOperationBenchmark
     ${CMAKE_CURRENT_LIST_DIR}/../tests/ae-relational/NumericalDomainOperationBenchmark.cpp

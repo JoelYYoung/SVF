@@ -831,6 +831,11 @@ const OptionMap<u32_t> Options::AERelationalPolicy(
         "Use Box globally and the relational domain on a fixed query dependency slice."
     }
 });
+const Option<std::string> Options::AENumericalTrace(
+    "ae-numerical-trace",
+    "Write a versioned, replay-oriented numerical operation trace (Default: disabled)",
+    ""
+);
 const Option<u32_t> Options::AERelationalMaxVars(
     "ae-relational-max-vars",
     "Maximum variables in the fixed partial relational vocabulary.",

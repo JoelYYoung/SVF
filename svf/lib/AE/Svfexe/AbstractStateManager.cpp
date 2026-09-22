@@ -2,6 +2,7 @@
 
 #include "AE/Svfexe/AbstractInterpretation.h"
 #include "AE/Core/NumericalDomainFactory.h"
+#include "AE/Core/NumericalOperationTrace.h"
 #include "AE/Core/PartialRelationalDomain.h"
 
 #include "SVFIR/SVFIR.h"
@@ -364,6 +365,11 @@ bottomState() const
 std::unique_ptr<AD::NumericalDomain>
 AbstractInterpretation::makeNumericalDomain(bool bottom) const
 {
+    const auto traced = [&](std::unique_ptr<AD::NumericalDomain> domain)
+    {
+        return AD::traceNumericalDomain(std::move(domain),
+                                        numericalOperationTrace_);
+    };
     const AD::NumericalBackendKind backend =
         Options::AEBackend() == AENumericalBackend::ELINABackend
         ? AD::NumericalBackendKind::Elina
@@ -378,12 +384,12 @@ AbstractInterpretation::makeNumericalDomain(bool bottom) const
             Options::AEDomain() == AENumericalDomain::Octagon
             ? AD::DomainKind::Octagon
             : AD::DomainKind::ConvexPolyhedra;
-        return std::make_unique<AD::PartialRelationalDomain>(
-                   bottom
-                   ? AD::PartialRelationalDomain::bottom(
-                       kind, relationalVocabulary_, backend)
-                   : AD::PartialRelationalDomain::top(
-                       kind, relationalVocabulary_, backend));
+        return traced(std::make_unique<AD::PartialRelationalDomain>(
+                          bottom
+                          ? AD::PartialRelationalDomain::bottom(
+                              kind, relationalVocabulary_, backend)
+                          : AD::PartialRelationalDomain::top(
+                              kind, relationalVocabulary_, backend)));
     }
     AD::DomainKind kind = AD::DomainKind::Box;
     switch (Options::AEDomain())
@@ -400,7 +406,7 @@ AbstractInterpretation::makeNumericalDomain(bool bottom) const
     }
     AD::OctagonConfig config;
     config.storage = AD::OctagonStorageKind::ComponentDense;
-    return AD::makeNumericalDomain(kind, bottom, backend, config);
+    return traced(AD::makeNumericalDomain(kind, bottom, backend, config));
 }
 
 AbstractInterpretation::State& AbstractInterpretation::

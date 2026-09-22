@@ -50,6 +50,10 @@
 
 namespace SVF
 {
+namespace AbstractDomain
+{
+class NumericalOperationTraceWriter;
+}
 class AbstractInterpretation;
 class AbsExtAPI;
 class AEStat;
@@ -533,6 +537,8 @@ protected:
     SVFIRAdapter adapter_;
     std::shared_ptr<const std::vector<AbstractDomain::Variable>>
         relationalVocabulary_;
+    std::shared_ptr<AbstractDomain::NumericalOperationTraceWriter>
+        numericalOperationTrace_;
     std::size_t relationalSeedCount_ = 0;
     std::size_t relationalDroppedCount_ = 0;
     Map<const ICFGNode*, State> stateTrace_;

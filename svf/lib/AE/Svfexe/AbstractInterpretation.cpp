@@ -30,6 +30,7 @@
 #include "AE/Svfexe/AbsExtAPI.h"
 #include "AE/Svfexe/SparseAbstractInterpretation.h"
 #include "AE/Core/NumericalDomainFactory.h"
+#include "AE/Core/NumericalOperationTrace.h"
 #include "AE/Core/PartialRelationalDomain.h"
 #include "Graphs/CallGraph.h"
 #include "SVFIR/SVFIR.h"
@@ -626,6 +627,10 @@ AbstractInterpretation::AbstractInterpretation()
       unknownTargetTelemetryEnabled_(
           std::getenv("SVF_AE_UNKNOWN_TARGET_STATS") != nullptr)
 {
+    if (!Options::AENumericalTrace().empty())
+        numericalOperationTrace_ =
+            std::make_shared<AD::NumericalOperationTraceWriter>(
+                Options::AENumericalTrace());
     stat = new AEStat(this);
     // Run Andersen's pointer analysis and build WTO
     svfir = PAG::getPAG();
