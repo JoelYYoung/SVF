@@ -91,12 +91,16 @@ static void reset_manager_result(elina_manager_t* manager)
 
 static void check_integer_strict_guard(elina_manager_t* manager,
                                        const char* domain,
-                                       bool require_support)
+                                       bool require_support,
+                                       bool direct_strict)
 {
     elina_abstract0_t* top = elina_abstract0_top(manager, 1, 0);
     elina_lincons0_array_t constraints = elina_lincons0_array_make(1);
     constraints.p[0] = elina_lincons0_make(
-        ELINA_CONS_SUP, expression(1, 0, 0, 1, -1, 0), NULL);
+        direct_strict ? ELINA_CONS_SUP : ELINA_CONS_SUPEQ,
+        expression(1, direct_strict ? 0 : -1, 0, 1, -1, 0), NULL);
+    if (!direct_strict)
+        printf("REWRITE %s integer-strict x>0 -> x>=1\n", domain);
     elina_abstract0_t* guarded = elina_abstract0_meet_lincons_array(
         manager, false, top, &constraints);
     if (manager->result.exn != ELINA_EXC_NONE || guarded == NULL)
@@ -243,7 +247,7 @@ static void exercise_domain(elina_manager_t* manager, const char* domain,
           "closure changed a closed point");
     check_no_exception(manager, domain, "closure equality");
 
-    check_integer_strict_guard(manager, domain, !octagon);
+    check_integer_strict_guard(manager, domain, true, octagon);
 
     if (octagon)
     {
