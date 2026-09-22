@@ -101,6 +101,33 @@ def marginal_mapping(variables, marginal):
     return {key: index // 8 for index, key in enumerate(ordered)}
 
 
+def support_mapping(variables, supports):
+    """Co-locate variables with the same retained-state membership signature.
+
+    The support multiset may use the complete future trace and is therefore an
+    offline static-layout upper-bound candidate, not a deployable policy.  It
+    still returns one immutable mapping for the whole replay; unlike the
+    per-state ideal it cannot repack every state independently.  Sorting by
+    membership signature avoids quadratic pair materialization for very large
+    supports while packing variables with identical coexistence exactly.
+    """
+    frequency = collections.Counter()
+    memberships = collections.defaultdict(list)
+    ordered_supports = sorted(
+        supports.items(), key=lambda item: tuple(sorted(item[0])))
+    for edge_index, (support, weight) in enumerate(ordered_supports):
+        if weight <= 0 or not support:
+            continue
+        for key in support:
+            frequency[key] += weight
+            memberships[key].append(edge_index)
+    ordered = sorted(
+        variables,
+        key=lambda key: (-frequency[key], tuple(memberships[key]), key),
+    )
+    return {key: index // 8 for index, key in enumerate(ordered)}
+
+
 def relational_mapping(variables, marginal, pair, hyperedges=()):
     ordered = sorted(variables, key=lambda key: (-marginal[key], key))
     neighbours = collections.defaultdict(list)
@@ -244,6 +271,60 @@ class Replay:
         self.replacement_epochs = set()
         self.metrics = collections.Counter()
         self.diagnostics = {"mismatch_count": 0, "first_mismatches": []}
+
+    def state_measure(self, state):
+        pages = state["pages"]
+        constrained = sum(len(self.pages[page]) for page in pages.values())
+        return {
+            "logical_page_refs": len(pages),
+            "logical_directory_chunk_refs": len(
+                {page_index // 8 for page_index in pages}),
+            "logical_constrained_slots": constrained,
+            "per_state_ideal_page_refs": (constrained + 7) // 8,
+        }
+
+    def affected_states(self, event):
+        if event[0] == "S":
+            return {event[3], event[4]} - {0}
+        return {event[4]}
+
+    def update_logical_totals(self, before, affected):
+        for state_id in affected:
+            previous = before.get(state_id, {})
+            current = (self.state_measure(self.states[state_id])
+                       if state_id in self.states else {})
+            for name in ("logical_page_refs", "logical_directory_chunk_refs",
+                         "logical_constrained_slots", "per_state_ideal_page_refs"):
+                self.metrics[name] += current.get(name, 0) - previous.get(name, 0)
+
+    def sample_layout(self, mutation):
+        self.metrics["layout_samples"] += 1
+        self.metrics["mutation_layout_samples"] += mutation
+        for name in ("logical_page_refs", "logical_directory_chunk_refs",
+                     "logical_constrained_slots", "per_state_ideal_page_refs"):
+            value = self.metrics[name]
+            self.metrics["sampled_" + name] += value
+            self.metrics["peak_" + name] = max(
+                self.metrics["peak_" + name], value)
+        physical = len(self.pages)
+        saved = self.metrics["logical_page_refs"] - physical
+        self.metrics["sampled_live_physical_pages"] += physical
+        self.metrics["sampled_cow_saved_page_refs"] += saved
+        self.metrics["peak_live_physical_pages"] = max(
+            self.metrics["peak_live_physical_pages"], physical)
+        self.metrics["peak_cow_saved_page_refs"] = max(
+            self.metrics["peak_cow_saved_page_refs"], saved)
+
+    def final_supports(self):
+        supports = collections.Counter()
+        for state in self.states.values():
+            if state["bottom"]:
+                continue
+            support = frozenset(
+                key for page in state["pages"].values()
+                for key in self.pages[page])
+            supports[support] += 1
+        return supports
 
     def retain(self, page):
         self.references[page] += 1
@@ -405,6 +486,11 @@ class Replay:
     def run(self, events, raw_epochs=None):
         seen_epochs = set()
         for event in events:
+            affected = self.affected_states(event)
+            before = {
+                state_id: self.state_measure(self.states[state_id])
+                for state_id in affected if state_id in self.states
+            }
             before_detaches = self.metrics["detaches"]
             before_slots = self.metrics["cloned_slots"]
             if event[0] == "S":
@@ -437,6 +523,8 @@ class Replay:
                                 "expected_cloned_slots": expected_slots,
                                 "actual_cloned_slots": actual_slots,
                             })
+            self.update_logical_totals(before, affected)
+            self.sample_layout(event[0] == "M")
         if raw_epochs is not None:
             for epoch in sorted(set(raw_epochs) - seen_epochs):
                 expected = raw_epochs[epoch]
@@ -450,6 +538,8 @@ class Replay:
                     })
         self.metrics["live_states"] = len(self.states)
         self.metrics["live_pages"] = len(self.pages)
+        self.metrics["final_cow_saved_page_refs"] = (
+            self.metrics["logical_page_refs"] - len(self.pages))
         return dict(self.metrics)
 
 
@@ -463,6 +553,7 @@ def evaluate_replay(events, mapping, cache, raw_epochs=None):
         "metrics": metrics,
         "clone_conflicts": engine.clone_conflicts,
         "clone_triggers": engine.clone_triggers,
+        "final_supports": engine.final_supports(),
         "diagnostics": engine.diagnostics,
     }
     cache[signature] = evaluation
@@ -526,6 +617,9 @@ def main():
     parser.add_argument("trace", type=Path)
     parser.add_argument("--json", type=Path)
     parser.add_argument("--g0-only", action="store_true")
+    parser.add_argument(
+        "--opportunity-only", action="store_true",
+        help="evaluate only current, registration-dense, and retained-support layouts")
     parser.add_argument("--future-rounds", type=int, default=0)
     args = parser.parse_args()
     if args.future_rounds < 0:
@@ -541,13 +635,20 @@ def main():
     future_search = None
     if not args.g0_only:
         mappings.update({
-            "g2_marginal": marginal_mapping(variables, marginal),
-            "g3_cowrite": relational_mapping(
-                variables, marginal, pair, hyperedges),
-            "g3_clone_conflict": clone_conflict_mapping(
-                variables, marginal, g0["clone_conflicts"]),
+            "g1_registration_dense": marginal_mapping(
+                variables, collections.Counter()),
+            "g4_retained_support": support_mapping(
+                variables, g0["final_supports"]),
         })
-        if args.future_rounds:
+        if not args.opportunity_only:
+            mappings.update({
+                "g2_marginal": marginal_mapping(variables, marginal),
+                "g3_cowrite": relational_mapping(
+                    variables, marginal, pair, hyperedges),
+                "g3_clone_conflict": clone_conflict_mapping(
+                    variables, marginal, g0["clone_conflicts"]),
+            })
+        if args.future_rounds and not args.opportunity_only:
             mappings["g4_future_conflict"], future_search = (
                 future_conflict_search(
                     events, variables, marginal, g0_mapping,
@@ -561,8 +662,21 @@ def main():
         "detach_match": replay["g0_current"].get("detaches", 0) == raw["detaches"],
         "cloned_slots_match": replay["g0_current"].get("cloned_slots", 0) == raw["cloned_slots"],
     }
+    mapping_shapes = {}
+    for name, mapping in mappings.items():
+        groups = collections.Counter(mapping.values())
+        maximum_id = max((key[0] for key in mapping), default=-1)
+        mapping_shapes[name] = {
+            "variables": len(mapping),
+            "groups": len(groups),
+            "group_empty_slots": len(groups) * 8 - len(mapping),
+            "maximum_group_occupancy": max(groups.values(), default=0),
+            "dense_id_table_entries": maximum_id + 1,
+            "dense_uint32_table_bytes": (maximum_id + 1) * 4,
+            "sparse_id_group_pair_bytes_lower_bound": len(mapping) * 8,
+        }
     result = {
-        "schema": "box-cowrite-replay-v2",
+        "schema": "box-cross-page-replay-v1",
         "trace": str(args.trace),
         "variables": len(variables),
         "mutation_events": sum(event[0] == "M" for event in events),
@@ -579,6 +693,9 @@ def main():
         },
         "unique_replays": len(evaluation_cache),
         "future_search": future_search,
+        "mapping_shapes": mapping_shapes,
+        "retained_support_classes": len(g0["final_supports"]),
+        "retained_support_states": sum(g0["final_supports"].values()),
         "raw": raw,
         "validation": validation,
         "g0_diagnostics": g0_diagnostics,

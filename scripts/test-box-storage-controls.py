@@ -43,6 +43,44 @@ class Controls(unittest.TestCase):
         self.assertEqual(result.get('detaches', 0), 0)
         self.assertEqual(result.get('cloned_slots', 0), 0)
 
+    def test_cross_page_metrics_bound_sparse_ids(self):
+        variables = [(0, 0, 0, 0), (8, 0, 0, 0)]
+        events = [
+            ('S', 1, COWRITE['CREATE'], 1, 0, 0, 0),
+            ('M', 2, 1, 0, 1, 0, 0, 0,
+             [(key, True) for key in variables], variables),
+            ('S', 3, COWRITE['COPY_CONSTRUCT'], 2, 1, 0, 0),
+        ]
+        current = COWRITE['Replay'](
+            COWRITE['current_mapping'](variables)).run(events)
+        self.assertEqual(current['logical_page_refs'], 4)
+        self.assertEqual(current['per_state_ideal_page_refs'], 2)
+        self.assertEqual(current['live_pages'], 2)
+        self.assertEqual(current['final_cow_saved_page_refs'], 2)
+        self.assertEqual(current['peak_logical_page_refs'], 4)
+        self.assertEqual(current['peak_live_physical_pages'], 2)
+
+        dense = COWRITE['Replay'](
+            COWRITE['marginal_mapping'](
+                variables, collections.Counter())).run(events)
+        self.assertEqual(dense['logical_page_refs'], 2)
+        self.assertEqual(dense['per_state_ideal_page_refs'], 2)
+        self.assertEqual(dense['live_pages'], 1)
+        self.assertLess(dense['sampled_logical_page_refs'],
+                        current['sampled_logical_page_refs'])
+
+    def test_retained_support_mapping_is_one_static_layout(self):
+        variables = [(index, 0, 0, 0) for index in range(16)]
+        supports = collections.Counter({
+            frozenset(variables[::2]): 20,
+            frozenset(variables[1::2]): 20,
+        })
+        mapping = COWRITE['support_mapping'](set(variables), supports)
+        self.assertEqual(len(mapping), 16)
+        self.assertEqual(max(collections.Counter(mapping.values()).values()), 8)
+        for support in supports:
+            self.assertEqual(len({mapping[key] for key in support}), 1)
+
     def test_cowrite_hyperedges_preserve_explicit_pair_mapping(self):
         variables = {(index, 0, 0, 0) for index in range(37)}
         marginal = collections.Counter()
