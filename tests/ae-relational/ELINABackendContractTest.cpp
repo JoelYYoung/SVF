@@ -70,7 +70,20 @@ int main()
         AD::NumericalBackendKind::Native);
     expect(native->isTop(), "native factory did not preserve B0 top");
 
-#if !defined(SVF_HAS_ELINA_POLYHEDRA)
+#if defined(SVF_HAS_ELINA_POLYHEDRA)
+    expect(AD::numericalBackendAvailable(AD::DomainKind::ConvexPolyhedra,
+                                         AD::NumericalBackendKind::ELINA),
+           "configured ELINA Polyhedra backend was not advertised");
+    auto elina = AD::makeNumericalDomain(
+        AD::DomainKind::ConvexPolyhedra, false,
+        AD::NumericalBackendKind::ELINA);
+    elina->assume(AD::equal(AD::LinearExpression(integer),
+                            AD::LinearExpression(AD::Rational(5))));
+    const AD::Interval bound = elina->bound(integer);
+    expect(bound.isSingleton() &&
+               bound.singletonValue() == AD::Rational(5),
+           "ELINA Polyhedra runtime shadow did not preserve x == 5");
+#else
     expect(!AD::numericalBackendAvailable(AD::DomainKind::ConvexPolyhedra,
                                           AD::NumericalBackendKind::ELINA),
            "ELINA backend reported available in a native-only build");
