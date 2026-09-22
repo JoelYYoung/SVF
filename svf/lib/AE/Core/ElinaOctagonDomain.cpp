@@ -1050,6 +1050,10 @@ CheckResult ElinaOctagonDomain::subsetOf(
 
 Interval ElinaOctagonDomain::bound(Variable variable) const
 {
+    // Bottom denotes no concrete valuation, including for variables that do
+    // not yet have a physical ELINA coordinate.
+    if (isBottom())
+        return Interval::bottom();
     if (!impl_->contains(variable))
         return Interval::top();
     ScopedElinaRounding rounding;
@@ -1071,6 +1075,8 @@ Interval ElinaOctagonDomain::bound(Variable variable) const
 Interval ElinaOctagonDomain::bound(
     const LinearExpression& expression) const
 {
+    if (isBottom())
+        return Interval::bottom();
     ElinaOctagonDomain aligned(*this);
     if (!aligned.impl_->ensureVariables(expressionVariables(expression)))
         return Interval::top();

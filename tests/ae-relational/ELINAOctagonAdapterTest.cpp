@@ -258,6 +258,22 @@ void checkParallelRemoveOracle(const Stage& result)
            "parallel/remove isolate simultaneous relation");
 }
 
+template <typename Domain>
+void checkZeroDimensionBottomBounds(int expectedRounding)
+{
+    Domain bottom = Domain::bottom();
+    expect(bottom.bound(X).isBottom(),
+           "zero-dimension bottom variable bound");
+    expect(bottom.bound(AD::LinearExpression(X) +
+                        AD::LinearExpression(AD::Rational(1))).isBottom(),
+           "zero-dimension bottom affine bound");
+    expect(bottom.bound(
+               AD::LinearExpression(AD::Rational(7))).isBottom(),
+           "zero-dimension bottom constant bound");
+    expect(std::fegetround() == expectedRounding,
+           "bottom bound queries leaked ELINA's FPU rounding mode");
+}
+
 struct MixedDimensionResult
 {
     AD::Interval integerLowBefore;
@@ -568,6 +584,7 @@ int main()
     const Stage nativeParallelRemove =
         runParallelRemoveIsolate<AD::OctagonDomain>(callerRounding);
     checkParallelRemoveOracle(nativeParallelRemove);
+    checkZeroDimensionBottomBounds<AD::OctagonDomain>(callerRounding);
 
 #ifndef SVF_HAVE_ELINA
     expect(!AD::octagonBackendAvailable(AD::NumericalBackendKind::Elina),
@@ -607,6 +624,7 @@ int main()
     const Stage elinaParallelRemove =
         runParallelRemoveIsolate<AD::ElinaOctagonDomain>(callerRounding);
     compareParallelRemove(nativeParallelRemove, elinaParallelRemove);
+    checkZeroDimensionBottomBounds<AD::ElinaOctagonDomain>(callerRounding);
     checkPredicateTriState(callerRounding);
     checkUnsupportedFallbacks(callerRounding);
 
