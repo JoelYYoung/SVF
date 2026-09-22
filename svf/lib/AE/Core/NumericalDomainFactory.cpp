@@ -77,10 +77,11 @@ std::unique_ptr<NumericalDomain> makeOctagonDomain(
 }
 
 std::unique_ptr<NumericalDomain> makeNumericalDomain(
-    DomainKind kind, bool bottom, NumericalBackendKind backend)
+    DomainKind kind, bool bottom, NumericalBackendKind backend,
+    const OctagonConfig& octagonConfig)
 {
     if (kind == DomainKind::Octagon)
-        return makeOctagonDomain(backend, bottom);
+        return makeOctagonDomain(backend, bottom, octagonConfig);
     if (backend == NumericalBackendKind::Elina)
     {
 #ifdef SVF_HAS_ELINA_POLYHEDRA

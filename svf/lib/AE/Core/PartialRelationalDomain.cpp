@@ -2,9 +2,8 @@
 
 #include "AE/Core/PartialRelationalDomain.h"
 
-#include "AE/Core/ConvexPolyhedraDomain.h"
 #include "AE/Core/Expression.h"
-#include "AE/Core/OctagonDomain.h"
+#include "AE/Core/NumericalDomainFactory.h"
 
 #include <algorithm>
 #include <iterator>
@@ -17,22 +16,16 @@ namespace SVF::AbstractDomain
 namespace
 {
 
-std::unique_ptr<NumericalDomain> makeRelational(DomainKind kind, bool bottom)
+std::unique_ptr<NumericalDomain> makeRelational(
+    DomainKind kind, bool bottom, NumericalBackendKind backend)
 {
-    if (kind == DomainKind::Octagon)
-    {
-        OctagonConfig config;
-        config.storage = OctagonStorageKind::ComponentDense;
-        return std::make_unique<OctagonDomain>(
-            bottom ? OctagonDomain::bottom(config)
-                   : OctagonDomain::top(config));
-    }
-    if (kind == DomainKind::ConvexPolyhedra)
-        return std::make_unique<ConvexPolyhedraDomain>(
-            bottom ? ConvexPolyhedraDomain::bottom()
-                   : ConvexPolyhedraDomain::top());
-    throw std::invalid_argument(
-        "partial relational domain requires Octagon or Convex Polyhedra");
+    if (kind != DomainKind::Octagon &&
+            kind != DomainKind::ConvexPolyhedra)
+        throw std::invalid_argument(
+            "partial relational domain requires Octagon or Convex Polyhedra");
+    OctagonConfig config;
+    config.storage = OctagonStorageKind::ComponentDense;
+    return makeNumericalDomain(kind, bottom, backend, config);
 }
 
 std::unique_ptr<NumericalDomain> cloneNumerical(const NumericalDomain& domain)
@@ -52,10 +45,11 @@ LinearConstraint impossibleConstraint()
 
 PartialRelationalDomain::PartialRelationalDomain(
     DomainKind relationalKind, std::shared_ptr<const Vocabulary> vocabulary,
-    bool bottom)
-    : relationalKind_(relationalKind), vocabulary_(std::move(vocabulary)),
+    NumericalBackendKind backend, bool bottom)
+    : relationalKind_(relationalKind), backend_(backend),
+      vocabulary_(std::move(vocabulary)),
       box_(bottom ? BoxDomain::bottom() : BoxDomain::top()),
-      relational_(makeRelational(relationalKind, bottom))
+      relational_(makeRelational(relationalKind, bottom, backend))
 {
     if (!vocabulary_)
         throw std::invalid_argument("partial relational vocabulary is null");
@@ -68,21 +62,25 @@ PartialRelationalDomain::PartialRelationalDomain(
 }
 
 PartialRelationalDomain PartialRelationalDomain::top(
-    DomainKind relationalKind, std::shared_ptr<const Vocabulary> vocabulary)
+    DomainKind relationalKind, std::shared_ptr<const Vocabulary> vocabulary,
+    NumericalBackendKind backend)
 {
     return PartialRelationalDomain(relationalKind, std::move(vocabulary),
-                                   false);
+                                   backend, false);
 }
 
 PartialRelationalDomain PartialRelationalDomain::bottom(
-    DomainKind relationalKind, std::shared_ptr<const Vocabulary> vocabulary)
+    DomainKind relationalKind, std::shared_ptr<const Vocabulary> vocabulary,
+    NumericalBackendKind backend)
 {
-    return PartialRelationalDomain(relationalKind, std::move(vocabulary), true);
+    return PartialRelationalDomain(relationalKind, std::move(vocabulary),
+                                   backend, true);
 }
 
 PartialRelationalDomain::PartialRelationalDomain(
     const PartialRelationalDomain& other)
     : NumericalDomain(other), relationalKind_(other.relationalKind_),
+      backend_(other.backend_),
       vocabulary_(other.vocabulary_), selected_(other.selected_),
       box_(other.box_), relational_(cloneNumerical(*other.relational_))
 {
@@ -95,6 +93,7 @@ PartialRelationalDomain& PartialRelationalDomain::operator=(
         return *this;
     NumericalDomain::operator=(other);
     relationalKind_ = other.relationalKind_;
+    backend_ = other.backend_;
     vocabulary_ = other.vocabulary_;
     selected_ = other.selected_;
     box_ = other.box_;
@@ -556,6 +555,7 @@ bool PartialRelationalDomain::hasCompatibleDomain(
         return false;
     const auto& partial = static_cast<const PartialRelationalDomain&>(other);
     return relationalKind_ == partial.relationalKind_ &&
+           backend_ == partial.backend_ &&
            *vocabulary_ == *partial.vocabulary_ &&
            box_.isCompatibleWith(partial.box_) &&
            relational_->isCompatibleWith(*partial.relational_);

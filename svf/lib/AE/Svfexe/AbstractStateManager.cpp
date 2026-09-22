@@ -1,10 +1,9 @@
 //===- AbstractStateManager.cpp -- AE domain projection helpers --------===//
 
 #include "AE/Svfexe/AbstractInterpretation.h"
+#include "AE/Core/NumericalDomainFactory.h"
 #include "AE/Core/PartialRelationalDomain.h"
 
-#include "AE/Core/ConvexPolyhedraDomain.h"
-#include "AE/Core/OctagonDomain.h"
 #include "SVFIR/SVFIR.h"
 #include "Util/Options.h"
 
@@ -365,6 +364,10 @@ bottomState() const
 std::unique_ptr<AD::NumericalDomain>
 AbstractInterpretation::makeNumericalDomain(bool bottom) const
 {
+    const AD::NumericalBackendKind backend =
+        Options::AEBackend() == AENumericalBackend::ELINABackend
+        ? AD::NumericalBackendKind::Elina
+        : AD::NumericalBackendKind::Native;
     if (Options::AERelationalPolicy() == QuerySliceRelational &&
             Options::AEDomain() != AENumericalDomain::Box)
     {
@@ -378,29 +381,26 @@ AbstractInterpretation::makeNumericalDomain(bool bottom) const
         return std::make_unique<AD::PartialRelationalDomain>(
                    bottom
                    ? AD::PartialRelationalDomain::bottom(
-                       kind, relationalVocabulary_)
+                       kind, relationalVocabulary_, backend)
                    : AD::PartialRelationalDomain::top(
-                       kind, relationalVocabulary_));
+                       kind, relationalVocabulary_, backend));
     }
+    AD::DomainKind kind = AD::DomainKind::Box;
     switch (Options::AEDomain())
     {
     case AENumericalDomain::Octagon:
-    {
-        AD::OctagonConfig config;
-        config.storage = AD::OctagonStorageKind::ComponentDense;
-        return std::make_unique<AD::OctagonDomain>(
-                   bottom ? AD::OctagonDomain::bottom(config)
-                   : AD::OctagonDomain::top(config));
-    }
+        kind = AD::DomainKind::Octagon;
+        break;
     case AENumericalDomain::Polyhedra:
-        return std::make_unique<AD::ConvexPolyhedraDomain>(
-                   bottom ? AD::ConvexPolyhedraDomain::bottom()
-                   : AD::ConvexPolyhedraDomain::top());
+        kind = AD::DomainKind::ConvexPolyhedra;
+        break;
     case AENumericalDomain::Box:
     default:
-        return std::make_unique<AD::BoxDomain>(
-                   bottom ? AD::BoxDomain::bottom() : AD::BoxDomain::top());
+        break;
     }
+    AD::OctagonConfig config;
+    config.storage = AD::OctagonStorageKind::ComponentDense;
+    return AD::makeNumericalDomain(kind, bottom, backend, config);
 }
 
 AbstractInterpretation::State& AbstractInterpretation::

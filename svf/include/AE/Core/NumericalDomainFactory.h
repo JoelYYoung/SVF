@@ -26,7 +26,8 @@ bool octagonBackendAvailable(NumericalBackendKind backend) noexcept;
 
 std::unique_ptr<NumericalDomain> makeNumericalDomain(
     DomainKind kind, bool bottom,
-    NumericalBackendKind backend = NumericalBackendKind::Native);
+    NumericalBackendKind backend = NumericalBackendKind::Native,
+    const OctagonConfig& octagonConfig = {});
 std::unique_ptr<NumericalDomain> makeOctagonDomain(
     NumericalBackendKind backend = NumericalBackendKind::Native,
     bool bottom = false, const OctagonConfig& config = {});

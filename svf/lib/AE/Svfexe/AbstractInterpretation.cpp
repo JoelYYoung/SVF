@@ -29,6 +29,7 @@
 #include "AE/Svfexe/AbstractInterpretation.h"
 #include "AE/Svfexe/AbsExtAPI.h"
 #include "AE/Svfexe/SparseAbstractInterpretation.h"
+#include "AE/Core/NumericalDomainFactory.h"
 #include "AE/Core/PartialRelationalDomain.h"
 #include "Graphs/CallGraph.h"
 #include "SVFIR/SVFIR.h"
@@ -645,6 +646,23 @@ AbstractInterpretation& AbstractInterpretation::getAEInstance()
     // outside AE's control.
     static AbstractInterpretation* instance = []() -> AbstractInterpretation*
     {
+        const bool elinaBackend =
+            Options::AEBackend() == AENumericalBackend::ELINABackend;
+        if (elinaBackend && Options::AEDomain() == AENumericalDomain::Box)
+            throw std::invalid_argument(
+                "-ae-backend=elina is not applicable to -ae-domain=box");
+        if (elinaBackend)
+        {
+            const AD::DomainKind kind =
+                Options::AEDomain() == AENumericalDomain::Octagon
+                ? AD::DomainKind::Octagon
+                : AD::DomainKind::ConvexPolyhedra;
+            if (!AD::numericalBackendAvailable(
+                    kind, AD::NumericalBackendKind::Elina))
+                throw std::invalid_argument(
+                    "-ae-backend=elina is unavailable for the selected "
+                    "domain in this build");
+        }
         if (Options::AESparsity() == AESparsity::Sparse &&
                 Options::AEDomain() != AENumericalDomain::Box)
             throw std::invalid_argument(

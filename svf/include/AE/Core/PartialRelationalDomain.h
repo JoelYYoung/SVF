@@ -9,7 +9,7 @@
 #ifndef SVF_AE_PARTIAL_RELATIONAL_DOMAIN_H
 #define SVF_AE_PARTIAL_RELATIONAL_DOMAIN_H
 
-#include "AE/Core/NumericalDomain.h"
+#include "AE/Core/NumericalDomainFactory.h"
 
 #include <memory>
 #include <set>
@@ -34,10 +34,12 @@ public:
 
     static PartialRelationalDomain top(
         DomainKind relationalKind,
-        std::shared_ptr<const Vocabulary> vocabulary);
+        std::shared_ptr<const Vocabulary> vocabulary,
+        NumericalBackendKind backend = NumericalBackendKind::Native);
     static PartialRelationalDomain bottom(
         DomainKind relationalKind,
-        std::shared_ptr<const Vocabulary> vocabulary);
+        std::shared_ptr<const Vocabulary> vocabulary,
+        NumericalBackendKind backend = NumericalBackendKind::Native);
 
     PartialRelationalDomain(const PartialRelationalDomain& other);
     PartialRelationalDomain(PartialRelationalDomain&& other) noexcept = default;
@@ -86,10 +88,15 @@ public:
     {
         return *relational_;
     }
+    NumericalBackendKind backend() const
+    {
+        return backend_;
+    }
 
 private:
     PartialRelationalDomain(DomainKind relationalKind,
                             std::shared_ptr<const Vocabulary> vocabulary,
+                            NumericalBackendKind backend,
                             bool bottom);
 
     const void* dynamicTypeToken() const noexcept override
@@ -119,6 +126,7 @@ private:
     void makeBottom();
 
     DomainKind relationalKind_;
+    NumericalBackendKind backend_;
     std::shared_ptr<const Vocabulary> vocabulary_;
     std::set<Variable> selected_;
     BoxDomain box_;

@@ -101,6 +101,12 @@ public:
         Polyhedra
     };
 
+    enum AENumericalBackend
+    {
+        NativeBackend,
+        ELINABackend
+    };
+
     enum AERelationalPolicy
     {
         WholeRelational,
