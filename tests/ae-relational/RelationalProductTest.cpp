@@ -2,6 +2,7 @@
 #include "AE/Core/ConvexPolyhedraDomain.h"
 #include "AE/Core/Expression.h"
 #include "AE/Core/OctagonDomain.h"
+#include "AE/Core/PartialRelationalDomain.h"
 #include <algorithm>
 #include <cstdint>
 #include <cstdlib>
@@ -158,6 +159,60 @@ template <class Domain> void exactSmallModel()
         }
     }
 }
+
+void partialRelationalModel(AD::DomainKind kind)
+{
+    const AD::Variable x(51);
+    const AD::Variable y(52);
+    const AD::Variable outside(53);
+    auto vocabulary = std::make_shared<const std::vector<AD::Variable>>(
+        std::vector<AD::Variable>{x, y});
+    AD::PartialRelationalDomain state =
+        AD::PartialRelationalDomain::top(kind, vocabulary);
+    state.assume(AD::greaterEqual(AD::LinearExpression(x),
+                                  AD::LinearExpression(AD::Rational(0))));
+    state.assume(AD::lessEqual(AD::LinearExpression(x),
+                               AD::LinearExpression(AD::Rational(10))));
+    state.assign(y, AD::LinearExpression(x) +
+                    AD::LinearExpression(AD::Rational(1)));
+    if (state.entails(AD::equal(
+            AD::LinearExpression(y),
+            AD::LinearExpression(x) +
+            AD::LinearExpression(AD::Rational(1)))) != AD::CheckResult::True)
+        fail("partial relational slice lost an inside-vocabulary relation");
+
+    state.assign(outside, AD::LinearExpression(x) +
+                          AD::LinearExpression(y));
+    if (state.bound(outside) != AD::Interval::closed(
+            AD::Rational(1), AD::Rational(21)))
+        fail("partial relational slice lost the global Box fallback");
+
+    state.assign(y, AD::LinearExpression(outside) +
+                    AD::LinearExpression(x));
+    if (state.entails(AD::equal(
+            AD::LinearExpression(y),
+            AD::LinearExpression(x) +
+            AD::LinearExpression(AD::Rational(1)))) == AD::CheckResult::True)
+        fail("cross-vocabulary assignment retained a stale relation");
+    if (!state.relational().supportVariables().empty())
+    {
+        for (AD::Variable variable : state.relational().supportVariables())
+            if (variable != x && variable != y)
+                fail("partial relational support escaped the vocabulary");
+    }
+
+    bool rejectedRaw = false;
+    try
+    {
+        (void)state.serializeRaw();
+    }
+    catch (const std::invalid_argument&)
+    {
+        rejectedRaw = true;
+    }
+    if (!rejectedRaw)
+        fail("partial relational raw serialization was not rejected");
+}
 }
 int main()
 {
@@ -220,6 +275,8 @@ int main()
         fail("integer polyhedra guard missed an inconsistent equality");
     exactSmallModel<AD::OctagonDomain>();
     exactSmallModel<AD::ConvexPolyhedraDomain>();
+    partialRelationalModel(AD::DomainKind::Octagon);
+    partialRelationalModel(AD::DomainKind::ConvexPolyhedra);
     machineInteger8Exhaustive();
     std::cout << "RelationalProductTest: PASS\n";
     return EXIT_SUCCESS;

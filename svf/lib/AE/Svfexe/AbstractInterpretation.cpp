@@ -29,6 +29,7 @@
 #include "AE/Svfexe/AbstractInterpretation.h"
 #include "AE/Svfexe/AbsExtAPI.h"
 #include "AE/Svfexe/SparseAbstractInterpretation.h"
+#include "AE/Core/PartialRelationalDomain.h"
 #include "Graphs/CallGraph.h"
 #include "SVFIR/SVFIR.h"
 #include "Util/Options.h"
@@ -37,12 +38,14 @@
 #include <chrono>
 #include <cmath>
 #include <cstdlib>
+#include <deque>
 #include <fstream>
 #include <iomanip>
 #include <memory>
 #include <set>
 #include <stdexcept>
 #include <tuple>
+#include <unordered_set>
 
 using namespace SVF;
 using namespace SVFUtil;
@@ -107,6 +110,39 @@ static unsigned queryOutcomeRank(AbstractInterpretation::QueryOutcome outcome)
     default:
         return 0;
     }
+}
+
+static std::vector<const ValVar*> definitionOperands(const SVFStmt* statement)
+{
+    std::vector<const ValVar*> result;
+    const auto add = [&](const SVFVar* variable) {
+        if (const auto* value = SVFUtil::dyn_cast<ValVar>(variable))
+            result.push_back(value);
+    };
+    // Loads are an explicit memory boundary for the initial static slice. The
+    // loaded result can still be selected, but its relational payload is
+    // reconstructed from the global Box hull rather than following a pointer.
+    if (SVFUtil::isa<LoadStmt>(statement))
+        return result;
+    if (const auto* multi = SVFUtil::dyn_cast<MultiOpndStmt>(statement))
+    {
+        for (const ValVar* operand : multi->getOpndVars())
+            add(operand);
+    }
+    else if (const auto* unary = SVFUtil::dyn_cast<UnaryOPStmt>(statement))
+        add(unary->getOpVar());
+    else if (const auto* assignment =
+                 SVFUtil::dyn_cast<AssignStmt>(statement))
+        add(assignment->getRHSVar());
+    if (const auto* address = SVFUtil::dyn_cast<AddrStmt>(statement))
+        for (const SVFVar* size : address->getArrSize())
+            add(size);
+    std::sort(result.begin(), result.end(),
+              [](const ValVar* left, const ValVar* right) {
+                  return left->getId() < right->getId();
+              });
+    result.erase(std::unique(result.begin(), result.end()), result.end());
+    return result;
 }
 
 static std::string queryKey(AEDetector::DetectorKind detector,
@@ -213,6 +249,119 @@ void AbstractInterpretation::initializeObjectValue(
     addresses = AD::AddressSet::singleton(adapter_.location(*object));
 }
 
+void AbstractInterpretation::initializeRelationalPolicy()
+{
+    if (Options::AERelationalPolicy() != QuerySliceRelational)
+        return;
+    if (Options::AEDomain() == AENumericalDomain::Box)
+        throw std::invalid_argument(
+            "-ae-relational-policy=query-slice requires octagon or polyhedra");
+
+    std::vector<const ValVar*> seeds;
+    const auto addSeed = [&](const SVFVar* variable) {
+        if (const auto* value = SVFUtil::dyn_cast<ValVar>(variable))
+            if (adapter_.contains(*value))
+                seeds.push_back(value);
+    };
+    for (auto iterator = icfg->begin(); iterator != icfg->end(); ++iterator)
+    {
+        const ICFGNode* node = iterator->second;
+        if (const auto* call = SVFUtil::dyn_cast<CallICFGNode>(node))
+        {
+            const FunObjVar* function = call->getCalledFunction();
+            if (function &&
+                    (function->getName() == "SAFE_BUFACCESS" ||
+                     function->getName() == "UNSAFE_BUFACCESS") &&
+                    call->arg_size() >= 2)
+                addSeed(call->getArgument(1));
+            if (function && SVFUtil::isExtCall(function) &&
+                    call->arg_size() != 0)
+            {
+                bool sizedMemoryOperation = false;
+                for (const std::string& annotation :
+                        ExtAPI::getExtAPI()->getExtFuncAnnotations(function))
+                    sizedMemoryOperation |=
+                        annotation.find("MEMCPY") != std::string::npos ||
+                        annotation.find("MEMSET") != std::string::npos;
+                if (sizedMemoryOperation)
+                    addSeed(call->getArgument(call->arg_size() - 1));
+            }
+        }
+        for (const SVFStmt* statement : node->getSVFStmts())
+        {
+            if (const auto* gep = SVFUtil::dyn_cast<GepStmt>(statement))
+                for (const auto& [index, type] :
+                        gep->getOffsetVarAndGepTypePairVec())
+                {
+                    (void)type;
+                    addSeed(index);
+                }
+            if (const auto* address = SVFUtil::dyn_cast<AddrStmt>(statement))
+                for (const SVFVar* size : address->getArrSize())
+                    addSeed(size);
+        }
+    }
+
+    const auto byVariable = [&](const ValVar* left, const ValVar* right) {
+        return adapter_.variable(*left) < adapter_.variable(*right);
+    };
+    std::sort(seeds.begin(), seeds.end(), byVariable);
+    seeds.erase(std::unique(seeds.begin(), seeds.end()), seeds.end());
+    relationalSeedCount_ = seeds.size();
+
+    std::deque<const ValVar*> worklist(seeds.begin(), seeds.end());
+    std::unordered_set<NodeID> seen;
+    std::vector<AD::Variable> closure;
+    while (!worklist.empty())
+    {
+        const ValVar* value = worklist.front();
+        worklist.pop_front();
+        if (!seen.insert(value->getId()).second)
+            continue;
+        if (adapter_.contains(*value))
+            closure.push_back(adapter_.variable(*value));
+
+        std::vector<const SVFStmt*> definitions(
+            value->getInEdges().begin(), value->getInEdges().end());
+        std::sort(definitions.begin(), definitions.end(),
+                  [](const SVFStmt* left, const SVFStmt* right) {
+                      return left->getEdgeID() < right->getEdgeID();
+                  });
+        std::vector<const ValVar*> operands;
+        for (const SVFStmt* definition : definitions)
+        {
+            std::vector<const ValVar*> current =
+                definitionOperands(definition);
+            operands.insert(operands.end(), current.begin(), current.end());
+        }
+        std::sort(operands.begin(), operands.end(), byVariable);
+        operands.erase(std::unique(operands.begin(), operands.end()),
+                       operands.end());
+        for (const ValVar* operand : operands)
+            if (seen.count(operand->getId()) == 0)
+                worklist.push_back(operand);
+    }
+
+    // BFS order gives query seeds priority, then progressively older
+    // definitions. Canonicalize only after applying the explicit policy cap.
+    const std::size_t limit = Options::AERelationalMaxVars();
+    relationalDroppedCount_ = closure.size() > limit
+                              ? closure.size() - limit : 0;
+    if (closure.size() > limit)
+        closure.resize(limit);
+    std::sort(closure.begin(), closure.end());
+    closure.erase(std::unique(closure.begin(), closure.end()), closure.end());
+    relationalVocabulary_ =
+        std::make_shared<const std::vector<AD::Variable>>(std::move(closure));
+
+    SVFUtil::outs()
+            << "AE_RELATIONAL_POLICY policy=query-slice seeds="
+            << relationalSeedCount_
+            << " selected=" << relationalVocabulary_->size()
+            << " dropped=" << relationalDroppedCount_
+            << " max=" << Options::AERelationalMaxVars() << '\n';
+}
+
 
 void AbstractInterpretation::runOnModule()
 {
@@ -231,6 +380,8 @@ void AbstractInterpretation::runOnModule()
     querySeconds += secondsSince(queryEnumerationStart);
     /// collect checkpoint
     utils->collectCheckPoint();
+
+    initializeRelationalPolicy();
 
     if (domainStats)
         AD::NumericalDomain::beginTelemetry();
@@ -293,6 +444,14 @@ void AbstractInterpretation::runOnModule()
                 << " join_calls=" << operations.joinCalls
                 << " widen_calls=" << operations.wideningCalls
                 << " narrow_calls=" << operations.narrowingCalls << '\n';
+        if (Options::AERelationalPolicy() == QuerySliceRelational)
+            SVFUtil::outs()
+                    << "AE_PARTIAL_RELATIONAL_STATS inside_ops="
+                    << operations.partialInsideOperations
+                    << " fallback_ops="
+                    << operations.partialFallbackOperations
+                    << " projections=" << operations.partialProjections
+                    << '\n';
     }
     if (unknownTargetTelemetryEnabled_)
     {
@@ -480,6 +639,10 @@ AbstractInterpretation& AbstractInterpretation::getAEInstance()
             throw std::invalid_argument(
                 "relational numerical domains currently support dense and "
                 "semi-sparse AE only");
+        if (Options::AERelationalPolicy() == QuerySliceRelational &&
+                Options::AEDomain() == AENumericalDomain::Box)
+            throw std::invalid_argument(
+                "query-slice relational policy requires octagon or polyhedra");
         switch (Options::AESparsity())
         {
         case AESparsity::SemiSparse:

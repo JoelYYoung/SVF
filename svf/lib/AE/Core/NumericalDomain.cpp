@@ -2403,6 +2403,22 @@ void NumericalDomain::recordOperation(OperationKind operation,
                      };
 }
 
+void NumericalDomain::recordPartialOperation(bool inside) const
+{
+    if (!telemetryEnabled)
+        return;
+    if (inside)
+        ++telemetry.partialInsideOperations;
+    else
+        ++telemetry.partialFallbackOperations;
+}
+
+void NumericalDomain::recordPartialProjection() const
+{
+    if (telemetryEnabled)
+        ++telemetry.partialProjections;
+}
+
 std::uint64_t NumericalDomain::hash() const
 {
     if (isDomain<ConvexPolyhedraDomain>())

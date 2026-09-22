@@ -486,6 +486,9 @@ void AbstractInterpretation::verifyPostFixpoint()
     // states and replay states remain lattice-compatible.
     AbstractInterpretation replay;
     replay.adapter_ = adapter_;
+    replay.relationalVocabulary_ = relationalVocabulary_;
+    replay.relationalSeedCount_ = relationalSeedCount_;
+    replay.relationalDroppedCount_ = relationalDroppedCount_;
     replay.utils = new AbsExtAPI(&replay);
     const ICFGNode* global = icfg->getGlobalICFGNode();
 

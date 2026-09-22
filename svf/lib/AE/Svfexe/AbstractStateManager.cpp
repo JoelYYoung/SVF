@@ -1,6 +1,7 @@
 //===- AbstractStateManager.cpp -- AE domain projection helpers --------===//
 
 #include "AE/Svfexe/AbstractInterpretation.h"
+#include "AE/Core/PartialRelationalDomain.h"
 
 #include "AE/Core/ConvexPolyhedraDomain.h"
 #include "AE/Core/OctagonDomain.h"
@@ -364,6 +365,23 @@ bottomState() const
 std::unique_ptr<AD::NumericalDomain>
 AbstractInterpretation::makeNumericalDomain(bool bottom) const
 {
+    if (Options::AERelationalPolicy() == QuerySliceRelational &&
+            Options::AEDomain() != AENumericalDomain::Box)
+    {
+        if (!relationalVocabulary_)
+            throw std::logic_error(
+                "partial relational vocabulary was not initialized");
+        const AD::DomainKind kind =
+            Options::AEDomain() == AENumericalDomain::Octagon
+            ? AD::DomainKind::Octagon
+            : AD::DomainKind::ConvexPolyhedra;
+        return std::make_unique<AD::PartialRelationalDomain>(
+                   bottom
+                   ? AD::PartialRelationalDomain::bottom(
+                       kind, relationalVocabulary_)
+                   : AD::PartialRelationalDomain::top(
+                       kind, relationalVocabulary_));
+    }
     switch (Options::AEDomain())
     {
     case AENumericalDomain::Octagon:

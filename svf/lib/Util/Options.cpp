@@ -802,6 +802,26 @@ const OptionMap<u32_t> Options::AEDomain(
         "General convex linear constraints."
     }
 });
+const OptionMap<u32_t> Options::AERelationalPolicy(
+    "ae-relational-policy",
+    "Relational-domain activation policy (Default: whole)",
+    AbstractInterpretation::AERelationalPolicy::WholeRelational,
+{
+    {
+        AbstractInterpretation::AERelationalPolicy::WholeRelational, "whole",
+        "Use the selected relational domain for every numerical variable."
+    },
+    {
+        AbstractInterpretation::AERelationalPolicy::QuerySliceRelational,
+        "query-slice",
+        "Use Box globally and the relational domain on a fixed query dependency slice."
+    }
+});
+const Option<u32_t> Options::AERelationalMaxVars(
+    "ae-relational-max-vars",
+    "Maximum variables in the fixed partial relational vocabulary.",
+    32
+);
 const Option<std::string> Options::AEQueryLedgerFile(
     "ae-query-ledger",
     "Write the complete abstract-execution detector query ledger as TSV.",

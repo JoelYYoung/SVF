@@ -235,6 +235,8 @@ public:
     // Abstract Execution
     static const OptionMap<u32_t> AESparsity;
     static const OptionMap<u32_t> AEDomain;
+    static const OptionMap<u32_t> AERelationalPolicy;
+    static const Option<u32_t> AERelationalMaxVars;
     /// Optional complete abstract-execution query ledger (TSV).
     static const Option<std::string> AEQueryLedgerFile;
     /// Content identity supplied by the runner (normally input SHA-256).

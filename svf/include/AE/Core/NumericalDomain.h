@@ -434,6 +434,9 @@ struct NumericalTelemetry
     std::uint64_t joinCalls = 0;
     std::uint64_t wideningCalls = 0;
     std::uint64_t narrowingCalls = 0;
+    std::uint64_t partialInsideOperations = 0;
+    std::uint64_t partialFallbackOperations = 0;
+    std::uint64_t partialProjections = 0;
 };
 
 struct Diagnostic
@@ -584,6 +587,8 @@ protected:
     void recordOperation(OperationKind operation,
                          ApproximationKind approximation, bool best,
                          std::string reason = {}) const;
+    void recordPartialOperation(bool inside) const;
+    void recordPartialProjection() const;
 
 private:
     mutable OperationMetadata lastOperation_;

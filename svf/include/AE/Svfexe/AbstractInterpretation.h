@@ -44,7 +44,9 @@
 #include "SVFIR/SVFIR.h"
 #include "Util/SVFBugReport.h"
 #include "Util/WorkList.h"
+#include <memory>
 #include <set>
+#include <vector>
 
 namespace SVF
 {
@@ -97,6 +99,12 @@ public:
         Box,
         Octagon,
         Polyhedra
+    };
+
+    enum AERelationalPolicy
+    {
+        WholeRelational,
+        QuerySliceRelational
     };
 
     enum HandleRecur
@@ -490,6 +498,7 @@ protected:
     State bottomState() const;
     std::unique_ptr<AbstractDomain::NumericalDomain> makeNumericalDomain(
         bool bottom) const;
+    void initializeRelationalPolicy();
 
     void assignValue(State& state, AbstractDomain::Variable variable,
                      const AbstractDomain::Interval& interval,
@@ -516,6 +525,10 @@ protected:
     SVFIR* svfir{nullptr};
     AEWTO* preAnalysis{nullptr};
     SVFIRAdapter adapter_;
+    std::shared_ptr<const std::vector<AbstractDomain::Variable>>
+        relationalVocabulary_;
+    std::size_t relationalSeedCount_ = 0;
+    std::size_t relationalDroppedCount_ = 0;
     Map<const ICFGNode*, State> stateTrace_;
     bool unknownTargetTelemetryEnabled_ = false;
     UnknownTargetTelemetry unknownTargetTelemetry_;
