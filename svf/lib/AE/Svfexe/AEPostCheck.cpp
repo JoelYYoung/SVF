@@ -2,6 +2,7 @@
 
 #include "AE/Svfexe/AbstractInterpretation.h"
 
+#include "AE/Core/NumericalOperationTrace.h"
 #include "AE/Svfexe/AbsExtAPI.h"
 #include "Util/Options.h"
 
