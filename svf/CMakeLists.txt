@@ -134,6 +134,24 @@ if(BUILD_TESTING)
   )
   target_link_libraries(ELINABackendContractTest PRIVATE AbstractDomainCore)
   add_test(NAME ae-elina-backend-contract COMMAND ELINABackendContractTest)
+  set(APRON_ORACLE_ROOT "" CACHE PATH
+      "Optional fixed APRON prefix for ELINA differential tests")
+  if(SVF_ENABLE_ELINA AND APRON_ORACLE_ROOT AND
+     EXISTS "${APRON_ORACLE_ROOT}/include/ap_abstract0.h")
+    add_executable(
+      ELINAApronDifferentialTest
+      ${CMAKE_CURRENT_LIST_DIR}/../tests/ae-relational/ELINAApronDifferentialTest.cpp
+    )
+    target_include_directories(ELINAApronDifferentialTest SYSTEM PRIVATE
+                               ${APRON_ORACLE_ROOT}/include)
+    target_link_libraries(ELINAApronDifferentialTest PRIVATE
+                          AbstractDomainCore
+                          ${APRON_ORACLE_ROOT}/lib/libpolkaMPQ.so
+                          ${APRON_ORACLE_ROOT}/lib/liboctMPQ.so
+                          ${APRON_ORACLE_ROOT}/lib/libapron.so)
+    add_test(NAME ae-elina-apron-differential
+             COMMAND ELINAApronDifferentialTest)
+  endif()
 endif()
 set_target_properties(
   AbstractDomainCore PROPERTIES
