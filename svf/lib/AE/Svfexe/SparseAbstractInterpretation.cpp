@@ -1085,7 +1085,11 @@ void SemiSparseAbstractInterpretation::materializeScalarDefinitions(
             // Uninitialized default. Join the complete coordinate before
             // relations are re-applied below. Any disagreement becomes Top,
             // which conservatively covers both paths.
-            if (scalarState_)
+            if (scalarState_ &&
+                    (definition->second.numericalInitialization().value(variable) !=
+                         scalarState_->numericalInitialization().value(variable) ||
+                     definition->second.addressInitialization().value(variable) !=
+                         scalarState_->addressInitialization().value(variable)))
                 destination.joinValueFrom(variable, *scalarState_, variable);
         }
         else if (scalarState_)
