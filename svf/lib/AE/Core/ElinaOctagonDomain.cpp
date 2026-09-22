@@ -389,11 +389,15 @@ private:
                 manager->funptr[ELINA_FUNID_BOUND_LINEXPR] == nullptr ||
                 manager->funptr[ELINA_FUNID_TO_LINCONS_ARRAY] == nullptr ||
                 manager->funptr[ELINA_FUNID_ASSIGN_LINEXPR_ARRAY] == nullptr ||
+                manager->funptr[ELINA_FUNID_SUBSTITUTE_LINEXPR_ARRAY] == nullptr ||
                 manager->funptr[ELINA_FUNID_MEET_LINCONS_ARRAY] == nullptr ||
                 manager->funptr[ELINA_FUNID_JOIN] == nullptr ||
                 manager->funptr[ELINA_FUNID_MEET] == nullptr ||
                 manager->funptr[ELINA_FUNID_WIDENING] == nullptr ||
-                manager->funptr[ELINA_FUNID_CLOSURE] == nullptr)
+                manager->funptr[ELINA_FUNID_CLOSURE] == nullptr ||
+                manager->funptr[ELINA_FUNID_ADD_DIMENSIONS] == nullptr ||
+                manager->funptr[ELINA_FUNID_REMOVE_DIMENSIONS] == nullptr ||
+                manager->funptr[ELINA_FUNID_FOLD] == nullptr)
         {
             elina_manager_free(manager);
             throw std::runtime_error(
@@ -882,8 +886,13 @@ void ElinaOctagonDomain::expand(Variable source,
     if (unique.size() != copies.size() || unique.count(source) != 0)
         throw std::invalid_argument("invalid ELINA Octagon expansion set");
     for (Variable copy : copies)
+    {
+        if (copy.type() != source.type())
+            throw std::invalid_argument(
+                "ELINA Octagon expansion requires same-type copies");
         if (impl_->contains(copy))
             throw std::invalid_argument("expansion target already exists");
+    }
     if (!impl_->contains(source))
     {
         std::vector<Variable> all = copies;
@@ -935,6 +944,10 @@ void ElinaOctagonDomain::fold(Variable target,
     std::set<Variable> unique(dimensions.begin(), dimensions.end());
     if (unique.size() != dimensions.size())
         throw std::invalid_argument("duplicate ELINA Octagon fold dimension");
+    for (Variable variable : dimensions)
+        if (variable.type() != target.type())
+            throw std::invalid_argument(
+                "ELINA Octagon fold requires same-type dimensions");
     std::vector<Variable> required = dimensions;
     required.push_back(target);
     if (!impl_->ensureVariables(required))
