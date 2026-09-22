@@ -116,6 +116,12 @@ std::vector<Variable> NumericalDomain::relationalClosureState(
     return std::vector<Variable>(closure.begin(), closure.end());
 }
 
+std::vector<Variable> NumericalDomain::delegateRelationalClosureState(
+    const NumericalDomain& facet, const std::vector<Variable>& seeds)
+{
+    return facet.relationalClosureState(seeds);
+}
+
 void NumericalDomain::recordRelationalClosureConstraintExport() const
 {
     if (telemetryEnabled)

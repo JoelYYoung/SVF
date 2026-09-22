@@ -291,6 +291,40 @@ void octagonIndexedClosure()
             fail("indexed octagon closure disagrees after forget");
     }
 }
+
+void partialRelationalClosureDelegation()
+{
+    const AD::Variable x(71);
+    const AD::Variable y(72);
+    auto vocabulary = std::make_shared<const std::vector<AD::Variable>>(
+        std::vector<AD::Variable>{x, y});
+
+    for (AD::DomainKind kind :
+            {AD::DomainKind::Octagon, AD::DomainKind::ConvexPolyhedra})
+    {
+        AD::PartialRelationalDomain state =
+            AD::PartialRelationalDomain::top(kind, vocabulary);
+        state.assign(y, AD::LinearExpression(x) +
+                            AD::LinearExpression(AD::Rational(1)));
+        AD::NumericalDomain::beginTelemetry();
+        const std::vector<AD::Variable> closure =
+            state.relationalClosure({x});
+        const AD::NumericalTelemetry telemetry =
+            AD::NumericalDomain::endTelemetry();
+        if (closure != std::vector<AD::Variable>({x, y}))
+            fail("partial relational closure omitted its facet component");
+        if (telemetry.relationalClosureCalls != 1)
+            fail("partial relational closure counted a delegated query twice");
+        if (kind == AD::DomainKind::Octagon &&
+                (telemetry.relationalClosureConstraintExports != 0 ||
+                 telemetry.relationalClosureIndexedQueries != 1))
+            fail("partial Octagon closure bypassed its component index");
+        if (kind == AD::DomainKind::ConvexPolyhedra &&
+                (telemetry.relationalClosureConstraintExports != 1 ||
+                 telemetry.relationalClosureIndexedQueries != 0))
+            fail("partial Polyhedra closure bypassed its export oracle");
+    }
+}
 }
 int main()
 {
@@ -363,6 +397,7 @@ int main()
     partialRelationalModel(AD::DomainKind::Octagon);
     partialRelationalModel(AD::DomainKind::ConvexPolyhedra);
     octagonIndexedClosure();
+    partialRelationalClosureDelegation();
     machineInteger8Exhaustive();
     std::cout << "RelationalProductTest: PASS\n";
     return EXIT_SUCCESS;

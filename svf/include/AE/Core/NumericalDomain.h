@@ -579,6 +579,12 @@ protected:
     /// physical representation can answer this without exporting constraints.
     virtual std::vector<Variable> relationalClosureState(
         const std::vector<Variable>& seeds) const;
+    /// Delegate a product wrapper's already-counted closure query to one of
+    /// its numerical facets without incrementing the public call counter a
+    /// second time. The facet still records export-vs-index telemetry.
+    static std::vector<Variable> delegateRelationalClosureState(
+        const NumericalDomain& facet,
+        const std::vector<Variable>& seeds);
     void recordRelationalClosureConstraintExport() const;
     void recordRelationalClosureIndexedQuery() const;
     /// Evaluate nonlinear and finite IEEE trees by sound interval semantics,

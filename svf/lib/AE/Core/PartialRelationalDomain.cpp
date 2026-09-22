@@ -511,6 +511,14 @@ std::vector<Variable> PartialRelationalDomain::supportVariables() const
     return result;
 }
 
+std::vector<Variable> PartialRelationalDomain::relationalClosureState(
+    const std::vector<Variable>& seeds) const
+{
+    // Box contributes only unary bounds, so every dependency edge in this
+    // reduced product comes from the selected relational facet.
+    return delegateRelationalClosureState(*relational_, seeds);
+}
+
 LinearConstraintSet PartialRelationalDomain::toConstraints() const
 {
     LinearConstraintSet result = box_.toConstraints();

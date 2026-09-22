@@ -105,6 +105,8 @@ private:
     bool isTopDomain() const override;
     bool leqDomain(const AbstractDomain& other) const override;
     std::string domainToString() const override;
+    std::vector<Variable> relationalClosureState(
+        const std::vector<Variable>& seeds) const override;
 
     const PartialRelationalDomain& requirePartial(
         const AbstractDomain& other) const;
