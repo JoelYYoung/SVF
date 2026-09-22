@@ -24,13 +24,18 @@
 #include <stdexcept>
 #include <string_view>
 #ifdef SVF_BOX_STORAGE_TELEMETRY
+#include <atomic>
 #include <array>
+#include <chrono>
 #include <fstream>
 #include <iterator>
 #include <limits>
 #include <map>
+#include <thread>
 #include <unordered_map>
 #include <unordered_set>
+#include <sys/resource.h>
+#include <unistd.h>
 #endif
 #include <vector>
 
@@ -220,6 +225,229 @@ struct StorageEvents
     std::size_t directoryChunkEntriesCopied = 0;
 } storageEvents;
 
+class PeakMemoryCensus
+{
+    struct Page
+    {
+        std::size_t occupiedSlots = 0;
+        std::size_t shallowBytes = 0;
+        std::size_t rationalUsedLimbBytes = 0;
+        std::size_t emptySlotShallowBytes = 0;
+    };
+
+    struct Sample
+    {
+        std::uint64_t elapsedMicros = 0;
+        std::uint64_t rssBytes = 0;
+        std::uint64_t livePages = 0;
+        std::uint64_t occupiedSlots = 0;
+        std::uint64_t pageShallowBytes = 0;
+        std::uint64_t rationalUsedLimbBytes = 0;
+        std::uint64_t emptySlotShallowBytes = 0;
+    };
+
+public:
+    void start()
+    {
+        const char* value = std::getenv("BOX_PEAK_MEMORY_CENSUS");
+        enabled_ = value && std::string_view(value) != "0";
+        if (!enabled_)
+            return;
+        started_ = std::chrono::steady_clock::now();
+        stop_.store(false, std::memory_order_release);
+        sampler_ = std::thread(
+            [this]
+        {
+            while (!stop_.load(std::memory_order_acquire))
+            {
+                sample();
+                std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            }
+            sample();
+        });
+    }
+
+    void storage(const BoxStorageEvent& event)
+    {
+        if (!enabled_)
+            return;
+        const bool creates = event.kind == BoxStorageEventKind::PageAllocate ||
+                             event.kind == BoxStorageEventKind::PageDetach ||
+                             event.kind == BoxStorageEventKind::JoinMaterializedPage;
+        const bool updates = event.kind == BoxStorageEventKind::PageContentUpdate;
+        const bool releases = event.kind == BoxStorageEventKind::PageRelease;
+        if (!creates && !updates && !releases)
+            return;
+
+        generation_.fetch_add(1, std::memory_order_acq_rel);
+        if (releases)
+        {
+            const auto found = pages_.find(event.pageId);
+            if (found != pages_.end())
+            {
+                subtract(found->second);
+                pages_.erase(found);
+            }
+        }
+        else
+        {
+            const Page next{event.occupiedSlots, event.pageShallowBytes,
+                            event.rationalUsedLimbBytes,
+                            event.emptySlotShallowBytes};
+            const auto [found, inserted] = pages_.try_emplace(event.pageId, next);
+            if (!inserted)
+            {
+                subtract(found->second);
+                found->second = next;
+            }
+            add(next);
+        }
+        publish();
+        generation_.fetch_add(1, std::memory_order_release);
+    }
+
+    void stopAndPrint()
+    {
+        if (!enabled_)
+            return;
+        stop_.store(true, std::memory_order_release);
+        sampler_.join();
+        const Sample final = readSample();
+        struct rusage usage {};
+        getrusage(RUSAGE_SELF, &usage);
+        printSample("rss_peak", rssPeak_);
+        printSample("page_peak", pagePeak_);
+        printSample("final", final);
+        std::uint64_t kernelPeakRssBytes =
+            static_cast<std::uint64_t>(usage.ru_maxrss);
+#ifndef __APPLE__
+        kernelPeakRssBytes *= 1024;
+#endif
+        SVFUtil::outs() << "BOX_PEAK_MEMORY_SUMMARY samples=" << samples_
+                        << " interval_us=5000"
+                        << " kernel_peak_rss_bytes=" << kernelPeakRssBytes
+                        << '\n';
+        enabled_ = false;
+    }
+
+private:
+    static std::uint64_t currentRssBytes()
+    {
+        std::ifstream input("/proc/self/statm");
+        std::uint64_t virtualPages = 0, residentPages = 0;
+        if (!(input >> virtualPages >> residentPages))
+            return 0;
+        (void)virtualPages;
+        return residentPages * static_cast<std::uint64_t>(sysconf(_SC_PAGESIZE));
+    }
+
+    void add(const Page& page)
+    {
+        ++livePages_;
+        occupiedSlots_ += page.occupiedSlots;
+        pageShallowBytes_ += page.shallowBytes;
+        rationalUsedLimbBytes_ += page.rationalUsedLimbBytes;
+        emptySlotShallowBytes_ += page.emptySlotShallowBytes;
+    }
+
+    void subtract(const Page& page)
+    {
+        --livePages_;
+        occupiedSlots_ -= page.occupiedSlots;
+        pageShallowBytes_ -= page.shallowBytes;
+        rationalUsedLimbBytes_ -= page.rationalUsedLimbBytes;
+        emptySlotShallowBytes_ -= page.emptySlotShallowBytes;
+    }
+
+    void publish()
+    {
+        publishedLivePages_.store(livePages_, std::memory_order_relaxed);
+        publishedOccupiedSlots_.store(occupiedSlots_, std::memory_order_relaxed);
+        publishedPageShallowBytes_.store(pageShallowBytes_,
+                                         std::memory_order_relaxed);
+        publishedRationalUsedLimbBytes_.store(
+            rationalUsedLimbBytes_, std::memory_order_relaxed);
+        publishedEmptySlotShallowBytes_.store(
+            emptySlotShallowBytes_, std::memory_order_relaxed);
+    }
+
+    Sample readSample() const
+    {
+        Sample result;
+        std::uint64_t before = 0, after = 0;
+        do
+        {
+            before = generation_.load(std::memory_order_acquire);
+            if (before & 1U)
+                continue;
+            result.livePages = publishedLivePages_.load(std::memory_order_relaxed);
+            result.occupiedSlots = publishedOccupiedSlots_.load(std::memory_order_relaxed);
+            result.pageShallowBytes = publishedPageShallowBytes_.load(
+                                          std::memory_order_relaxed);
+            result.rationalUsedLimbBytes = publishedRationalUsedLimbBytes_.load(
+                                               std::memory_order_relaxed);
+            result.emptySlotShallowBytes = publishedEmptySlotShallowBytes_.load(
+                                               std::memory_order_relaxed);
+            after = generation_.load(std::memory_order_acquire);
+        }
+        while (before != after || (after & 1U));
+        result.rssBytes = currentRssBytes();
+        result.elapsedMicros = static_cast<std::uint64_t>(
+                                   std::chrono::duration_cast<std::chrono::microseconds>(
+                                       std::chrono::steady_clock::now() - started_).count());
+        return result;
+    }
+
+    void sample()
+    {
+        const Sample current = readSample();
+        ++samples_;
+        if (current.rssBytes > rssPeak_.rssBytes)
+            rssPeak_ = current;
+        if (current.pageShallowBytes > pagePeak_.pageShallowBytes)
+            pagePeak_ = current;
+    }
+
+    static void printSample(const char* name, const Sample& sample)
+    {
+        const std::uint64_t capacitySlots = sample.livePages * 8;
+        const std::uint64_t emptySlots = capacitySlots >= sample.occupiedSlots
+                                         ? capacitySlots - sample.occupiedSlots : 0;
+        SVFUtil::outs() << "BOX_PEAK_MEMORY_SAMPLE name=" << name
+                        << " elapsed_us=" << sample.elapsedMicros
+                        << " rss_bytes=" << sample.rssBytes
+                        << " live_pages=" << sample.livePages
+                        << " occupied_slots=" << sample.occupiedSlots
+                        << " empty_slots=" << emptySlots
+                        << " page_shallow_bytes=" << sample.pageShallowBytes
+                        << " rational_used_limb_bytes="
+                        << sample.rationalUsedLimbBytes
+                        << " empty_slot_shallow_bytes="
+                        << sample.emptySlotShallowBytes
+                        << '\n';
+    }
+
+    bool enabled_ = false;
+    std::atomic<bool> stop_{false};
+    std::thread sampler_;
+    std::chrono::steady_clock::time_point started_;
+    std::unordered_map<std::uint64_t, Page> pages_;
+    std::uint64_t livePages_ = 0;
+    std::uint64_t occupiedSlots_ = 0;
+    std::uint64_t pageShallowBytes_ = 0;
+    std::uint64_t rationalUsedLimbBytes_ = 0;
+    std::uint64_t emptySlotShallowBytes_ = 0;
+    std::atomic<std::uint64_t> generation_{0};
+    std::atomic<std::uint64_t> publishedLivePages_{0};
+    std::atomic<std::uint64_t> publishedOccupiedSlots_{0};
+    std::atomic<std::uint64_t> publishedPageShallowBytes_{0};
+    std::atomic<std::uint64_t> publishedRationalUsedLimbBytes_{0};
+    std::atomic<std::uint64_t> publishedEmptySlotShallowBytes_{0};
+    Sample rssPeak_;
+    Sample pagePeak_;
+    std::uint64_t samples_ = 0;
+} peakMemoryCensus;
+
 struct StorageWork
 {
     std::uint64_t count = 0;
@@ -272,6 +500,7 @@ std::size_t eventIndex(BoxStorageEventKind kind)
 
 void collectStorageEvent(const BoxStorageEvent &event)
 {
+    peakMemoryCensus.storage(event);
     cowriteCensus.storage(event);
     ++storageEvents.counts[eventIndex(event.kind)];
     if (event.kind != BoxStorageEventKind::DirectoryDetach &&
@@ -666,6 +895,7 @@ int main(int argc, char **argv)
         SVF::AbstractDomain::AbstractDomain::setOperationEventSink(nullptr);
         return 0;
     }
+    peakMemoryCensus.start();
 #endif
     std::vector<char *> arguments(argv, argv + argc);
     arguments.reserve(static_cast<std::size_t>(argc) + 3);
@@ -710,6 +940,7 @@ int main(int argc, char **argv)
     ae.runOnModule();
 
 #ifdef SVF_BOX_STORAGE_TELEMETRY
+    peakMemoryCensus.stopAndPrint();
     CarrierStorage scalarStorage;
     CarrierStorage nodeStorage;
     const SVF::AbstractDomain::AbstractDomain *scalar =

@@ -571,6 +571,8 @@ enum class BoxStorageEventKind
     JoinMaterializedPage,
     DirectoryDetach,
     DirectoryChunkDetach,
+    /// Exact post-mutation page contents for live-memory diagnostics.
+    PageContentUpdate,
     Count
 };
 
@@ -586,6 +588,9 @@ struct BoxStorageEvent
     /// Zero outside a logical Box mutation observed by BoxMutationEventSink.
     std::uint64_t mutationEpoch = 0;
     std::uint64_t stateId = 0;
+    std::size_t pageShallowBytes = 0;
+    std::size_t rationalUsedLimbBytes = 0;
+    std::size_t emptySlotShallowBytes = 0;
 };
 
 struct BoxStoragePageSnapshot
@@ -1214,6 +1219,7 @@ private:
     static void emitStateEvent(BoxStateEventKind kind, const BoxDomain& state,
                                const BoxDomain* source = nullptr) noexcept;
     static std::size_t occupiedSlots(const BoundPage& page) noexcept;
+    static std::size_t rationalUsedLimbBytes(const BoundPage& page) noexcept;
 #endif
     void eraseBound(Variable variable);
     static bool pageIsEmpty(const BoundPage& page);

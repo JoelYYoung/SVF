@@ -477,6 +477,14 @@ void mutationEventContract()
           "mutation assignment epoch");
     check(mutationRecords[1].constrainedAfter ==
           std::vector<std::uint8_t> {1}, "assignment support result");
+    check(std::any_of(contextualStorageEvents.begin(),
+                      contextualStorageEvents.end(),
+                      [](const BoxStorageEvent& event)
+    {
+        return event.kind == BoxStorageEventKind::PageContentUpdate &&
+               event.occupiedSlots == 1 && event.pageShallowBytes > 0 &&
+               event.emptySlotShallowBytes > 0;
+    }), "post-mutation page footprint missing");
 
     mutationRecords.clear();
     box.assign(first, LinearExpression(Rational(1)));
@@ -523,6 +531,14 @@ void mutationEventContract()
         return event.kind == BoxStorageWorkKind::Clone &&
                event.mutationEpoch == forgetEpoch && event.stateId != 0;
     }), "slot-copy work lacks mutation context");
+    check(std::any_of(contextualStorageEvents.begin(),
+                      contextualStorageEvents.end(),
+                      [forgetEpoch](const BoxStorageEvent& event)
+    {
+        return event.kind == BoxStorageEventKind::PageContentUpdate &&
+               event.mutationEpoch == forgetEpoch &&
+               event.occupiedSlots == 0;
+    }), "post-erase page footprint missing");
 
     BoxDomain bottoming = box;
     mutationRecords.clear();

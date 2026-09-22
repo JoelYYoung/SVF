@@ -3014,6 +3014,28 @@ std::size_t BoxDomain::occupiedSlots(const BoundPage& page) noexcept
     return page.bounds.size();
 }
 
+std::size_t BoxDomain::rationalUsedLimbBytes(const BoundPage& page) noexcept
+{
+    const auto boundBytes = [](const Bound& bound)
+    {
+        if (!bound.isFinite())
+            return std::size_t{0};
+        const mpq_srcptr value = bound.value().value().get_mpq_t();
+        return static_cast<std::size_t>(mpz_size(mpq_numref(value)) +
+                                        mpz_size(mpq_denref(value))) *
+               sizeof(mp_limb_t);
+    };
+    std::size_t result = 0;
+    for (std::size_t offset = 0; offset < BoundsPerPage; ++offset)
+    {
+        const BoundSlot* slot = page.bounds.find(offset);
+        if (slot)
+            result += boundBytes(slot->interval.lower()) +
+                      boundBytes(slot->interval.upper());
+    }
+    return result;
+}
+
 void BoxDomain::emitStorageEvent(BoxStorageEventKind kind,
                                  const BoundPage& page,
                                  std::uint64_t parentPageId) noexcept
@@ -3023,11 +3045,33 @@ void BoxDomain::emitStorageEvent(BoxStorageEventKind kind,
     if (!sink)
         return;
     const BoxDomain* state = MutationScope::activeState();
-    sink({kind, nextBoxStorageSequence.fetch_add(1, std::memory_order_relaxed),
-          page.storageId, parentPageId, page.storageIndex,
-          occupiedSlots(page), 0,
-          MutationScope::activeEpoch(),
-          state ? state->telemetryStateId_ : 0});
+    BoxStorageEvent event
+    {
+        kind, nextBoxStorageSequence.fetch_add(1, std::memory_order_relaxed),
+        page.storageId, parentPageId, page.storageIndex,
+        occupiedSlots(page), 0,
+        MutationScope::activeEpoch(),
+        state ? state->telemetryStateId_ : 0};
+    const bool recordsFootprint =
+        kind == BoxStorageEventKind::PageAllocate ||
+        kind == BoxStorageEventKind::PageDetach ||
+        kind == BoxStorageEventKind::JoinMaterializedPage ||
+        kind == BoxStorageEventKind::PageRelease ||
+        kind == BoxStorageEventKind::PageContentUpdate;
+    if (recordsFootprint)
+    {
+        event.pageShallowBytes = sizeof(BoundPage) +
+                                 page.bounds.allocatedBytes();
+        event.rationalUsedLimbBytes = rationalUsedLimbBytes(page);
+#if defined(SVF_BOX_PACKED_PAGES) || defined(SVF_BOX_ADAPTIVE_PAGES)
+        event.emptySlotShallowBytes = 0;
+#else
+        event.emptySlotShallowBytes =
+            (BoundsPerPage - occupiedSlots(page)) *
+            sizeof(std::optional<BoundSlot>);
+#endif
+    }
+    sink(event);
 }
 
 void BoxDomain::emitDirectoryDetach(std::size_t directoryEntries) noexcept
@@ -4012,9 +4056,12 @@ void BoxDomain::canonicalize(Variable variable)
     if (interval.isTop())
         eraseBound(variable);
     else
-        writablePage(variable.id() / BoundsPerPage)
-        .bounds.set(variable.id() % BoundsPerPage,
-                    BoundSlot{variable, std::move(interval)});
+    {
+        BoundPage& page = writablePage(variable.id() / BoundsPerPage);
+        page.bounds.set(variable.id() % BoundsPerPage,
+                        BoundSlot{variable, std::move(interval)});
+        emitStorageEvent(BoxStorageEventKind::PageContentUpdate, page);
+    }
 }
 
 void BoxDomain::setBound(Variable variable, Interval interval)
@@ -4029,9 +4076,12 @@ void BoxDomain::setBound(Variable variable, Interval interval)
     if (interval.isTop())
         eraseBound(variable);
     else
-        writablePage(variable.id() / BoundsPerPage)
-        .bounds.set(variable.id() % BoundsPerPage,
-                    BoundSlot{variable, std::move(interval)});
+    {
+        BoundPage& page = writablePage(variable.id() / BoundsPerPage);
+        page.bounds.set(variable.id() % BoundsPerPage,
+                        BoundSlot{variable, std::move(interval)});
+        emitStorageEvent(BoxStorageEventKind::PageContentUpdate, page);
+    }
     canonicalize(variable);
 #ifdef SVF_BOX_PAGE_INTERNING
     internAfterWrite();
@@ -4232,6 +4282,9 @@ void BoxDomain::eraseBound(Variable variable)
     page->internedScope = 0;
 #endif
     page->bounds.erase(offset);
+#ifdef SVF_BOX_STORAGE_TELEMETRY
+    emitStorageEvent(BoxStorageEventKind::PageContentUpdate, *page);
+#endif
 #ifdef SVF_BOX_WHOLE_DIRECTORY
     if (pageIsEmpty(*page))
         directory.erase(iterator);
