@@ -289,6 +289,13 @@ void AbstractInterpretation::initializeRelationalPolicy()
         }
         for (const SVFStmt* statement : node->getSVFStmts())
         {
+            // Branch guards are the numerical proof obligations that decide
+            // whether detector checkpoints are reachable. Seed their operands
+            // even when the eventual query operand is a pointer (for example
+            // an infeasible null-dereference branch).
+            if (const auto* compare = SVFUtil::dyn_cast<CmpStmt>(statement))
+                for (const ValVar* operand : compare->getOpndVars())
+                    addSeed(operand);
             if (const auto* gep = SVFUtil::dyn_cast<GepStmt>(statement))
                 for (const auto& [index, type] :
                         gep->getOffsetVarAndGepTypePairVec())
