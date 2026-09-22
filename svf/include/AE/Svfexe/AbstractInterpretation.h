@@ -309,7 +309,7 @@ public:
 
 protected:
     /// Factory-only construction. External callers use getAEInstance().
-    AbstractInterpretation();
+    explicit AbstractInterpretation(bool enableNumericalTrace = true);
 
     /// SVF's BlackHole is an explicit summary object in the current transfer
     /// policy, not AddressSet object-top. Keeping its Location concrete

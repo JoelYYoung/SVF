@@ -622,12 +622,12 @@ void AbstractInterpretation::writeQueryLedger() const
                                  Options::AEQueryLedgerFile());
 }
 
-AbstractInterpretation::AbstractInterpretation()
+AbstractInterpretation::AbstractInterpretation(bool enableNumericalTrace)
     : adapter_(*PAG::getPAG()),
       unknownTargetTelemetryEnabled_(
           std::getenv("SVF_AE_UNKNOWN_TARGET_STATS") != nullptr)
 {
-    if (!Options::AENumericalTrace().empty())
+    if (enableNumericalTrace && !Options::AENumericalTrace().empty())
         numericalOperationTrace_ =
             std::make_shared<AD::NumericalOperationTraceWriter>(
                 Options::AENumericalTrace());

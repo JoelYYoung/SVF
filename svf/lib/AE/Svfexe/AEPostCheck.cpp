@@ -484,7 +484,11 @@ void AbstractInterpretation::verifyPostFixpoint()
     // sparse transfer hooks from mutating the analyzed SSA carrier while the
     // equations are checked. Reuse the exact symbol mapping so reconstructed
     // states and replay states remain lattice-compatible.
-    AbstractInterpretation replay;
+    // Post validation replays equations through a separate interpreter, but it
+    // is not part of the measured production-domain workload.  In particular,
+    // it must not reopen and truncate the analysis trace while the live writer
+    // still owns an older file offset.
+    AbstractInterpretation replay(false);
     replay.adapter_ = adapter_;
     replay.relationalVocabulary_ = relationalVocabulary_;
     replay.relationalSeedCount_ = relationalSeedCount_;
