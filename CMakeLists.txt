@@ -97,6 +97,10 @@ option(SVF_EXPORT_DYNAMIC "Export all (not only the actually used) symbols to dy
 option(SVF_ENABLE_ASSERTIONS "Always enable debugging assertions, also if the build type is a release build")
 option(SVF_ENABLE_RTTI "Adds -fno-rtti to disable runtime type information (RTTI)" ON)
 option(SVF_ENABLE_EXCEPTIONS "Adds -fno-exceptions to disable exception handling" ON)
+option(SVF_ENABLE_ELINA_POLYHEDRA
+       "Build the optional ELINA f524156d Polyhedra validation adapter" OFF)
+set(SVF_ELINA_ROOT "" CACHE PATH
+    "Root of the pinned ELINA f524156d source/build tree")
 if(NOT SVF_ENABLE_EXCEPTIONS)
   message(FATAL_ERROR
           "AbstractDomainCore uses exception-based API diagnostics; "
