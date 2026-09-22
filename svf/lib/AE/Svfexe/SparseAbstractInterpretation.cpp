@@ -1075,19 +1075,7 @@ void SemiSparseAbstractInterpretation::materializeScalarDefinitions(
     {
         const auto definition = scalarDefinitions_.find(variable);
         if (definition != scalarDefinitions_.end())
-        {
             destination.assignValueFrom(variable, definition->second, variable);
-            // The relational definition owns the projected numerical carrier,
-            // while scalarState_ is the path-insensitive owner of the complete
-            // initialization/address coordinate. A call-entry reconstruction
-            // can observe both histories: retaining only the definition may
-            // turn an Initialized caller value into the sparse carrier's
-            // Uninitialized default. Join the complete coordinate before
-            // relations are re-applied below. Any disagreement becomes Top,
-            // which conservatively covers both paths.
-            if (scalarState_)
-                destination.joinValueFrom(variable, *scalarState_, variable);
-        }
         else if (scalarState_)
             destination.assignValueFrom(variable, *scalarState_, variable);
     }
