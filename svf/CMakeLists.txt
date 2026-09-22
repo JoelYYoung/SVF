@@ -4,6 +4,7 @@ set(ABSTRACT_DOMAIN_CORE_HEADERS
     ${CMAKE_CURRENT_LIST_DIR}/include/AE/Core/DimensionLayout.h
     ${CMAKE_CURRENT_LIST_DIR}/include/AE/Core/OctagonDomain.h
     ${CMAKE_CURRENT_LIST_DIR}/include/AE/Core/ConvexPolyhedraDomain.h
+    ${CMAKE_CURRENT_LIST_DIR}/include/AE/Core/ELINABackendContract.h
     ${CMAKE_CURRENT_LIST_DIR}/include/AE/Core/AbstractDomain.h
     ${CMAKE_CURRENT_LIST_DIR}/include/AE/Core/Variable.h
     ${CMAKE_CURRENT_LIST_DIR}/include/AE/Core/Expression.h
@@ -17,6 +18,7 @@ set(ABSTRACT_DOMAIN_CORE_HEADERS
 set(ABSTRACT_DOMAIN_CORE_SOURCES
     ${CMAKE_CURRENT_LIST_DIR}/lib/AE/Core/OctagonDomain.cpp
     ${CMAKE_CURRENT_LIST_DIR}/lib/AE/Core/ConvexPolyhedraDomain.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/lib/AE/Core/ELINABackendContract.cpp
     ${CMAKE_CURRENT_LIST_DIR}/lib/AE/Core/AbstractDomain.cpp
     ${CMAKE_CURRENT_LIST_DIR}/lib/AE/Core/AddressDomain.cpp
     ${CMAKE_CURRENT_LIST_DIR}/lib/AE/Core/InitializationDomain.cpp
@@ -75,12 +77,16 @@ if(SVF_ENABLE_ELINA)
             HINTS ${ELINA_ROOT} PATH_SUFFIXES include elina_auxiliary)
   find_path(ELINA_OCT_INCLUDE_DIR opt_oct.h
             HINTS ${ELINA_ROOT} PATH_SUFFIXES include elina_oct)
+  find_path(ELINA_POLY_INCLUDE_DIR opt_pk.h
+            HINTS ${ELINA_ROOT} PATH_SUFFIXES include elina_poly)
   find_path(ELINA_LINEARIZE_INCLUDE_DIR elina_generic.h
             HINTS ${ELINA_ROOT} PATH_SUFFIXES include elina_linearize)
   find_path(ELINA_PARTITIONS_INCLUDE_DIR comp_list.h
             HINTS ${ELINA_ROOT} PATH_SUFFIXES include partitions_api)
   find_library(ELINA_OCT_LIBRARY NAMES optoct liboptoct
                HINTS ${ELINA_ROOT} PATH_SUFFIXES lib elina_oct)
+  find_library(ELINA_POLY_LIBRARY NAMES optpoly liboptpoly
+               HINTS ${ELINA_ROOT} PATH_SUFFIXES lib elina_poly)
   find_library(ELINA_AUX_LIBRARY NAMES elinaux libelinaux
                HINTS ${ELINA_ROOT} PATH_SUFFIXES lib elina_auxiliary)
   find_library(ELINA_LINEARIZE_LIBRARY NAMES elinalinearize libelinalinearize
@@ -88,23 +94,29 @@ if(SVF_ENABLE_ELINA)
   find_library(ELINA_PARTITIONS_LIBRARY NAMES partitions libpartitions
                HINTS ${ELINA_ROOT} PATH_SUFFIXES lib partitions_api)
   if(NOT ELINA_AUX_INCLUDE_DIR OR NOT ELINA_OCT_INCLUDE_DIR OR
+     NOT ELINA_POLY_INCLUDE_DIR OR
      NOT ELINA_LINEARIZE_INCLUDE_DIR OR NOT ELINA_PARTITIONS_INCLUDE_DIR OR
-     NOT ELINA_OCT_LIBRARY OR NOT ELINA_AUX_LIBRARY OR
+     NOT ELINA_OCT_LIBRARY OR NOT ELINA_POLY_LIBRARY OR NOT ELINA_AUX_LIBRARY OR
      NOT ELINA_LINEARIZE_LIBRARY OR NOT ELINA_PARTITIONS_LIBRARY)
     message(FATAL_ERROR
-            "SVF_ENABLE_ELINA requires the fixed ELINA headers and Octagon, auxiliary, linearize, and partitions libraries under ELINA_ROOT")
+            "SVF_ENABLE_ELINA requires fixed Octagon/Polyhedra headers and libraries under ELINA_ROOT")
   endif()
   target_sources(AbstractDomainCore PRIVATE
-                 ${CMAKE_CURRENT_LIST_DIR}/lib/AE/Core/ElinaOctagonDomain.cpp)
+                 ${CMAKE_CURRENT_LIST_DIR}/lib/AE/Core/ElinaOctagonDomain.cpp
+                 ${CMAKE_CURRENT_LIST_DIR}/lib/AE/Core/ELINAPolyhedraDomain.cpp)
   target_sources(AbstractDomainCore PUBLIC FILE_SET HEADERS FILES
-                 ${CMAKE_CURRENT_LIST_DIR}/include/AE/Core/ElinaOctagonDomain.h)
-  target_compile_definitions(AbstractDomainCore PUBLIC SVF_HAVE_ELINA=1)
+                 ${CMAKE_CURRENT_LIST_DIR}/include/AE/Core/ElinaOctagonDomain.h
+                 ${CMAKE_CURRENT_LIST_DIR}/include/AE/Core/ELINAPolyhedraDomain.h)
+  target_compile_definitions(AbstractDomainCore PUBLIC SVF_HAVE_ELINA=1
+                                                       SVF_HAS_ELINA_POLYHEDRA=1)
   target_include_directories(AbstractDomainCore SYSTEM PRIVATE
                              ${ELINA_AUX_INCLUDE_DIR} ${ELINA_OCT_INCLUDE_DIR}
+                             ${ELINA_POLY_INCLUDE_DIR}
                              ${ELINA_LINEARIZE_INCLUDE_DIR}
                              ${ELINA_PARTITIONS_INCLUDE_DIR})
   target_link_libraries(AbstractDomainCore PRIVATE
-                        ${ELINA_OCT_LIBRARY} ${ELINA_PARTITIONS_LIBRARY}
+                        ${ELINA_OCT_LIBRARY} ${ELINA_POLY_LIBRARY}
+                        ${ELINA_PARTITIONS_LIBRARY}
                         ${ELINA_AUX_LIBRARY} ${ELINA_LINEARIZE_LIBRARY})
 endif()
 
@@ -116,6 +128,12 @@ if(BUILD_TESTING)
   target_link_libraries(ELINAOctagonAdapterTest PRIVATE AbstractDomainCore)
   add_test(NAME ae-relational/ELINAOctagonAdapterTest
            COMMAND ELINAOctagonAdapterTest)
+  add_executable(
+    ELINABackendContractTest
+    ${CMAKE_CURRENT_LIST_DIR}/../tests/ae-relational/ELINABackendContractTest.cpp
+  )
+  target_link_libraries(ELINABackendContractTest PRIVATE AbstractDomainCore)
+  add_test(NAME ae-elina-backend-contract COMMAND ELINABackendContractTest)
 endif()
 set_target_properties(
   AbstractDomainCore PROPERTIES
