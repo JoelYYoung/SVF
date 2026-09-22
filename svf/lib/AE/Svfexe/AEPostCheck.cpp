@@ -666,7 +666,12 @@ void AbstractInterpretation::verifyPostFixpoint()
             continue;
         }
         State incoming = sourceFinal->second;
-        replay.applyRelationalCallBoundary(incoming, edge, target);
+        // Dense replay states have the same physical shape as dense solver
+        // states. Semi-sparse finalStates are reconstructed with scalar
+        // summaries that are absent from the propagated flow carrier; their
+        // virtual caller-frame hook below already mirrors the sparse merge.
+        if (Options::AESparsity() == AESparsity::Dense)
+            replay.applyRelationalCallBoundary(incoming, edge, target);
         const auto targetAvailability = availability.find(target);
         if (targetAvailability != availability.end())
         {
