@@ -142,9 +142,8 @@ void SemiSparseAbstractInterpretation::initializeScalarAvailability()
               });
 
     const ICFGNode* global = this->icfg->getGlobalICFGNode();
-    const std::set<AD::Variable> moduleGlobals =
+    std::set<AD::Variable> globalOut =
         definedScalarVariables(global, this->adapter_);
-    std::set<AD::Variable> globalOut = moduleGlobals;
     FIFOWorkList<const FunObjVar*> roots = this->collectProgEntryFuns();
     while (!roots.empty())
     {
@@ -180,15 +179,6 @@ void SemiSparseAbstractInterpretation::initializeScalarAvailability()
                 if (predecessor == scalarAvailability_.end())
                     continue;
                 std::set<AD::Variable> edgeAvailable = predecessor->second;
-                // CallPE reads every actual at its recorded caller node, not
-                // from the callee-entry flow state.  Propagating the complete
-                // caller SSA frame here therefore makes unrelated caller
-                // locals appear live in the callee and breaks sparse
-                // initialization reconstruction.  Only module-level scalar
-                // bindings cross the function boundary; CallPE definitions
-                // below add the callee formals.
-                if (SVFUtil::isa<CallCFGEdge>(edge))
-                    edgeAvailable = moduleGlobals;
                 // Return transfer retains the callee's formal-return ghosts
                 // needed to bind RetPE relations and restores only the caller
                 // SSA frame. Other callee locals are out of scope here and

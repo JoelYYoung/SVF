@@ -192,9 +192,7 @@ Map<const ICFGNode*, std::set<AD::Variable>> computeAvailability(
               });
 
     const ICFGNode* global = graph->getGlobalICFGNode();
-    const std::set<AD::Variable> moduleGlobals =
-        definedScalars(global, adapter);
-    std::set<AD::Variable> globalOut = moduleGlobals;
+    std::set<AD::Variable> globalOut = definedScalars(global, adapter);
     for (const FunObjVar* root : roots)
     {
         const FunEntryICFGNode* entry = graph->getFunEntryICFGNode(root);
@@ -226,13 +224,6 @@ Map<const ICFGNode*, std::set<AD::Variable>> computeAvailability(
                     continue;
                 std::set<AD::Variable> edgeAvailable =
                     available.at(predecessor);
-                // CallPE reads actual values at the associated caller nodes.
-                // The callee-entry sparse frame therefore starts with module
-                // globals, while this node's definitions add formal
-                // parameters.  Carrying the whole caller frame would retain
-                // out-of-scope initialization guards in Post reconstruction.
-                if (SVFUtil::isa<CallCFGEdge>(edge))
-                    edgeAvailable = moduleGlobals;
                 // RetPE needs the callee formal-return ghosts while the caller
                 // frame also remains live. Other callee locals are out of
                 // scope. The node definitions add the actual return value.
