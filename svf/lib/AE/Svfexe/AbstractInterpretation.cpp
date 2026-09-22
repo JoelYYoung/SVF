@@ -310,7 +310,7 @@ void AbstractInterpretation::initializeRelationalPolicy()
     }
 
     const auto byVariable = [&](const ValVar* left, const ValVar* right) {
-        return adapter_.variable(*left) < adapter_.variable(*right);
+        return left->getId() < right->getId();
     };
     std::sort(seeds.begin(), seeds.end(), byVariable);
     seeds.erase(std::unique(seeds.begin(), seeds.end()), seeds.end());
