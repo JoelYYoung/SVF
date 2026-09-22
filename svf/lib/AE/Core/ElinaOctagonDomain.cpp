@@ -9,6 +9,7 @@
 #include <cfenv>
 #include <cmath>
 #include <cstdlib>
+#include <limits>
 #include <map>
 #include <optional>
 #include <set>
@@ -679,42 +680,63 @@ void ElinaOctagonDomain::assignParallel(
         return;
     }
 
-    std::vector<elina_dim_t> dimensions;
-    std::vector<elina_linexpr0_t*> expressions;
-    dimensions.reserve(assignments.size());
-    expressions.reserve(assignments.size());
+    // The fixed opt_oct destructive multi-assignment corrupts its internal
+    // matrix before a later dimension removal. Preserve simultaneous
+    // semantics with fresh coordinates: all right-hand sides first read the
+    // unchanged source variables, then targets read only those snapshots.
+    std::set<Variable> occupied(impl_->variables().begin(),
+                                impl_->variables().end());
+    std::vector<Variable> temporaries;
+    temporaries.reserve(assignments.size());
     for (const LinearAssignment& assignment : assignments)
     {
-        dimensions.push_back(static_cast<elina_dim_t>(
-            impl_->dimensionOf(assignment.target)));
-        expressions.push_back(impl_->expression(assignment.expression));
+        std::uint64_t id = 0;
+        while (id <= std::numeric_limits<std::uint32_t>::max() &&
+                occupied.count(Variable(static_cast<std::uint32_t>(id),
+                                        assignment.target.type())) != 0)
+            ++id;
+        if (id > std::numeric_limits<std::uint32_t>::max())
+            throw std::length_error(
+                "no temporary variable available for parallel assignment");
+        Variable temporary(static_cast<std::uint32_t>(id),
+                           assignment.target.type());
+        temporaries.push_back(temporary);
+        occupied.insert(temporary);
     }
-    ScopedElinaRounding rounding;
-    resetResult(impl_->manager());
-    elina_abstract0_t* assigned = elina_abstract0_assign_linexpr_array(
-        impl_->manager(), true, impl_->state(), dimensions.data(),
-        expressions.data(), expressions.size(), nullptr);
-    for (elina_linexpr0_t* expression : expressions)
-        elina_linexpr0_free(expression);
-    if (assigned == nullptr || !succeeded(impl_->manager()))
+
+    bool usedFallback = false;
+    for (std::size_t index = 0; index < assignments.size(); ++index)
     {
-        if (assigned != nullptr)
-            elina_abstract0_free(impl_->manager(), assigned);
-        const std::string reason =
-            exceptionReason(impl_->manager(), "parallel assignment");
-        for (Variable target : targets)
-            forget(target);
-        report(OperationKind::Assignment,
-               ApproximationKind::UnsupportedFallback, reason, false);
-        return;
+        assign(temporaries[index], assignments[index].expression);
+        usedFallback = usedFallback ||
+                       lastOperation().approximation ==
+                           ApproximationKind::UnsupportedFallback;
     }
-    const ApproximationKind kind = approximation(impl_->manager());
-    const bool best = impl_->manager()->result.flag_best;
-    impl_->replace(assigned);
-    report(OperationKind::Assignment, kind,
-           kind == ApproximationKind::Exact ? std::string() :
-           "ELINA Octagon approximated a parallel assignment",
-           best);
+    for (std::size_t index = 0; index < assignments.size(); ++index)
+    {
+        assign(assignments[index].target,
+               LinearExpression(temporaries[index]));
+        usedFallback = usedFallback ||
+                       lastOperation().approximation ==
+                           ApproximationKind::UnsupportedFallback;
+    }
+    for (Variable temporary : temporaries)
+    {
+        forget(temporary);
+        usedFallback = usedFallback ||
+                       lastOperation().approximation ==
+                           ApproximationKind::UnsupportedFallback;
+    }
+    report(OperationKind::Assignment,
+           usedFallback ? ApproximationKind::UnsupportedFallback
+                        : ApproximationKind::SoundOverApproximation,
+           usedFallback
+               ? "ELINA Octagon parallel snapshot used a conservative "
+                 "fallback"
+               : "ELINA f524156d parallel assignment staged through fresh "
+                 "coordinates because its direct destructive operation "
+                 "corrupts later dimension removal",
+           false);
 }
 
 void ElinaOctagonDomain::substitute(

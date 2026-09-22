@@ -229,6 +229,35 @@ SequenceResult runFiniteSequence(int expectedRounding)
     return result;
 }
 
+template <typename Domain>
+Stage runParallelRemoveIsolate(int expectedRounding)
+{
+    Domain state = Domain::top();
+    state.assign(X, AD::LinearExpression(AD::Rational(2)));
+    state.assign(Y, AD::LinearExpression(AD::Rational(5)));
+    state.assignParallel({
+        {Z, AD::LinearExpression(X)},
+        {X, AD::LinearExpression(Y)}
+    });
+    state.forget(Y);
+    SequenceResult result;
+    capture(result, "parallel-remove-isolate", state,
+            AD::equal(AD::LinearExpression(X),
+                      AD::LinearExpression(Z) +
+                          AD::LinearExpression(AD::Rational(3))),
+            expectedRounding);
+    return result.stages.front();
+}
+
+void checkParallelRemoveOracle(const Stage& result)
+{
+    expectSingleton(result.x, 5, "parallel/remove isolate target");
+    expect(result.y.isTop(), "parallel/remove isolate removed dimension");
+    expectSingleton(result.z, 2, "parallel/remove isolate snapshot");
+    expect(result.relation == AD::CheckResult::True,
+           "parallel/remove isolate simultaneous relation");
+}
+
 struct MixedDimensionResult
 {
     AD::Interval integerLowBefore;
@@ -454,6 +483,18 @@ void compareMixedDimensions(const MixedDimensionResult& expected,
                     false, "mixed dimensions real-high after removal");
 }
 
+void compareParallelRemove(const Stage& expected, const Stage& actual)
+{
+    compareInterval(expected.x, actual.x, false,
+                    "parallel/remove isolate x");
+    compareInterval(expected.y, actual.y, false,
+                    "parallel/remove isolate y");
+    compareInterval(expected.z, actual.z, false,
+                    "parallel/remove isolate z");
+    expectResult(actual.relation, AD::CheckResult::True,
+                 "parallel/remove isolate relation");
+}
+
 void checkPredicateTriState(int expectedRounding)
 {
     const AD::LinearConstraint relation = AD::equal(
@@ -524,6 +565,9 @@ int main()
     const MixedDimensionResult nativeMixed =
         runMixedDimensionSequence<AD::OctagonDomain>(callerRounding);
     checkMixedDimensionOracle(nativeMixed);
+    const Stage nativeParallelRemove =
+        runParallelRemoveIsolate<AD::OctagonDomain>(callerRounding);
+    checkParallelRemoveOracle(nativeParallelRemove);
 
 #ifndef SVF_HAVE_ELINA
     expect(!AD::octagonBackendAvailable(AD::NumericalBackendKind::Elina),
@@ -553,9 +597,16 @@ int main()
     const SequenceResult elina =
         runFiniteSequence<AD::ElinaOctagonDomain>(callerRounding);
     compareSequences(native, elina);
+    expect(elina.stages[3].approximation ==
+               AD::ApproximationKind::SoundOverApproximation &&
+               !elina.stages[3].approximationReason.empty(),
+           "safe staged parallel assignment was not reported explicitly");
     const MixedDimensionResult elinaMixed =
         runMixedDimensionSequence<AD::ElinaOctagonDomain>(callerRounding);
     compareMixedDimensions(nativeMixed, elinaMixed);
+    const Stage elinaParallelRemove =
+        runParallelRemoveIsolate<AD::ElinaOctagonDomain>(callerRounding);
+    compareParallelRemove(nativeParallelRemove, elinaParallelRemove);
     checkPredicateTriState(callerRounding);
     checkUnsupportedFallbacks(callerRounding);
 
