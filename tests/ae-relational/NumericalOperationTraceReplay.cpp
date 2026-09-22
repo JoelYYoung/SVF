@@ -286,13 +286,16 @@ Snapshot readSnapshot(const std::string& encoded)
 }
 
 std::unique_ptr<AD::NumericalDomain> makeState(
-    const Snapshot& snapshot, AD::NumericalBackendKind backend)
+    const Snapshot& snapshot, AD::NumericalBackendKind backend,
+    AD::OctagonStorageKind octagonStorage)
 {
     if (!AD::numericalBackendAvailable(snapshot.kind, backend))
         throw std::invalid_argument(
             "selected backend is unavailable for a traced domain");
-    std::unique_ptr<AD::NumericalDomain> state =
-        AD::makeNumericalDomain(snapshot.kind, snapshot.bottom, backend);
+    AD::OctagonConfig octagonConfig;
+    octagonConfig.storage = octagonStorage;
+    std::unique_ptr<AD::NumericalDomain> state = AD::makeNumericalDomain(
+        snapshot.kind, snapshot.bottom, backend, octagonConfig);
     if (!snapshot.bottom)
         state->assumeAll(snapshot.constraints);
     return state;
@@ -486,6 +489,14 @@ AD::NumericalBackendKind parseBackend(const std::string& name)
     throw std::invalid_argument("backend must be native or elina");
 }
 
+const char* replayCarrierName(AD::NumericalBackendKind backend,
+                              AD::OctagonStorageKind storage)
+{
+    return backend == AD::NumericalBackendKind::Native
+        ? AD::octagonStorageKindName(storage)
+        : "external";
+}
+
 const char* domainName(AD::DomainKind kind)
 {
     switch (kind)
@@ -505,14 +516,19 @@ const char* domainName(AD::DomainKind kind)
 
 int main(int argc, char** argv)
 {
-    if (argc != 3)
+    if (argc != 3 && argc != 4)
     {
-        std::cerr << "usage: " << argv[0] << " TRACE.tsv native|elina\n";
+        std::cerr << "usage: " << argv[0]
+                  << " TRACE.tsv native|elina [dense-half|sparse-finite|"
+                     "component-dense]\n";
         return 2;
     }
     try
     {
         const AD::NumericalBackendKind backend = parseBackend(argv[2]);
+        const AD::OctagonStorageKind octagonStorage = argc == 4
+            ? AD::octagonStorageKindFromName(argv[3])
+            : AD::OctagonStorageKind::DenseHalf;
         std::ifstream input(argv[1]);
         if (!input)
             throw std::runtime_error("cannot open numerical operation trace");
@@ -525,7 +541,7 @@ int main(int argc, char** argv)
                     "\tapproximation\texact\tbest\treason_hex")
             throw std::invalid_argument("numerical trace header is missing");
 
-        std::cout << "sequence\tbackend\tdomain\tevent\toperation\telapsed_ns"
+        std::cout << "sequence\tbackend\tcarrier\tdomain\tevent\toperation\telapsed_ns"
                      "\tvalidation\trelation\tinput_constraints\tchecksum\n";
         std::cout.flush();
         std::size_t rows = 0;
@@ -544,10 +560,11 @@ int main(int argc, char** argv)
                     backend == AD::NumericalBackendKind::Elina)
                 continue;
             std::unique_ptr<AD::NumericalDomain> state =
-                makeState(before, backend);
+                makeState(before, backend, octagonStorage);
             std::unique_ptr<AD::NumericalDomain> rhs;
             if (!row[7].empty())
-                rhs = makeState(readSnapshot(row[7]), backend);
+                rhs = makeState(readSnapshot(row[7]), backend,
+                                octagonStorage);
 
             std::uint64_t checksum = 0;
             const char* validation = "NA";
@@ -577,12 +594,13 @@ int main(int argc, char** argv)
             if (!row[8].empty() && event == "operation")
             {
                 std::unique_ptr<AD::NumericalDomain> expected =
-                    makeState(readSnapshot(row[8]), backend);
+                    makeState(readSnapshot(row[8]), backend, octagonStorage);
                 const Relation comparison = compareStates(*state, *expected);
                 validation = comparison.validation;
                 relation = comparison.name;
             }
             std::cout << sequence << '\t' << AD::numericalBackendName(backend)
+                      << '\t' << replayCarrierName(backend, octagonStorage)
                       << '\t' << domainName(before.kind) << '\t'
                       << event << '\t'
                       << (event == "clone" ? "clone" : operation) << '\t'
