@@ -311,6 +311,32 @@ const char* checkName(AD::CheckResult result)
     return AD::toString(result);
 }
 
+struct Relation
+{
+    const char* validation = "unknown";
+    const char* name = "unknown";
+};
+
+Relation compareStates(const AD::NumericalDomain& candidate,
+                       const AD::NumericalDomain& recorded)
+{
+    const AD::CheckResult candidateSubset = candidate.isSubsetOf(recorded);
+    const AD::CheckResult recordedSubset = recorded.isSubsetOf(candidate);
+    if (candidateSubset == AD::CheckResult::True &&
+        recordedSubset == AD::CheckResult::True)
+        return {"true", "equal"};
+    if (candidateSubset == AD::CheckResult::True &&
+        recordedSubset == AD::CheckResult::False)
+        return {"false", "under"};
+    if (candidateSubset == AD::CheckResult::False &&
+        recordedSubset == AD::CheckResult::True)
+        return {"false", "over"};
+    if (candidateSubset == AD::CheckResult::False &&
+        recordedSubset == AD::CheckResult::False)
+        return {"false", "incomparable"};
+    return {"unknown", "unknown"};
+}
+
 struct Execution
 {
     std::uint64_t checksum = 0;
@@ -500,7 +526,8 @@ int main(int argc, char** argv)
             throw std::invalid_argument("numerical trace header is missing");
 
         std::cout << "sequence\tbackend\tdomain\tevent\toperation\telapsed_ns"
-                     "\tvalidation\tinput_constraints\tchecksum\n";
+                     "\tvalidation\trelation\tinput_constraints\tchecksum\n";
+        std::cout.flush();
         std::size_t rows = 0;
         while (std::getline(input, line))
         {
@@ -524,13 +551,16 @@ int main(int argc, char** argv)
 
             std::uint64_t checksum = 0;
             const char* validation = "NA";
+            const char* relation = "NA";
             const Clock::time_point start = Clock::now();
             if (event == "clone")
             {
                 std::unique_ptr<AD::NumericalDomain> copy =
                     cloneNumerical(*state);
                 checksum = static_cast<std::uint64_t>(copy->isBottom());
-                validation = checkName(copy->isEquivalentTo(*state));
+                const Relation comparison = compareStates(*copy, *state);
+                validation = comparison.validation;
+                relation = comparison.name;
             }
             else
             {
@@ -548,14 +578,18 @@ int main(int argc, char** argv)
             {
                 std::unique_ptr<AD::NumericalDomain> expected =
                     makeState(readSnapshot(row[8]), backend);
-                validation = checkName(state->isEquivalentTo(*expected));
+                const Relation comparison = compareStates(*state, *expected);
+                validation = comparison.validation;
+                relation = comparison.name;
             }
             std::cout << sequence << '\t' << AD::numericalBackendName(backend)
                       << '\t' << domainName(before.kind) << '\t'
                       << event << '\t'
                       << (event == "clone" ? "clone" : operation) << '\t'
-                      << elapsed << '\t' << validation << '\t'
+                      << elapsed << '\t' << validation << '\t' << relation
+                      << '\t'
                       << before.constraints.size() << '\t' << checksum << '\n';
+            std::cout.flush();
             ++rows;
         }
         if (rows == 0)
