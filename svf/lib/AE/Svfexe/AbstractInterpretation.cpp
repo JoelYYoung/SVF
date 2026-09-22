@@ -362,18 +362,22 @@ void AbstractInterpretation::initializeRelationalPolicy()
     std::vector<AD::Variable> evaCandidates;
     std::unordered_set<NodeID> evaSeen;
     std::size_t recognizedPairs = 0;
-    const auto integerValue = [&](const ValVar* value) {
+    // SVF formal-return ghosts can lose the source integer type and are then
+    // conservatively represented as Real by the adapter. Octagons support
+    // both Integer and Real coordinates; only pointer and IEEE-float values
+    // are outside this policy's affine numerical vocabulary.
+    const auto octagonalValue = [&](const ValVar* value) {
         return value && adapter_.contains(*value) && !value->isPointer() &&
-               adapter_.variable(*value).type().kind ==
-                   AD::NumericKind::Integer;
+               adapter_.variable(*value).type().kind !=
+                   AD::NumericKind::IEEEFloat;
     };
     const auto addCandidate = [&](const ValVar* value) {
-        if (integerValue(value) && evaSeen.insert(value->getId()).second)
+        if (octagonalValue(value) && evaSeen.insert(value->getId()).second)
             evaCandidates.push_back(adapter_.variable(*value));
     };
     const auto addPair = [&](const ValVar* left, const ValVar* right) {
-        const bool leftInteger = integerValue(left);
-        const bool rightInteger = integerValue(right);
+        const bool leftOctagonal = octagonalValue(left);
+        const bool rightOctagonal = octagonalValue(right);
         if (std::getenv("SVF_AE_TRACE_RELATIONAL_POLICY"))
         {
             const auto printValue = [&](const ValVar* value,
@@ -389,12 +393,12 @@ void AbstractInterpretation::initializeRelationalPolicy()
                     std::cerr << '-';
             };
             std::cerr << "AE_RELATIONAL_PAIR=";
-            printValue(left, leftInteger);
+            printValue(left, leftOctagonal);
             std::cerr << ',';
-            printValue(right, rightInteger);
+            printValue(right, rightOctagonal);
             std::cerr << '\n';
         }
-        if (!leftInteger || !rightInteger || left == right)
+        if (!leftOctagonal || !rightOctagonal || left == right)
             return;
         ++recognizedPairs;
         addCandidate(left);
