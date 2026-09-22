@@ -139,6 +139,14 @@ if(BUILD_TESTING)
   set_tests_properties(
     ae-relational/NumericalDomainOperationBenchmark-smoke
     PROPERTIES PASS_REGULAR_EXPRESSION "construct/import" TIMEOUT 30)
+  add_test(
+    NAME ae-relational/MicrobenchRunnerTest
+    COMMAND
+      ${CMAKE_CURRENT_LIST_DIR}/../tests/ae-relational/MicrobenchRunnerTest.sh
+      ${CMAKE_CURRENT_LIST_DIR}/../tests/ae-relational/run_numerical_domain_microbench.sh
+      ${CMAKE_CURRENT_LIST_DIR}/../tests/ae-relational/MicrobenchRunnerFixture.sh)
+  set_tests_properties(ae-relational/MicrobenchRunnerTest
+                       PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 20)
   add_executable(
     ELINAOctagonAdapterTest
     ${CMAKE_CURRENT_LIST_DIR}/../tests/ae-relational/ELINAOctagonAdapterTest.cpp

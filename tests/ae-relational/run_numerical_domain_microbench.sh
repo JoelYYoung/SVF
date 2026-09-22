@@ -49,13 +49,15 @@ mkdir -p "$(dirname "$output_tsv")"
 temporary_directory=$(mktemp -d)
 trap 'rm -rf "$temporary_directory"' EXIT
 case_tsv="${output_tsv%.tsv}.cases.tsv"
+case_artifact_directory="${output_tsv%.tsv}.cases"
+mkdir -p "$case_artifact_directory"
 
 if ! "$benchmark_bin" --header |
     awk '{ print $0 "\tpeak_rss_kb" }' > "$output_tsv"; then
   echo "failed to read benchmark TSV header" >&2
   exit 1
 fi
-printf 'backend\tdomain\tdimension\tshape\tstatus\texit\telapsed_s\tpeak_rss_kb\toperation_rows\n' \
+printf 'backend\tdomain\tdimension\tshape\tstatus\texit\telapsed_s\tpeak_rss_kb\toperation_rows\tstderr_path\ttiming_path\n' \
   > "$case_tsv"
 
 attempted_cases=0
@@ -71,6 +73,12 @@ run_case()
   local rows="$temporary_directory/rows.tsv"
   local timing="$temporary_directory/time.txt"
   local stderr_file="$temporary_directory/stderr.txt"
+  local artifact_name="$backend-$domain-$dimension-$shape"
+  local artifact_stem="$case_artifact_directory/$artifact_name"
+  local saved_stderr="$artifact_stem.stderr.txt"
+  local saved_timing="$artifact_stem.time.txt"
+  local recorded_stderr="${case_artifact_directory##*/}/$artifact_name.stderr.txt"
+  local recorded_timing="${case_artifact_directory##*/}/$artifact_name.time.txt"
   local -a command=(
     "$benchmark_bin"
     --backend "$backend" --domain "$domain" --dimension "$dimension"
@@ -105,6 +113,8 @@ run_case()
   [[ -n $elapsed_s ]] || elapsed_s=NA
   [[ -n $rss_kb ]] || rss_kb=NA
   operation_rows=$(awk 'NR > 1 { count++ } END { print count + 0 }' "$rows")
+  cp "$stderr_file" "$saved_stderr"
+  cp "$timing" "$saved_timing"
 
   if (( exit_code == 0 )); then
     status=completed
@@ -115,9 +125,10 @@ run_case()
   fi
 
   awk -v rss="$rss_kb" 'NR > 1 { print $0 "\t" rss }' "$rows" >> "$output_tsv"
-  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
     "$backend" "$domain" "$dimension" "$shape" "$status" "$exit_code" \
-    "$elapsed_s" "$rss_kb" "$operation_rows" >> "$case_tsv"
+    "$elapsed_s" "$rss_kb" "$operation_rows" "$recorded_stderr" \
+    "$recorded_timing" >> "$case_tsv"
 }
 
 for backend in "${backends[@]}"; do
