@@ -136,6 +136,9 @@ if(BUILD_TESTING)
            COMMAND NumericalDomainOperationBenchmark
                    --backend native --domain octagon --dimension 4
                    --shape sparse --iterations 1)
+  set_tests_properties(
+    ae-relational/NumericalDomainOperationBenchmark-smoke
+    PROPERTIES PASS_REGULAR_EXPRESSION "construct/import" TIMEOUT 30)
   add_executable(
     ELINAOctagonAdapterTest
     ${CMAKE_CURRENT_LIST_DIR}/../tests/ae-relational/ELINAOctagonAdapterTest.cpp
