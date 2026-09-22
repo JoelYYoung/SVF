@@ -1195,6 +1195,7 @@ bool SemiSparseAbstractInterpretation::mergeStatesFromPredecessors(
                       << '\n';
 
         State source = this->state(predecessor);
+        this->applyRelationalCallBoundary(source, edge, node);
         filterPropagatedState(source);
         if (hasConditional)
             this->collectBranchRefinement(conditional, source);

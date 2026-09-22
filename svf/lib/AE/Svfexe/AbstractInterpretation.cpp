@@ -253,11 +253,12 @@ void AbstractInterpretation::initializeObjectValue(
 
 void AbstractInterpretation::initializeRelationalPolicy()
 {
-    if (Options::AERelationalPolicy() != QuerySliceRelational)
+    const u32_t policy = Options::AERelationalPolicy();
+    if (policy == WholeRelational)
         return;
     if (Options::AEDomain() == AENumericalDomain::Box)
         throw std::invalid_argument(
-            "-ae-relational-policy=query-slice requires octagon or polyhedra");
+            "partial relational policies require octagon or polyhedra");
 
     std::vector<const ValVar*> seeds;
     const auto addSeed = [&](const SVFVar* variable) {
@@ -318,9 +319,12 @@ void AbstractInterpretation::initializeRelationalPolicy()
     seeds.erase(std::unique(seeds.begin(), seeds.end()), seeds.end());
     relationalSeedCount_ = seeds.size();
 
+    // The query slice is deliberately computed independently from Eva-style
+    // expression recognition. This keeps the two policy dimensions
+    // measurable instead of silently changing the existing baseline.
     std::deque<const ValVar*> worklist(seeds.begin(), seeds.end());
     std::unordered_set<NodeID> seen;
-    std::vector<AD::Variable> closure;
+    std::vector<AD::Variable> queryClosure;
     while (!worklist.empty())
     {
         const ValVar* value = worklist.front();
@@ -328,7 +332,7 @@ void AbstractInterpretation::initializeRelationalPolicy()
         if (!seen.insert(value->getId()).second)
             continue;
         if (adapter_.contains(*value))
-            closure.push_back(adapter_.variable(*value));
+            queryClosure.push_back(adapter_.variable(*value));
 
         std::vector<const SVFStmt*> definitions(
             value->getInEdges().begin(), value->getInEdges().end());
@@ -351,21 +355,133 @@ void AbstractInterpretation::initializeRelationalPolicy()
                 worklist.push_back(operand);
     }
 
-    // BFS order gives query seeds priority, then progressively older
-    // definitions. Canonicalize only after applying the explicit policy cap.
+    // Eva's native Octagon creates relations only from recognizable affine
+    // shapes. The current SVF carrier still stores a complete Octagon over the
+    // selected vocabulary, so these pairs induce candidate variables rather
+    // than claiming Eva's sparse-pair carrier or partial saturation.
+    std::vector<AD::Variable> evaCandidates;
+    std::unordered_set<NodeID> evaSeen;
+    std::size_t recognizedPairs = 0;
+    const auto integerValue = [&](const ValVar* value) {
+        return value && adapter_.contains(*value) && !value->isPointer() &&
+               value->getType()->getKind() == SVFType::SVFIntegerTy;
+    };
+    const auto addCandidate = [&](const ValVar* value) {
+        if (integerValue(value) && evaSeen.insert(value->getId()).second)
+            evaCandidates.push_back(adapter_.variable(*value));
+    };
+    const auto addPair = [&](const ValVar* left, const ValVar* right) {
+        if (!integerValue(left) || !integerValue(right) || left == right)
+            return;
+        ++recognizedPairs;
+        addCandidate(left);
+        addCandidate(right);
+    };
+
+    if (policy == EvaStyleRelational || policy == QueryEvaRelational)
+    {
+        const bool throughCalls =
+            Options::AERelationalCallPolicy() == ThroughCalls;
+        for (auto iterator = icfg->begin(); iterator != icfg->end(); ++iterator)
+        {
+            for (const SVFStmt* statement : iterator->second->getSVFStmts())
+            {
+                if (const auto* binary =
+                        SVFUtil::dyn_cast<BinaryOPStmt>(statement))
+                {
+                    if (binary->getOpcode() == BinaryOPStmt::Add ||
+                            binary->getOpcode() == BinaryOPStmt::Sub)
+                        for (const ValVar* operand : binary->getOpndVars())
+                            addPair(binary->getRes(), operand);
+                }
+                else if (const auto* compare =
+                             SVFUtil::dyn_cast<CmpStmt>(statement))
+                {
+                    if (compare->getOpVarNum() == 2)
+                        addPair(compare->getOpVar(0), compare->getOpVar(1));
+                }
+                else if (const auto* phi =
+                             SVFUtil::dyn_cast<PhiStmt>(statement))
+                {
+                    for (const ValVar* operand : phi->getOpndVars())
+                        addPair(phi->getRes(), operand);
+                }
+                else if (const auto* select =
+                             SVFUtil::dyn_cast<SelectStmt>(statement))
+                {
+                    for (const ValVar* operand : select->getOpndVars())
+                        addPair(select->getRes(), operand);
+                }
+                else if (throughCalls)
+                {
+                    if (const auto* call =
+                            SVFUtil::dyn_cast<CallPE>(statement))
+                        for (const ValVar* operand : call->getOpndVars())
+                            addPair(call->getRes(), operand);
+                    else if (const auto* ret =
+                                 SVFUtil::dyn_cast<RetPE>(statement))
+                        addPair(ret->getLHSVar(), ret->getRHSVar());
+                    else if (const auto* copy =
+                                 SVFUtil::dyn_cast<CopyStmt>(statement))
+                        addPair(copy->getLHSVar(), copy->getRHSVar());
+                }
+                else if (const auto* copy =
+                             SVFUtil::dyn_cast<CopyStmt>(statement))
+                    addPair(copy->getLHSVar(), copy->getRHSVar());
+            }
+        }
+    }
+
+    std::vector<AD::Variable> selected;
+    if (policy == QuerySliceRelational)
+        selected = queryClosure;
+    else if (policy == EvaStyleRelational)
+        selected = evaCandidates;
+    else
+    {
+        const std::set<AD::Variable> recognized(evaCandidates.begin(),
+                                                evaCandidates.end());
+        for (AD::Variable variable : queryClosure)
+            if (recognized.count(variable) != 0)
+                selected.push_back(variable);
+        // Query operands remain available even when the current IR has no
+        // recognizable binary partner. This fallback can only add precision
+        // to the global Box state and makes an empty candidate set explicit.
+        for (const ValVar* seed : seeds)
+            if (adapter_.contains(*seed))
+                selected.push_back(adapter_.variable(*seed));
+    }
+
+    // Query-slice BFS order prioritizes query seeds. Eva-style order follows
+    // deterministic ICFG/statement traversal. Canonicalize only after the cap.
+    std::vector<AD::Variable> uniqueSelected;
+    std::set<AD::Variable> selectedSeen;
+    for (AD::Variable variable : selected)
+        if (selectedSeen.insert(variable).second)
+            uniqueSelected.push_back(variable);
     const std::size_t limit = Options::AERelationalMaxVars();
-    relationalDroppedCount_ = closure.size() > limit
-                              ? closure.size() - limit : 0;
-    if (closure.size() > limit)
-        closure.resize(limit);
-    std::sort(closure.begin(), closure.end());
-    closure.erase(std::unique(closure.begin(), closure.end()), closure.end());
+    relationalDroppedCount_ = uniqueSelected.size() > limit
+                              ? uniqueSelected.size() - limit : 0;
+    if (uniqueSelected.size() > limit)
+        uniqueSelected.resize(limit);
+    std::sort(uniqueSelected.begin(), uniqueSelected.end());
     relationalVocabulary_ =
-        std::make_shared<const std::vector<AD::Variable>>(std::move(closure));
+        std::make_shared<const std::vector<AD::Variable>>(
+            std::move(uniqueSelected));
+
+    const char* policyName = policy == QuerySliceRelational ? "query-slice" :
+                             policy == EvaStyleRelational ? "eva-style" :
+                             "query-eva";
+    const char* callName =
+        Options::AERelationalCallPolicy() == ThroughCalls
+        ? "through" : "intraprocedural";
 
     SVFUtil::outs()
-            << "AE_RELATIONAL_POLICY policy=query-slice seeds="
+            << "AE_RELATIONAL_POLICY policy=" << policyName
+            << " calls=" << callName << " seeds="
             << relationalSeedCount_
+            << " recognized_pairs=" << recognizedPairs
+            << " candidates=" << evaCandidates.size()
             << " selected=" << relationalVocabulary_->size()
             << " dropped=" << relationalDroppedCount_
             << " max=" << Options::AERelationalMaxVars() << '\n';
@@ -457,7 +573,7 @@ void AbstractInterpretation::runOnModule()
                 << " join_calls=" << operations.joinCalls
                 << " widen_calls=" << operations.wideningCalls
                 << " narrow_calls=" << operations.narrowingCalls << '\n';
-        if (Options::AERelationalPolicy() == QuerySliceRelational)
+        if (Options::AERelationalPolicy() != WholeRelational)
             SVFUtil::outs()
                     << "AE_PARTIAL_RELATIONAL_STATS inside_ops="
                     << operations.partialInsideOperations
@@ -673,10 +789,10 @@ AbstractInterpretation& AbstractInterpretation::getAEInstance()
             throw std::invalid_argument(
                 "relational numerical domains currently support dense and "
                 "semi-sparse AE only");
-        if (Options::AERelationalPolicy() == QuerySliceRelational &&
+        if (Options::AERelationalPolicy() != WholeRelational &&
                 Options::AEDomain() == AENumericalDomain::Box)
             throw std::invalid_argument(
-                "query-slice relational policy requires octagon or polyhedra");
+                "partial relational policies require octagon or polyhedra");
         switch (Options::AESparsity())
         {
         case AESparsity::SemiSparse:
@@ -1455,6 +1571,7 @@ bool AbstractInterpretation::mergeStatesFromPredecessors(
             continue;
 
         State source = state(predecessor);
+        applyRelationalCallBoundary(source, edge, node);
         if (conditional && conditional->getCondition())
         {
             assumeBranch(conditional, source);
@@ -1471,6 +1588,55 @@ bool AbstractInterpretation::mergeStatesFromPredecessors(
         return false;
     stateTrace_.insert_or_assign(node, std::move(merged));
     return true;
+}
+
+void AbstractInterpretation::applyRelationalCallBoundary(
+    State& source, const ICFGEdge* edge, const ICFGNode* target) const
+{
+    if (Options::AEDomain() == AENumericalDomain::Box ||
+            Options::AERelationalCallPolicy() != IntraproceduralCalls ||
+            (!SVFUtil::isa<CallCFGEdge>(edge) &&
+             !SVFUtil::isa<RetCFGEdge>(edge)) || source.isBottom())
+        return;
+
+    // Eva's intraprocedural mode keeps unary values and memory effects across
+    // a call boundary, but not relations inferred in the other function.
+    // Snapshot every unary hull before forgetting support so the operation is
+    // backend-independent and also works through the tracing decorator.
+    AD::NumericalDomain& numerical = source.numerical();
+    std::vector<std::pair<AD::Variable, AD::Interval>> unary;
+    for (AD::Variable variable : numerical.supportVariables())
+        unary.emplace_back(variable, numerical.bound(variable));
+    for (const auto& [variable, value] : unary)
+    {
+        (void)value;
+        numerical.forget(variable);
+    }
+    for (const auto& [variable, value] : unary)
+        if (!value.isTop())
+            numerical.assignBound(variable, value);
+
+    if (!SVFUtil::isa<RetCFGEdge>(edge))
+        return;
+    const auto* returnSite = SVFUtil::dyn_cast<RetICFGNode>(target);
+    if (!returnSite)
+        return;
+    const CallICFGNode* call = returnSite->getCallICFGNode();
+    if (!call || stateTrace_.count(call) == 0)
+        return;
+
+    // Caller SSA values are immutable across the call. Restore their
+    // caller-local relations after importing the callee's unary/effect state;
+    // object-content coordinates remain excluded because the callee may have
+    // modified them.
+    State caller = state(call);
+    const AD::Variable contentBegin = adapter_.firstObjectContentVariable();
+    std::vector<AD::Variable> callerScalars;
+    for (AD::Variable variable : caller.numerical().supportVariables())
+        if (variable < contentBegin)
+            callerScalars.push_back(variable);
+    caller.numerical().project(callerScalars);
+    numerical.meetWith(caller.numerical());
 }
 
 // Loop / recursion handling (handleLoopOrRecursion + cycle helpers +
@@ -1768,7 +1934,8 @@ void AbstractInterpretation::updateStateOnCall(const CallPE* callPE)
             interval.joinWith(getInterval(callPE->getOpVar(i), opICFGNode));
             addresses.joinWith(getAddressSet(callPE->getOpVar(i),
                                              opICFGNode));
-            if (Options::AEDomain() != AENumericalDomain::Box)
+            if (Options::AEDomain() != AENumericalDomain::Box &&
+                    Options::AERelationalCallPolicy() == ThroughCalls)
             {
                 const auto* target = SVFUtil::dyn_cast<ValVar>(res);
                 const auto* source =
@@ -1823,7 +1990,8 @@ void AbstractInterpretation::updateStateOnRet(const RetPE* retPE)
     updateValue(retPE->getLHSVar(),
                 getDefinedInterval(retPE->getRHSVar(), node),
                 getAddressSet(retPE->getRHSVar(), node), node);
-    if (Options::AEDomain() == AENumericalDomain::Box)
+    if (Options::AEDomain() == AENumericalDomain::Box ||
+            Options::AERelationalCallPolicy() == IntraproceduralCalls)
         return;
     // A context-insensitive callee summary shared by multiple call sites has
     // one formal-return ghost. Relating every actual return to that same ghost

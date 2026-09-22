@@ -114,7 +114,15 @@ public:
     enum AERelationalPolicy
     {
         WholeRelational,
-        QuerySliceRelational
+        QuerySliceRelational,
+        EvaStyleRelational,
+        QueryEvaRelational
+    };
+
+    enum AERelationalCallPolicy
+    {
+        ThroughCalls,
+        IntraproceduralCalls
     };
 
     enum HandleRecur
@@ -509,6 +517,8 @@ protected:
     std::unique_ptr<AbstractDomain::NumericalDomain> makeNumericalDomain(
         bool bottom) const;
     void initializeRelationalPolicy();
+    void applyRelationalCallBoundary(State& state, const ICFGEdge* edge,
+                                     const ICFGNode* target) const;
 
     void assignValue(State& state, AbstractDomain::Variable variable,
                      const AbstractDomain::Interval& interval,

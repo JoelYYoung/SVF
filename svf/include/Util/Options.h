@@ -237,6 +237,7 @@ public:
     static const OptionMap<u32_t> AEDomain;
     static const OptionMap<u32_t> AEBackend;
     static const OptionMap<u32_t> AERelationalPolicy;
+    static const OptionMap<u32_t> AERelationalCallPolicy;
     static const Option<std::string> AENumericalTrace;
     static const Option<u32_t> AERelationalMaxVars;
     /// Optional complete abstract-execution query ledger (TSV).

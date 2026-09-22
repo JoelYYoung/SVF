@@ -829,6 +829,32 @@ const OptionMap<u32_t> Options::AERelationalPolicy(
         AbstractInterpretation::AERelationalPolicy::QuerySliceRelational,
         "query-slice",
         "Use Box globally and the relational domain on a fixed query dependency slice."
+    },
+    {
+        AbstractInterpretation::AERelationalPolicy::EvaStyleRelational,
+        "eva-style",
+        "Use Box globally and relational variables induced by Eva-style recognizable expressions."
+    },
+    {
+        AbstractInterpretation::AERelationalPolicy::QueryEvaRelational,
+        "query-eva",
+        "Use the query dependency slice restricted by Eva-style recognizable expressions."
+    }
+});
+const OptionMap<u32_t> Options::AERelationalCallPolicy(
+    "ae-relational-calls",
+    "Relational propagation across call boundaries (Default: through)",
+    AbstractInterpretation::AERelationalCallPolicy::ThroughCalls,
+{
+    {
+        AbstractInterpretation::AERelationalCallPolicy::ThroughCalls,
+        "through",
+        "Propagate actual/formal and return relations across calls."
+    },
+    {
+        AbstractInterpretation::AERelationalCallPolicy::IntraproceduralCalls,
+        "intraprocedural",
+        "Keep unary bounds and effects across calls but do not propagate binary relations."
     }
 });
 const Option<std::string> Options::AENumericalTrace(

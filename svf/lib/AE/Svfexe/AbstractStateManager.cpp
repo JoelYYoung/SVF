@@ -374,7 +374,7 @@ AbstractInterpretation::makeNumericalDomain(bool bottom) const
         Options::AEBackend() == AENumericalBackend::ELINABackend
         ? AD::NumericalBackendKind::Elina
         : AD::NumericalBackendKind::Native;
-    if (Options::AERelationalPolicy() == QuerySliceRelational &&
+    if (Options::AERelationalPolicy() != WholeRelational &&
             Options::AEDomain() != AENumericalDomain::Box)
     {
         if (!relationalVocabulary_)
