@@ -473,6 +473,65 @@ public:
         *this = std::move(rebuilt);
     }
 
+    /// Return the connected variable component without materializing the
+    /// octagon as a LinearConstraintSet. ComponentDense maintains this index
+    /// incrementally; the other carriers use their matrix as a compatibility
+    /// path for tests and explicitly selected storage policies.
+    std::vector<Dimension> relationComponent(Dimension seed) const
+    {
+        if (seed >= dimensions)
+            throw std::out_of_range("octagon relation seed is out of range");
+        if (bottom)
+            return {seed};
+        if (kind_ == OctagonStorageKind::ComponentDense)
+        {
+            const std::size_t owner = componentOwner_[seed];
+            if (owner == noComponent())
+                return {seed};
+            std::vector<Dimension> result(
+                components_[owner].variables.begin(),
+                components_[owner].variables.end());
+            std::sort(result.begin(), result.end());
+            return result;
+        }
+
+        std::vector<bool> reached(dimensions, false);
+        std::vector<Dimension> worklist{seed};
+        reached[seed] = true;
+        while (!worklist.empty())
+        {
+            const Dimension current = worklist.back();
+            worklist.pop_back();
+            for (Dimension candidate = 0; candidate < dimensions;
+                    ++candidate)
+            {
+                if (reached[candidate] || candidate == current)
+                    continue;
+                bool related = false;
+                for (std::size_t currentSign = 0;
+                        currentSign < 2 && !related; ++currentSign)
+                    for (std::size_t candidateSign = 0;
+                            candidateSign < 2; ++candidateSign)
+                        if (at(2 * current + currentSign,
+                               2 * candidate + candidateSign).isFinite())
+                        {
+                            related = true;
+                            break;
+                        }
+                if (related)
+                {
+                    reached[candidate] = true;
+                    worklist.push_back(candidate);
+                }
+            }
+        }
+        std::vector<Dimension> result;
+        for (Dimension dimension = 0; dimension < dimensions; ++dimension)
+            if (reached[dimension])
+                result.push_back(dimension);
+        return result;
+    }
+
     std::size_t dimensions;
     std::vector<NumericKind> variableKinds;
     bool bottom = false;
@@ -1660,6 +1719,22 @@ public:
         const LinearExpression& expression) const
     {
         return boundExpression(state_, layout, expression);
+    }
+
+    std::vector<Variable> relationalClosureCurrent(
+        const DimensionLayout& layout,
+        const std::vector<Variable>& seeds) const
+    {
+        std::set<Variable> closure(seeds.begin(), seeds.end());
+        std::optional<OctagonStorage> normalizedStorage;
+        const OctagonStorage& state = normalized(state_, normalizedStorage);
+        if (!state.bottom)
+            for (Variable seed : seeds)
+                if (layout.contains(seed))
+                    for (Dimension dimension :
+                            state.relationComponent(layout.dimensionOf(seed)))
+                        closure.insert(layout.variableOf(dimension));
+        return std::vector<Variable>(closure.begin(), closure.end());
     }
 
     LinearConstraintSet constraintsCurrent(
@@ -3272,6 +3347,13 @@ std::vector<Variable> OctagonDomain::supportVariables() const
     for (const auto& entry : layout_.variables())
         result.push_back(entry.variable);
     return result;
+}
+
+std::vector<Variable> OctagonDomain::relationalClosureState(
+    const std::vector<Variable>& seeds) const
+{
+    recordRelationalClosureIndexedQuery();
+    return impl_->relationalClosureCurrent(layout(), seeds);
 }
 
 void OctagonDomain::ensureVariables(const std::vector<Variable>& variables)

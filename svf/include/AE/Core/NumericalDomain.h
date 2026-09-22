@@ -431,6 +431,8 @@ struct OperationMetadata
 struct NumericalTelemetry
 {
     std::uint64_t relationalClosureCalls = 0;
+    std::uint64_t relationalClosureConstraintExports = 0;
+    std::uint64_t relationalClosureIndexedQueries = 0;
     std::uint64_t joinCalls = 0;
     std::uint64_t wideningCalls = 0;
     std::uint64_t narrowingCalls = 0;
@@ -573,6 +575,12 @@ public:
     }
 
 protected:
+    /// Domain-specific closure hook. Relational domains with an indexed
+    /// physical representation can answer this without exporting constraints.
+    virtual std::vector<Variable> relationalClosureState(
+        const std::vector<Variable>& seeds) const;
+    void recordRelationalClosureConstraintExport() const;
+    void recordRelationalClosureIndexedQuery() const;
     /// Evaluate nonlinear and finite IEEE trees by sound interval semantics,
     /// applying each IEEE node's requested rounding mode at its endpoints.
     /// Exceptional IEEE outcomes conservatively produce top.

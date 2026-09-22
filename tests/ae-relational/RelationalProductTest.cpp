@@ -7,7 +7,9 @@
 #include <cstdint>
 #include <cstdlib>
 #include <iostream>
+#include <map>
 #include <memory>
+#include <set>
 #include <vector>
 namespace AD = SVF::AbstractDomain;
 namespace
@@ -213,6 +215,82 @@ void partialRelationalModel(AD::DomainKind kind)
     if (!rejectedRaw)
         fail("partial relational raw serialization was not rejected");
 }
+
+std::vector<AD::Variable> exportedConstraintClosure(
+    const AD::NumericalDomain& domain,
+    const std::vector<AD::Variable>& seeds)
+{
+    std::map<AD::Variable, std::set<AD::Variable>> adjacency;
+    for (const AD::LinearConstraint& constraint : domain.toConstraints())
+    {
+        std::vector<AD::Variable> variables;
+        for (const auto& [variable, coefficient] :
+                constraint.expression().terms())
+        {
+            (void)coefficient;
+            variables.push_back(variable);
+        }
+        for (AD::Variable lhs : variables)
+            for (AD::Variable rhs : variables)
+                if (lhs != rhs)
+                    adjacency[lhs].insert(rhs);
+    }
+    std::set<AD::Variable> closure(seeds.begin(), seeds.end());
+    std::vector<AD::Variable> worklist(seeds.begin(), seeds.end());
+    while (!worklist.empty())
+    {
+        const AD::Variable variable = worklist.back();
+        worklist.pop_back();
+        for (AD::Variable neighbor : adjacency[variable])
+            if (closure.insert(neighbor).second)
+                worklist.push_back(neighbor);
+    }
+    return std::vector<AD::Variable>(closure.begin(), closure.end());
+}
+
+void octagonIndexedClosure()
+{
+    const AD::Variable x(61);
+    const AD::Variable y(62);
+    const AD::Variable independent(63);
+    const AD::Variable absent(64);
+    for (AD::OctagonStorageKind storage :
+            {AD::OctagonStorageKind::DenseHalf,
+             AD::OctagonStorageKind::SparseFinite,
+             AD::OctagonStorageKind::ComponentDense})
+    {
+        AD::OctagonConfig config;
+        config.storage = storage;
+        AD::OctagonDomain state = AD::OctagonDomain::top(config);
+        state.assign(y, AD::LinearExpression(x) +
+                        AD::LinearExpression(AD::Rational(1)));
+        state.assign(independent, AD::LinearExpression(AD::Rational(0)));
+        state.forget(independent);
+
+        for (const std::vector<AD::Variable>& seeds :
+                {std::vector<AD::Variable>{x},
+                 std::vector<AD::Variable>{independent},
+                 std::vector<AD::Variable>{absent},
+                 std::vector<AD::Variable>{x, independent}})
+            if (state.relationalClosure(seeds) !=
+                    exportedConstraintClosure(state, seeds))
+                fail("indexed octagon closure disagrees with constraint oracle");
+
+        AD::NumericalDomain::beginTelemetry();
+        (void)state.relationalClosure({x});
+        const AD::NumericalTelemetry telemetry =
+            AD::NumericalDomain::endTelemetry();
+        if (telemetry.relationalClosureCalls != 1 ||
+                telemetry.relationalClosureConstraintExports != 0 ||
+                telemetry.relationalClosureIndexedQueries != 1)
+            fail("octagon closure did not use indexed telemetry path");
+
+        state.forget(x);
+        if (state.relationalClosure({y}) !=
+                exportedConstraintClosure(state, {y}))
+            fail("indexed octagon closure disagrees after forget");
+    }
+}
 }
 int main()
 {
@@ -260,10 +338,17 @@ int main()
         fail("Box conditional initialized payload changed");
     AD::ConvexPolyhedraDomain poly = AD::ConvexPolyhedraDomain::top();
     poly.assign(z, AD::LinearExpression(x) + AD::LinearExpression(y));
+    AD::NumericalDomain::beginTelemetry();
     const std::vector<AD::Variable> closure = poly.relationalClosure({z});
+    const AD::NumericalTelemetry polyTelemetry =
+        AD::NumericalDomain::endTelemetry();
     if (closure.size() != 3 || closure[0] != x || closure[1] != y ||
             closure[2] != z)
         fail("polyhedra relation closure omitted a connected variable");
+    if (polyTelemetry.relationalClosureCalls != 1 ||
+            polyTelemetry.relationalClosureConstraintExports != 1 ||
+            polyTelemetry.relationalClosureIndexedQueries != 0)
+        fail("polyhedra closure did not retain the generic export path");
     AD::ConvexPolyhedraDomain integerGuard =
         AD::ConvexPolyhedraDomain::top();
     integerGuard.assign(y, AD::LinearExpression(x) +
@@ -277,6 +362,7 @@ int main()
     exactSmallModel<AD::ConvexPolyhedraDomain>();
     partialRelationalModel(AD::DomainKind::Octagon);
     partialRelationalModel(AD::DomainKind::ConvexPolyhedra);
+    octagonIndexedClosure();
     machineInteger8Exhaustive();
     std::cout << "RelationalProductTest: PASS\n";
     return EXIT_SUCCESS;

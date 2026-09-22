@@ -76,6 +76,13 @@ std::vector<Variable> NumericalDomain::relationalClosure(
 {
     if (telemetryEnabled)
         ++telemetry.relationalClosureCalls;
+    return relationalClosureState(seeds);
+}
+
+std::vector<Variable> NumericalDomain::relationalClosureState(
+    const std::vector<Variable>& seeds) const
+{
+    recordRelationalClosureConstraintExport();
     std::map<Variable, std::set<Variable>> adjacency;
     for (const LinearConstraint& constraint : toConstraints())
     {
@@ -107,6 +114,18 @@ std::vector<Variable> NumericalDomain::relationalClosure(
                 worklist.push_back(neighbor);
     }
     return std::vector<Variable>(closure.begin(), closure.end());
+}
+
+void NumericalDomain::recordRelationalClosureConstraintExport() const
+{
+    if (telemetryEnabled)
+        ++telemetry.relationalClosureConstraintExports;
+}
+
+void NumericalDomain::recordRelationalClosureIndexedQuery() const
+{
+    if (telemetryEnabled)
+        ++telemetry.relationalClosureIndexedQueries;
 }
 
 Integer::Integer() : value_(0) {}

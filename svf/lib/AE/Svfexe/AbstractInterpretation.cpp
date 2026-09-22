@@ -448,6 +448,10 @@ void AbstractInterpretation::runOnModule()
                 << " components=" << components
                 << " max_component=" << maximumComponent
                 << " closure_calls=" << operations.relationalClosureCalls
+                << " closure_exports="
+                << operations.relationalClosureConstraintExports
+                << " closure_indexed="
+                << operations.relationalClosureIndexedQueries
                 << " join_calls=" << operations.joinCalls
                 << " widen_calls=" << operations.wideningCalls
                 << " narrow_calls=" << operations.narrowingCalls << '\n';

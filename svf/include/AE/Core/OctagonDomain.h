@@ -149,6 +149,8 @@ public:
     OctagonDomain projectedLowerBounds() const;
 
 private:
+    std::vector<Variable> relationalClosureState(
+        const std::vector<Variable>& seeds) const override;
     static OctagonDomain top(const detail::DimensionLayout& layout,
                              const OctagonConfig& config);
     static OctagonDomain bottom(const detail::DimensionLayout& layout,

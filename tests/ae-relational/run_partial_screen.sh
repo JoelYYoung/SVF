@@ -27,7 +27,7 @@ configs=(
 )
 results="$output_dir/results.tsv"
 metadata="$output_dir/metadata.txt"
-printf 'program\tinput_sha256\tsparsity\tdomain\tpolicy\tstatus\ttermination\ttimeout_s\telapsed_s\tuser_s\tsys_s\trss_kb\tllvm_ir_s\tsvfir_s\tpta_s\tai_s\tquery_s\tqueries\tsafe\tmay\tunreachable\tunsupported\tquery_identity_sha256\tquery_outcome_sha256\ticfg_nodes\tanalyzed_icfg_nodes\tfunctions\tanalyzed_functions\tseeds\tselected\tdropped\tinside_ops\tfallback_ops\tprojections\n' > "$results"
+printf 'program\tinput_sha256\tsparsity\tdomain\tpolicy\tstatus\ttermination\ttimeout_s\telapsed_s\tuser_s\tsys_s\trss_kb\tllvm_ir_s\tsvfir_s\tpta_s\tai_s\tquery_s\tqueries\tsafe\tmay\tunreachable\tunsupported\tquery_identity_sha256\tquery_outcome_sha256\ticfg_nodes\tanalyzed_icfg_nodes\tfunctions\tanalyzed_functions\tseeds\tselected\tdropped\tinside_ops\tfallback_ops\tprojections\tclosure_calls\tclosure_exports\tclosure_indexed\n' > "$results"
 
 {
   printf 'ae=%s\n' "$ae_bin"
@@ -129,8 +129,11 @@ run_one()
   inside=$(read_named_field inside_ops "$stem.stdout")
   fallback=$(read_named_field fallback_ops "$stem.stdout")
   projections=$(read_named_field projections "$stem.stdout")
+  closure_calls=$(read_named_field closure_calls "$stem.stdout")
+  closure_exports=$(read_named_field closure_exports "$stem.stdout")
+  closure_indexed=$(read_named_field closure_indexed "$stem.stdout")
 
-  printf '%s\t%s\t%s\t%s\t%s\t%d\t%s\t%d\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%d\t%d\t%d\t%d\t%d\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+  printf '%s\t%s\t%s\t%s\t%s\t%d\t%s\t%d\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%d\t%d\t%d\t%d\t%d\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
     "$program" "$input_id" "$sparsity" "$domain" "$policy" "$status" \
     "$termination" "$limit" "${elapsed:-NA}" "${user:-NA}" "${sys:-NA}" \
     "${rss:-NA}" "${llvm_ir:-NA}" "${svfir:-NA}" "${pta:-NA}" \
@@ -139,7 +142,8 @@ run_one()
     "${icfg:-NA}" "${analyzed_icfg:-NA}" "${functions:-NA}" \
     "${analyzed_functions:-NA}" "${seeds:-NA}" "${selected:-NA}" \
     "${dropped:-NA}" "${inside:-NA}" "${fallback:-NA}" \
-    "${projections:-NA}" >> "$results"
+    "${projections:-NA}" "${closure_calls:-NA}" \
+    "${closure_exports:-NA}" "${closure_indexed:-NA}" >> "$results"
 }
 
 mapfile -t cohort_rows < <(tail -n +2 "$cohort")
