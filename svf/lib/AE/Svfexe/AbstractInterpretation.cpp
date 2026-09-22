@@ -487,11 +487,15 @@ void AbstractInterpretation::initializeRelationalPolicy()
             << " max=" << Options::AERelationalMaxVars() << '\n';
     if (std::getenv("SVF_AE_TRACE_RELATIONAL_POLICY"))
     {
-        const auto printVariables = [](const char* label,
-                                       const std::vector<AD::Variable>& values) {
+        const auto printVariables = [&](const char* label,
+                                        const std::vector<AD::Variable>& values) {
             std::cerr << label << '=';
             for (AD::Variable variable : values)
-                std::cerr << variable.id() << ',';
+            {
+                const ValVar* value = adapter_.value(variable);
+                std::cerr << variable.id() << ':'
+                          << (value ? value->getId() : 0) << ',';
+            }
             std::cerr << '\n';
         };
         printVariables("AE_RELATIONAL_QUERY_CLOSURE", queryClosure);
