@@ -324,15 +324,27 @@ Execution execute(const std::string& operation, Reader& payload,
 {
     Execution result;
     if (operation == "assign-linear")
-        state.assign(readVariable(payload), readExpression(payload));
+    {
+        const AD::Variable target = readVariable(payload);
+        AD::LinearExpression expression = readExpression(payload);
+        state.assign(target, expression);
+    }
     else if (operation == "assign-tree")
-        state.assign(readVariable(payload), readTree(payload));
+    {
+        const AD::Variable target = readVariable(payload);
+        AD::TreeExpression expression = readTree(payload);
+        state.assign(target, expression);
+    }
     else if (operation == "assign-parallel-linear")
         state.assignParallel(readLinearAssignments(payload));
     else if (operation == "assign-parallel-tree")
         state.assignParallel(readTreeAssignments(payload));
     else if (operation == "substitute-linear")
-        state.substitute(readVariable(payload), readExpression(payload));
+    {
+        const AD::Variable target = readVariable(payload);
+        AD::LinearExpression expression = readExpression(payload);
+        state.substitute(target, expression);
+    }
     else if (operation == "substitute-parallel-linear")
         state.substituteParallel(readLinearAssignments(payload));
     else if (operation == "assume-linear")
@@ -387,7 +399,11 @@ Execution execute(const std::string& operation, Reader& payload,
     else if (operation == "canonicalize")
         state.canonicalize();
     else if (operation == "assign-interval")
-        state.assignBound(readVariable(payload), readInterval(payload));
+    {
+        const AD::Variable target = readVariable(payload);
+        const AD::Interval interval = readInterval(payload);
+        state.assignBound(target, interval);
+    }
     else if (operation == "relational-closure")
     {
         const std::vector<AD::Variable> actual =
