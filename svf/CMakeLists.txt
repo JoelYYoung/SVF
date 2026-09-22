@@ -127,6 +127,16 @@ endif()
 
 if(BUILD_TESTING)
   add_executable(
+    NumericalDomainOperationBenchmark
+    ${CMAKE_CURRENT_LIST_DIR}/../tests/ae-relational/NumericalDomainOperationBenchmark.cpp
+  )
+  target_link_libraries(NumericalDomainOperationBenchmark
+                        PRIVATE AbstractDomainCore)
+  add_test(NAME ae-relational/NumericalDomainOperationBenchmark-smoke
+           COMMAND NumericalDomainOperationBenchmark
+                   --backend native --domain octagon --dimension 4
+                   --shape sparse --iterations 1)
+  add_executable(
     ELINAOctagonAdapterTest
     ${CMAKE_CURRENT_LIST_DIR}/../tests/ae-relational/ELINAOctagonAdapterTest.cpp
   )
