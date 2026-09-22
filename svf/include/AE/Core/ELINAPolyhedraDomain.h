@@ -24,11 +24,9 @@ struct ELINAPolyhedraConfig
 
 /// Fixed-f524156d ELINA Polyhedra adapter.
 ///
-/// The native property is retained as a checked conservative fallback for
-/// operations that the fixed ELINA revision cannot safely expose. The ELINA
-/// value is rebuilt after every mutation in this first adapter revision, which
-/// makes semantics and failure behavior explicit but is intentionally not yet
-/// a performance baseline.
+/// Common operations execute directly on the ELINA value, which is the
+/// authoritative observable state. The native implementation is materialized
+/// only for an explicitly diagnosed unsupported/exception fallback.
 class ELINAPolyhedraDomain final : public NumericalDomain
 {
 public:
@@ -87,8 +85,12 @@ public:
 private:
     class Impl;
     ELINAPolyhedraDomain(ELINAPolyhedraConfig config, bool bottom);
-    void synchronizeELINA(OperationKind operation,
-                          const std::string& fallbackOperation = {});
+    ConvexPolyhedraDomain nativeSnapshot() const;
+    void replaceFromNative(const ConvexPolyhedraDomain& native,
+                           OperationKind operation,
+                           const std::string& fallbackOperation);
+    void ensureVariables(const std::vector<Variable>& variables);
+    void removeVariables(const std::vector<Variable>& variables);
     void report(OperationKind operation, ApproximationKind approximation,
                 std::string reason, bool best = true) const;
 
@@ -106,12 +108,15 @@ private:
     bool leqDomain(const AbstractDomain& other) const override;
     std::string domainToString() const override;
 
-    const ELINAPolyhedraDomain& requireELINA(
-        const AbstractDomain& other) const;
+    const ELINAPolyhedraDomain& requireELINA(const AbstractDomain& other) const;
 
     ELINAPolyhedraConfig config_;
-    ConvexPolyhedraDomain native_;
     std::unique_ptr<Impl> impl_;
+    /// Active only after an operation reaches syntax or numeric sorts that
+    /// fixed f524156d's optimized Polyhedra carrier cannot represent. In
+    /// particular, opt_pk_dimension reports every coordinate as integer and
+    /// hard-codes realdim to zero.
+    std::unique_ptr<ConvexPolyhedraDomain> fallback_;
 };
 
 } // namespace SVF::AbstractDomain
