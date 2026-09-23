@@ -2392,6 +2392,17 @@ void AbstractInterpretation::updateStateOnCmp(const CmpStmt* cmp)
             assert(false && "undefined numerical compare");
         }
     }
+    if (std::getenv("SVF_AE_TRACE_ADDRESS_TRANSFER") && addressComparison)
+        SVFUtil::outs()
+                << "AE_ADDRESS_CMP node=" << node->getId()
+                << " function="
+                << (node->getFun() ? node->getFun()->getName() : "<global>")
+                << " predicate=" << predicate
+                << " lhs_var=" << cmp->getOpVar(0)->getId()
+                << " lhs=" << lhsAddresses.toString()
+                << " rhs_var=" << cmp->getOpVar(1)->getId()
+                << " rhs=" << rhsAddresses.toString()
+                << " result=" << result.toString() << '\n';
     updateInterval(cmp->getRes(), result, node);
 }
 
@@ -2403,6 +2414,17 @@ void AbstractInterpretation::updateStateOnLoad(const LoadStmt* load)
     bool numericalMayBeUninitialized = false;
     loadValue(SVFUtil::cast<ValVar>(load->getRHSVar()), interval, addresses,
               numericalMayBeUninitialized, node);
+    if (std::getenv("SVF_AE_TRACE_ADDRESS_TRANSFER") &&
+            load->getLHSVar()->isPointer())
+        SVFUtil::outs()
+                << "AE_ADDRESS_LOAD node=" << node->getId()
+                << " function="
+                << (node->getFun() ? node->getFun()->getName() : "<global>")
+                << " target=" << load->getLHSVar()->getId()
+                << " pointer=" << load->getRHSVar()->getId()
+                << " pointees="
+                << getAddressSet(load->getRHSVar(), node).toString()
+                << " result=" << addresses.toString() << '\n';
     updateValue(load->getLHSVar(), interval, addresses, node);
     if (numericalMayBeUninitialized)
         addUninitializedNumericalAlternative(load->getLHSVar(), node);
@@ -2425,6 +2447,18 @@ void AbstractInterpretation::updateStateOnLoad(const LoadStmt* load)
 void AbstractInterpretation::updateStateOnStore(const StoreStmt* store)
 {
     const ICFGNode* node = store->getICFGNode();
+    if (std::getenv("SVF_AE_TRACE_ADDRESS_TRANSFER") &&
+            store->getRHSVar()->isPointer())
+        SVFUtil::outs()
+                << "AE_ADDRESS_STORE node=" << node->getId()
+                << " function="
+                << (node->getFun() ? node->getFun()->getName() : "<global>")
+                << " pointer=" << store->getLHSVar()->getId()
+                << " pointees="
+                << getAddressSet(store->getLHSVar(), node).toString()
+                << " source=" << store->getRHSVar()->getId()
+                << " value="
+                << getAddressSet(store->getRHSVar(), node).toString() << '\n';
     storeValue(SVFUtil::cast<ValVar>(store->getLHSVar()),
                getInterval(store->getRHSVar(), node),
                getAddressSet(store->getRHSVar(), node), node);
