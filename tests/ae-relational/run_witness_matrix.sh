@@ -30,6 +30,7 @@ witnesses=(
   RecursiveCallWitness
   MachineInteger8Witness
   ExternalReturnWitness
+  PointerLoadWitness
 )
 modes=(dense semi-sparse)
 domains=(box octagon polyhedra)
@@ -105,6 +106,18 @@ for witness in "${witnesses[@]}"; do
       failed=1
     fi
   done
+done
+
+# A numerical relation update after a pointer store/load must not erase the
+# address facet.  All domains therefore have the same result on this witness.
+for mode in "${modes[@]}"; do
+  outcomes=$(awk -F '\t' -v m="$mode" \
+    '$1 == "PointerLoadWitness" && $2 == m { print $10 }' "$summary" |
+    LC_ALL=C sort -u | wc -l | tr -d ' ')
+  if [[ $outcomes != 1 ]]; then
+    echo "pointer load outcome mismatch: $mode" >&2
+    failed=1
+  fi
 done
 
 echo "$summary"
