@@ -29,7 +29,7 @@ mkdir -p "$output_dir"
 field() {
   local name=$1 file=$2
   awk -F '\t' -v name="$name" '
-    NR == 1 { for (index = 1; index <= NF; index++) if ($index == name) column = index; next }
+    NR == 1 { for (position = 1; position <= NF; position++) if ($position == name) column = position; next }
     NR == 2 { print $column; exit }
   ' "$file"
 }
