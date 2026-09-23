@@ -118,6 +118,19 @@ for mode in "${modes[@]}"; do
     echo "pointer load outcome mismatch: $mode" >&2
     failed=1
   fi
+  for domain in "${domains[@]}"; do
+    ledger="$output_dir/PointerLoadWitness-$mode-$domain.queries.tsv"
+    if ! awk -F '\t' '
+      NR > 1 { count[$9]++; total++ }
+      END {
+        exit !(total == 2 && count["Safe"] == 1 &&
+               count["Unreachable"] == 1 && count["May"] == 0 &&
+               count["Unsupported"] == 0)
+      }' "$ledger"; then
+      echo "pointer load expected outcome failed: $mode $domain" >&2
+      failed=1
+    fi
+  done
 done
 
 echo "$summary"
