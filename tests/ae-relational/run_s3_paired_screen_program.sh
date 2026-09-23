@@ -15,6 +15,7 @@ output_dir=$6
 timeout_seconds=${SVF_AE_S3_PAIR_TIMEOUT_SECONDS:-300}
 memory_kib=${SVF_AE_S3_MEMORY_KIB:-33554432}
 max_vars=${SVF_AE_RELATIONAL_MAX_VARS:-32}
+order_offset=${SVF_AE_S3_PAIR_ORDER_OFFSET:-0}
 expected_ae_sha=${SVF_AE_EXPECTED_SHA256:-}
 expected_extapi_sha=${SVF_AE_EXPECTED_EXTAPI_SHA256:-}
 
@@ -49,7 +50,7 @@ configs=(
   'box:dense:box:whole:through'
   'octagon:dense:octagon:eva-style:through'
 )
-if ((ordinal % 2 == 0)); then
+if (((ordinal + order_offset) % 2 == 0)); then
   configs=("${configs[1]}" "${configs[0]}")
 fi
 
@@ -182,11 +183,11 @@ if ((completed == 2)); then
   fi
 fi
 
-printf 'program_key=%s\ninput_sha256=%s\ncohort_sha256=%s\nrunner_sha256=%s\nae_sha256=%s\nextapi_sha256=%s\ntimeout_seconds=%s\nmemory_kib=%s\nmax_vars=%s\ncpu=%s\nhost=%s\ncompleted_configs=%s\ngate_status=%s\ngate_reason=%s\ncompleted_at=%s\n' \
+printf 'program_key=%s\ninput_sha256=%s\ncohort_sha256=%s\nrunner_sha256=%s\nae_sha256=%s\nextapi_sha256=%s\ntimeout_seconds=%s\nmemory_kib=%s\nmax_vars=%s\norder_offset=%s\ncpu=%s\nhost=%s\ncompleted_configs=%s\ngate_status=%s\ngate_reason=%s\ncompleted_at=%s\n' \
   "$program_key" "$input_id" "$(sha256sum "$cohort" | cut -d' ' -f1)" \
   "$(sha256sum "$0" | cut -d' ' -f1)" "$(sha256sum "$ae_bin" | cut -d' ' -f1)" \
   "$(sha256sum "$extapi_bc" | cut -d' ' -f1)" "$timeout_seconds" \
-  "$memory_kib" "$max_vars" "$cpu" "$(hostname)" "$completed" \
+  "$memory_kib" "$max_vars" "$order_offset" "$cpu" "$(hostname)" "$completed" \
   "$gate_status" "$gate_reason" "$(date -u +%FT%TZ)" \
   > "$output_dir/manifest.txt"
 find "$output_dir" -type f ! -name sha256.txt -print0 | sort -z | \
