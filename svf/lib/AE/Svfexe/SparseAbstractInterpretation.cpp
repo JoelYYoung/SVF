@@ -421,7 +421,8 @@ void SemiSparseAbstractInterpretation::assignRelationalStore(
     const AD::Variable sourceVariable = this->adapter_.variable(*source);
     materializeRelations(local, {sourceVariable}, node);
     if (!scalarState().numericalMayBeUninitialized(sourceVariable))
-        local.assignNumeric(content, AD::LinearExpression(sourceVariable));
+        local.numerical().assign(content,
+                                 AD::LinearExpression(sourceVariable));
 }
 
 void SemiSparseAbstractInterpretation::assignRelationalLoad(
@@ -433,7 +434,8 @@ void SemiSparseAbstractInterpretation::assignRelationalLoad(
     if (local.numericalMayBeUninitialized(content))
         return;
     const AD::Variable targetVariable = this->adapter_.variable(*target);
-    local.assignNumeric(targetVariable, AD::LinearExpression(content));
+    local.numerical().assign(targetVariable,
+                             AD::LinearExpression(content));
 
     State projection = local;
     for (AD::Variable variable : projection.numerical().supportVariables())

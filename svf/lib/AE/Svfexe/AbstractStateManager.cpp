@@ -469,8 +469,11 @@ void AbstractInterpretation::assignRelationalStore(
     State& destination = ensureState(node);
     const AD::Variable sourceVariable = adapter_.variable(*source);
     if (!destination.numericalMayBeUninitialized(sourceVariable))
-        destination.assignNumeric(content,
-                                  AD::LinearExpression(sourceVariable));
+        // storeValue has already installed both value facets and their
+        // initialization guards.  This second assignment only records the
+        // affine relation; assignNumeric would erase a pointer payload.
+        destination.numerical().assign(
+            content, AD::LinearExpression(sourceVariable));
 }
 
 void AbstractInterpretation::assignRelationalLoad(
@@ -480,8 +483,11 @@ void AbstractInterpretation::assignRelationalLoad(
         return;
     State& destination = ensureState(node);
     if (!destination.numericalMayBeUninitialized(content))
-        destination.assignNumeric(adapter_.variable(*target),
-                                  AD::LinearExpression(content));
+        // updateValue has already installed both value facets and their
+        // initialization guards.  Preserve a loaded pointer while refining
+        // only the numerical relation.
+        destination.numerical().assign(adapter_.variable(*target),
+                                       AD::LinearExpression(content));
 }
 
 void AbstractInterpretation::resetAbstractState(const ICFGNode* node)
