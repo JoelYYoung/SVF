@@ -51,6 +51,7 @@ public:
     {
         BUF_OVERFLOW, ///< Detector for buffer overflow issues.
         NULL_DEREF,   ///< Detector for nullptr dereference issues.
+        ASSERTION,    ///< Standard C assert failure reachability.
         UNKNOWN,      ///< Default type if the kind is not specified.
     };
 

@@ -225,25 +225,18 @@ Map<const ICFGNode*, std::set<AD::Variable>> computeAvailability(
                     continue;
                 std::set<AD::Variable> edgeAvailable =
                     available.at(predecessor);
-                // RetPE needs the callee formal-return ghosts while the caller
-                // frame also remains live. Other callee locals are out of
-                // scope. The node definitions add the actual return value.
+                // RetPE consumes its callee's formal-return ghost on the
+                // return edge.  After that edge only the caller frame remains
+                // live; the node definitions below add the actual return.
+                // Keeping every alternative callee's formal ghost at a shared
+                // return site would make each single-edge Post obligation
+                // prove facts about the other alternatives.
                 if (const auto* ret = SVFUtil::dyn_cast<RetCFGEdge>(edge))
                 {
                     edgeAvailable.clear();
                     const auto caller = available.find(ret->getCallSite());
                     if (caller != available.end())
                         edgeAvailable = caller->second;
-                    for (const SVFStmt* statement : node->getSVFStmts())
-                    {
-                        const auto* binding =
-                            SVFUtil::dyn_cast<RetPE>(statement);
-                        const auto* formal = binding
-                            ? SVFUtil::dyn_cast<ValVar>(binding->getRHSVar())
-                            : nullptr;
-                        if (formal && adapter.contains(*formal))
-                            edgeAvailable.insert(adapter.variable(*formal));
-                    }
                 }
                 if (first)
                 {
@@ -515,7 +508,13 @@ void AbstractInterpretation::verifyPostFixpoint()
         replay.stateTrace_ = finalStates;
         replay.stateTrace_.insert_or_assign(node, incoming);
         for (const SVFStmt* statement : node->getSVFStmts())
+        {
+            if (SVFUtil::isa<RetICFGNode>(node) &&
+                    SVFUtil::isa<RetPE>(statement))
+                continue;
             replay.handleSVFStatement(statement);
+        }
+        replay.updateStateOnPhiGroupAtNode(node);
         if (const auto* call = SVFUtil::dyn_cast<CallICFGNode>(node))
         {
             if (replay.isExtCall(call))
@@ -691,6 +690,7 @@ void AbstractInterpretation::verifyPostFixpoint()
                 restorePostReplayCallerFrame(
                     incoming, SVFUtil::cast<RetICFGNode>(target),
                     callerFinal->second, callerAvailability->second);
+            replay.applyReturnEdgeTransfer(incoming, ret);
         }
         if (conditional && conditional->getCondition())
         {

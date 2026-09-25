@@ -108,7 +108,11 @@ void AbsExtAPI::initExtFunMap()
                     << SVFUtil::errMsg("Assertion failure, this svf_assert cannot "
                                "be verified!!\n")
                     << callNode->toString() << "\n";
-            assert(false);
+            // A query-ledger run records this as May and must continue so a
+            // complete dataset can be classified. Preserve the historical
+            // assertion behavior when no ledger was requested.
+            if (!ae->queryLedgerEnabled())
+                assert(false);
         }
         return;
     };

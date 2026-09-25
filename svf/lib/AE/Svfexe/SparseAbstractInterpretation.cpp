@@ -279,13 +279,29 @@ SemiSparseAbstractInterpretation::phiAlternativeState(
         if (this->hasAbsState(predecessor))
             alternative.numerical().meetWith(
                 this->state(predecessor).numerical());
+        // Semi-sparse branch predicates live in refinementTrace_ because
+        // scalar SSA coordinates are removed from persistent ICFG states.
+        // A phi alternative must include the predicate that selected its
+        // predecessor; otherwise joining `x` from x<=y with `y` from x>y
+        // loses the derived min/max relation and retains only unary hulls.
+        const auto refinement = refinementTrace_.find(predecessor);
+        // Replaying branch relations into every loop phi makes the same
+        // octagonal closure participate in each widening iteration.  Cyclic
+        // functions already reconstruct loop values through WTO
+        // widen/scatter; keep this supplementary path-sensitive phi recovery
+        // for acyclic SSA joins, where it is stable and directly useful.
+        if (refinement != refinementTrace_.end() &&
+                !this->preAnalysis->functionHasCycle(
+                    predecessor->getFun()))
+            applyScalarRefinement(alternative, refinement->second);
     }
     return alternative;
 }
 
 void SemiSparseAbstractInterpretation::assignRelationalValue(
     const ValVar* target, const AD::LinearExpression& expression,
-    const AD::AddressSet& addresses, const ICFGNode* node)
+    const AD::Interval& interval, const AD::AddressSet& addresses,
+    const ICFGNode* node)
 {
     if (!target || !this->adapter_.contains(*target))
         return;
@@ -304,11 +320,27 @@ void SemiSparseAbstractInterpretation::assignRelationalValue(
         }
         materializeScalarDefinitions(summary, sources, node);
         summary.assignNumeric(variable, expression);
+        // The interval was evaluated in the current invocation.  It is stable
+        // for a root or single-call-site function, but not for a
+        // context-insensitive callee shared by multiple call sites: a later
+        // caller can enlarge the formal inputs after an earlier return edge
+        // has already been processed.  Keep only the invocation-independent
+        // affine equality in that case.  Reusing call-local unary bounds would
+        // make the earlier return state fail the interprocedural Post equation.
+        const bool sharedFunction =
+            isSharedFunction(node ? node->getFun() : nullptr);
+        const bool cyclicFunction =
+            this->preAnalysis->functionHasCycle(node ? node->getFun()
+                                               : nullptr);
+        const AD::Interval impliedInterval =
+            summary.numerical().bound(variable);
+        if (!sharedFunction && !cyclicFunction &&
+                !impliedInterval.isSubsetOf(interval))
+            this->constrainInterval(summary, variable, interval);
         summary.setAddressSet(variable, addresses);
-        // updateValue has just installed a unary summary for this same
-        // definition.  Joining that state would immediately erase the affine
-        // relation established above.  Only join a saved value from an older
-        // visit to this definition (for example, a loop iteration).
+        // Keep the independently proved unary result together with the affine
+        // equality. Only join a saved value from an older visit to this
+        // definition (for example, a loop iteration).
         const auto pending = pendingDefinitionHistory_.find(variable);
         if (pending != pendingDefinitionHistory_.end() &&
             pending->second.first == node)
@@ -319,7 +351,9 @@ void SemiSparseAbstractInterpretation::assignRelationalValue(
         scalarDefinitions_.insert_or_assign(variable, std::move(summary));
         if (std::getenv("SVF_AE_TRACE_SCALAR_SUMMARY"))
             std::cerr << "AE scalar summary assign node=" << node->getId()
-                      << " target=" << variable.id() << " state="
+                      << " target=" << variable.id()
+                      << " shared_function=" << sharedFunction
+                      << " cyclic_function=" << cyclicFunction << " state="
                       << scalarDefinitions_.at(variable).numerical().toString()
                       << '\n';
     }
@@ -342,6 +376,13 @@ void SemiSparseAbstractInterpretation::recordRelationalDependency(
     else
         scalarDependencies_[target].insert(dependencies->second.begin(),
                                            dependencies->second.end());
+}
+
+void SemiSparseAbstractInterpretation::recordRelationalTupleDependency(
+    AD::Variable target, AD::Variable peer)
+{
+    if (target != peer)
+        scalarDependencies_[target].insert(peer);
 }
 
 void SemiSparseAbstractInterpretation::recordRelationalSummary(
@@ -380,14 +421,18 @@ void SemiSparseAbstractInterpretation::recordRelationalSummary(
     State summary = this->topState();
     for (AD::Variable variable : variables)
         summary.assignValueFrom(variable, sourceSummary, variable);
-    // The unary summary written by updateValue owns the target's
-    // initialization/address facets.  Do not meet the complete products:
-    // every other coordinate is deliberately absent (Uninitialized) there,
-    // and meeting it with an Initialized dependency would collapse the
-    // independent initialization lattice to Bottom.
+    // The unary summary written by updateValue may own target product facets
+    // that are absent from the relational source.  Restore only those missing
+    // facets: copying the old numerical coordinate would reintroduce a stale
+    // bound when a shared callee or loop revisits this SSA definition with a
+    // wider input summary.
     const auto intervalSummary = scalarDefinitions_.find(target);
     if (intervalSummary != scalarDefinitions_.end())
-        summary.assignValueFrom(target, intervalSummary->second, target);
+    {
+        summary.restoreMissingNumericalInitializationFrom(
+            intervalSummary->second, target);
+        summary.restoreMissingAddressFrom(intervalSummary->second, target);
+    }
     State projected = sourceSummary;
     projected.numerical().project(variables);
     summary.numerical().meetWith(projected.numerical());
@@ -410,6 +455,40 @@ void SemiSparseAbstractInterpretation::recordRelationalSummary(
                   << scalarDefinitions_.at(target).numerical().toString()
                   << '\n';
     }
+}
+
+void SemiSparseAbstractInterpretation::recordMergedReturnSummary(
+    const RetICFGNode* returnSite)
+{
+    if (!returnSite)
+        return;
+    const auto* target =
+        SVFUtil::dyn_cast<ValVar>(returnSite->getActualRet());
+    if (!target || !this->adapter_.contains(*target))
+        return;
+    const AD::Variable targetVariable = this->adapter_.variable(*target);
+    if (Options::AEDomain() == AENumericalDomain::Box)
+    {
+        // The edge merge computes the return value in the transient flow
+        // state.  Publish its scalar facet before finalizeAbstractState drops
+        // active ValVars from that state.
+        scalarState().assignValueFrom(
+            targetVariable, this->state(returnSite), targetVariable);
+        return;
+    }
+    for (const ICFGEdge* edge : returnSite->getInEdges())
+    {
+        const auto* ret = SVFUtil::dyn_cast<RetCFGEdge>(edge);
+        const auto* binding = ret ? ret->getRetPE() : nullptr;
+        const auto* source = binding
+                             ? SVFUtil::dyn_cast<ValVar>(binding->getRHSVar())
+                             : nullptr;
+        if (source && this->adapter_.contains(*source))
+            recordRelationalDependency(
+                targetVariable, this->adapter_.variable(*source));
+    }
+    recordRelationalSummary(targetVariable, this->state(returnSite),
+                            returnSite);
 }
 
 void SemiSparseAbstractInterpretation::assignRelationalStore(
@@ -841,8 +920,19 @@ void SemiSparseAbstractInterpretation::restorePostReplayCallerFrame(
     else
     {
         for (AD::Variable variable : callerScalars)
-            if (!denseState.hasValue(variable))
-                denseState.assignValueFrom(variable, callerState, variable);
+        {
+            // The relational flow state can contain a sound relation for a
+            // caller SSA coordinate while deliberately omitting that
+            // coordinate's initialization carrier.  A strong coordinate
+            // assignment would then erase all relations through it.  Caller
+            // SSA values are unchanged by a single-call-site callee, so meet
+            // their unary bounds and restore only missing product facets.
+            this->constrainInterval(
+                denseState, variable, callerState.interval(variable));
+            denseState.restoreMissingNumericalInitializationFrom(
+                callerState, variable);
+            denseState.restoreMissingAddressFrom(callerState, variable);
+        }
     }
     restoreCallerFrameAfterSharedCallee(denseState, returnSite, &callerState);
 }
@@ -948,6 +1038,21 @@ void SemiSparseAbstractInterpretation::restoreCallerFrameAfterSharedCallee(
         restore(content);
 }
 
+bool SemiSparseAbstractInterpretation::isSharedFunction(
+    const FunObjVar* function) const
+{
+    if (!function)
+        return false;
+    const ICFGNode* entry = this->icfg->getFunEntryICFGNode(function);
+    const std::size_t callers = std::count_if(
+                                    entry->getInEdges().begin(), entry->getInEdges().end(),
+                                    [](const ICFGEdge* incoming)
+    {
+        return SVFUtil::isa<CallCFGEdge>(incoming);
+    });
+    return callers > 1;
+}
+
 bool SemiSparseAbstractInterpretation::isSharedCalleeReturn(
     const RetICFGNode* returnSite) const
 {
@@ -957,15 +1062,7 @@ bool SemiSparseAbstractInterpretation::isSharedCalleeReturn(
     {
         if (!SVFUtil::isa<RetCFGEdge>(edge) || !edge->getSrcNode()->getFun())
             continue;
-        const ICFGNode* entry = this->icfg->getFunEntryICFGNode(
-                                    edge->getSrcNode()->getFun());
-        const std::size_t callers = std::count_if(
-                                        entry->getInEdges().begin(), entry->getInEdges().end(),
-                                        [](const ICFGEdge* incoming)
-        {
-            return SVFUtil::isa<CallCFGEdge>(incoming);
-        });
-        if (callers > 1)
+        if (isSharedFunction(edge->getSrcNode()->getFun()))
             return true;
     }
     return false;
@@ -1198,6 +1295,27 @@ bool SemiSparseAbstractInterpretation::mergeStatesFromPredecessors(
 
         State source = this->state(predecessor);
         this->applyRelationalCallBoundary(source, edge, node);
+        if (const auto* ret = SVFUtil::dyn_cast<RetCFGEdge>(edge))
+        {
+            // Scalar SSA definitions live in the semi-sparse carrier rather
+            // than in persistent ICFG states.  A return binding is owned by
+            // one callee edge, so reconstruct that edge's formal return in
+            // its source state before applying RetPE.  Doing this per edge
+            // preserves join(Post_edge) for multi-target calls; materializing
+            // after the join would conflate alternative formal returns.
+            const RetPE* binding = ret->getRetPE();
+            const auto* returned = binding
+                                   ? SVFUtil::dyn_cast<ValVar>(
+                                         binding->getRHSVar())
+                                   : nullptr;
+            if (returned && this->adapter_.contains(*returned))
+            {
+                materializeScalarDefinitions(
+                    source, {this->adapter_.variable(*returned)},
+                    predecessor);
+            }
+            this->applyReturnEdgeTransfer(source, ret);
+        }
         filterPropagatedState(source);
         if (hasConditional)
             this->collectBranchRefinement(conditional, source);
@@ -1324,6 +1442,7 @@ void SemiSparseAbstractInterpretation::scatterCycleValues(
                     variable, std::make_pair(head, previous->second));
             else
                 pendingDefinitionHistory_.erase(variable);
+
             State summary = this->topState();
             summary.assignValueFrom(variable, cycleState, variable);
             scalarDefinitions_.insert_or_assign(variable,

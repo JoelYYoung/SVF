@@ -651,6 +651,18 @@ void MemoryLayout::extend(Location location, Variable content)
             "location already has a different content symbol");
 }
 
+void BoxAddressDomain::restoreMissingNumericalInitializationFrom(
+    const BoxAddressDomain& caller, Variable variable)
+{
+    if (isBottom() || caller.isBottom() || !trackInitialization_)
+        return;
+    if (trackInitialization_ != caller.trackInitialization_)
+        throw std::invalid_argument("incompatible initialization tracking");
+    if (!mayBeInitialized(numericalInitialization_.value(variable)))
+        numericalInitialization_.assign(
+            variable, caller.numericalInitialization_.value(variable));
+}
+
 void BoxAddressDomain::restoreMissingMemoryFrom(
     const BoxAddressDomain& caller, Variable content)
 {

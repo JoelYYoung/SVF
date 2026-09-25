@@ -66,6 +66,7 @@ class AEStat;
 class AbstractInterpretation
 {
     friend class AEStat;
+    friend class AbsExtAPI;
     friend class BufOverflowDetector;
     friend class NullptrDerefDetector;
 
@@ -415,6 +416,12 @@ protected:
     /// funEntry
     bool handleFunction(const ICFGNode* funEntry, const CallICFGNode* caller);
 
+    /// A context-insensitive callee can grow when a later call site is
+    /// analyzed. Recompute already-reached sibling return sites so their
+    /// caller states cover the enlarged callee summary.
+    void refreshSiblingReturnSites(const FunObjVar* callee,
+                                   const RetICFGNode* currentReturn);
+
     /// Handle an ICFG node: execute statements; return true if state changed
     bool handleICFGNode(const ICFGNode* node);
 
@@ -443,6 +450,15 @@ protected:
     void updateStateOnSelect(const SelectStmt* select);
 
     void updateStateOnPhi(const PhiStmt* phi);
+
+    /// Reconstruct and apply a basic-block phi tuple when `node` is the last
+    /// ICFG node of that tuple. Shared by solver execution and Post replay.
+    void updateStateOnPhiGroupAtNode(const ICFGNode* node);
+
+    /// Apply every phi at one ICFG program point as a simultaneous tuple for
+    /// each predecessor, then join predecessor alternatives.  Processing the
+    /// targets independently loses relations shared by every alternative.
+    void updateStateOnPhiGroup(const std::vector<const PhiStmt*>& phis);
 
     ICFG* icfg;
     CallGraph* callGraph;
@@ -499,10 +515,17 @@ protected:
     virtual void assignRelationalValue(
         const ValVar* target,
         const AbstractDomain::LinearExpression& expression,
+        const AbstractDomain::Interval& interval,
         const AbstractDomain::AddressSet& addresses,
         const ICFGNode* node);
     virtual void recordRelationalDependency(AbstractDomain::Variable target,
                                             AbstractDomain::Variable source);
+    /// Record that two results belong to the same simultaneous definition.
+    /// Unlike an ordinary use-def dependency, a tuple peer must not be
+    /// flattened through the peer's own operands.
+    virtual void recordRelationalTupleDependency(
+        AbstractDomain::Variable target,
+        AbstractDomain::Variable peer);
     virtual void recordRelationalSummary(AbstractDomain::Variable target,
                                          const State& summary,
                                          const ICFGNode* node);
@@ -519,6 +542,13 @@ protected:
     void initializeRelationalPolicy();
     void applyRelationalCallBoundary(State& state, const ICFGEdge* edge,
                                      const ICFGNode* target) const;
+    /// Execute the binding owned by one return edge before alternative
+    /// callee post-states are joined.
+    void applyReturnEdgeTransfer(State& state,
+                                 const RetCFGEdge* edge) const;
+    /// Publish a representation-specific summary after return alternatives
+    /// have been joined at a RetICFGNode.
+    virtual void recordMergedReturnSummary(const RetICFGNode* returnSite);
 
     void assignValue(State& state, AbstractDomain::Variable variable,
                      const AbstractDomain::Interval& interval,
@@ -532,12 +562,21 @@ protected:
     void assignInterval(State& state, AbstractDomain::Variable variable,
                         const AbstractDomain::Interval& interval);
     void constrainInterval(State& state, AbstractDomain::Variable variable,
-                           const AbstractDomain::Interval& interval);
+                           const AbstractDomain::Interval& interval) const;
     virtual void materializeValue(State& state, const ValVar* value,
                                   const ICFGNode* node);
     virtual void materializeRelations(
         State& state, const std::vector<AbstractDomain::Variable>& variables,
         const ICFGNode* node);
+    /// Rebuild a bounded affine expression from a uniquely defined SSA value.
+    /// Integer arithmetic is unfolded only when its interval proves that the
+    /// LLVM operation cannot wrap at this program point. Unsupported
+    /// definitions remain sound leaf variables.
+    std::optional<AbstractDomain::LinearExpression>
+    reconstructLinearExpression(
+        const SVFVar* operand, State& state, const ICFGNode* node,
+        std::vector<AbstractDomain::Variable>& relationVariables,
+        unsigned depth, std::set<NodeID>& visiting);
     void forgetValue(State& state,
                      AbstractDomain::Variable variable) const;
     void assumeBranch(const IntraCFGEdge* edge, State& state);
@@ -570,6 +609,8 @@ protected:
     Map<std::string, QueryRecord> queryLedger_;
     bool queryLedgerEnabled() const;
     void enumerateQueries();
+    void enumerateStandardAssertionQueries();
+    void recordReachedAssertion(const CallICFGNode* call);
     void writeQueryLedger() const;
 
     bool postCheckEnabled() const;

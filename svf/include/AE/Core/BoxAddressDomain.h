@@ -235,6 +235,8 @@ public:
     /// Restore absent facets from a caller frame after a shared callee.
     /// With initialization tracking, a defined Top is never treated as absent.
     /// Untracked clients retain the payload-Top restoration policy.
+    void restoreMissingNumericalInitializationFrom(
+        const BoxAddressDomain& caller, Variable variable);
     void restoreMissingMemoryFrom(const BoxAddressDomain& caller,
                                   Variable content);
     void restoreMissingAddressFrom(const BoxAddressDomain& caller,

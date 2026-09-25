@@ -13,14 +13,30 @@ timeout_seconds=${SVF_AE_WITNESS_TIMEOUT_SECONDS:-60}
 fixture_dir=$(cd "$(dirname "$0")" && pwd)
 mkdir -p "$output_dir"
 
+timeout_prefix=()
+if command -v timeout >/dev/null 2>&1; then
+  timeout_prefix=(timeout "$timeout_seconds")
+elif command -v gtimeout >/dev/null 2>&1; then
+  timeout_prefix=(gtimeout "$timeout_seconds")
+fi
+runtime_prefix=()
+if [[ -n ${SVF_AE_DYLD_LIBRARY_PATH:-} ]]; then
+  runtime_prefix=(env "DYLD_LIBRARY_PATH=$SVF_AE_DYLD_LIBRARY_PATH")
+fi
+
 witnesses=(
   RelationalWitness
   RelationalWrapWitness
   PolyhedraWitness
   RelationalPhiWitness
+  RelationalPhiPartialWitness
+  RelationalPhiTupleWitness
+  RelationalExpressionBoundWitness
+  RelationalQueryReconstructionWitness
   RelationalSelectWitness
   RelationalCallWitness
   RelationalCallWrapWitness
+  RelationalIndirectReturnWitness
   RelationalLoopWitness
   RelationalMemoryWitness
   RelationalMemoryKillWitness
@@ -48,11 +64,12 @@ for witness in "${witnesses[@]}"; do
   for mode in "${modes[@]}"; do
     for domain in "${domains[@]}"; do
       stem="$output_dir/$witness-$mode-$domain"
-      timeout "$timeout_seconds" "$ae_bin" \
+      ${timeout_prefix[@]+"${timeout_prefix[@]}"} \
+        ${runtime_prefix[@]+"${runtime_prefix[@]}"} "$ae_bin" \
         -extapi="$extapi_bc" \
         -ae-domain="$domain" \
         -ae-sparsity="$mode" \
-        "${recursion[@]}" \
+      ${recursion[@]+"${recursion[@]}"} \
         -model-consts=true \
         -model-arrays=true \
         -pre-field-sensitive=false \
@@ -77,7 +94,9 @@ for witness in "${witnesses[@]}"; do
       fi
       query_hash=missing
       if [[ -f $stem.queries.tsv ]]; then
-        query_hash=$(tail -n +2 "$stem.queries.tsv" | cut -f1,9 |
+        # Coverage equality compares stable query identities only.  Outcomes
+        # may legitimately differ across dense and semi-sparse precision.
+        query_hash=$(tail -n +2 "$stem.queries.tsv" | cut -f1 |
                      LC_ALL=C sort | sha256sum | awk '{print $1}')
       fi
       printf '%s\t%s\t%s\t%d\t%b\t%s\n' "$witness" "$mode" "$domain" \
@@ -103,6 +122,84 @@ for witness in "${witnesses[@]}"; do
       '$1 == w && $2 == "semi-sparse" && $3 == d { print $10 }' "$summary")
     if [[ -z $dense || $dense != "$semi" ]]; then
       echo "query mismatch: $witness $domain dense=$dense semi=$semi" >&2
+      failed=1
+    fi
+  done
+done
+
+# The assertion is concretely false on the zero-iteration path (%a == -3).
+# No domain/mode may certify it as Safe; doing so indicates that a partial phi
+# summary discarded a feasible predecessor.
+for mode in "${modes[@]}"; do
+  for domain in "${domains[@]}"; do
+    ledger="$output_dir/RelationalPhiPartialWitness-$mode-$domain.queries.tsv"
+    if ! awk -F '\t' '
+      NR > 1 { total++; outcome[$9]++ }
+      END { exit !(total == 1 && outcome["Safe"] == 0) }
+    ' "$ledger"; then
+      echo "partial phi soundness regression: $mode $domain" >&2
+      failed=1
+    fi
+  done
+done
+
+# The second subtraction is bounded by the saved x-a=2 relation. Box has no
+# such relation; Octagon and Polyhedra must prove it in both execution modes.
+for mode in "${modes[@]}"; do
+  for domain in "${domains[@]}"; do
+    ledger="$output_dir/RelationalExpressionBoundWitness-$mode-$domain.queries.tsv"
+    expected=May
+    if [[ $domain == octagon || $domain == polyhedra ]]; then
+      expected=Safe
+    fi
+    if ! awk -F '\t' -v expected="$expected" '
+      NR > 1 && $3 == "assertion" { total++; outcome[$9]++ }
+      END { exit !(total == 1 && outcome[expected] == 1) }
+    ' "$ledger"; then
+      echo "expression-bound outcome failed: $mode $domain expected=$expected" >&2
+      failed=1
+    fi
+  done
+done
+
+# The guard and assertion use different subtraction temporaries. Box cannot
+# connect them, while Octagon must prove the reconstructed a-b <= 1 predicate
+# in both execution modes.
+for mode in "${modes[@]}"; do
+  for domain in "${domains[@]}"; do
+    ledger="$output_dir/RelationalQueryReconstructionWitness-$mode-$domain.queries.tsv"
+    expected=May
+    if [[ $domain == octagon || $domain == polyhedra ]]; then
+      expected=Safe
+    fi
+    if ! awk -F '\t' -v expected="$expected" '
+      NR > 1 && $3 == "assertion" { total++; outcome[$9]++ }
+      END { exit !(total == 1 && outcome[expected] == 1) }
+    ' "$ledger"; then
+      echo "query reconstruction outcome failed: $mode $domain expected=$expected" >&2
+      failed=1
+    fi
+  done
+done
+
+# Split ICFG nodes must retain LLVM's simultaneous phi-tuple semantics. Box
+# cannot prove the cross-target equality. Octagon and Polyhedra prove the
+# positive assertion, while the paired false assertion remains May.
+for mode in "${modes[@]}"; do
+  for domain in "${domains[@]}"; do
+    ledger="$output_dir/RelationalPhiTupleWitness-$mode-$domain.queries.tsv"
+    expected_safe=0
+    if [[ $domain == octagon || $domain == polyhedra ]]; then
+      expected_safe=1
+    fi
+    if ! awk -F '\t' -v expected_safe="$expected_safe" '
+      NR > 1 && $3 == "assertion" { total++; outcome[$9]++ }
+      END {
+        exit !(total == 2 && outcome["Safe"] == expected_safe &&
+               outcome["May"] == 2 - expected_safe &&
+               outcome["Unsupported"] == 0)
+      }' "$ledger"; then
+      echo "phi-tuple outcome failed: $mode $domain" >&2
       failed=1
     fi
   done

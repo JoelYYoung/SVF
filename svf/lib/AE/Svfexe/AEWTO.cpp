@@ -114,6 +114,9 @@ void AEWTO::initCycleValVars()
             stack.pop_back();
             if (const ICFGCycleWTO* cycle = SVFUtil::dyn_cast<ICFGCycleWTO>(comp))
             {
+                if (const FunObjVar* function =
+                            cycle->head()->getICFGNode()->getFun())
+                    cyclicFunctions.insert(function);
                 for (const ICFGWTOComp* sub : cycle->getWTOComponents())
                     stack.push_back(sub);
                 cycles.push_back(cycle);

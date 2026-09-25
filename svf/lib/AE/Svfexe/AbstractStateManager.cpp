@@ -441,19 +441,27 @@ phiAlternativeState(const ICFGNode* predecessor)
 
 void AbstractInterpretation::assignRelationalValue(
     const ValVar* target, const AD::LinearExpression& expression,
-    const AD::AddressSet& addresses, const ICFGNode* node)
+    const AD::Interval& interval, const AD::AddressSet& addresses,
+    const ICFGNode* node)
 {
     if (!target || !adapter_.contains(*target))
         return;
     State& destination = ensureState(node);
     const AD::Variable variable = adapter_.variable(*target);
     destination.assignNumeric(variable, expression);
+    (void)interval;
     destination.setAddressSet(variable, addresses);
 }
 
 void AbstractInterpretation::recordRelationalDependency(AD::Variable,
                                                         AD::Variable)
 {
+}
+
+void AbstractInterpretation::recordRelationalTupleDependency(
+    AD::Variable target, AD::Variable peer)
+{
+    recordRelationalDependency(target, peer);
 }
 
 void AbstractInterpretation::recordRelationalSummary(AD::Variable, const State&,
@@ -522,7 +530,8 @@ void AbstractInterpretation::assignInterval(State& denseState,
 }
 
 void AbstractInterpretation::constrainInterval(
-    State& denseState, AD::Variable variable, const AD::Interval& interval)
+    State& denseState, AD::Variable variable,
+    const AD::Interval& interval) const
 {
     if (interval.isBottom())
         return;
@@ -937,6 +946,134 @@ void AbstractInterpretation::storeValue(const ValVar* pointer,
 }
 
 
+std::optional<AD::LinearExpression>
+AbstractInterpretation::reconstructLinearExpression(
+    const SVFVar* operand, State& denseState, const ICFGNode* node,
+    std::vector<AD::Variable>& relationVariables, unsigned depth,
+    std::set<NodeID>& visiting)
+{
+    const auto* value = SVFUtil::dyn_cast<ValVar>(operand);
+    if (!value)
+    {
+        const AD::Interval constant = getInterval(operand, node);
+        return constant.isSingleton()
+               ? std::optional<AD::LinearExpression>(
+                     AD::LinearExpression(constant.singletonValue()))
+               : std::nullopt;
+    }
+
+    AD::Interval literal;
+    if (constantInterval(value, literal) && literal.isSingleton())
+        return AD::LinearExpression(literal.singletonValue());
+    if (!adapter_.contains(*value))
+        return std::nullopt;
+
+    materializeValue(denseState, value, node);
+    const AD::Variable variable = adapter_.variable(*value);
+    if (denseState.numericalMayBeUninitialized(variable))
+        return std::nullopt;
+    const AD::Interval valueInterval = denseState.interval(variable);
+    if (valueInterval.isSingleton())
+        return AD::LinearExpression(valueInterval.singletonValue());
+
+    const auto retainValue = [&]() -> std::optional<AD::LinearExpression>
+    {
+        relationVariables.push_back(variable);
+        return AD::LinearExpression(variable);
+    };
+    if (depth == 0 || value->getInEdges().size() != 1 ||
+            !visiting.insert(value->getId()).second)
+        return retainValue();
+
+    const auto* binary = SVFUtil::dyn_cast<BinaryOPStmt>(
+                             *value->getInEdges().begin());
+    const bool supported = binary &&
+                           (binary->getOpcode() == BinaryOPStmt::Add ||
+                            binary->getOpcode() == BinaryOPStmt::Sub ||
+                            binary->getOpcode() == BinaryOPStmt::Mul);
+    const auto* integerType = binary
+                              ? SVFUtil::dyn_cast<SVFIntegerType>(
+                                    binary->getRes()->getType())
+                              : nullptr;
+    if (!supported || !integerType)
+    {
+        visiting.erase(value->getId());
+        return retainValue();
+    }
+
+    const auto intervalFor = [&](const SVFVar* input) -> AD::Interval
+    {
+        if (const auto* inputValue = SVFUtil::dyn_cast<ValVar>(input))
+        {
+            AD::Interval constant;
+            if (constantInterval(inputValue, constant))
+                return constant;
+            if (adapter_.contains(*inputValue))
+            {
+                materializeValue(denseState, inputValue, node);
+                const AD::Variable inputVariable =
+                    adapter_.variable(*inputValue);
+                if (denseState.numericalMayBeUninitialized(inputVariable))
+                    return AD::Interval::bottom();
+                return denseState.interval(inputVariable);
+            }
+        }
+        return getInterval(input, node);
+    };
+
+    const AD::Interval lhsInterval = intervalFor(binary->getOpVar(0));
+    const AD::Interval rhsInterval = intervalFor(binary->getOpVar(1));
+    AD::Interval mathematical = AD::Interval::top();
+    if (!lhsInterval.isBottom() && !rhsInterval.isBottom())
+    {
+        if (binary->getOpcode() == BinaryOPStmt::Add)
+            mathematical = AD::add(lhsInterval, rhsInterval);
+        else if (binary->getOpcode() == BinaryOPStmt::Sub)
+            mathematical = AD::subtract(lhsInterval, rhsInterval);
+        else
+            mathematical = AD::multiply(lhsInterval, rhsInterval);
+    }
+    const AD::Interval typeRange =
+        utils->getRangeLimitFromType(binary->getRes()->getType());
+    const bool noIntegerWrap = !mathematical.isBottom() &&
+                               mathematical.isSubsetOf(typeRange);
+    if (!noIntegerWrap)
+    {
+        visiting.erase(value->getId());
+        return retainValue();
+    }
+
+    std::vector<AD::Variable> expandedVariables;
+    const auto lhs = reconstructLinearExpression(
+                         binary->getOpVar(0), denseState, node,
+                         expandedVariables, depth - 1, visiting);
+    const auto rhs = reconstructLinearExpression(
+                         binary->getOpVar(1), denseState, node,
+                         expandedVariables, depth - 1, visiting);
+    visiting.erase(value->getId());
+    if (!lhs || !rhs)
+        return retainValue();
+
+    std::optional<AD::LinearExpression> result;
+    if (binary->getOpcode() == BinaryOPStmt::Add)
+        result = *lhs + *rhs;
+    else if (binary->getOpcode() == BinaryOPStmt::Sub)
+        result = *lhs - *rhs;
+    else if (lhsInterval.isSingleton())
+        result = lhsInterval.singletonValue() * *rhs;
+    else if (rhsInterval.isSingleton())
+        result = rhsInterval.singletonValue() * *lhs;
+
+    // Bound expansion even for Polyhedra. Octagon queries normally stop at
+    // two variables, while this small slack lets constants and copies fold.
+    if (!result || result->terms().size() > 8)
+        return retainValue();
+    relationVariables.insert(relationVariables.end(),
+                             expandedVariables.begin(),
+                             expandedVariables.end());
+    return result;
+}
+
 void AbstractInterpretation::assumeBranch(const IntraCFGEdge* edge,
         State& denseState)
 {
@@ -977,29 +1114,13 @@ void AbstractInterpretation::assumeBranch(const IntraCFGEdge* edge,
         {
             const ICFGNode* source = edge->getSrcNode();
             std::vector<AD::Variable> relationVariables;
-            const auto expressionFor = [&](const SVFVar* operand)
-                -> std::optional<AD::LinearExpression>
-            {
-                if (const auto* value = SVFUtil::dyn_cast<ValVar>(operand))
-                {
-                    if (adapter_.contains(*value))
-                    {
-                        materializeValue(denseState, value, source);
-                        const AD::Variable variable = adapter_.variable(*value);
-                        if (denseState.numericalMayBeUninitialized(variable))
-                            return std::nullopt;
-                        relationVariables.push_back(variable);
-                        return AD::LinearExpression(variable);
-                    }
-                }
-                const AD::Interval constant = getInterval(operand, source);
-                if (constant.isSingleton())
-                    return AD::LinearExpression(constant.singletonValue());
-                return std::nullopt;
-            };
-
-            const auto lhs = expressionFor(comparison->getOpVar(0));
-            const auto rhs = expressionFor(comparison->getOpVar(1));
+            std::set<NodeID> visiting;
+            const auto lhs = reconstructLinearExpression(
+                                 comparison->getOpVar(0), denseState, source,
+                                 relationVariables, 8, visiting);
+            const auto rhs = reconstructLinearExpression(
+                                 comparison->getOpVar(1), denseState, source,
+                                 relationVariables, 8, visiting);
             if (lhs && rhs)
             {
                 materializeRelations(denseState, relationVariables, source);

@@ -76,6 +76,8 @@ static const char* queryDetectorName(AEDetector::DetectorKind detector)
         return "buffer-overflow";
     case AEDetector::NULL_DEREF:
         return "null-dereference";
+    case AEDetector::ASSERTION:
+        return "assertion";
     case AEDetector::UNKNOWN:
     default:
         return "unknown";
@@ -698,6 +700,63 @@ void AbstractInterpretation::enumerateQueries()
             "-ae-query-input-id is required with -ae-query-ledger");
     for (auto& detector : detectors)
         detector->enumerateQueries();
+    enumerateStandardAssertionQueries();
+}
+
+namespace
+{
+bool isStandardAssertionFailure(const CallICFGNode* call)
+{
+    const FunObjVar* function = call ? call->getCalledFunction() : nullptr;
+    if (!function)
+        return false;
+    const std::string name = function->getName();
+    return name == "__assert_fail" || name == "__assert_rtn" ||
+           name == "__assert_func" || name == "__assert2";
+}
+
+bool isDirectSVFAssertion(const CallICFGNode* call)
+{
+    const FunObjVar* function = call ? call->getCalledFunction() : nullptr;
+    return function && function->getName() == "svf_assert" &&
+           call->arg_size() >= 1;
+}
+} // namespace
+
+void AbstractInterpretation::enumerateStandardAssertionQueries()
+{
+    for (auto iterator = icfg->begin(); iterator != icfg->end(); ++iterator)
+    {
+        const auto* call = SVFUtil::dyn_cast<CallICFGNode>(iterator->second);
+        if (isStandardAssertionFailure(call))
+            registerQuery(AEDetector::ASSERTION, call, nullptr,
+                          "standard-assert-failure");
+        else if (isDirectSVFAssertion(call))
+            registerQuery(AEDetector::ASSERTION, call, call->getArgument(0),
+                          "assert-condition");
+    }
+}
+
+void AbstractInterpretation::recordReachedAssertion(
+    const CallICFGNode* call)
+{
+    if (isStandardAssertionFailure(call))
+    {
+        recordQuery(AEDetector::ASSERTION, call, nullptr,
+                    "standard-assert-failure", QueryOutcome::May,
+                    "assertion failure block is abstractly reachable");
+    }
+    else if (isDirectSVFAssertion(call))
+    {
+        const ValVar* condition = call->getArgument(0);
+        const AD::Interval value = getInterval(condition, call);
+        const bool safe = value == AD::Interval::singleton(AD::Rational(1));
+        recordQuery(AEDetector::ASSERTION, call, condition,
+                    "assert-condition", safe ? QueryOutcome::Safe
+                                             : QueryOutcome::May,
+                    safe ? "assertion condition is definitely true"
+                         : "assertion condition may be false");
+    }
 }
 
 void AbstractInterpretation::registerQuery(
@@ -1393,15 +1452,34 @@ bool AbstractInterpretation::handleICFGNode(const ICFGNode* node)
     stat->getBlockTrace()++;
     stat->getICFGNodeTrace()++;
 
-    // Handle SVF statements
+    // A RetPE is owned by one RetCFGEdge and was executed before incoming
+    // alternatives were joined. Executing every RetPE here would turn
+    // alternative callees into sequential strong assignments.
+    const bool returnBindingsApplied =
+        SVFUtil::isa<RetICFGNode>(node) &&
+        std::any_of(node->getInEdges().begin(), node->getInEdges().end(),
+                    [](const ICFGEdge* edge) {
+            const auto* ret = SVFUtil::dyn_cast<RetCFGEdge>(edge);
+            return ret && ret->getRetPE();
+        });
+
+    // Handle SVF statements.  Individual phi transfers establish each
+    // target's product facets.  The grouped transfer below additionally
+    // preserves relations between targets selected by the same predecessor.
     for (const SVFStmt* stmt : node->getSVFStmts())
     {
+        if (returnBindingsApplied && SVFUtil::isa<RetPE>(stmt))
+            continue;
         handleSVFStatement(stmt);
     }
+    updateStateOnPhiGroupAtNode(node);
+    if (returnBindingsApplied)
+        recordMergedReturnSummary(SVFUtil::cast<RetICFGNode>(node));
 
     // Handle call sites
     if (const CallICFGNode* callNode = SVFUtil::dyn_cast<CallICFGNode>(node))
     {
+        recordReachedAssertion(callNode);
         handleCallSite(callNode);
     }
 
@@ -1476,6 +1554,37 @@ bool AbstractInterpretation::handleFunction(const ICFGNode* funEntry,
             return true;
     }
     return false;
+}
+
+void AbstractInterpretation::refreshSiblingReturnSites(
+    const FunObjVar* callee, const RetICFGNode* currentReturn)
+{
+    if (!callee)
+        return;
+    const ICFGNode* entry = icfg->getFunEntryICFGNode(callee);
+    std::vector<const CallICFGNode*> callers;
+    for (const ICFGEdge* incoming : entry->getInEdges())
+    {
+        const auto* callEdge = SVFUtil::dyn_cast<CallCFGEdge>(incoming);
+        if (callEdge)
+            callers.push_back(callEdge->getCallSite());
+    }
+    if (callers.size() <= 1)
+        return;
+    std::sort(callers.begin(), callers.end(),
+              [](const CallICFGNode* left, const CallICFGNode* right) {
+                  return left->getId() < right->getId();
+              });
+    callers.erase(std::unique(callers.begin(), callers.end()), callers.end());
+    for (const CallICFGNode* call : callers)
+    {
+        const RetICFGNode* returnSite = call->getRetICFGNode();
+        if (!returnSite || returnSite == currentReturn || !hasAbsState(call))
+            continue;
+        copyAbstractState(call, returnSite);
+        if (mergeStatesFromPredecessors(returnSite))
+            handleICFGNode(returnSite);
+    }
 }
 
 void AbstractInterpretation::handleCallSite(const ICFGNode* node)
@@ -1569,12 +1678,14 @@ void AbstractInterpretation::handleFunCall(const CallICFGNode* callNode)
         // same whole-function pass.
         if (mergeStatesFromPredecessors(retNode))
             handleICFGNode(retNode);
+        refreshSiblingReturnSites(callee, retNode);
         return;
     }
 
     // Indirect call: use Andersen's call graph to get all resolved callees.
     const RetICFGNode* retNode = callNode->getRetICFGNode();
     bool analyzedCallee = false;
+    std::vector<const FunObjVar*> analyzedCallees;
     if (callGraph->hasIndCSCallees(callNode))
     {
         const auto& callees = callGraph->getIndCSCallees(callNode);
@@ -1590,6 +1701,7 @@ void AbstractInterpretation::handleFunCall(const CallICFGNode* callNode)
             if (callee->isDeclaration())
                 continue;
             analyzedCallee = true;
+            analyzedCallees.push_back(callee);
             const ICFGNode* calleeEntry = icfg->getFunEntryICFGNode(callee);
             handleFunction(calleeEntry, callNode);
         }
@@ -1607,6 +1719,8 @@ void AbstractInterpretation::handleFunCall(const CallICFGNode* callNode)
     copyAbstractState(callNode, retNode);
     if (analyzedCallee && mergeStatesFromPredecessors(retNode))
         handleICFGNode(retNode);
+    for (const FunObjVar* callee : analyzedCallees)
+        refreshSiblingReturnSites(callee, retNode);
 }
 
 bool AbstractInterpretation::mergeStatesFromPredecessors(
@@ -1644,6 +1758,8 @@ bool AbstractInterpretation::mergeStatesFromPredecessors(
 
         State source = state(predecessor);
         applyRelationalCallBoundary(source, edge, node);
+        if (const auto* ret = SVFUtil::dyn_cast<RetCFGEdge>(edge))
+            applyReturnEdgeTransfer(source, ret);
         if (conditional && conditional->getCondition())
         {
             assumeBranch(conditional, source);
@@ -1709,6 +1825,33 @@ void AbstractInterpretation::applyRelationalCallBoundary(
             callerScalars.push_back(variable);
     caller.numerical().project(callerScalars);
     numerical.meetWith(caller.numerical());
+}
+
+void AbstractInterpretation::applyReturnEdgeTransfer(
+    State& source, const RetCFGEdge* edge) const
+{
+    if (!edge || !edge->getRetPE() || source.isBottom())
+        return;
+    const RetPE* binding = edge->getRetPE();
+    const auto* target = SVFUtil::dyn_cast<ValVar>(binding->getLHSVar());
+    const auto* value = SVFUtil::dyn_cast<ValVar>(binding->getRHSVar());
+    if (!target || !value || !adapter_.contains(*target) ||
+            !adapter_.contains(*value))
+        return;
+
+    const AD::Variable targetVariable = adapter_.variable(*target);
+    const AD::Variable sourceVariable = adapter_.variable(*value);
+    const bool numericalMayBeUninitialized =
+        source.numericalMayBeUninitialized(sourceVariable);
+    source.assignValueFrom(targetVariable, source, sourceVariable);
+    if (!numericalMayBeUninitialized)
+        source.numerical().assign(
+            targetVariable, AD::LinearExpression(sourceVariable));
+}
+
+void AbstractInterpretation::recordMergedReturnSummary(
+    const RetICFGNode*)
+{
 }
 
 // Loop / recursion handling (handleLoopOrRecursion + cycle helpers +
@@ -1863,6 +2006,7 @@ void AbstractInterpretation::updateStateOnPhi(const PhiStmt* phi)
     AD::Interval interval = AD::Interval::bottom();
     AD::AddressSet addresses = AD::AddressSet::bottom();
     std::optional<State> relationalPhi;
+    bool relationalPhiComplete = true;
     for (u32_t i = 0; i < phi->getOpVarNum(); i++)
     {
         const ICFGNode* opICFGNode = phi->getOpICFGNode(i);
@@ -1907,14 +2051,28 @@ void AbstractInterpretation::updateStateOnPhi(const PhiStmt* phi)
                         SVFUtil::dyn_cast<ValVar>(phi->getRes());
                     const auto* source =
                         SVFUtil::dyn_cast<ValVar>(phi->getOpVar(i));
-                    if (target && source && adapter_.contains(*target) &&
-                            adapter_.contains(*source))
+                    if (!target || !source || !adapter_.contains(*target) ||
+                            !adapter_.contains(*source))
+                    {
+                        // A phi is a union of every feasible predecessor.  A
+                        // relational summary built from only the representable
+                        // operands would under-approximate that union when it
+                        // is met back into the flow state.
+                        relationalPhiComplete = false;
+                        relationalPhi.reset();
+                    }
+                    else if (relationalPhiComplete)
                     {
                         State alternative = phiAlternativeState(opICFGNode);
                         const AD::Variable sourceVariable =
                             adapter_.variable(*source);
-                        if (!alternative.numericalMayBeUninitialized(
+                        if (alternative.numericalMayBeUninitialized(
                                     sourceVariable))
+                        {
+                            relationalPhiComplete = false;
+                            relationalPhi.reset();
+                        }
+                        else
                         {
                             const AD::Variable targetVariable =
                                 adapter_.variable(*target);
@@ -1926,8 +2084,12 @@ void AbstractInterpretation::updateStateOnPhi(const PhiStmt* phi)
                             alternative.setAddressSet(
                                 targetVariable,
                                 alternative.addressSet(sourceVariable));
-                            if (sourceVariable != targetVariable)
-                                alternative.numerical().forget(sourceVariable);
+                            // Keep the selected source until the joined phi
+                            // summary is projected.  For a root SSA value
+                            // there is no earlier dependency through which
+                            // target==source can be reconstructed; forgetting
+                            // it here erases max/min relations after the two
+                            // guarded alternatives are joined.
                             if (std::getenv("SVF_AE_TRACE_PHI_RELATIONS"))
                                 SVFUtil::outs()
                                     << "AE_PHI_ALTERNATIVE target="
@@ -1973,7 +2135,7 @@ void AbstractInterpretation::updateStateOnPhi(const PhiStmt* phi)
         addresses = std::move(previousAddresses);
     }
     updateValue(phi->getRes(), interval, addresses, icfgNode);
-    if (relationalPhi)
+    if (relationalPhiComplete && relationalPhi)
     {
         const auto* target = SVFUtil::dyn_cast<ValVar>(phi->getRes());
         if (target && adapter_.contains(*target))
@@ -1988,6 +2150,194 @@ void AbstractInterpretation::updateStateOnPhi(const PhiStmt* phi)
     }
 }
 
+void AbstractInterpretation::updateStateOnPhiGroupAtNode(
+    const ICFGNode* node)
+{
+    if (!node || !node->getBB())
+        return;
+    const bool containsPhi =
+        std::any_of(node->getSVFStmts().begin(), node->getSVFStmts().end(),
+                    [](const SVFStmt* statement) {
+                        return SVFUtil::isa<PhiStmt>(statement);
+                    });
+    if (!containsPhi)
+        return;
+
+    // SVF may split one LLVM phi tuple across several sequential ICFG nodes.
+    // Reconstruct the complete basic-block group and apply it once, after the
+    // last split phi's independent product transfer.
+    std::vector<const PhiStmt*> blockPhis;
+    const ICFGNode* lastPhiNode = nullptr;
+    for (const ICFGNode* blockNode : node->getBB()->getICFGNodeList())
+        for (const SVFStmt* statement : blockNode->getSVFStmts())
+            if (const auto* phi = SVFUtil::dyn_cast<PhiStmt>(statement))
+            {
+                blockPhis.push_back(phi);
+                lastPhiNode = blockNode;
+            }
+    if (lastPhiNode == node)
+        updateStateOnPhiGroup(blockPhis);
+}
+
+void AbstractInterpretation::updateStateOnPhiGroup(
+    const std::vector<const PhiStmt*>& phis)
+{
+    if (Options::AEDomain() == AENumericalDomain::Box || phis.size() < 2)
+        return;
+
+    // Ignore non-numerical members without disabling a valid numerical tuple.
+    // Pointer phis keep their ordinary address-set transfer.
+    std::vector<const PhiStmt*> numericalPhis;
+    for (const PhiStmt* phi : phis)
+    {
+        const auto* target = phi ? SVFUtil::dyn_cast<ValVar>(phi->getRes())
+                                 : nullptr;
+        bool numerical = target && adapter_.contains(*target) &&
+                         !target->isPointer();
+        for (u32_t i = 0; numerical && i < phi->getOpVarNum(); ++i)
+        {
+            const auto* source =
+                SVFUtil::dyn_cast<ValVar>(phi->getOpVar(i));
+            numerical = source && adapter_.contains(*source) &&
+                        !source->isPointer();
+        }
+        if (numerical)
+            numericalPhis.push_back(phi);
+    }
+    if (numericalPhis.size() < 2)
+        return;
+
+    const ICFGNode* node = numericalPhis.back()->getICFGNode();
+    const SVFBasicBlock* block = node ? node->getBB() : nullptr;
+    if (!node || !block)
+        return;
+
+    std::vector<AD::Variable> targets;
+    targets.reserve(numericalPhis.size());
+    std::set<AD::Variable> uniqueTargets;
+    for (const PhiStmt* phi : numericalPhis)
+    {
+        const auto* target = phi && phi->getICFGNode()->getBB() == block
+                             ? SVFUtil::dyn_cast<ValVar>(phi->getRes())
+                             : nullptr;
+        if (!target || !adapter_.contains(*target))
+            return;
+        const AD::Variable variable = adapter_.variable(*target);
+        if (!uniqueTargets.insert(variable).second)
+            return;
+        targets.push_back(variable);
+    }
+
+    // Every phi in one SSA group must map exactly one operand to each of the
+    // same predecessor program points.  If the frontend presents an
+    // incomplete/non-canonical group, retain the already-applied independent
+    // transfers rather than guessing a correlation.
+    std::vector<const ICFGNode*> predecessors;
+    for (u32_t i = 0; i < numericalPhis.front()->getOpVarNum(); ++i)
+    {
+        const ICFGNode* predecessor =
+            numericalPhis.front()->getOpICFGNode(i);
+        if (!predecessor ||
+                std::find(predecessors.begin(), predecessors.end(),
+                          predecessor) != predecessors.end())
+            return;
+        predecessors.push_back(predecessor);
+    }
+    for (const PhiStmt* phi : numericalPhis)
+    {
+        if (phi->getOpVarNum() != predecessors.size())
+            return;
+        for (const ICFGNode* predecessor : predecessors)
+        {
+            unsigned matches = 0;
+            for (u32_t i = 0; i < phi->getOpVarNum(); ++i)
+                matches += phi->getOpICFGNode(i) == predecessor;
+            if (matches != 1)
+                return;
+        }
+    }
+
+    std::optional<State> joined;
+    for (const ICFGNode* predecessor : predecessors)
+    {
+        if (!hasAbsState(predecessor))
+            continue;
+
+        const ICFGEdge* edge = nullptr;
+        for (const PhiStmt* phi : numericalPhis)
+            if ((edge = icfg->getICFGEdge(
+                     predecessor, phi->getICFGNode(), ICFGEdge::IntraCF)))
+                break;
+        if (edge)
+        {
+            const auto* intra = SVFUtil::cast<IntraCFGEdge>(edge);
+            if (intra->getCondition() &&
+                    !isBranchEdgeFeasibleAt(intra, predecessor))
+                continue;
+        }
+
+        State alternative = phiAlternativeState(predecessor);
+        AD::LinearAssignmentList assignments;
+        std::vector<AD::AddressSet> addresses;
+        assignments.reserve(numericalPhis.size());
+        addresses.reserve(numericalPhis.size());
+        for (std::size_t phiIndex = 0;
+                phiIndex < numericalPhis.size(); ++phiIndex)
+        {
+            const PhiStmt* phi = numericalPhis[phiIndex];
+            const ValVar* source = nullptr;
+            for (u32_t i = 0; i < phi->getOpVarNum(); ++i)
+                if (phi->getOpICFGNode(i) == predecessor)
+                {
+                    source = SVFUtil::dyn_cast<ValVar>(phi->getOpVar(i));
+                    break;
+                }
+            if (!source || !adapter_.contains(*source))
+                return;
+            const AD::Variable sourceVariable = adapter_.variable(*source);
+            if (alternative.numericalMayBeUninitialized(sourceVariable))
+                return;
+            assignments.push_back(
+                {targets[phiIndex], AD::LinearExpression(sourceVariable)});
+            addresses.push_back(alternative.addressSet(sourceVariable));
+            recordRelationalDependency(targets[phiIndex], sourceVariable);
+        }
+
+        alternative.assignNumericParallel(assignments);
+        for (std::size_t i = 0; i < targets.size(); ++i)
+            alternative.setAddressSet(targets[i], addresses[i]);
+        if (!joined)
+            joined = std::move(alternative);
+        else
+            joined->joinWith(alternative);
+    }
+    if (!joined)
+        return;
+
+    const std::vector<AD::Variable> retained =
+        joined->numerical().relationalClosure(targets);
+    joined->numerical().project(retained);
+    scalarTransferState(node).numerical().meetWith(joined->numerical());
+
+    // Make a grouped relation reconstructible in Semi-Sparse mode.  All
+    // targets form one simultaneous SSA definition tuple.  Keeping the tuple
+    // together is conservative even when the backend ultimately represents
+    // no relation between a particular pair; its projection will simply be
+    // Top for that pair.
+    for (AD::Variable target : targets)
+    {
+        for (AD::Variable peer : targets)
+            if (peer != target)
+                recordRelationalTupleDependency(target, peer);
+        recordRelationalSummary(target, *joined, node);
+    }
+
+    if (std::getenv("SVF_AE_TRACE_PHI_RELATIONS"))
+        SVFUtil::outs() << "AE_PHI_GROUP node=" << node->getId()
+                        << " targets=" << targets.size() << " state="
+                        << joined->numerical().toString() << '\n';
+}
+
 /// Handle CallPE: phi-like merging of actual parameters from all call sites
 /// into the formal parameter at FunEntryICFGNode (e.g., formal =
 /// join(actual1@cs1, actual2@cs2, ...))
@@ -1995,6 +2345,12 @@ void AbstractInterpretation::updateStateOnCall(const CallPE* callPE)
 {
     const ICFGNode* node = callPE->getICFGNode();
     const SVFVar* res = callPE->getRes();
+    const std::size_t callerCount = std::count_if(
+                                        node->getInEdges().begin(), node->getInEdges().end(),
+                                        [](const ICFGEdge* incoming) {
+        return SVFUtil::isa<CallCFGEdge>(incoming);
+    });
+    const bool sharedContextInsensitiveFormal = callerCount > 1;
     AD::Interval interval = AD::Interval::bottom();
     AD::AddressSet addresses = AD::AddressSet::bottom();
     std::optional<State> relationalCall;
@@ -2007,8 +2363,15 @@ void AbstractInterpretation::updateStateOnCall(const CallPE* callPE)
             addresses.joinWith(getAddressSet(callPE->getOpVar(i),
                                              opICFGNode));
             if (Options::AEDomain() != AENumericalDomain::Box &&
-                    Options::AERelationalCallPolicy() == ThroughCalls)
+                    Options::AERelationalCallPolicy() == ThroughCalls &&
+                    !sharedContextInsensitiveFormal)
             {
+                // A single formal shared by multiple call sites denotes the
+                // join of distinct calling contexts. Caller-local SSA
+                // coordinates do not identify which alternative supplied the
+                // current invocation, so retaining formal--caller relations
+                // would correlate different calls. Keep only the joined
+                // unary value until the analysis has explicit contexts.
                 const auto* target = SVFUtil::dyn_cast<ValVar>(res);
                 const auto* source =
                     SVFUtil::dyn_cast<ValVar>(callPE->getOpVar(i));
@@ -2097,9 +2460,10 @@ void AbstractInterpretation::updateStateOnRet(const RetPE* retPE)
             !adapter_.contains(*source))
         return;
     const AD::Variable sourceVariable = adapter_.variable(*source);
-    if (!getDefinedInterval(source, node).isBottom())
+    const AD::Interval sourceInterval = getDefinedInterval(source, node);
+    if (!sourceInterval.isBottom())
         assignRelationalValue(target, AD::LinearExpression(sourceVariable),
-                              getAddressSet(source, node), node);
+                              sourceInterval, getAddressSet(source, node), node);
 }
 
 void AbstractInterpretation::updateStateOnAddr(const AddrStmt* addr)
@@ -2176,22 +2540,17 @@ void AbstractInterpretation::updateStateOnBinary(const BinaryOPStmt* binary)
     const AD::Interval typeRange =
         integerType ? utils->getRangeLimitFromType(binary->getRes()->getType())
                     : AD::Interval::top();
-    const bool noIntegerWrap =
+    const bool intervalProvesNoIntegerWrap =
         integerType && !result.isBottom() && result.isSubsetOf(typeRange);
-    if (std::getenv("SVF_AE_TRACE_AFFINE_TRANSFER"))
-        std::cerr << "AE affine candidate node=" << node->getId()
-                  << " lhs=" << lhs.toString() << " rhs=" << rhs.toString()
-                  << " result=" << result.toString() << " range="
-                  << utils->getRangeLimitFromType(binary->getRes()->getType())
-                         .toString()
-                  << '\n';
+    std::optional<AD::LinearExpression> affine;
+    AD::Interval relationalResult = AD::Interval::top();
 
-    // Keep an affine equality when the LLVM integer operation cannot wrap
-    // under the incoming bounds. This is the point where Octagon and
-    // Polyhedra gain information beyond the interval baseline. Floating-point
-    // operations retain interval semantics because rounding/NaN behavior is
-    // not affine over rationals.
-    if (Options::AEDomain() != AENumericalDomain::Box && noIntegerWrap)
+    // Build the affine expression before deciding whether the operation can
+    // wrap.  A relational domain can bound x-y exactly even when the unary
+    // intervals of x and y are both Top.  Requiring operand-wise interval
+    // arithmetic to prove no-wrap first would prevent Octagon/Polyhedra from
+    // answering precisely the expressions they are designed to represent.
+    if (Options::AEDomain() != AENumericalDomain::Box && integerType)
     {
         const auto expressionFor = [&](const SVFVar* operand)
             -> std::optional<AD::LinearExpression>
@@ -2214,7 +2573,6 @@ void AbstractInterpretation::updateStateOnBinary(const BinaryOPStmt* binary)
 
         const auto lhsExpression = expressionFor(binary->getOpVar(0));
         const auto rhsExpression = expressionFor(binary->getOpVar(1));
-        std::optional<AD::LinearExpression> affine;
         if (lhsExpression && rhsExpression)
         {
             if (binary->getOpcode() == BinaryOPStmt::Add)
@@ -2229,11 +2587,65 @@ void AbstractInterpretation::updateStateOnBinary(const BinaryOPStmt* binary)
                     affine = rhs.singletonValue() * *lhsExpression;
             }
         }
+
+        // Relational evaluation is normally a precision fallback.  A genuine
+        // two-variable octagonal expression is also queried when intervals
+        // already prove no-wrap so dense Post replay and semi-sparse transfer
+        // agree on exact singleton folding (for example, x-a == 2).
+        const bool exactOctagonalCandidate =
+            affine && affine->terms().size() == 2;
+        if (affine &&
+                (!intervalProvesNoIntegerWrap || exactOctagonalCandidate))
+        {
+            State relationalState = ensureState(node);
+            std::vector<AD::Variable> variables;
+            variables.reserve(affine->terms().size());
+            for (const auto& [variable, coefficient] : affine->terms())
+            {
+                (void)coefficient;
+                variables.push_back(variable);
+            }
+            materializeRelations(relationalState, variables, node);
+            relationalResult = relationalState.numerical().bound(*affine);
+        }
+    }
+
+    const bool relationProvesNoIntegerWrap =
+        integerType && relationalResult.isSingleton() &&
+        relationalResult.isSubsetOf(typeRange);
+    const bool noIntegerWrap =
+        intervalProvesNoIntegerWrap || relationProvesNoIntegerWrap;
+    if (std::getenv("SVF_AE_TRACE_AFFINE_TRANSFER"))
+        std::cerr << "AE affine candidate node=" << node->getId()
+                  << " lhs=" << lhs.toString() << " rhs=" << rhs.toString()
+                  << " result=" << result.toString()
+                  << " relational=" << relationalResult.toString()
+                  << " range="
+                  << utils->getRangeLimitFromType(binary->getRes()->getType())
+                         .toString()
+                  << '\n';
+
+    // Keep an affine equality when either interval arithmetic or the active
+    // relational domain proves that the LLVM integer operation cannot wrap.
+    // Floating-point operations retain interval semantics because rounding and
+    // NaN behavior are not affine over rationals.
+    if (Options::AEDomain() != AENumericalDomain::Box && noIntegerWrap)
+    {
         const auto* resultValue =
             SVFUtil::dyn_cast<ValVar>(binary->getRes());
         if (affine && resultValue && adapter_.contains(*resultValue))
         {
-            assignRelationalValue(resultValue, *affine,
+            // Octagon cannot directly encode target = x-y because that
+            // equality contains three variables.  If the pre-state proves the
+            // right-hand side is a singleton, fold it before assignment so the
+            // exact result survives in the target coordinate.
+            const AD::LinearExpression assignment =
+                relationalResult.isSingleton()
+                    ? AD::LinearExpression(relationalResult.singletonValue())
+                    : *affine;
+            const AD::Interval assignmentInterval =
+                relationalResult.isSingleton() ? relationalResult : result;
+            assignRelationalValue(resultValue, assignment, assignmentInterval,
                                   AD::AddressSet::bottom(), node);
             return;
         }
@@ -2391,6 +2803,85 @@ void AbstractInterpretation::updateStateOnCmp(const CmpStmt* cmp)
         default:
             assert(false && "undefined numerical compare");
         }
+
+        // Interval projection cannot prove comparisons such as x - y <= c
+        // even when the selected relational domain entails them.  Ask the
+        // numerical state directly before leaving a Boolean result at [0, 1].
+        // Unsigned order predicates are excluded because their modular order
+        // is not mathematical integer order.
+        if (result == AD::Interval::closed(AD::Rational(0), AD::Rational(1)))
+        {
+            const State pointLocal = ensureState(node);
+            const bool separateScalarCarrier =
+                getScalarAbstractState() != nullptr;
+            State relationalQuery =
+                separateScalarCarrier ? topState() : pointLocal;
+            std::vector<AD::Variable> relationVariables;
+            std::set<NodeID> visiting;
+            const auto lhs = reconstructLinearExpression(
+                                 cmp->getOpVar(0), relationalQuery, node,
+                                 relationVariables, 8, visiting);
+            const auto rhs = reconstructLinearExpression(
+                                 cmp->getOpVar(1), relationalQuery, node,
+                                 relationVariables, 8, visiting);
+            if (lhs && rhs)
+            {
+                materializeRelations(relationalQuery, relationVariables,
+                                     node);
+                // Semi-sparse coordinate materialization assigns each leaf
+                // and would forget a relation already held in the same state.
+                // Build definitions on a neutral carrier, then conjoin the
+                // point-local branch refinement after materialization.
+                if (separateScalarCarrier)
+                    relationalQuery.numerical().meetWith(
+                        pointLocal.numerical());
+                std::optional<AD::LinearConstraint> truth;
+                std::optional<AD::LinearConstraint> falsity;
+                switch (predicate)
+                {
+                case CmpStmt::ICMP_EQ:
+                    truth = AD::equal(*lhs, *rhs);
+                    falsity = AD::notEqual(*lhs, *rhs);
+                    break;
+                case CmpStmt::ICMP_NE:
+                    truth = AD::notEqual(*lhs, *rhs);
+                    falsity = AD::equal(*lhs, *rhs);
+                    break;
+                case CmpStmt::ICMP_SGT:
+                    truth = AD::greaterThan(*lhs, *rhs);
+                    falsity = AD::lessEqual(*lhs, *rhs);
+                    break;
+                case CmpStmt::ICMP_SGE:
+                    truth = AD::greaterEqual(*lhs, *rhs);
+                    falsity = AD::lessThan(*lhs, *rhs);
+                    break;
+                case CmpStmt::ICMP_SLT:
+                    truth = AD::lessThan(*lhs, *rhs);
+                    falsity = AD::greaterEqual(*lhs, *rhs);
+                    break;
+                case CmpStmt::ICMP_SLE:
+                    truth = AD::lessEqual(*lhs, *rhs);
+                    falsity = AD::greaterThan(*lhs, *rhs);
+                    break;
+                default:
+                    break;
+                }
+                if (std::getenv("SVF_AE_TRACE_PHI_RELATIONS"))
+                    SVFUtil::outs()
+                        << "AE_CMP_QUERY node=" << node->getId()
+                        << " lhs=" << lhs->toString()
+                        << " rhs=" << rhs->toString()
+                        << " state="
+                        << relationalQuery.numerical().toString() << '\n';
+                if (truth && relationalQuery.numerical().entails(*truth) ==
+                                     AD::CheckResult::True)
+                    result = boolean(true);
+                else if (falsity &&
+                         relationalQuery.numerical().entails(*falsity) ==
+                             AD::CheckResult::True)
+                    result = boolean(false);
+            }
+        }
     }
     if (std::getenv("SVF_AE_TRACE_ADDRESS_TRANSFER") && addressComparison)
         SVFUtil::outs()
@@ -2506,6 +2997,7 @@ void AbstractInterpretation::updateStateOnCopy(const CopyStmt* copy)
             if (!getDefinedInterval(rhsValue, node).isBottom())
             {
                 assignRelationalValue(lhsValue, AD::LinearExpression(source),
+                                      rhsInterval,
                                       rhsAddresses, node);
                 return;
             }
