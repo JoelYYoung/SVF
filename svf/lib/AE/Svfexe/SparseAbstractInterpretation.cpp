@@ -873,23 +873,16 @@ void SemiSparseAbstractInterpretation::preparePostReplayState(
     State& denseState, const ICFGNode* target,
     const std::set<AD::Variable>& inputScalars) const
 {
-    (void)inputScalars;
-    if (Options::AEDomain() != AENumericalDomain::Box)
-        return;
-    const auto available = scalarAvailability_.find(target);
-    if (available == scalarAvailability_.end())
-        return;
-    std::set<AD::Variable> targetInputs = available->second;
-    for (AD::Variable definition :
-            definedScalarVariables(target, this->adapter_))
-        targetInputs.erase(definition);
     std::vector<AD::Variable> missingInputs;
-    for (AD::Variable variable : targetInputs)
+    for (AD::Variable variable : inputScalars)
     {
         // Preserve path-local facts already reconstructed at the source.
         // The global per-definition summary is only a fallback for an input
         // that semi-sparse transfer would materialize on demand but dense Post
-        // replay cannot otherwise observe.
+        // replay cannot otherwise observe. This applies to relational domains
+        // as well: their production transfer reads the same sparse definition
+        // carrier through materializeValue/materializeRelations, while the
+        // deliberately dense replay object has no access to that carrier.
         if (!denseState.hasValue(variable))
             missingInputs.push_back(variable);
     }
