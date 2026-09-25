@@ -896,10 +896,16 @@ void SemiSparseAbstractInterpretation::preparePostReplayState(
         // supplies the unary/address/init payload that a sparse read would
         // obtain from its definition carrier.
         const auto definition = scalarDefinitions_.find(variable);
-        if (definition != scalarDefinitions_.end())
-            denseState.assignValueFrom(variable, definition->second, variable);
-        else if (scalarState_)
-            denseState.assignValueFrom(variable, *scalarState_, variable);
+        const State* summary = definition != scalarDefinitions_.end()
+                               ? &definition->second : findScalarState();
+        if (!summary)
+            continue;
+        State projected = *summary;
+        projected.numerical().project({variable});
+        denseState.numerical().meetWith(projected.numerical());
+        denseState.restoreMissingNumericalInitializationFrom(
+            *summary, variable);
+        denseState.restoreMissingAddressFrom(*summary, variable);
     }
 }
 
