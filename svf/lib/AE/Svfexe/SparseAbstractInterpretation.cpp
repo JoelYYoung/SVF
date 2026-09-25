@@ -1467,8 +1467,18 @@ bool SemiSparseAbstractInterpretation::mergeStatesFromPredecessors(
                 }
                 refinement.reset();
                 if (traceMerge)
+                {
                     std::cerr << "  predecessor=" << predecessor->getId()
-                              << " bottom-refinement=dropped\n";
+                              << " bottom-refinement=dropped\n"
+                              << "    source=" << predecessor->toString()
+                              << "\n    target=" << node->toString() << '\n';
+                    if (conditional && conditional->getCondition())
+                        std::cerr << "    condition="
+                                  << conditional->getCondition()->toString()
+                                  << " value="
+                                  << conditional->getSuccessorCondValue()
+                                  << '\n';
+                }
             }
         }
 
