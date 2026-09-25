@@ -449,28 +449,38 @@ void AbstractInterpretation::verifyPostFixpoint()
     const Map<const ICFGNode*, State> storedStates = stateTrace_;
     auto availability =
         computeAvailability(icfg, *svfir, adapter_, storedStates, roots);
-    // Phi transfer reads each operand at its annotated predecessor program
-    // point. Keep those coordinates observable in the predecessor's Post
+    // Phi and CallPE transfers read each operand at its annotated predecessor
+    // program point. Keep those coordinates observable in that point's Post
     // state even when the ordinary CFG availability recurrence does not carry
-    // them into that node's own statements.
-    for (auto nodeIterator = icfg->begin();
-            Options::AEDomain() == AENumericalDomain::Box &&
-            nodeIterator != icfg->end(); ++nodeIterator)
+    // them into the node's own statements.
+    for (auto nodeIterator = icfg->begin(); nodeIterator != icfg->end();
+            ++nodeIterator)
     {
         for (const SVFStmt* statement : nodeIterator->second->getSVFStmts())
         {
-            const auto* phi = SVFUtil::dyn_cast<PhiStmt>(statement);
-            if (!phi)
-                continue;
-            for (u32_t index = 0; index < phi->getOpVarNum(); ++index)
+            const auto addOperand = [&](const SVFVar* operand,
+                                        const ICFGNode* operandNode)
             {
-                const ICFGNode* operandNode = phi->getOpICFGNode(index);
                 const auto point = availability.find(operandNode);
-                const auto* operand =
-                    SVFUtil::dyn_cast<ValVar>(phi->getOpVar(index));
-                if (point != availability.end() && operand &&
-                        adapter_.contains(*operand))
-                    point->second.insert(adapter_.variable(*operand));
+                const auto* value = SVFUtil::dyn_cast<ValVar>(operand);
+                if (point != availability.end() && value &&
+                        adapter_.contains(*value))
+                    point->second.insert(adapter_.variable(*value));
+            };
+            if (const auto* phi = SVFUtil::dyn_cast<PhiStmt>(statement))
+            {
+                if (Options::AEDomain() != AENumericalDomain::Box)
+                    continue;
+                for (u32_t index = 0; index < phi->getOpVarNum(); ++index)
+                    addOperand(phi->getOpVar(index),
+                               phi->getOpICFGNode(index));
+            }
+            else if (const auto* call =
+                         SVFUtil::dyn_cast<CallPE>(statement))
+            {
+                for (u32_t index = 0; index < call->getOpVarNum(); ++index)
+                    addOperand(call->getOpVar(index),
+                               call->getOpCallICFGNode(index));
             }
         }
     }

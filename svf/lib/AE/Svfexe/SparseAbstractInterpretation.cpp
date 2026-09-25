@@ -1147,7 +1147,7 @@ void SemiSparseAbstractInterpretation::materializeScalarDefinitions(
     if (available == scalarAvailability_.end())
         return;
 
-    std::set<AD::Variable> retained;
+    std::vector<AD::Variable> availableSeeds;
     for (AD::Variable seed : seeds)
     {
         if (available->second.count(seed) == 0)
@@ -1157,15 +1157,17 @@ void SemiSparseAbstractInterpretation::materializeScalarDefinitions(
         // summary below existentially forgets those unavailable coordinates;
         // dropping the whole closure would also drop the seed's value and
         // initialization facet.
-        retained.insert(seed);
-        const std::vector<AD::Variable> closure =
-            carrierDependencyClosure({seed});
-        for (AD::Variable dependency : closure)
-        {
-            if (available->second.count(dependency) != 0)
-                retained.insert(dependency);
-        }
+        availableSeeds.push_back(seed);
     }
+    // Reachability from a union of seeds is the union of their individual
+    // dependency closures. Traverse the carrier once instead of once per
+    // seed; this preserves the retained variables exactly while avoiding the
+    // dominant repeated graph walks at large reconstruction points.
+    std::set<AD::Variable> retained;
+    for (AD::Variable dependency :
+            carrierDependencyClosure(availableSeeds))
+        if (available->second.count(dependency) != 0)
+            retained.insert(dependency);
     if (retained.empty())
         return;
 
@@ -1279,10 +1281,42 @@ bool SemiSparseAbstractInterpretation::mergeStatesFromPredecessors(
                 this->assumeBranch(conditional, *refinement);
             if (refinement->isBottom())
             {
+                // A refinement trace is an auxiliary, path-insensitive
+                // scalar carrier. It may contain constraints accumulated on
+                // another predecessor of a shared/merged value. Such a stale
+                // contradiction cannot by itself prove this CFG edge
+                // infeasible. Retry the current edge predicate from Top and
+                // prune only if that edge-local predicate is itself Bottom.
+                if (refinementIterator == refinementTrace_.end())
+                {
+                    if (traceMerge)
+                        std::cerr << "  predecessor="
+                                  << predecessor->getId()
+                                  << " edge-refinement=bottom\n";
+                    continue;
+                }
+                if (!hasConditional)
+                {
+                    refinement.reset();
+                }
+                else
+                {
+                    State edgeRefinement(this->makeNumericalDomain(false),
+                                         this->adapter_.memoryLayout());
+                    this->assumeBranch(conditional, edgeRefinement);
+                    if (edgeRefinement.isBottom())
+                    {
+                        if (traceMerge)
+                            std::cerr << "  predecessor="
+                                      << predecessor->getId()
+                                      << " edge-refinement=bottom\n";
+                        continue;
+                    }
+                    refinement = std::move(edgeRefinement);
+                }
                 if (traceMerge)
                     std::cerr << "  predecessor=" << predecessor->getId()
-                              << " refinement=bottom\n";
-                continue;
+                              << " stale-refinement=dropped\n";
             }
         }
 

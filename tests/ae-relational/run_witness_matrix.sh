@@ -42,6 +42,8 @@ witnesses=(
   RelationalMemoryKillWitness
   BranchLocalWitness
   SharedCalleeWitness
+  SharedPointerCalleeWitness
+  SparseRefinementReachabilityWitness
   MultiAliasKillWitness
   RecursiveCallWitness
   MachineInteger8Witness
@@ -122,6 +124,39 @@ for witness in "${witnesses[@]}"; do
       '$1 == w && $2 == "semi-sparse" && $3 == d { print $10 }' "$summary")
     if [[ -z $dense || $dense != "$semi" ]]; then
       echo "query mismatch: $witness $domain dense=$dense semi=$semi" >&2
+      failed=1
+    fi
+  done
+done
+
+# Both phi-Boolean branch successors are concretely reachable. An auxiliary
+# sparse refinement must not turn either null-dereference query Unreachable.
+for mode in "${modes[@]}"; do
+  for domain in "${domains[@]}"; do
+    ledger="$output_dir/SparseRefinementReachabilityWitness-$mode-$domain.queries.tsv"
+    if ! awk -F '\t' '
+      NR > 1 && $3 == "null-dereference" { total++; outcome[$9]++ }
+      END {
+        exit !(total == 2 && outcome["Unreachable"] == 0 &&
+               outcome["Unsupported"] == 0)
+      }' "$ledger"; then
+      echo "sparse refinement reachability regression: $mode $domain" >&2
+      failed=1
+    fi
+  done
+done
+
+# A shared callee's CallPE reads pointer actuals from distinct call sites.
+# Every configuration must validate the call equations and preserve the
+# callee load query identity.
+for mode in "${modes[@]}"; do
+  for domain in "${domains[@]}"; do
+    ledger="$output_dir/SharedPointerCalleeWitness-$mode-$domain.queries.tsv"
+    if ! awk -F '\t' '
+      NR > 1 && $3 == "null-dereference" { total++; outcome[$9]++ }
+      END { exit !(total == 1 && outcome["Safe"] == 1) }
+      ' "$ledger"; then
+      echo "shared pointer callee query regression: $mode $domain" >&2
       failed=1
     fi
   done
