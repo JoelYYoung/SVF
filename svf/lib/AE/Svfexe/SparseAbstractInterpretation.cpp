@@ -1456,17 +1456,24 @@ bool SemiSparseAbstractInterpretation::mergeStatesFromPredecessors(
                 // Pointer comparisons use the independently joined address
                 // carrier and may still establish an impossible null/non-null
                 // edge (for example, loading a stored null pointer).
-                if (hasPointerCondition &&
-                        refinementIterator == refinementTrace_.end())
+                if (hasPointerCondition)
                 {
-                    if (traceMerge)
-                        std::cerr << "  predecessor="
-                                  << predecessor->getId()
-                                  << " pointer-edge-refinement=bottom\n";
-                    continue;
+                    State edgeRefinement(this->makeNumericalDomain(false),
+                                         this->adapter_.memoryLayout());
+                    this->assumeBranch(conditional, edgeRefinement);
+                    if (edgeRefinement.isBottom())
+                    {
+                        if (traceMerge)
+                            std::cerr << "  predecessor="
+                                      << predecessor->getId()
+                                      << " pointer-edge-refinement=bottom\n";
+                        continue;
+                    }
+                    refinement = std::move(edgeRefinement);
                 }
-                refinement.reset();
-                if (traceMerge)
+                else
+                    refinement.reset();
+                if (traceMerge && !hasPointerCondition)
                 {
                     std::cerr << "  predecessor=" << predecessor->getId()
                               << " bottom-refinement=dropped\n"
