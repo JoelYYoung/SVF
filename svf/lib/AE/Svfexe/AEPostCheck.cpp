@@ -383,7 +383,15 @@ void AbstractInterpretation::verifyPostFixpoint()
             {
                 std::cerr << "  numerical difference v" << variable.id()
                           << " replayed=" << replayedBound.toString()
-                          << " final=" << finalBound.toString();
+                          << " final=" << finalBound.toString()
+                          << " numeric-init="
+                          << static_cast<unsigned>(
+                                 replayed.numericalInitialization().value(
+                                     variable))
+                          << "->"
+                          << static_cast<unsigned>(
+                                 finalState.numericalInitialization().value(
+                                     variable));
                 if (const ValVar* value = adapter_.value(variable))
                     std::cerr << " svfir=" << value->getId() << ' '
                               << value->toString();
@@ -730,6 +738,62 @@ void AbstractInterpretation::verifyPostFixpoint()
                 for (const SVFStmt* statement : target->getSVFStmts())
                     std::cerr << "AE Post target statement: "
                               << statement->toString() << '\n';
+                const auto traceVariable = [&](const char* role,
+                                               const SVFVar* raw) {
+                    const auto* value = SVFUtil::dyn_cast<ValVar>(raw);
+                    if (!value || !adapter_.contains(*value))
+                    {
+                        std::cerr << "AE Post variable " << role
+                                  << " svfir="
+                                  << (value ? value->getId() : 0)
+                                  << " abstract=unmapped\n";
+                        return;
+                    }
+                    const AD::Variable variable = adapter_.variable(*value);
+                    std::cerr << "AE Post variable " << role
+                              << " svfir=" << value->getId()
+                              << " abstract=v" << variable.id()
+                              << " incoming="
+                              << incoming.numerical().bound(variable).toString()
+                              << " replayed="
+                              << replayed.numerical().bound(variable).toString()
+                              << " final="
+                              << targetFinal->second.numerical().bound(
+                                     variable).toString()
+                              << " numeric-init="
+                              << static_cast<unsigned>(
+                                     incoming.numericalInitialization().value(
+                                         variable))
+                              << "->"
+                              << static_cast<unsigned>(
+                                     replayed.numericalInitialization().value(
+                                         variable))
+                              << "->"
+                              << static_cast<unsigned>(
+                                     targetFinal->second
+                                         .numericalInitialization().value(
+                                             variable))
+                              << '\n';
+                };
+                if (conditional)
+                    traceVariable("edge-condition",
+                                  conditional->getCondition());
+                for (const SVFStmt* statement : target->getSVFStmts())
+                {
+                    if (const auto* compare =
+                            SVFUtil::dyn_cast<CmpStmt>(statement))
+                    {
+                        traceVariable("cmp-result", compare->getRes());
+                        traceVariable("cmp-lhs", compare->getOpVar(0));
+                        traceVariable("cmp-rhs", compare->getOpVar(1));
+                    }
+                    else if (const auto* load =
+                                 SVFUtil::dyn_cast<LoadStmt>(statement))
+                    {
+                        traceVariable("load-result", load->getLHSVar());
+                        traceVariable("load-pointer", load->getRHSVar());
+                    }
+                }
             }
             traceFailure(kind + ":" + std::to_string(source->getId()) + ":" +
                              std::to_string(target->getId()),
