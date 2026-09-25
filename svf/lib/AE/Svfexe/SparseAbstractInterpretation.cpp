@@ -873,28 +873,15 @@ void SemiSparseAbstractInterpretation::preparePostReplayState(
     State& denseState, const ICFGNode*,
     const std::set<AD::Variable>& inputScalars) const
 {
-    std::vector<AD::Variable> missingInputs;
     for (AD::Variable variable : inputScalars)
     {
         // Preserve path-local facts already reconstructed at the source.
-        // The global per-definition summary is only a fallback for an input
-        // that semi-sparse transfer would materialize on demand but dense Post
-        // replay cannot otherwise observe. This applies to relational domains
-        // as well: their production transfer reads the same sparse definition
-        // carrier through materializeValue/materializeRelations, while the
-        // deliberately dense replay object has no access to that carrier.
-        if (!denseState.hasValue(variable))
-            missingInputs.push_back(variable);
-    }
-    for (AD::Variable variable : missingInputs)
-    {
-        // Import only this reduced-product coordinate. Pulling the complete
-        // saved relation component here can make one edge's replay stronger
-        // than the path-local source state (especially after joins), creating
-        // spurious Post failures. The source reconstruction already carries
-        // every relation valid at that program point; the missing coordinate
-        // supplies the unary/address/init payload that a sparse read would
-        // obtain from its definition carrier.
+        // The global per-definition summary supplies only unary information
+        // and missing product facets that a sparse read would obtain from its
+        // carrier. State::hasValue is insufficient here because it is true
+        // when either the numerical or address facet exists; compare/load can
+        // still need the other facet. Apply these idempotent restores to every
+        // input without overwriting a path-local coordinate or relation.
         const auto definition = scalarDefinitions_.find(variable);
         const State* summary = definition != scalarDefinitions_.end()
                                ? &definition->second : findScalarState();
