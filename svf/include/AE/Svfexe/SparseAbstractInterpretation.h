@@ -164,6 +164,10 @@ protected:
     void materializeScalarDefinitions(
         State& state, const std::vector<AbstractDomain::Variable>& seeds,
         const ICFGNode* node) const;
+    void restorePostReplayScalarDependencies(
+        State& state, const ICFGNode* target,
+        const std::set<AbstractDomain::Variable>& seeds,
+        bool includeSeeds) const;
 
     Map<const ICFGNode*, State> refinementTrace_;
     Map<const ICFGNode*, std::set<AbstractDomain::Variable>>
