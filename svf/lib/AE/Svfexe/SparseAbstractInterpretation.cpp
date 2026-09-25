@@ -870,30 +870,30 @@ void SemiSparseAbstractInterpretation::normalizePostReplayState(
 }
 
 void SemiSparseAbstractInterpretation::preparePostReplayState(
-    State& denseState, const ICFGNode*,
+    State& denseState, const ICFGNode* target,
     const std::set<AD::Variable>& inputScalars) const
 {
-    for (AD::Variable variable : inputScalars)
+    (void)inputScalars;
+    if (Options::AEDomain() != AENumericalDomain::Box)
+        return;
+    const auto available = scalarAvailability_.find(target);
+    if (available == scalarAvailability_.end())
+        return;
+    std::set<AD::Variable> targetInputs = available->second;
+    for (AD::Variable definition :
+            definedScalarVariables(target, this->adapter_))
+        targetInputs.erase(definition);
+    std::vector<AD::Variable> missingInputs;
+    for (AD::Variable variable : targetInputs)
     {
         // Preserve path-local facts already reconstructed at the source.
-        // The global per-definition summary supplies only unary information
-        // and missing product facets that a sparse read would obtain from its
-        // carrier. State::hasValue is insufficient here because it is true
-        // when either the numerical or address facet exists; compare/load can
-        // still need the other facet. Apply these idempotent restores to every
-        // input without overwriting a path-local coordinate or relation.
-        const auto definition = scalarDefinitions_.find(variable);
-        const State* summary = definition != scalarDefinitions_.end()
-                               ? &definition->second : findScalarState();
-        if (!summary)
-            continue;
-        State projected = *summary;
-        projected.numerical().project({variable});
-        denseState.numerical().meetWith(projected.numerical());
-        denseState.restoreMissingNumericalInitializationFrom(
-            *summary, variable);
-        denseState.restoreMissingAddressFrom(*summary, variable);
+        // The global per-definition summary is only a fallback for an input
+        // that semi-sparse transfer would materialize on demand but dense Post
+        // replay cannot otherwise observe.
+        if (!denseState.hasValue(variable))
+            missingInputs.push_back(variable);
     }
+    materializeScalarDefinitions(denseState, missingInputs, target);
 }
 
 void SemiSparseAbstractInterpretation::restorePostReplayCallerFrame(
