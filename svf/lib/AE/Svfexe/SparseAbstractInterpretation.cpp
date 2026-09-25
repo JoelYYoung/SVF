@@ -873,9 +873,30 @@ void SemiSparseAbstractInterpretation::preparePostReplayState(
     State& denseState, const ICFGNode* target,
     const std::set<AD::Variable>& inputScalars) const
 {
-    (void)inputScalars;
     if (Options::AEDomain() != AENumericalDomain::Box)
+    {
+        // Production Semi-Sparse transfers read absent SSA inputs on demand
+        // from the definition carrier. Dense Post replay has no access to
+        // that carrier, so restore the same unary numerical fact and missing
+        // reduced-product facets for every explicit input. Do not import the
+        // saved multi-variable component: relations reconstructed at the
+        // source program point remain authoritative for this edge.
+        for (AD::Variable variable : inputScalars)
+        {
+            const auto definition = scalarDefinitions_.find(variable);
+            const State* summary = definition != scalarDefinitions_.end()
+                                   ? &definition->second : findScalarState();
+            if (!summary)
+                continue;
+            State projected = *summary;
+            projected.numerical().project({variable});
+            denseState.numerical().meetWith(projected.numerical());
+            denseState.restoreMissingNumericalInitializationFrom(
+                *summary, variable);
+            denseState.restoreMissingAddressFrom(*summary, variable);
+        }
         return;
+    }
     const auto available = scalarAvailability_.find(target);
     if (available == scalarAvailability_.end())
         return;
