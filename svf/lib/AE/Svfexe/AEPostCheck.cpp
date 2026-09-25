@@ -304,7 +304,7 @@ AbstractInterpretation::State AbstractInterpretation::reconstructPostState(
 }
 
 void AbstractInterpretation::normalizePostReplayState(
-    State&, const std::set<AD::Variable>&) const
+    State&, const ICFGNode*, const std::set<AD::Variable>&) const
 {
 }
 
@@ -568,7 +568,7 @@ void AbstractInterpretation::verifyPostFixpoint()
         }
         replay.finalizeAbstractState(node);
         State result = replay.state(node);
-        normalizePostReplayState(result, availability.at(node));
+        normalizePostReplayState(result, node, availability.at(node));
         return result;
     };
 
@@ -594,7 +594,8 @@ void AbstractInterpretation::verifyPostFixpoint()
         for (const SVFVar* argument : rootEntry->getFormalParms())
             replay.updateInterval(argument, AD::Interval::top(), global);
         State replayedGlobal = replay.state(global);
-        normalizePostReplayState(replayedGlobal, availability.at(global));
+        normalizePostReplayState(replayedGlobal, global,
+                                 availability.at(global));
         const bool included = replayedGlobal.isSubsetOf(globalFinal->second) ==
                               AD::CheckResult::True;
         if (!included)

@@ -82,7 +82,7 @@ protected:
     State reconstructPostState(
         const ICFGNode* node,
         const std::set<AbstractDomain::Variable>& availableScalars) override;
-    void normalizePostReplayState(State& state,
+    void normalizePostReplayState(State& state, const ICFGNode* node,
                                   const std::set<AbstractDomain::Variable>&
                                       availableScalars) const override;
     void preparePostReplayState(

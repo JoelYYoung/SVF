@@ -848,13 +848,30 @@ SemiSparseAbstractInterpretation::State SemiSparseAbstractInterpretation::
 }
 
 void SemiSparseAbstractInterpretation::normalizePostReplayState(
-    State& denseState, const std::set<AD::Variable>& availableScalars) const
+    State& denseState, const ICFGNode* node,
+    const std::set<AD::Variable>& availableScalars) const
 {
     const AD::Variable contentBegin =
         this->adapter_.firstObjectContentVariable();
+    std::set<AD::Variable> retainedScalars = availableScalars;
+    if (Options::AEDomain() != AENumericalDomain::Box)
+    {
+        retainedScalars.clear();
+        const auto pointAvailability = scalarAvailability_.find(node);
+        if (pointAvailability != scalarAvailability_.end())
+        {
+            std::vector<AD::Variable> seeds;
+            for (AD::Variable variable : availableScalars)
+                if (pointAvailability->second.count(variable) != 0)
+                    seeds.push_back(variable);
+            for (AD::Variable variable : carrierDependencyClosure(seeds))
+                if (pointAvailability->second.count(variable) != 0)
+                    retainedScalars.insert(variable);
+        }
+    }
     for (AD::Variable variable : nonDefaultVariables(denseState))
     {
-        if (variable < contentBegin && availableScalars.count(variable) == 0)
+        if (variable < contentBegin && retainedScalars.count(variable) == 0)
             this->forgetValue(denseState, variable);
     }
     // Octagon carriers retain forgotten dimensions in their physical layout.
@@ -864,7 +881,7 @@ void SemiSparseAbstractInterpretation::normalizePostReplayState(
     std::vector<AD::Variable> retainedNumerical;
     for (AD::Variable variable : denseState.numerical().supportVariables())
         if (!(variable < contentBegin) ||
-                availableScalars.count(variable) != 0)
+                retainedScalars.count(variable) != 0)
             retainedNumerical.push_back(variable);
     denseState.numerical().project(retainedNumerical);
 }

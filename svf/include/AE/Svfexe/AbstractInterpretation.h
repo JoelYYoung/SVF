@@ -620,7 +620,7 @@ protected:
         const ICFGNode* node,
         const std::set<AbstractDomain::Variable>& availableScalars);
     virtual void normalizePostReplayState(
-        State& state,
+        State& state, const ICFGNode* node,
         const std::set<AbstractDomain::Variable>& availableScalars) const;
     virtual void preparePostReplayState(
         State& state, const ICFGNode* target,
