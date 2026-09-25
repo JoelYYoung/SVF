@@ -171,13 +171,15 @@ test "$(($(wc -l < "$results") - 1))" -eq 4 || {
   gate_reason=row-count
 }
 completed=$(awk -F '\t' 'NR > 1 && $15 == "completed" { count++ } END { print count+0 }' "$results")
-if ((completed > 0)); then
-  awk -F '\t' 'NR > 1 && $15 == "completed" && ($14 != 0 || $41 != 0 || $42 != 0) { bad++ }
-    END { exit bad != 0 }' "$results" || {
-      gate_status=1
-      gate_reason=post-or-status
-    }
-fi
+# A Post failure makes AE exit nonzero, so that row is not classified as
+# "completed". Check every emitted row before applying capacity rules;
+# otherwise a semantic failure is mislabeled as an ordinary incomplete run.
+awk -F '\t' 'NR > 1 &&
+    ($15 == "failed" || $15 ~ /^signal-/ || $41 != 0 || $42 != 0) { bad++ }
+  END { exit bad != 0 }' "$results" || {
+  gate_status=1
+  gate_reason=post-or-status
+}
 if ((completed >= 2)); then
   identities=$(awk -F '\t' '$15 == "completed" { print $36 }' "$results" | \
     LC_ALL=C sort -u | wc -l)
