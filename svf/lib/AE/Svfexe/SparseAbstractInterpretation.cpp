@@ -870,7 +870,7 @@ void SemiSparseAbstractInterpretation::normalizePostReplayState(
 }
 
 void SemiSparseAbstractInterpretation::preparePostReplayState(
-    State& denseState, const ICFGNode* target,
+    State& denseState, const ICFGNode*,
     const std::set<AD::Variable>& inputScalars) const
 {
     std::vector<AD::Variable> missingInputs;
@@ -886,7 +886,21 @@ void SemiSparseAbstractInterpretation::preparePostReplayState(
         if (!denseState.hasValue(variable))
             missingInputs.push_back(variable);
     }
-    materializeScalarDefinitions(denseState, missingInputs, target);
+    for (AD::Variable variable : missingInputs)
+    {
+        // Import only this reduced-product coordinate. Pulling the complete
+        // saved relation component here can make one edge's replay stronger
+        // than the path-local source state (especially after joins), creating
+        // spurious Post failures. The source reconstruction already carries
+        // every relation valid at that program point; the missing coordinate
+        // supplies the unary/address/init payload that a sparse read would
+        // obtain from its definition carrier.
+        const auto definition = scalarDefinitions_.find(variable);
+        if (definition != scalarDefinitions_.end())
+            denseState.assignValueFrom(variable, definition->second, variable);
+        else if (scalarState_)
+            denseState.assignValueFrom(variable, *scalarState_, variable);
+    }
 }
 
 void SemiSparseAbstractInterpretation::restorePostReplayCallerFrame(
