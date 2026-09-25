@@ -252,6 +252,31 @@ SemiSparseAbstractInterpretation::findScalarState() const
     return scalarState_ ? &*scalarState_ : nullptr;
 }
 
+std::size_t SemiSparseAbstractInterpretation::analysisRevision() const
+{
+    return scalarCoordinateRevision_;
+}
+
+void SemiSparseAbstractInterpretation::storeScalarDefinition(
+    AD::Variable variable, State summary)
+{
+    bool coordinateChanged = true;
+    const auto previous = scalarDefinitions_.find(variable);
+    if (previous != scalarDefinitions_.end())
+    {
+        State oldCoordinate = this->topState();
+        State newCoordinate = this->topState();
+        oldCoordinate.assignValueFrom(variable, previous->second, variable);
+        newCoordinate.assignValueFrom(variable, summary, variable);
+        coordinateChanged =
+            newCoordinate.isEquivalentTo(oldCoordinate) !=
+            AD::CheckResult::True;
+    }
+    scalarDefinitions_.insert_or_assign(variable, std::move(summary));
+    if (coordinateChanged)
+        ++scalarCoordinateRevision_;
+}
+
 SemiSparseAbstractInterpretation::State&
 SemiSparseAbstractInterpretation::scalarTransferState(const ICFGNode*)
 {
@@ -348,7 +373,7 @@ void SemiSparseAbstractInterpretation::assignRelationalValue(
             summary.joinWith(pending->second.second);
             pendingDefinitionHistory_.erase(pending);
         }
-        scalarDefinitions_.insert_or_assign(variable, std::move(summary));
+        storeScalarDefinition(variable, std::move(summary));
         if (std::getenv("SVF_AE_TRACE_SCALAR_SUMMARY"))
             std::cerr << "AE scalar summary assign node=" << node->getId()
                       << " target=" << variable.id()
@@ -443,7 +468,7 @@ void SemiSparseAbstractInterpretation::recordRelationalSummary(
         summary.joinWith(pending->second.second);
         pendingDefinitionHistory_.erase(pending);
     }
-    scalarDefinitions_.insert_or_assign(target, std::move(summary));
+    storeScalarDefinition(target, std::move(summary));
     if (std::getenv("SVF_AE_TRACE_SCALAR_SUMMARY"))
         std::cerr << "AE scalar summary merge target=" << target.id()
                   << " dependencies=";
@@ -728,7 +753,7 @@ void SemiSparseAbstractInterpretation::updateValue(
             else
                 pendingDefinitionHistory_.erase(variable);
         }
-        scalarDefinitions_.insert_or_assign(variable, std::move(summary));
+        storeScalarDefinition(variable, std::move(summary));
     }
 }
 
@@ -742,7 +767,14 @@ void SemiSparseAbstractInterpretation::addUninitializedNumericalAlternative(
         scalarState().addUninitializedNumericalAlternative(variable);
         const auto summary = scalarDefinitions_.find(variable);
         if (summary != scalarDefinitions_.end())
+        {
+            const auto before =
+                summary->second.numericalInitialization().value(variable);
             summary->second.addUninitializedNumericalAlternative(variable);
+            if (before !=
+                    summary->second.numericalInitialization().value(variable))
+                ++scalarCoordinateRevision_;
+        }
     }
 }
 
@@ -1572,8 +1604,7 @@ void SemiSparseAbstractInterpretation::scatterCycleValues(
         {
             State summary = this->topState();
             summary.assignValueFrom(variable, cycleState, variable);
-            scalarDefinitions_.insert_or_assign(variable,
-                                                std::move(summary));
+            storeScalarDefinition(variable, std::move(summary));
         }
         else
         {
@@ -1586,8 +1617,7 @@ void SemiSparseAbstractInterpretation::scatterCycleValues(
 
             State summary = this->topState();
             summary.assignValueFrom(variable, cycleState, variable);
-            scalarDefinitions_.insert_or_assign(variable,
-                                                std::move(summary));
+            storeScalarDefinition(variable, std::move(summary));
         }
     }
 }

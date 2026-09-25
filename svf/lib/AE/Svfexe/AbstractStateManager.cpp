@@ -522,6 +522,11 @@ bool AbstractInterpretation::isAbstractStateEquivalent(
            AbstractDomain::CheckResult::True;
 }
 
+std::size_t AbstractInterpretation::analysisRevision() const
+{
+    return 0;
+}
+
 void AbstractInterpretation::assignInterval(State& denseState,
         AD::Variable variable,
         const AD::Interval& interval)

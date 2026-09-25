@@ -162,6 +162,9 @@ protected:
     void materializeScalarDefinitions(
         State& state, const std::vector<AbstractDomain::Variable>& seeds,
         const ICFGNode* node) const;
+    std::size_t analysisRevision() const override;
+    void storeScalarDefinition(AbstractDomain::Variable variable,
+                               State summary);
 
     Map<const ICFGNode*, State> refinementTrace_;
     Map<const ICFGNode*, std::set<AbstractDomain::Variable>>
@@ -173,6 +176,7 @@ protected:
         pendingDefinitionHistory_;
     std::optional<State> scalarState_;
     std::optional<State> globalScalarSnapshot_;
+    std::size_t scalarCoordinateRevision_ = 0;
 };
 
 /// Full-sparse AE backed by BoxAddressDomain. Scalar SSA values share the same
