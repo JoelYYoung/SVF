@@ -750,7 +750,9 @@ void AbstractInterpretation::verifyPostFixpoint()
                               << statement->toString() << '\n';
                 const auto traceVariable = [&](const char* role,
                                                const SVFVar* raw) {
-                    const auto* value = SVFUtil::dyn_cast<ValVar>(raw);
+                    const auto* value = raw
+                                        ? SVFUtil::dyn_cast<ValVar>(raw)
+                                        : nullptr;
                     if (!value || !adapter_.contains(*value))
                     {
                         std::cerr << "AE Post variable " << role
