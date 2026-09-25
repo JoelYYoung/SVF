@@ -865,8 +865,16 @@ void AbstractInterpretation::loadValue(const ValVar* pointer,
     interval = AD::Interval::bottom();
     addresses = AD::AddressSet::bottom();
     const char* traceLoadNode = std::getenv("SVF_AE_TRACE_LOAD_NODE");
-    const bool traceLoad = traceLoadNode && node &&
-        std::strtoul(traceLoadNode, nullptr, 10) == node->getId();
+    bool traceLoad = false;
+    for (const char* cursor = traceLoadNode; cursor && node && *cursor;)
+    {
+        char* end = nullptr;
+        const unsigned long selected = std::strtoul(cursor, &end, 10);
+        if (end == cursor)
+            break;
+        traceLoad |= selected == node->getId();
+        cursor = *end == ',' ? end + 1 : end;
+    }
     if (traceLoad)
         std::cerr << "AE load trace node=" << node->getId()
                   << " pointer=" << pointer->getId()
