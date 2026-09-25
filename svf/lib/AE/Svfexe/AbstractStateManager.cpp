@@ -869,6 +869,13 @@ void AbstractInterpretation::loadValue(const ValVar* pointer,
 
     interval = AD::Interval::bottom();
     addresses = AD::AddressSet::bottom();
+    const char* traceLoadNode = std::getenv("SVF_AE_TRACE_LOAD_NODE");
+    const bool traceLoad = traceLoadNode && node &&
+        std::strtoul(traceLoadNode, nullptr, 10) == node->getId();
+    if (traceLoad)
+        std::cerr << "AE load trace node=" << node->getId()
+                  << " pointer=" << pointer->getId()
+                  << " pointees=" << pointees.toString() << '\n';
     for (AD::Location location : pointees.locations())
     {
         // getInterval/getAddressSet implement Original's freed-cell routing;
@@ -879,12 +886,33 @@ void AbstractInterpretation::loadValue(const ValVar* pointer,
             if (!object)
                 continue;
             const AD::Variable content = memoryVariable(*object, denseState);
+            if (traceLoad)
+                std::cerr << "  location=" << location.id()
+                          << " content=" << content.id()
+                          << " numerical-init="
+                          << static_cast<unsigned>(
+                                 denseState.numericalInitialization().value(
+                                     content))
+                          << " address-init="
+                          << static_cast<unsigned>(
+                                 denseState.addressInitialization().value(
+                                     content))
+                          << " interval="
+                          << denseState.interval(content).toString()
+                          << " addresses="
+                          << denseState.addressSet(content).toString()
+                          << '\n';
             numericalMayBeUninitialized |=
                 denseState.numericalMayBeUninitialized(content);
             interval.joinWith(denseState.interval(content));
             addresses.joinWith(denseState.addressSet(content));
         }
     }
+    if (traceLoad)
+        std::cerr << "  result interval=" << interval.toString()
+                  << " addresses=" << addresses.toString()
+                  << " numerical-may-uninitialized="
+                  << numericalMayBeUninitialized << '\n';
 }
 
 void AbstractInterpretation::storeValue(const ValVar* pointer,
