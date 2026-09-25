@@ -1424,6 +1424,16 @@ bool SemiSparseAbstractInterpretation::mergeStatesFromPredecessors(
 
         const auto refinementIterator = refinementTrace_.find(predecessor);
         const bool hasConditional = conditional && conditional->getCondition();
+        bool hasPointerCondition = false;
+        if (hasConditional)
+        {
+            const SVFVar* condition = conditional->getCondition();
+            if (condition && condition->getInEdges().size() == 1)
+                if (const auto* comparison = SVFUtil::dyn_cast<CmpStmt>(
+                        *condition->getInEdges().begin()))
+                    hasPointerCondition =
+                        comparison->getOpVar(0)->isPointer();
+        }
         const bool needsRefinement =
             hasConditional || refinementIterator != refinementTrace_.end();
         std::optional<State> refinement;
@@ -1439,40 +1449,26 @@ bool SemiSparseAbstractInterpretation::mergeStatesFromPredecessors(
             {
                 // A refinement trace is an auxiliary, path-insensitive
                 // scalar carrier. It may contain constraints accumulated on
-                // another predecessor of a shared/merged value. Such a stale
-                // contradiction cannot by itself prove this CFG edge
-                // infeasible. Retry the current edge predicate from Top and
-                // prune only if that edge-local predicate is itself Bottom.
-                if (refinementIterator == refinementTrace_.end())
+                // another predecessor of a shared/merged value. Even an
+                // edge predicate replayed from Top still materializes its SSA
+                // numerical operands from that same global carrier, so
+                // numerical Bottom here is not a sound reachability proof.
+                // Pointer comparisons use the independently joined address
+                // carrier and may still establish an impossible null/non-null
+                // edge (for example, loading a stored null pointer).
+                if (hasPointerCondition &&
+                        refinementIterator == refinementTrace_.end())
                 {
                     if (traceMerge)
                         std::cerr << "  predecessor="
                                   << predecessor->getId()
-                                  << " edge-refinement=bottom\n";
+                                  << " pointer-edge-refinement=bottom\n";
                     continue;
                 }
-                if (!hasConditional)
-                {
-                    refinement.reset();
-                }
-                else
-                {
-                    State edgeRefinement(this->makeNumericalDomain(false),
-                                         this->adapter_.memoryLayout());
-                    this->assumeBranch(conditional, edgeRefinement);
-                    if (edgeRefinement.isBottom())
-                    {
-                        if (traceMerge)
-                            std::cerr << "  predecessor="
-                                      << predecessor->getId()
-                                      << " edge-refinement=bottom\n";
-                        continue;
-                    }
-                    refinement = std::move(edgeRefinement);
-                }
+                refinement.reset();
                 if (traceMerge)
                     std::cerr << "  predecessor=" << predecessor->getId()
-                              << " stale-refinement=dropped\n";
+                              << " bottom-refinement=dropped\n";
             }
         }
 
