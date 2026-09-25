@@ -876,24 +876,78 @@ void SemiSparseAbstractInterpretation::preparePostReplayState(
     if (Options::AEDomain() != AENumericalDomain::Box)
     {
         // Production Semi-Sparse transfers read absent SSA inputs on demand
-        // from the definition carrier. Dense Post replay has no access to
-        // that carrier, so restore the same unary numerical fact and missing
-        // reduced-product facets for every explicit input. Do not import the
-        // saved multi-variable component: relations reconstructed at the
-        // source program point remain authoritative for this edge.
-        for (AD::Variable variable : inputScalars)
+        // from the transitive definition carrier. Dense Post replay has no
+        // access to that carrier, so restore the same unary numerical facts
+        // and missing reduced-product facets for every available dependency
+        // of an explicit input. Do not import a saved multi-variable
+        // component: relations reconstructed at the source program point
+        // remain authoritative for this edge.
+        const auto available = scalarAvailability_.find(target);
+        if (available == scalarAvailability_.end())
+            return;
+        const std::vector<AD::Variable> seeds(inputScalars.begin(),
+                                              inputScalars.end());
+        for (AD::Variable variable : carrierDependencyClosure(seeds))
         {
+            if (available->second.count(variable) == 0)
+                continue;
             const auto definition = scalarDefinitions_.find(variable);
             const State* summary = definition != scalarDefinitions_.end()
                                    ? &definition->second : findScalarState();
             if (!summary)
                 continue;
-            State projected = *summary;
-            projected.numerical().project({variable});
-            denseState.numerical().meetWith(projected.numerical());
+            const auto beforeNumerical =
+                denseState.numericalInitialization().value(variable);
+            const auto beforeAddress =
+                denseState.addressInitialization().value(variable);
+            const auto summaryNumerical =
+                summary->numericalInitialization().value(variable);
+            const auto summaryAddress =
+                summary->addressInitialization().value(variable);
+            // Refine only the numerical payload here. constrainInterval()
+            // denotes an initialized observation and would incorrectly turn
+            // pointer-only carrier dependencies into initialized numbers.
+            const AD::Interval interval = summary->interval(variable);
+            AD::LinearConstraintSet constraints;
+            AD::LinearExpression expression(variable);
+            if (interval.lower().isFinite())
+                constraints.emplace_back(
+                    expression -
+                        AD::LinearExpression(interval.lower().value()),
+                    interval.lower().isStrict()
+                        ? AD::ConstraintKind::GreaterThan
+                        : AD::ConstraintKind::GreaterEqual);
+            if (interval.upper().isFinite())
+                constraints.emplace_back(
+                    expression -
+                        AD::LinearExpression(interval.upper().value()),
+                    interval.upper().isStrict()
+                        ? AD::ConstraintKind::LessThan
+                        : AD::ConstraintKind::LessEqual);
+            denseState.numerical().assumeAll(constraints);
             denseState.restoreMissingNumericalInitializationFrom(
                 *summary, variable);
             denseState.restoreMissingAddressFrom(*summary, variable);
+            if (std::getenv("SVF_AE_TRACE_POST_INPUT_RESTORE") &&
+                    (beforeNumerical !=
+                         denseState.numericalInitialization().value(variable) ||
+                     beforeAddress !=
+                         denseState.addressInitialization().value(variable)))
+                std::cerr << "AE Post input restore node="
+                          << (target ? target->getId() : 0)
+                          << " variable=" << variable.id()
+                          << " numerical="
+                          << static_cast<unsigned>(beforeNumerical) << ':'
+                          << static_cast<unsigned>(summaryNumerical) << ':'
+                          << static_cast<unsigned>(
+                                 denseState.numericalInitialization().value(
+                                     variable))
+                          << " address="
+                          << static_cast<unsigned>(beforeAddress) << ':'
+                          << static_cast<unsigned>(summaryAddress) << ':'
+                          << static_cast<unsigned>(
+                                 denseState.addressInitialization().value(
+                                     variable)) << '\n';
         }
         return;
     }
