@@ -409,12 +409,38 @@ bool BoxAddressDomain::initializedSubsetOf(const BoxAddressDomain& other) const
         // them here would let the fixpoint engine stop before relations have
         // stabilized.
         if (numerical_->kind() != DomainKind::Box)
-            return false;
-        for (Variable variable : other.numerical_->supportVariables())
-            if (mayBeInitialized(numericalInitialization_.value(variable)) &&
-                    !numerical_->bound(variable).isSubsetOf(
-                        other.numerical_->bound(variable)))
+        {
+            // Relational payloads on coordinates with no initialized case are
+            // latent implementation data, just like an inactive Box bound.
+            // Compare the conditional payload only for coordinates that the
+            // left-hand state can concretely initialize. Existential
+            // projection is conservative when an inactive coordinate links a
+            // larger component: it may retain a consequence over active
+            // variables, but it cannot hide one.
+            std::vector<Variable> active;
+            for (Variable variable :
+                    numericalInitialization_.nonDefaultVariables())
+                if (mayBeInitialized(
+                        numericalInitialization_.value(variable)))
+                    active.push_back(variable);
+            std::unique_ptr<NumericalDomain> left =
+                cloneNumerical(*numerical_);
+            std::unique_ptr<NumericalDomain> right =
+                cloneNumerical(*other.numerical_);
+            left->project(active);
+            right->project(active);
+            if (left->isSubsetOf(*right) != CheckResult::True)
                 return false;
+        }
+        else
+        {
+            for (Variable variable : other.numerical_->supportVariables())
+                if (mayBeInitialized(
+                        numericalInitialization_.value(variable)) &&
+                        !numerical_->bound(variable).isSubsetOf(
+                            other.numerical_->bound(variable)))
+                    return false;
+        }
     }
     if (addresses_.isSubsetOf(other.addresses_) != CheckResult::True)
     {

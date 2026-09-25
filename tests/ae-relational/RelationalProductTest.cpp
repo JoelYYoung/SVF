@@ -433,6 +433,30 @@ int main()
     boundedWithoutRelation.setInterval(y, unit);
     if (boundedWithoutRelation.isSubsetOf(left) == AD::CheckResult::True)
         fail("relational inclusion fell back to equal unary bounds");
+
+    AD::BoxAddressDomain inactivePayloadLeft(
+        std::make_unique<AD::OctagonDomain>(
+            AD::OctagonDomain::top(octagonConfig)),
+        AD::MemoryLayout(), true);
+    AD::BoxAddressDomain inactivePayloadRight(inactivePayloadLeft);
+    inactivePayloadRight.numerical().assignBound(
+        x, AD::Interval::singleton(AD::Rational(0)));
+    if (inactivePayloadLeft.isSubsetOf(inactivePayloadRight) !=
+            AD::CheckResult::True)
+        fail("inactive relational payload affected inclusion");
+
+    AD::BoxAddressDomain activePayloadLeft(
+        std::make_unique<AD::OctagonDomain>(
+            AD::OctagonDomain::top(octagonConfig)),
+        AD::MemoryLayout(), true);
+    AD::BoxAddressDomain activePayloadRight(activePayloadLeft);
+    activePayloadLeft.setInterval(x, AD::Interval::top());
+    activePayloadRight.setInterval(
+        x, AD::Interval::singleton(AD::Rational(0)));
+    if (activePayloadLeft.isSubsetOf(activePayloadRight) ==
+            AD::CheckResult::True)
+        fail("active relational payload was ignored by inclusion");
+
     left.joinWith(right);
     if (left.numerical().entails(
             AD::equal(AD::LinearExpression(x), AD::LinearExpression(y))) ==

@@ -129,6 +129,13 @@ endif()
 
 if(BUILD_TESTING)
   add_executable(
+    RelationalProductTest
+    ${CMAKE_CURRENT_LIST_DIR}/../tests/ae-relational/RelationalProductTest.cpp
+  )
+  target_link_libraries(RelationalProductTest PRIVATE AbstractDomainCore)
+  add_test(NAME ae-relational/RelationalProductTest
+           COMMAND RelationalProductTest)
+  add_executable(
     NumericalOperationTraceTest
     ${CMAKE_CURRENT_LIST_DIR}/../tests/ae-relational/NumericalOperationTraceTest.cpp
   )
