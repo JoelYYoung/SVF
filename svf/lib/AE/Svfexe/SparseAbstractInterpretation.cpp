@@ -713,8 +713,18 @@ void SemiSparseAbstractInterpretation::updateValue(
         {
             const auto previous = scalarDefinitions_.find(variable);
             if (previous != scalarDefinitions_.end())
+            {
+                // A relational summary can be revisited from several call
+                // contexts or memory states. Preserve every unary/product
+                // alternative monotonically even when no affine relation is
+                // recorded for this particular transfer (for example, a
+                // non-singleton load). The subsequent relational hook owns
+                // the multi-variable component and joins its saved history
+                // separately, so do not import that component here.
+                summary.joinValueFrom(variable, previous->second, variable);
                 pendingDefinitionHistory_.insert_or_assign(
                     variable, std::make_pair(node, previous->second));
+            }
             else
                 pendingDefinitionHistory_.erase(variable);
         }
