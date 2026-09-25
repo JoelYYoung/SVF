@@ -928,11 +928,16 @@ void SemiSparseAbstractInterpretation::preparePostReplayState(
             denseState.restoreMissingNumericalInitializationFrom(
                 *summary, variable);
             denseState.restoreMissingAddressFrom(*summary, variable);
-            if (std::getenv("SVF_AE_TRACE_POST_INPUT_RESTORE") &&
+            const char* traceVariable =
+                std::getenv("SVF_AE_TRACE_POST_INPUT_VARIABLE");
+            const bool traceSelectedVariable = traceVariable &&
+                std::strtoul(traceVariable, nullptr, 10) == variable.id();
+            if ((std::getenv("SVF_AE_TRACE_POST_INPUT_RESTORE") &&
                     (beforeNumerical !=
                          denseState.numericalInitialization().value(variable) ||
                      beforeAddress !=
-                         denseState.addressInitialization().value(variable)))
+                         denseState.addressInitialization().value(variable))) ||
+                    traceSelectedVariable)
                 std::cerr << "AE Post input restore node="
                           << (target ? target->getId() : 0)
                           << " variable=" << variable.id()
