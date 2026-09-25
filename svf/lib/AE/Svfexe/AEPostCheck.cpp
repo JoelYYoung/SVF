@@ -313,6 +313,11 @@ void AbstractInterpretation::preparePostReplayState(
 {
 }
 
+void AbstractInterpretation::preparePostReplayTransfer(State&,
+                                                        const ICFGNode*)
+{
+}
+
 void AbstractInterpretation::restorePostReplayCallerFrame(
     State&, const RetICFGNode*, const State&,
     const std::set<AD::Variable>&) const
@@ -523,8 +528,10 @@ void AbstractInterpretation::verifyPostFixpoint()
 
     const auto replayNode = [&](const ICFGNode* node,
                                 const State& incoming) -> State {
+        State prepared = incoming;
+        preparePostReplayTransfer(prepared, node);
         replay.stateTrace_ = finalStates;
-        replay.stateTrace_.insert_or_assign(node, incoming);
+        replay.stateTrace_.insert_or_assign(node, std::move(prepared));
         for (const SVFStmt* statement : node->getSVFStmts())
         {
             if (SVFUtil::isa<RetICFGNode>(node) &&

@@ -1507,7 +1507,6 @@ bool AbstractInterpretation::handleICFGNode(const ICFGNode* node)
 bool AbstractInterpretation::handleFunction(const ICFGNode* funEntry,
                                             const CallICFGNode* caller)
 {
-    const std::size_t revisionBefore = analysisRevision();
     auto it = preAnalysis->getFuncToWTO().find(funEntry->getFun());
     assert(it != preAnalysis->getFuncToWTO().end() &&
            "Missing WTO for function");
@@ -1554,7 +1553,7 @@ bool AbstractInterpretation::handleFunction(const ICFGNode* funEntry,
                 AD::CheckResult::True)
             return true;
     }
-    return analysisRevision() != revisionBefore;
+    return false;
 }
 
 void AbstractInterpretation::refreshSiblingReturnSites(

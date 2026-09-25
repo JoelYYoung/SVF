@@ -361,10 +361,6 @@ protected:
         const ICFGNode* node,
         const AbstractDomain::AbstractDomain& snapshot) const;
 
-    /// Change stamp for semantic state stored outside stateTrace_. Sparse
-    /// def-site carriers use this to participate in function convergence.
-    virtual std::size_t analysisRevision() const;
-
     /// Normalize a node after its transfers and detectors have consumed any
     /// temporary operands. Native sparse implementations use this boundary to
     /// keep ValVar values out of persistent ICFG states.
@@ -629,6 +625,10 @@ protected:
     virtual void preparePostReplayState(
         State& state, const ICFGNode* target,
         const std::set<AbstractDomain::Variable>& inputScalars) const;
+    /// Mirror any mode-specific, transient operand materialization immediately
+    /// before dense Post replay executes the target transfer.
+    virtual void preparePostReplayTransfer(State& state,
+                                           const ICFGNode* target);
     virtual void restorePostReplayCallerFrame(
         State& state, const RetICFGNode* returnSite,
         const State& callerState,

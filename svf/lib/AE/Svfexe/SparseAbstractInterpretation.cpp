@@ -110,6 +110,28 @@ std::set<AD::Variable> definedScalarVariables(const ICFGNode* node,
     return result;
 }
 
+std::vector<const ValVar*> transientMemoryPointers(const ICFGNode* node)
+{
+    std::vector<const ValVar*> result;
+    for (const SVFStmt* statement : node->getSVFStmts())
+    {
+        const SVFVar* pointer = nullptr;
+        if (const auto* load = SVFUtil::dyn_cast<LoadStmt>(statement))
+            pointer = load->getRHSVar();
+        else if (const auto* store = SVFUtil::dyn_cast<StoreStmt>(statement))
+            pointer = store->getLHSVar();
+        if (pointer)
+            if (const auto* value = SVFUtil::dyn_cast<ValVar>(pointer))
+                result.push_back(value);
+    }
+    std::sort(result.begin(), result.end(),
+              [](const ValVar* left, const ValVar* right) {
+                  return left->getId() < right->getId();
+              });
+    result.erase(std::unique(result.begin(), result.end()), result.end());
+    return result;
+}
+
 } // namespace
 
 SemiSparseAbstractInterpretation::SemiSparseAbstractInterpretation()
@@ -252,31 +274,6 @@ SemiSparseAbstractInterpretation::findScalarState() const
     return scalarState_ ? &*scalarState_ : nullptr;
 }
 
-std::size_t SemiSparseAbstractInterpretation::analysisRevision() const
-{
-    return scalarCoordinateRevision_;
-}
-
-void SemiSparseAbstractInterpretation::storeScalarDefinition(
-    AD::Variable variable, State summary)
-{
-    bool coordinateChanged = true;
-    const auto previous = scalarDefinitions_.find(variable);
-    if (previous != scalarDefinitions_.end())
-    {
-        State oldCoordinate = this->topState();
-        State newCoordinate = this->topState();
-        oldCoordinate.assignValueFrom(variable, previous->second, variable);
-        newCoordinate.assignValueFrom(variable, summary, variable);
-        coordinateChanged =
-            newCoordinate.isEquivalentTo(oldCoordinate) !=
-            AD::CheckResult::True;
-    }
-    scalarDefinitions_.insert_or_assign(variable, std::move(summary));
-    if (coordinateChanged)
-        ++scalarCoordinateRevision_;
-}
-
 SemiSparseAbstractInterpretation::State&
 SemiSparseAbstractInterpretation::scalarTransferState(const ICFGNode*)
 {
@@ -373,7 +370,7 @@ void SemiSparseAbstractInterpretation::assignRelationalValue(
             summary.joinWith(pending->second.second);
             pendingDefinitionHistory_.erase(pending);
         }
-        storeScalarDefinition(variable, std::move(summary));
+        scalarDefinitions_.insert_or_assign(variable, std::move(summary));
         if (std::getenv("SVF_AE_TRACE_SCALAR_SUMMARY"))
             std::cerr << "AE scalar summary assign node=" << node->getId()
                       << " target=" << variable.id()
@@ -468,7 +465,7 @@ void SemiSparseAbstractInterpretation::recordRelationalSummary(
         summary.joinWith(pending->second.second);
         pendingDefinitionHistory_.erase(pending);
     }
-    storeScalarDefinition(target, std::move(summary));
+    scalarDefinitions_.insert_or_assign(target, std::move(summary));
     if (std::getenv("SVF_AE_TRACE_SCALAR_SUMMARY"))
         std::cerr << "AE scalar summary merge target=" << target.id()
                   << " dependencies=";
@@ -739,21 +736,13 @@ void SemiSparseAbstractInterpretation::updateValue(
             const auto previous = scalarDefinitions_.find(variable);
             if (previous != scalarDefinitions_.end())
             {
-                // A relational summary can be revisited from several call
-                // contexts or memory states. Preserve every unary/product
-                // alternative monotonically even when no affine relation is
-                // recorded for this particular transfer (for example, a
-                // non-singleton load). The subsequent relational hook owns
-                // the multi-variable component and joins its saved history
-                // separately, so do not import that component here.
-                summary.joinValueFrom(variable, previous->second, variable);
                 pendingDefinitionHistory_.insert_or_assign(
                     variable, std::make_pair(node, previous->second));
             }
             else
                 pendingDefinitionHistory_.erase(variable);
         }
-        storeScalarDefinition(variable, std::move(summary));
+        scalarDefinitions_.insert_or_assign(variable, std::move(summary));
     }
 }
 
@@ -768,12 +757,7 @@ void SemiSparseAbstractInterpretation::addUninitializedNumericalAlternative(
         const auto summary = scalarDefinitions_.find(variable);
         if (summary != scalarDefinitions_.end())
         {
-            const auto before =
-                summary->second.numericalInitialization().value(variable);
             summary->second.addUninitializedNumericalAlternative(variable);
-            if (before !=
-                    summary->second.numericalInitialization().value(variable))
-                ++scalarCoordinateRevision_;
         }
     }
 }
@@ -1033,6 +1017,23 @@ void SemiSparseAbstractInterpretation::preparePostReplayState(
             missingInputs.push_back(variable);
     }
     materializeScalarDefinitions(denseState, missingInputs, target);
+}
+
+void SemiSparseAbstractInterpretation::preparePostReplayTransfer(
+    State& denseState, const ICFGNode* target)
+{
+    // loadValue()/storeValue() transiently materialize their address operand
+    // from the separate Semi-Sparse definition carrier. Post uses a dense
+    // replay object, whose hook is intentionally a no-op, so supply that exact
+    // address coordinate here. Keep the incoming numerical coordinate: the
+    // production transfer forgets the transient pointer and target-state
+    // reconstruction then restores its saved scalar facets. Calling the full
+    // materializeValue() here would instead leave its temporary numerical
+    // Bottom/uninitialized value visible to the Post inclusion check.
+    for (const ValVar* pointer : transientMemoryPointers(target))
+        if (this->adapter_.contains(*pointer))
+            denseState.setAddressSet(this->adapter_.variable(*pointer),
+                                     getAddressSet(pointer, target));
 }
 
 void SemiSparseAbstractInterpretation::restorePostReplayCallerFrame(
@@ -1604,7 +1605,8 @@ void SemiSparseAbstractInterpretation::scatterCycleValues(
         {
             State summary = this->topState();
             summary.assignValueFrom(variable, cycleState, variable);
-            storeScalarDefinition(variable, std::move(summary));
+            scalarDefinitions_.insert_or_assign(variable,
+                                                std::move(summary));
         }
         else
         {
@@ -1617,7 +1619,8 @@ void SemiSparseAbstractInterpretation::scatterCycleValues(
 
             State summary = this->topState();
             summary.assignValueFrom(variable, cycleState, variable);
-            storeScalarDefinition(variable, std::move(summary));
+            scalarDefinitions_.insert_or_assign(variable,
+                                                std::move(summary));
         }
     }
 }
