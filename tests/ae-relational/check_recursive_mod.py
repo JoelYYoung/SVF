@@ -13,7 +13,7 @@ print('raw artifacts:',out,flush=True)
 env=dict(os.environ,DYLD_LIBRARY_PATH=a.library_path,LD_LIBRARY_PATH=a.library_path,
          SVF_AE_TRACE_RECURSIVE_TOP='1')
 root=Path(__file__).parent
-inputs=sorted(root.glob('R15*.ll'))+[root/f'RecursiveModCase{i}.ll' for i in range(1,6)]
+inputs=sorted(root.glob('R15*.ll'))+[root/f'RecursiveModCase{i}.ll' for i in range(1,10)]
 configs={'box':('box','dense','whole'),'dense':('octagon','dense','whole'),
          'semi':('octagon','semi-sparse','whole'),'pack':('octagon','dense','syntax-pack'),
          'pack-semi':('octagon','semi-sparse','syntax-pack'),'oh':('octagon','oh-packed','syntax-pack')}
@@ -42,11 +42,19 @@ for inp in inputs:
         qs=list(csv.DictReader(qp.open(),delimiter='\t')) if qp.exists() else []
         ps=list(csv.DictReader(pp.open(),delimiter='\t')) if pp.exists() else []
         want=['Safe'] if inp.stem in ('RecursiveModCase1','RecursiveModCase5') else ['May']
+        if inp.stem=='RecursiveModCase9': want=['May','May']
+        if inp.stem=='R15j_recursion_no_write_positive': want=['Safe','Safe']
         actual=[q['outcome'] for q in qs]
         ok=status==0 and actual==want and ps and all(
             x['status'] in ('Pass','Infeasible','Unreachable') for x in ps)
         invoked='AE_RECURSIVE_TOP' in stderr
         ok=bool(ok and invoked)
+        if inp.stem in ('RecursiveModCase7','RecursiveModCase8'):
+            ok=ok and 'all=1' in stderr
+        if inp.stem=='RecursiveModCase9':
+            ok=ok and 'return_successors=2' in stderr
+        if inp.stem=='RecursiveModCase6':
+            ok=status==2 and 'AE_RECURSIVE_TOP_FAIL_CLOSED' in stderr and not qs
         keys.append({q['query_id'] for q in qs})
         records.append(dict(input=str(inp),config=cfg,command=cmd,status=status,
                             started_at=start,ended_at=end,wall_seconds=wall,

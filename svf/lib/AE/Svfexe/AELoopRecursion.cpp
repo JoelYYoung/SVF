@@ -155,7 +155,9 @@ void AbstractInterpretation::skipRecursionWithTop(const CallICFGNode* callNode)
     if (std::getenv("SVF_AE_TRACE_RECURSIVE_TOP"))
         std::cerr << "AE_RECURSIVE_TOP call=" << callNode->getId()
                   << " bases=" << effect.modifiedBases.count()
-                  << " all=" << effect.allObjects << '\n';
+                  << " all=" << effect.allObjects
+                  << " return_successors=" << retNode->getOutEdges().size()
+                  << '\n';
     prepareRecursiveHavoc(callNode, effect.modifiedBases, effect.allObjects);
     State before = ensureState(callNode);
     std::vector<AD::Location> locations;

@@ -1849,6 +1849,12 @@ const FunObjVar* AbstractInterpretation::getCallee(const CallICFGNode* callNode)
 /// targets.
 void AbstractInterpretation::handleFunCall(const CallICFGNode* callNode)
 {
+    // The configured TOP summary has one synthetic call->return equation.
+    // A mixed indirect target set needs a per-target summary/return join;
+    // until that is implemented, do not silently use the direct-call rule.
+    if (!callNode->getCalledFunction() && recursiveTopSummary(callNode))
+        throw std::runtime_error(
+            "AE_RECURSIVE_TOP_FAIL_CLOSED: indirect recursive target");
     if (skipRecursiveCall(callNode))
         return;
 

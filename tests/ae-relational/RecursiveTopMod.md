@@ -35,6 +35,12 @@ forget lifetime information. Return values include pointer and numeric forms;
 return-node out-degree never bypasses effects. SSA values unrelated to the
 return and memory retain their pre-call meaning under the existing call model.
 
+Only cells already in the shared memory layout are enumerated. A cell first
+encountered after this summary relies on the existing conservative treatment
+of uninitialized/absent content, not on explicit enumeration by this havoc.
+Supervisor probes R15h (first recursive write) and R15i (recursive allocation)
+exercise that dependence; it remains part of the memory-model contract.
+
 The soundness argument is conditional on the existing frontend and Andersen
 target overapproximation: actual writes lie within MOD, other scalar values
 are unchanged, and affected values can be arbitrary. Whole-region Top covers
@@ -95,3 +101,27 @@ CTest (`ctest-v2.log`) was 14 Pass / 1 Skip. ELINA was disabled, so adapter
 stub successes do not constitute ELINA numerical coverage. These parallel
 local runs are semantic regressions, not isolated performance measurements.
 No sanitizer or final six-program matrix is claimed here.
+
+## Additional boundary gates (Room #453)
+
+The follow-up tree preserves bd0b7dba and its artifacts. Case6 has mixed
+recursive/nonrecursive indirect targets: the common executor now rejects it
+with AE_RECURSIVE_TOP_FAIL_CLOSED before analysis results, matching D3's
+unsupported-target contract. Case7 calls an unknown function pointer inside
+recursion; case8 has external pointer-memory effects. Both require allObjects
+telemetry and May. Case9 uses a real LLVM invoke: both RetICFGNode successors
+must receive the havoc, both queries are May, and telemetry must report two
+successors. This exercises the CFG shape, not full C++ exception semantics.
+Supervisor R15h/i/j were copied byte-for-byte from fixtures 5766b6f.
+Release and ASan+UBSan each passed 114/114 expectations: 108 completed analyses
+and six explicit mixed-indirect rejections. Each completed set had Post
+1356 Pass / 1554 Unreachable, no Fail or Unsupported. Records:
+`recursive-mod-extra-{release,asan}-v1`. The sanitizer flags were
+`-fsanitize=address,undefined -fno-omit-frame-pointer` (compile) and
+`-fsanitize=address,undefined` (link), with ASAN_OPTIONS=detect_leaks=0:halt_on_error=1
+and UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1. Leak checking was disabled;
+external LLVM/Z3 dependencies were not rebuilt with sanitizers. This is not
+a universal memory-safety proof. Full sanitizer CTest is recorded separately.
+Release CTest was 14 Pass / 1 Skip. The additional Release E/R (138 runs) and
+witness (108 runs) queries were unchanged against bd0b7dba batches.
+Full ASan+UBSan CTest was also 14 Pass / 1 Skip (`ctest-asan-v1.log`, 72.29 s).
