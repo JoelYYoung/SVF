@@ -86,6 +86,21 @@ std::set<AD::Variable> definedAt(const ICFGNode* node,
 VersionedSparseAbstractInterpretation::VersionedSparseAbstractInterpretation()
 {
     collectCycleHeads();
+    for (auto iterator = this->icfg->begin(); iterator != this->icfg->end();
+            ++iterator)
+        for (const SVFStmt* statement : iterator->second->getSVFStmts())
+            if (const auto* load = SVFUtil::dyn_cast<LoadStmt>(statement))
+            {
+                const auto* target =
+                    SVFUtil::dyn_cast<ValVar>(load->getLHSVar());
+                if (!target || !this->adapter_.contains(*target) ||
+                        target->isPointer())
+                    continue;
+                bool havocAll = false;
+                for (const ObjVar* object :
+                        staticTargets(load->getRHSVar(), havocAll))
+                    loadedObjects_.insert(object->getId());
+            }
     buildMemoryVersions();
     computeVersionAvailability();
     reportTelemetry();
@@ -364,6 +379,8 @@ VersionedSparseAbstractInterpretation::transferNode(const ICFGNode* node,
             }
             for (const ObjVar* object : targets)
             {
+                if (!loadedObjects_.count(object->getId()))
+                    continue;
                 VersionMap& map = mutableMap();
                 const auto previous = map.find(object->getId());
                 StoreVersion record{
@@ -635,8 +652,14 @@ void VersionedSparseAbstractInterpretation::initializeExecutionPolicy()
     }
 
     std::vector<std::set<AD::Variable>> packs;
+    std::size_t originalMax = 0;
+    std::size_t originalTotal = 0;
     for (const auto& pack : *relationalPacking_)
+    {
         packs.emplace_back(pack.begin(), pack.end());
+        originalMax = std::max(originalMax, pack.size());
+        originalTotal += pack.size();
+    }
     bool changed = true;
     while (changed)
     {
@@ -661,11 +684,13 @@ void VersionedSparseAbstractInterpretation::initializeExecutionPolicy()
     }
     auto result = std::make_shared<std::vector<std::vector<AD::Variable>>>();
     std::size_t maxSize = 0;
+    std::size_t extendedTotal = 0;
     std::set<AD::Variable> packed;
     for (const auto& pack : packs)
     {
         result->emplace_back(pack.begin(), pack.end());
         maxSize = std::max(maxSize, pack.size());
+        extendedTotal += pack.size();
         for (AD::Variable variable : pack)
             if (versionVariables_.count(variable))
                 packed.insert(variable);
@@ -675,7 +700,10 @@ void VersionedSparseAbstractInterpretation::initializeExecutionPolicy()
                     << " packed_versions=" << packed.size()
                     << " box_only_versions="
                     << versionVariables_.size() - packed.size()
-                    << " max_pack_with_versions=" << maxSize << '\n';
+                    << " original_max_pack=" << originalMax
+                    << " original_total_dims=" << originalTotal
+                    << " extended_max_pack=" << maxSize
+                    << " extended_total_dims=" << extendedTotal << '\n';
 }
 
 void VersionedSparseAbstractInterpretation::handleSVFStatement(
@@ -741,13 +769,16 @@ void VersionedSparseAbstractInterpretation::versionStore(
         versioned.insert(record.object);
     // The static version map cannot be repaired after the fact: a runtime
     // target outside it would leave stale versions reachable. Fail closed.
-    if (unknown)
+    if (unknown && !loadedObjects_.empty())
         failClosed(node, "store with unknown target");
     for (NodeID object : written)
     {
         const auto* objectVar =
             SVFUtil::dyn_cast<ObjVar>(this->svfir->getGNode(object));
-        if (objectVar && !objectVar->isPointer() && !versioned.count(object))
+        // A write to an object that is never versioned (for example a field
+        // cell created on demand at run time) cannot leave a stale version.
+        if (objectVar && !objectVar->isPointer() && !versioned.count(object) &&
+                loadedObjects_.count(object))
             failClosed(node, "store target " + std::to_string(object) +
                                  " outside static points-to set");
     }
@@ -1108,5 +1139,6 @@ void VersionedSparseAbstractInterpretation::reportTelemetry() const
                     << " cycle_head_drops=" << cycleHeadDrops_
                     << " havoc_stores=" << havocStores_.size()
                     << " external_invalidations=" << externalInvalidations_
-                    << " versioned_nodes=" << versionOut_.size() << '\n';
+                    << " versioned_nodes=" << versionOut_.size()
+                    << " loaded_objects=" << loadedObjects_.size() << '\n';
 }

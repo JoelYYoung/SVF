@@ -134,6 +134,9 @@ private:
     void reportTelemetry() const;
 
     std::set<const ICFGNode*> cycleHeads_;
+    /// Objects some numerical load may read. Only these are versioned; a
+    /// write to any other object cannot make a version stale.
+    std::set<NodeID> loadedObjects_;
     std::map<const ICFGNode*, VersionMapPtr> versionOut_;
     std::map<const StoreStmt*, std::vector<StoreVersion>> storeVersions_;
     std::map<const LoadStmt*, VersionMapPtr> loadVersions_;
