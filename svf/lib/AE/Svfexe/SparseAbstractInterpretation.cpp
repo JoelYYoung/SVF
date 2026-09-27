@@ -171,6 +171,11 @@ void SemiSparseAbstractInterpretation::initializeScalarAvailability()
         for(const ICFGNode* node:nodes)
         {
             if(!reachable.count(node)) continue;
+            const auto* summaryCall = SVFUtil::dyn_cast<CallICFGNode>(node);
+            if (summaryCall && summaryCall->getCalledFunction() &&
+                this->recursiveTopSummary(summaryCall))
+                reachChanged |= reachable.insert(
+                    summaryCall->getRetICFGNode()).second;
             for(const ICFGEdge* edge:node->getOutEdges())
             {
                 if(!SVFUtil::isa<IntraCFGEdge>(edge) &&
@@ -198,6 +203,12 @@ void SemiSparseAbstractInterpretation::initializeScalarAvailability()
                 continue;
             bool first = true;
             std::set<AD::Variable> incoming;
+            const auto* returnSite = SVFUtil::dyn_cast<RetICFGNode>(node);
+            const CallICFGNode* summaryCall = returnSite
+                ? returnSite->getCallICFGNode() : nullptr;
+            const bool summaryReturn = summaryCall &&
+                summaryCall->getCalledFunction() &&
+                this->recursiveTopSummary(summaryCall);
             // Execution also starts selected roots directly from the global
             // state (including no-main entry SCCs without an explicit edge).
             if (entryNodes.count(node))
@@ -205,8 +216,17 @@ void SemiSparseAbstractInterpretation::initializeScalarAvailability()
                 incoming=scalarAvailability_.at(global);
                 first=false;
             }
+            if (summaryReturn)
+            {
+                incoming = scalarAvailability_.at(summaryCall);
+                first = false;
+            }
             for (const ICFGEdge* edge : node->getInEdges())
             {
+                // TOP binds its own result; the unexecuted callee's formal
+                // return ghost is not an input to the synthetic summary edge.
+                if (summaryReturn)
+                    break;
                 if (!SVFUtil::isa<IntraCFGEdge>(edge) &&
                     !SVFUtil::isa<CallCFGEdge>(edge) &&
                     !SVFUtil::isa<RetCFGEdge>(edge))

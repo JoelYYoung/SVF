@@ -169,7 +169,8 @@ std::set<AD::Variable> definedScalars(const ICFGNode* node,
 Map<const ICFGNode*, std::set<AD::Variable>> computeAvailability(
     ICFG* graph, const SVFIR& svfir, const SVFIRAdapter& adapter,
     const Map<const ICFGNode*, AbstractInterpretation::State>& reachable,
-    const std::vector<const FunObjVar*>& roots)
+    const std::vector<const FunObjVar*>& roots,
+    const Map<const ICFGNode*, const CallICFGNode*>& summaryReturns)
 {
     std::set<AD::Variable> universe;
     for (auto iterator = svfir.begin(); iterator != svfir.end(); ++iterator)
@@ -217,8 +218,18 @@ Map<const ICFGNode*, std::set<AD::Variable>> computeAvailability(
                 continue;
             bool first = true;
             std::set<AD::Variable> incoming;
+            // A TOP summary bypasses the unexecuted callee exit. Its return
+            // keeps the caller's available SSA names, including addresses.
+            const auto summary = summaryReturns.find(node);
+            if (summary != summaryReturns.end())
+            {
+                incoming = available.at(summary->second);
+                first = false;
+            }
             for (const ICFGEdge* edge : node->getInEdges())
             {
+                if (summary != summaryReturns.end())
+                    break;
                 const ICFGNode* predecessor = edge->getSrcNode();
                 if (!isEquationEdge(edge, reachable) ||
                     reachable.count(predecessor) == 0)
@@ -439,8 +450,18 @@ void AbstractInterpretation::verifyPostFixpoint()
     }
 
     const Map<const ICFGNode*, State> storedStates = stateTrace_;
+    Map<const ICFGNode*, const CallICFGNode*> summaryReturns;
+    for (const auto& [node, stored] : storedStates)
+    {
+        (void)stored;
+        const auto* call = SVFUtil::dyn_cast<CallICFGNode>(node);
+        if (call && call->getCalledFunction() && recursiveTopSummary(call) &&
+            storedStates.count(call->getRetICFGNode()))
+            summaryReturns.emplace(call->getRetICFGNode(), call);
+    }
     auto availability =
-        computeAvailability(icfg, *svfir, adapter_, storedStates, roots);
+        computeAvailability(icfg, *svfir, adapter_, storedStates, roots,
+                            summaryReturns);
     // Phi transfer reads each operand at its annotated predecessor program
     // point. Keep those coordinates observable in the predecessor's Post
     // state even when the ordinary CFG availability recurrence does not carry
@@ -606,6 +627,26 @@ void AbstractInterpretation::verifyPostFixpoint()
                     : "final entry state does not cover root initialization",
                 "");
         }
+    }
+
+    // Check the synthetic summary edge as well as ordinary ICFG equations.
+    // Replaying the havoc is idempotent; do not import an unexecuted exit or
+    // apply RetPE from that exit to the summary's already-bound return value.
+    for (const auto& [returnSite, call] : summaryReturns)
+    {
+        replay.stateTrace_ = finalStates;
+        replay.skipRecursionWithTop(call);
+        State summarized = replay.state(returnSite);
+        normalizePostReplayState(summarized, availability.at(returnSite));
+        const bool included = summarized.isSubsetOf(finalStates.at(returnSite)) ==
+                              AD::CheckResult::True;
+        if (!included)
+            traceFailure("recursive-summary", summarized, finalStates.at(returnSite));
+        addRecord("recursive-summary", call->getId(), returnSite->getId(),
+                  included ? EquationStatus::Pass : EquationStatus::Fail,
+                  included ? "recursive TOP summary is covered"
+                           : "return state does not cover recursive TOP summary",
+                  "");
     }
 
     std::vector<const ICFGEdge*> edges;

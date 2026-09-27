@@ -48,64 +48,137 @@ bool AbstractInterpretation::isRecursiveFun(const FunObjVar* fun)
     return preAnalysis->getPointerAnalysis()->isInRecursion(fun);
 }
 
-/// TOP mode for recursive calls: skip the function body entirely and
-/// conservatively set all reachable stores and the return value to TOP.
-void AbstractInterpretation::skipRecursionWithTop(const CallICFGNode* callNode)
+bool AbstractInterpretation::recursiveTopSummary(const CallICFGNode* call) const
 {
-    const RetICFGNode* retNode = callNode->getRetICFGNode();
+    if (!call || Options::HandleRecur() != TOP)
+        return false;
+    auto* pointerAnalysis = preAnalysis->getPointerAnalysis();
+    const auto summarized = [&](const FunObjVar* function) {
+        return function && pointerAnalysis->isInRecursion(function) &&
+               (!call->getCaller() ||
+                !pointerAnalysis->inSameCallGraphSCC(call->getCaller(), function));
+    };
+    if (const FunObjVar* direct = call->getCalledFunction())
+        return summarized(direct);
+    if (callGraph->hasIndCSCallees(call))
+        for (const FunObjVar* function : callGraph->getIndCSCallees(call))
+            if (summarized(function))
+                return true;
+    return false;
+}
 
-    // 1. Set return value to TOP
-    if (retNode->getSVFStmts().size() > 0)
-    {
-        if (const RetPE* retPE =
-                    SVFUtil::dyn_cast<RetPE>(*retNode->getSVFStmts().begin()))
+AbstractInterpretation::RecursiveMod AbstractInterpretation::recursiveTopMod(
+    const CallICFGNode* callNode) const
+{
+    RecursiveMod effect;
+    std::vector<const FunObjVar*> pending;
+    std::set<const FunObjVar*> visited;
+    const auto appendCallees = [&](const CallICFGNode* call) {
+        if (const FunObjVar* direct = call->getCalledFunction())
+            pending.push_back(direct);
+        else
         {
-            if (!retPE->getLHSVar()->isPointer() &&
-                    !retPE->getLHSVar()->isConstDataOrAggDataButNotNullPtr())
-                updateInterval(retPE->getLHSVar(),
-                               AbstractDomain::Interval::top(), callNode);
-        }
-    }
-
-    // 2. Set all stores in callee's reachable BBs to TOP
-    if (retNode->getOutEdges().size() > 1)
-    {
-        copyAbstractState(callNode, retNode);
-        return;
-    }
-    for (const SVFBasicBlock* bb :
-            callNode->getCalledFunction()->getReachableBBs())
-    {
-        for (const ICFGNode* node : bb->getICFGNodeList())
-        {
-            for (const SVFStmt* stmt : node->getSVFStmts())
+            const SVFVar* pointer = call->getIndFunPtr();
+            if (!pointer || !callGraph->hasIndCSCallees(call))
             {
-                if (const StoreStmt* store = SVFUtil::dyn_cast<StoreStmt>(stmt))
-                {
-                    const SVFVar* rhsVar = store->getRHSVar();
-                    if (!rhsVar->isPointer() &&
-                            !rhsVar->isConstDataOrAggDataButNotNullPtr())
+                effect.allObjects = true;
+                return;
+            }
+            const auto& targets = preAnalysis->getPointerAnalysis()->getPts(pointer->getId());
+            if (targets.empty())
+                effect.allObjects = true;
+            for (NodeID id : targets)
+                if (!SVFUtil::isa<FunObjVar>(svfir->getGNode(id)))
+                    effect.allObjects = true;
+            const auto& resolved = callGraph->getIndCSCallees(call);
+            if (resolved.empty())
+                effect.allObjects = true;
+            for (const FunObjVar* function : resolved)
+                pending.push_back(function);
+        }
+    };
+    if (!callNode)
+    {
+        effect.allObjects = true;
+        return effect;
+    }
+    appendCallees(callNode);
+    while (!pending.empty())
+    {
+        const FunObjVar* function = pending.back();
+        pending.pop_back();
+        if (!visited.insert(function).second)
+            continue;
+        if (SVFUtil::isExtCall(function))
+        {
+            // No external effect/callback contract: globals, reachable
+            // objects and lifetimes must all be treated as unconstrained.
+            effect.allObjects = true;
+            continue;
+        }
+        for (const SVFBasicBlock* bb : function->getReachableBBs())
+            for (const ICFGNode* node : bb->getICFGNodeList())
+            {
+                if (const auto* nested = SVFUtil::dyn_cast<CallICFGNode>(node))
+                    appendCallees(nested);
+                for (const SVFStmt* statement : node->getSVFStmts())
+                    if (const auto* store = SVFUtil::dyn_cast<StoreStmt>(statement))
                     {
-                        const AbstractDomain::AddressSet addresses =
-                            getAddressSet(store->getLHSVar(), callNode);
-                        if (!addresses.isBottom() &&
-                                !addresses.hasUnknownObject())
+                        // Unlike call-site state, Andersen has targets for
+                        // local pointers whose definitions are never run.
+                        const auto& targets = preAnalysis->getPointerAnalysis()->getPts(
+                                                  store->getLHSVarID());
+                        if (targets.empty())
+                            effect.allObjects = true;
+                        for (NodeID id : targets)
                         {
-                            for (AbstractDomain::Location location : addresses)
-                            {
-                                updateMemoryValue(
-                                    location, AbstractDomain::Interval::top(),
-                                    AbstractDomain::AddressSet::bottom(),
-                                    callNode);
-                            }
+                            const auto* object = SVFUtil::dyn_cast<ObjVar>(svfir->getGNode(id));
+                            const BaseObjVar* base = object ? svfir->getBaseObject(id) : nullptr;
+                            if (!base || base->isBlackHoleObj())
+                                effect.allObjects = true;
+                            else
+                                effect.modifiedBases.set(base->getId());
                         }
                     }
-                }
             }
-        }
     }
+    return effect;
+}
 
-    // 3. Copy callNode's state to retNode
+/// TOP summarizes effects of the whole callee plus transitive calls, even
+/// when the recursive WTO cycle has an already-executed acyclic prefix.
+void AbstractInterpretation::skipRecursionWithTop(const CallICFGNode* callNode)
+{
+    namespace AD = AbstractDomain;
+    const RetICFGNode* retNode = callNode->getRetICFGNode();
+    const RecursiveMod effect = recursiveTopMod(callNode);
+    if (std::getenv("SVF_AE_TRACE_RECURSIVE_TOP"))
+        std::cerr << "AE_RECURSIVE_TOP call=" << callNode->getId()
+                  << " bases=" << effect.modifiedBases.count()
+                  << " all=" << effect.allObjects << '\n';
+    prepareRecursiveHavoc(callNode, effect.modifiedBases, effect.allObjects);
+    State before = ensureState(callNode);
+    std::vector<AD::Location> locations;
+    for (const auto& [location, content] : before.memoryLayout().cells())
+    {
+        (void)content;
+        const ObjVar* object = objectAt(location);
+        const BaseObjVar* base = object ? svfir->getBaseObject(object->getId()) : nullptr;
+        if (effect.allObjects || (base && effect.modifiedBases.test(base->getId())))
+            locations.push_back(location);
+    }
+    for (AD::Location location : locations)
+        updateMemoryValue(location, AD::Interval::top(), AD::AddressSet::top(), callNode);
+    if (effect.allObjects)
+        ensureState(callNode).lifetimes() = AD::LifetimeDomain::top();
+    // MOD is may-write, so retain any previous uninitialized alternative.
+    ensureState(callNode).joinWith(before);
+    for (const SVFStmt* statement : retNode->getSVFStmts())
+        if (const auto* retPE = SVFUtil::dyn_cast<RetPE>(statement))
+            updateValue(retPE->getLHSVar(), AD::Interval::top(),
+                        retPE->getLHSVar()->isPointer() ? AD::AddressSet::top()
+                        : AD::AddressSet::bottom(), callNode);
+    // Return out-degree never bypasses the effect.
     copyAbstractState(callNode, retNode);
 }
 

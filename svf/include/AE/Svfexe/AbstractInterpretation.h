@@ -272,6 +272,17 @@ public:
                                    const AbstractDomain::Interval& interval,
                                    const AbstractDomain::AddressSet& addresses,
                                    const ICFGNode* node);
+    struct RecursiveMod
+    {
+        NodeBS modifiedBases;
+        bool allObjects = false;
+    };
+    /// Static overapproximation for TOP calls, available to version builders.
+    bool recursiveTopSummary(const CallICFGNode*) const;
+    RecursiveMod recursiveTopMod(const CallICFGNode*) const;
+    virtual void prepareRecursiveHavoc(const CallICFGNode*, const NodeBS&, bool)
+    {
+    }
     virtual void markFreedMemory(AbstractDomain::Location location,
                                  const ICFGNode* node);
     virtual bool isFreedMemory(AbstractDomain::Location location,
