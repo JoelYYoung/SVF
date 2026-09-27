@@ -144,11 +144,17 @@ void SemiSparseAbstractInterpretation::initializeScalarAvailability()
     const ICFGNode* global = this->icfg->getGlobalICFGNode();
     std::set<AD::Variable> globalOut =
         definedScalarVariables(global, this->adapter_);
+    // Use the same entry policy as execution, not all syntactic callers.
+    // This is static reachability: no guard feasibility is assumed here.
+    std::set<const ICFGNode*> reachable{global};
+    std::set<const ICFGNode*> entryNodes;
     FIFOWorkList<const FunObjVar*> roots = this->collectProgEntryFuns();
     while (!roots.empty())
     {
         const FunEntryICFGNode* entry =
             this->icfg->getFunEntryICFGNode(roots.pop());
+        reachable.insert(entry);
+        entryNodes.insert(entry);
         for (const SVFVar* argument : entry->getFormalParms())
         {
             const auto* value = SVFUtil::dyn_cast<ValVar>(argument);
@@ -158,22 +164,56 @@ void SemiSparseAbstractInterpretation::initializeScalarAvailability()
     }
     scalarAvailability_[global] = std::move(globalOut);
 
+    bool reachChanged=true;
+    while(reachChanged)
+    {
+        reachChanged=false;
+        for(const ICFGNode* node:nodes)
+        {
+            if(!reachable.count(node)) continue;
+            for(const ICFGEdge* edge:node->getOutEdges())
+            {
+                if(!SVFUtil::isa<IntraCFGEdge>(edge) &&
+                   !SVFUtil::isa<CallCFGEdge>(edge) &&
+                   !SVFUtil::isa<RetCFGEdge>(edge)) continue;
+                // Reaching a shared callee through main does not execute an
+                // unvisited caller's return site. Revisit on later discovery
+                // of that call site; this fixed point is independent of IDs.
+                if(const auto* ret=SVFUtil::dyn_cast<RetCFGEdge>(edge))
+                    if(!reachable.count(ret->getCallSite())) continue;
+                reachChanged|=reachable.insert(edge->getDstNode()).second;
+            }
+        }
+    }
+    for(const ICFGNode* node:nodes)
+        if(!reachable.count(node)) scalarAvailability_[node].clear();
+
     bool changed = true;
     while (changed)
     {
         changed = false;
         for (const ICFGNode* node : nodes)
         {
-            if (node == global)
+            if (node == global || !reachable.count(node))
                 continue;
             bool first = true;
             std::set<AD::Variable> incoming;
+            // Execution also starts selected roots directly from the global
+            // state (including no-main entry SCCs without an explicit edge).
+            if (entryNodes.count(node))
+            {
+                incoming=scalarAvailability_.at(global);
+                first=false;
+            }
             for (const ICFGEdge* edge : node->getInEdges())
             {
                 if (!SVFUtil::isa<IntraCFGEdge>(edge) &&
                     !SVFUtil::isa<CallCFGEdge>(edge) &&
                     !SVFUtil::isa<RetCFGEdge>(edge))
                     continue;
+                if (!reachable.count(edge->getSrcNode())) continue;
+                if (const auto* ret=SVFUtil::dyn_cast<RetCFGEdge>(edge))
+                    if (!reachable.count(ret->getCallSite())) continue;
                 const auto predecessor =
                     scalarAvailability_.find(edge->getSrcNode());
                 if (predecessor == scalarAvailability_.end())
