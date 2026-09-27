@@ -29,6 +29,7 @@
 #include "AE/Svfexe/AbstractInterpretation.h"
 #include "AE/Svfexe/AbsExtAPI.h"
 #include "AE/Svfexe/SparseAbstractInterpretation.h"
+#include "AE/Svfexe/OhPackedAbstractInterpretation.h"
 #include "AE/Core/NumericalDomainFactory.h"
 #include "AE/Core/NumericalOperationTrace.h"
 #include "AE/Core/PartialRelationalDomain.h"
@@ -699,6 +700,7 @@ void AbstractInterpretation::runOnModule()
 
     const auto packingStart = PhaseClock::now();
     initializeRelationalPolicy();
+    initializeExecutionPolicy();
     if (Options::AERelationalPolicy() == SyntaxPackedRelational)
         SVFUtil::outs() << "AE_PACKING_SECONDS " << secondsSince(packingStart) << '\n';
 
@@ -747,8 +749,8 @@ void AbstractInterpretation::runOnModule()
         };
         for (const auto& [node, property] : stateTrace_)
         {
-            (void)node;
-            measure(property);
+            (void)property;
+            measure(state(node));
         }
         if (const AD::AbstractDomain* carrier = getScalarAbstractState())
             measure(static_cast<const State&>(*carrier));
@@ -1046,6 +1048,13 @@ AbstractInterpretation& AbstractInterpretation::getAEInstance()
                 "partial relational policies require octagon or polyhedra");
         switch (Options::AESparsity())
         {
+        case AESparsity::OhPackedSparse:
+            if (Options::AEDomain() != Octagon ||
+                Options::AERelationalPolicy() != SyntaxPackedRelational ||
+                elinaBackend || !Options::AENumericalTrace().empty() ||
+                Options::AEPostCheckFile().empty())
+                throw std::invalid_argument("oh-packed requires native octagon, syntax-pack, Post checking and no numerical trace decorator");
+            return new OhPackedAbstractInterpretation();
         case AESparsity::SemiSparse:
             return new SemiSparseAbstractInterpretation();
         case AESparsity::Sparse:
@@ -1565,6 +1574,7 @@ bool AbstractInterpretation::handleICFGNode(const ICFGNode* node)
         }
     }
 
+    beginAbstractState(node);
     // Store the previous state for fixpoint detection
     std::unique_ptr<AbstractDomain::AbstractDomain> previousState =
         cloneAbstractState(node);

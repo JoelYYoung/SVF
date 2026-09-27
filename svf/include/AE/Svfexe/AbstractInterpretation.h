@@ -96,7 +96,8 @@ public:
     {
         Dense,
         SemiSparse,
-        Sparse
+        Sparse,
+        OhPackedSparse
     };
 
     enum AENumericalDomain
@@ -366,6 +367,8 @@ protected:
     /// temporary operands. Native sparse implementations use this boundary to
     /// keep ValVar values out of persistent ICFG states.
     virtual void finalizeAbstractState(const ICFGNode* node);
+    virtual void beginAbstractState(const ICFGNode*) {}
+    virtual void initializeExecutionPolicy() {}
 
     /// Pull-based state merge: read abstractTrace[pred] for each predecessor,
     /// apply branch refinement for conditional IntraCFGEdges, and join into
@@ -506,8 +509,8 @@ protected:
         return unknownTargetTelemetry_;
     }
 
-    State& ensureState(const ICFGNode* node);
-    const State& state(const ICFGNode* node) const;
+    virtual State& ensureState(const ICFGNode* node);
+    virtual const State& state(const ICFGNode* node) const;
     /// State that owns SSA numerical relations created by a transfer. Dense
     /// AE uses the current ICFG state; semi-sparse AE overrides this with its
     /// module-wide SSA carrier.

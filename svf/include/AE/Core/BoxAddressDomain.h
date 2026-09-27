@@ -178,6 +178,14 @@ public:
     {
         return *numerical_;
     }
+    /// Executor-only storage conversion; the caller must preserve semantics
+    /// through its component store before exposing this state to a transfer.
+    void replaceNumericalStorage(std::unique_ptr<NumericalDomain> numerical)
+    {
+        if (!numerical)
+            throw std::invalid_argument("null numerical storage");
+        numerical_ = std::move(numerical);
+    }
     AddressDomain& addresses()
     {
         return addresses_;

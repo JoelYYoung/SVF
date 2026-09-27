@@ -39,6 +39,10 @@ public:
     LinearConstraintSet toConstraints() const override;
     void close() override;
     void canonicalize() override;
+    // Executor storage boundary: a pack is an indivisible abstract location.
+    const OctagonDomain& packState(std::size_t index) const { return packs_.at(index); }
+    const BoxDomain& fallbackState() const { return box_; }
+    void restoreComponents(BoxDomain fallback, std::vector<OctagonDomain> packs);
 private:
     const void* dynamicTypeToken() const noexcept override { return staticTypeToken<PackedRelationalDomain>(); }
     bool hasCompatibleDomain(const AbstractDomain&) const override;

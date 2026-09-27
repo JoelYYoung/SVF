@@ -782,6 +782,10 @@ const OptionMap<u32_t> Options::AESparsity(
     {
         AbstractInterpretation::AESparsity::Sparse, "sparse",
         "Sparse abstract execution via SVFG."
+    },
+    {
+        AbstractInterpretation::AESparsity::OhPackedSparse, "oh-packed",
+        "Oh pack-location sparse propagation with dense auxiliary facets."
     }
 });
 const OptionMap<u32_t> Options::AEDomain(

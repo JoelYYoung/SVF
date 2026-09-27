@@ -132,6 +132,16 @@ if(SVF_ENABLE_ELINA)
 endif()
 
 if(BUILD_TESTING)
+  find_package(Python3 COMPONENTS Interpreter QUIET)
+  if(Python3_Interpreter_FOUND)
+    add_test(NAME ae-relational/OhPackedProductionTest
+      COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_LIST_DIR}/../tests/ae-relational/check_oh_production.py
+        --ae $<TARGET_FILE:ae>
+        --extapi ${CMAKE_BINARY_DIR}/lib/extapi.bc
+        --library-path $<TARGET_FILE_DIR:z3::libz3>)
+    set_tests_properties(ae-relational/OhPackedProductionTest PROPERTIES TIMEOUT 180)
+  endif()
   add_executable(PackedSparseAnalysisTest
     ${CMAKE_CURRENT_LIST_DIR}/../tests/ae-relational/PackedSparseAnalysisTest.cpp)
   target_link_libraries(PackedSparseAnalysisTest PRIVATE AbstractDomainCore)

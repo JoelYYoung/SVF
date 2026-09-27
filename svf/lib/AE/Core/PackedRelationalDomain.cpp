@@ -43,6 +43,11 @@ PackedRelationalDomain::PackedRelationalDomain(std::shared_ptr<const Packing> p,
 }
 std::unique_ptr<AbstractDomain> PackedRelationalDomain::clone() const
 { return std::make_unique<PackedRelationalDomain>(*this); }
+void PackedRelationalDomain::restoreComponents(BoxDomain fallback, std::vector<OctagonDomain> packs)
+{
+    if(packs.size()!=packing_->size()) throw std::invalid_argument("packed restore size mismatch");
+    box_=std::move(fallback); packs_=std::move(packs); normalizeBottom();
+}
 bool PackedRelationalDomain::contains(std::size_t p,Variable v) const
 { const auto& pack=packing_->at(p); return std::binary_search(pack.begin(),pack.end(),v); }
 void PackedRelationalDomain::normalizeBottom()
