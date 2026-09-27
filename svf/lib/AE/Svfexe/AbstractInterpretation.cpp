@@ -30,6 +30,7 @@
 #include "AE/Svfexe/AbsExtAPI.h"
 #include "AE/Svfexe/SparseAbstractInterpretation.h"
 #include "AE/Svfexe/OhPackedAbstractInterpretation.h"
+#include "AE/Svfexe/VersionedSparseAbstractInterpretation.h"
 #include "AE/Core/NumericalDomainFactory.h"
 #include "AE/Core/NumericalOperationTrace.h"
 #include "AE/Core/PartialRelationalDomain.h"
@@ -1042,6 +1043,12 @@ AbstractInterpretation& AbstractInterpretation::getAEInstance()
             throw std::invalid_argument(
                 "relational numerical domains currently support dense and "
                 "semi-sparse AE only");
+        if (Options::AESparsity() == AESparsity::VersionedSparse &&
+                (Options::AEDomain() == AENumericalDomain::Box ||
+                 Options::AERelationalPolicy() != WholeRelational))
+            throw std::invalid_argument(
+                "-ae-sparsity=d3 requires a relational domain with "
+                "-ae-relational-policy=whole");
         if (Options::AERelationalPolicy() != WholeRelational &&
                 Options::AEDomain() == AENumericalDomain::Box)
             throw std::invalid_argument(
@@ -1059,6 +1066,8 @@ AbstractInterpretation& AbstractInterpretation::getAEInstance()
             return new SemiSparseAbstractInterpretation();
         case AESparsity::Sparse:
             return new FullSparseAbstractInterpretation();
+        case AESparsity::VersionedSparse:
+            return new VersionedSparseAbstractInterpretation();
         case AESparsity::Dense:
         default:
             return new AbstractInterpretation();

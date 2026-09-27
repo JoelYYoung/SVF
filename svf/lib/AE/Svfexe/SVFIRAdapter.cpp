@@ -249,8 +249,17 @@ const ObjVar* SVFIRAdapter::contentObject(Variable variable) const
            : nullptr;
 }
 
+Variable SVFIRAdapter::syntheticVariable(const AbstractDomain::NumericType& type) const
+{
+    const Variable variable = nextVariable(nextVariableId_, type);
+    syntheticVariables_.insert(variable.id());
+    return variable;
+}
+
 bool SVFIRAdapter::isPointer(Variable variable) const
 {
+    if (isSynthetic(variable))
+        return false;
     if (const ValVar* scalar = value(variable))
         return scalar->isPointer();
     if (const ObjVar* object = contentObject(variable))

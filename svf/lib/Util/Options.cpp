@@ -786,6 +786,10 @@ const OptionMap<u32_t> Options::AESparsity(
     {
         AbstractInterpretation::AESparsity::OhPackedSparse, "oh-packed",
         "Oh pack-location sparse propagation with dense auxiliary facets."
+    },
+    {
+        AbstractInterpretation::AESparsity::VersionedSparse, "d3",
+        "D3 relational sparse AE: memory content versions, definition-site constraints, refinement channel."
     }
 });
 const OptionMap<u32_t> Options::AEDomain(

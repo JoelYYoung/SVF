@@ -28,6 +28,7 @@
 
 #include <cstdint>
 #include <map>
+#include <set>
 #include <vector>
 
 namespace SVF
@@ -59,6 +60,15 @@ public:
     const ObjVar* contentObject(AbstractDomain::Variable variable) const;
     bool isPointer(AbstractDomain::Variable variable) const;
     const ObjVar& object(AbstractDomain::Location location) const;
+    /// Allocate an analysis-internal numerical coordinate with no SVFIR
+    /// counterpart (for example a MemorySSA content version). It is neither
+    /// a ValVar slot nor an object content slot.
+    AbstractDomain::Variable syntheticVariable(
+        const AbstractDomain::NumericType& type) const;
+    bool isSynthetic(AbstractDomain::Variable variable) const
+    {
+        return syntheticVariables_.count(variable.id()) != 0;
+    }
     AbstractDomain::Variable firstObjectContentVariable() const
     {
         return AbstractDomain::Variable(firstObjectContentVariableId_);
@@ -82,6 +92,7 @@ private:
     mutable AbstractDomain::MemoryLayout memoryLayout_;
     mutable std::uint64_t nextVariableId_ = 1;
     mutable std::uint64_t nextLocationId_ = 1;
+    mutable std::set<std::uint32_t> syntheticVariables_;
     std::uint32_t firstObjectContentVariableId_ = 1;
 };
 

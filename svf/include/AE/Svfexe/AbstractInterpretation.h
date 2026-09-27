@@ -97,7 +97,10 @@ public:
         Dense,
         SemiSparse,
         Sparse,
-        OhPackedSparse
+        OhPackedSparse,
+        /// D3: MemorySSA content versions, definition-site constraints,
+        /// branch-refinement channel and use-site recovery (relational only).
+        VersionedSparse
     };
 
     enum AENumericalDomain
