@@ -1221,22 +1221,51 @@ void AbstractInterpretation::analyzeFromAllProgEntries()
 /// calling findBackingLoad(%a) returns the LoadStmt, and we can then
 /// narrow the ObjVar behind %p.
 ///
-/// Follows one level of CopyStmt (e.g., zext/sext) if the load is not
-/// directly on the cmp operand. Returns nullptr if no load is found.
+/// Follows one same-type identity CopyStmt. Casts require an inverse
+/// transformer and are conservatively excluded from this helper.
 static const LoadStmt* findBackingLoad(const SVFVar* var)
 {
-    if (var->getInEdges().empty())
+    if (var->getInEdges().size() != 1)
         return nullptr;
     SVFStmt* inStmt = *var->getInEdges().begin();
     if (const LoadStmt* ls = SVFUtil::dyn_cast<LoadStmt>(inStmt))
         return ls;
     if (const CopyStmt* cs = SVFUtil::dyn_cast<CopyStmt>(inStmt))
     {
+        // Only an identity copy can transport an interval unchanged back to
+        // memory. Casts require a separate inverse transformer.
+        if (cs->getCopyKind() != CopyStmt::COPYVAL ||
+            cs->getLHSVar()->getType() != cs->getRHSVar()->getType())
+            return nullptr;
         const SVFVar* src = cs->getRHSVar();
-        if (!src->getInEdges().empty())
+        if (src->getInEdges().size() == 1)
             return SVFUtil::dyn_cast<LoadStmt>(*src->getInEdges().begin());
     }
     return nullptr;
+}
+
+// Sufficient freshness proof, deliberately alias-independent: the load and
+// branch are on one acyclic, unconditional, intra-block predecessor chain,
+// with no intervening store or call. An SSA load result survives a write;
+// the mutable object's content does not. Check through the branch (not merely
+// through the comparison), because a write may also occur after the compare.
+static bool loadedMemoryStillCurrent(const LoadStmt* load, const ICFGNode* branch)
+{
+    const ICFGNode* origin=load->getICFGNode();
+    if (!origin->getBB() || origin->getBB()!=branch->getBB()) return false;
+    std::set<const ICFGNode*> seen;
+    for (const ICFGNode* cursor=branch;;)
+    {
+        if (!seen.insert(cursor).second || !SVFUtil::isa<IntraICFGNode>(cursor) ||
+            cursor->getBB()!=origin->getBB()) return false;
+        for (const SVFStmt* stmt:cursor->getSVFStmts())
+            if (SVFUtil::isa<StoreStmt>(stmt)) return false;
+        if (cursor==origin) return true;
+        if (cursor->getInEdges().size()!=1) return false;
+        const auto* edge=SVFUtil::dyn_cast<IntraCFGEdge>(*cursor->getInEdges().begin());
+        if (!edge || edge->getCondition()) return false;
+        cursor=edge->getSrcNode();
+    }
 }
 
 /// Compute the interval constraint on one cmp operand given the predicate,
@@ -1410,6 +1439,11 @@ void AbstractInterpretation::collectBranchRefinement(
     if (const CmpStmt* cmpStmt = SVFUtil::dyn_cast<CmpStmt>(condDef))
     {
         s32_t predicate = cmpStmt->getPredicate();
+        // Signed mathematical intervals cannot invert unsigned/IEEE guards.
+        if (predicate!=CmpStmt::ICMP_EQ && predicate!=CmpStmt::ICMP_NE &&
+            predicate!=CmpStmt::ICMP_SLT && predicate!=CmpStmt::ICMP_SLE &&
+            predicate!=CmpStmt::ICMP_SGT && predicate!=CmpStmt::ICMP_SGE)
+            return;
 
         if (cmpStmt->getOpVarID(0) == IRGraph::NullPtr ||
                 cmpStmt->getOpVarID(1) == IRGraph::NullPtr)
@@ -1449,7 +1483,7 @@ void AbstractInterpretation::collectBranchRefinement(
                         // Match Original: refine a loaded value only against
                         // a fixed numerical bound, not another interval.
                     }
-                    else if (!load)
+                    else if (!load || !loadedMemoryStillCurrent(load,pred))
                     {
                         // Example: cmp uses a computed temporary, not load p.
                     }
@@ -1467,7 +1501,7 @@ void AbstractInterpretation::collectBranchRefinement(
                             const ICFGNode* loadIcfg = load->getICFGNode();
                             const AD::AddressSet ptrVal =
                                 getAddressSet(load->getRHSVar(), loadIcfg);
-                            if (ptrVal.isBottom() ||
+                            if (!ptrVal.isSingleton() ||
                                     ptrVal.hasUnknownObject())
                             {
                                 // Cannot map load p back to concrete ObjVars.
@@ -1476,8 +1510,8 @@ void AbstractInterpretation::collectBranchRefinement(
                             {
                                 for (const AD::Location location : ptrVal)
                                 {
-                                    if (const ObjVar* object =
-                                                objectAt(location))
+                                    if (const ObjVar* object = objectAt(location))
+                                      if (canStrongStore(ptrVal,*object,static_cast<State&>(state)))
                                         recordBranchRefinement(
                                             object->getId(), narrowed, state,
                                             loadIcfg, succNode);
@@ -1508,7 +1542,7 @@ void AbstractInterpretation::collectBranchRefinement(
             {
                 const SVFStmt* stmt = stmtList.pop();
                 const LoadStmt* load = SVFUtil::dyn_cast<LoadStmt>(stmt);
-                if (!load)
+                if (!load || !loadedMemoryStillCurrent(load,pred))
                 {
                     // Skip non-load definitions of the switch condition.
                 }
@@ -1517,7 +1551,7 @@ void AbstractInterpretation::collectBranchRefinement(
                     const ICFGNode* loadIcfg = load->getICFGNode();
                     const AD::AddressSet ptrVal =
                         getAddressSet(load->getRHSVar(), loadIcfg);
-                    if (ptrVal.isBottom() || ptrVal.hasUnknownObject())
+                    if (!ptrVal.isSingleton() || ptrVal.hasUnknownObject())
                     {
                         // Cannot map load p back to concrete ObjVars.
                     }
@@ -1526,6 +1560,7 @@ void AbstractInterpretation::collectBranchRefinement(
                         for (const AD::Location location : ptrVal)
                         {
                             if (const ObjVar* object = objectAt(location))
+                              if (canStrongStore(ptrVal,*object,static_cast<State&>(state)))
                                 recordBranchRefinement(object->getId(),
                                                        switch_cond, state,
                                                        loadIcfg, succNode);
@@ -1547,9 +1582,22 @@ void AbstractInterpretation::recordBranchRefinement(
 
     State& denseState = static_cast<State&>(abstractState);
     const AD::Variable content = adapter_.contentVariable(*object);
-    AD::Interval refined = denseState.numerical().bound(content);
-    refined.meetWith(narrowed);
-    assignInterval(denseState, content, refined);
+    // A guard intersects the current content, preserving every relation and
+    // initialization facet. Assignment would forget those relations.
+    if (narrowed.isBottom())
+        denseState.numerical().assume(AD::equal(AD::LinearExpression(AD::Rational(0)),
+                                               AD::LinearExpression(AD::Rational(1))));
+    else
+    {
+        if (narrowed.lower().isFinite())
+            denseState.numerical().assume(AD::LinearConstraint(
+                AD::LinearExpression(content)-AD::LinearExpression(narrowed.lower().value()),
+                narrowed.lower().isStrict()?AD::ConstraintKind::GreaterThan:AD::ConstraintKind::GreaterEqual));
+        if (narrowed.upper().isFinite())
+            denseState.numerical().assume(AD::LinearConstraint(
+                AD::LinearExpression(content)-AD::LinearExpression(narrowed.upper().value()),
+                narrowed.upper().isStrict()?AD::ConstraintKind::LessThan:AD::ConstraintKind::LessEqual));
+    }
 }
 
 /**
