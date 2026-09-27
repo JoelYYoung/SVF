@@ -161,7 +161,8 @@ protected:
         const std::vector<AbstractDomain::Variable>& seeds) const;
     void materializeScalarDefinitions(
         State& state, const std::vector<AbstractDomain::Variable>& seeds,
-        const ICFGNode* node) const;
+        const ICFGNode* node,
+        const std::set<AbstractDomain::Variable>* availableOverride = nullptr) const;
     /// Coordinates available at `node` beyond the scalar availability sets
     /// (for example D3 content versions). They are materialized only when a
     /// seed or dependency names them, never as an "all available" seed.

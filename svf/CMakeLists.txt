@@ -134,6 +134,13 @@ endif()
 if(BUILD_TESTING)
   find_package(Python3 COMPONENTS Interpreter QUIET)
   if(Python3_Interpreter_FOUND)
+    add_test(NAME ae-relational/PostAvailabilityTest
+      COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_LIST_DIR}/../tests/ae-relational/check_post_availability.py
+        --ae $<TARGET_FILE:ae>
+        --extapi ${CMAKE_BINARY_DIR}/lib/extapi.bc
+        --library-path $<TARGET_FILE_DIR:z3::libz3>)
+    set_tests_properties(ae-relational/PostAvailabilityTest PROPERTIES TIMEOUT 150)
     add_test(NAME ae-relational/OhPackedProductionTest
       COMMAND ${Python3_EXECUTABLE}
         ${CMAKE_CURRENT_LIST_DIR}/../tests/ae-relational/check_oh_production.py

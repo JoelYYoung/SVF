@@ -809,7 +809,13 @@ SemiSparseAbstractInterpretation::State SemiSparseAbstractInterpretation::
     {
         const std::vector<AD::Variable> variables(pointScalars.begin(),
                                                   pointScalars.end());
-        materializeScalarDefinitions(reconstructed, variables, node);
+        // Post computed availability on the final reachable equation graph.
+        // Use that same scope throughout reconstruction, including inside
+        // materialization. Static all-CFG availability can be smaller when
+        // an unreachable predecessor bypasses a definition; filtering twice
+        // would silently turn an initialized coordinate into uninitialized.
+        materializeScalarDefinitions(reconstructed, variables, node,
+                                     &pointScalars);
     }
     else if (const State* carrier = findScalarState())
     {
@@ -1139,17 +1145,20 @@ std::vector<AD::Variable> SemiSparseAbstractInterpretation::
 
 void SemiSparseAbstractInterpretation::materializeScalarDefinitions(
     State& destination, const std::vector<AD::Variable>& seeds,
-    const ICFGNode* node) const
+    const ICFGNode* node,
+    const std::set<AD::Variable>* availableOverride) const
 {
     if (!node || seeds.empty())
         return;
     const auto available = scalarAvailability_.find(node);
-    if (available == scalarAvailability_.end())
+    if (!availableOverride && available == scalarAvailability_.end())
         return;
 
     const auto isAvailable = [&](AD::Variable variable)
     {
-        return available->second.count(variable) != 0 ||
+        const auto& scope = availableOverride ? *availableOverride
+                                             : available->second;
+        return scope.count(variable) != 0 ||
                extraAvailable(node, variable);
     };
     std::set<AD::Variable> retained;

@@ -243,8 +243,27 @@ bool PackedRelationalDomain::leqDomain(const AbstractDomain& other) const
 {
     if(isBottom()) return true;
     const auto& o=static_cast<const PackedRelationalDomain&>(other);
-    if(o.isBottom() || box_.isSubsetOf(o.box_)!=CheckResult::True) return false;
-    for(std::size_t p=0;p<packs_.size();++p) if(packs_[p].isSubsetOf(o.packs_[p])!=CheckResult::True) return false;
+    if(o.isBottom()) return false;
+    // Fast sufficient test on the stored product components.
+    bool componentwise = box_.isSubsetOf(o.box_) == CheckResult::True;
+    for(std::size_t p=0;componentwise && p<packs_.size();++p)
+        componentwise = packs_[p].isSubsetOf(o.packs_[p]) == CheckResult::True;
+    if(componentwise) return true;
+
+    // A state can store a unary consequence only in one overlapping pack.
+    // Import bounds implied by the entire LHS into temporary LHS components
+    // before checking. These consequences preserve its concretization; the
+    // original carriers and the RHS are untouched. One reduction pass is a
+    // sufficient inclusion check, not a complete relational decision rule.
+    for(Variable v:o.box_.supportVariables())
+        if(!bound(v).isSubsetOf(o.box_.bound(v))) return false;
+    for(std::size_t p=0;p<packs_.size();++p)
+    {
+        if(packs_[p].isSubsetOf(o.packs_[p])==CheckResult::True) continue;
+        auto reduced = packs_[p];
+        for(Variable v:packing_->at(p)) restrictBound(reduced,v,bound(v));
+        if(reduced.isSubsetOf(o.packs_[p])!=CheckResult::True) return false;
+    }
     return true;
 }
 std::string PackedRelationalDomain::domainToString() const

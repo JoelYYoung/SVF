@@ -66,7 +66,21 @@ int main()
             check(!entails(d,A::equal(E(y),c(4))),"fold includes previous target");
             d.project({y}); check(d.bound(z).isTop(),"project removes object");
         }
-        std::cout<<"PackedRelationalDomain: 9 transfer scenarios PASS\n";
+        {
+            auto overlap=std::make_shared<const D::Packing>(D::Packing{{x,y},{y,z}});
+            D left(overlap),right(overlap),tooStrong(overlap);
+            auto p0=left.packState(0),p1=left.packState(1);
+            p0.assume(A::lessEqual(E(y),c(5)));
+            left.restoreComponents(A::BoxDomain::top(),{p0,p1});
+            right.assume(A::lessEqual(E(y),c(5)));
+            check(left.isSubsetOf(right)==A::CheckResult::True,"cross-pack redundant unary bound inclusion");
+            check(right.isSubsetOf(left)==A::CheckResult::True,"cross-pack reverse inclusion");
+            tooStrong.assume(A::lessEqual(E(y),c(4)));
+            check(left.isSubsetOf(tooStrong)!=A::CheckResult::True,"cross-pack must reject stronger bound");
+            tooStrong=D(overlap); tooStrong.assume(A::equal(E(x),E(y)));
+            check(left.isSubsetOf(tooStrong)!=A::CheckResult::True,"cross-pack must reject unsupported relation");
+        }
+        std::cout<<"PackedRelationalDomain: transfer and inclusion scenarios PASS\n";
         return 0;
     }
     catch(const std::exception& e) { std::cerr<<e.what()<<'\n'; return 1; }
