@@ -562,6 +562,9 @@ protected:
                            AbstractDomain::Variable content,
                            const AbstractDomain::Interval& interval,
                            const AbstractDomain::AddressSet& addresses);
+    /// Strong writes require a definite, non-summary, live memory cell.
+    bool canStrongStore(const AbstractDomain::AddressSet& pointees,
+                        const ObjVar& object, const State& state);
     AbstractDomain::Variable memoryVariable(const ObjVar& object,
                                             const State& state) const;
     void assignInterval(State& state, AbstractDomain::Variable variable,

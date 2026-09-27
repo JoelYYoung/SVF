@@ -3100,7 +3100,7 @@ void AbstractInterpretation::updateStateOnStore(const StoreStmt* store)
             const AD::Location location = *pointees.begin();
             const ObjVar* object = location.isNull() ? nullptr
                                    : objectAt(location);
-            if (object)
+            if (object && canStrongStore(pointees, *object, state(node)))
                 assignRelationalStore(
                     SVFUtil::dyn_cast<ValVar>(store->getRHSVar()),
                     memoryVariable(*object, ensureState(node)), node);

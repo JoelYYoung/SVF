@@ -890,25 +890,25 @@ void AbstractInterpretation::loadValue(const ValVar* pointer,
     }
 }
 
+bool AbstractInterpretation::canStrongStore(
+    const AD::AddressSet& pointees, const ObjVar& object, const State& state)
+{
+    const BaseObjVar* base = svfir->getBaseObject(object.getId());
+    return pointees.isSingleton() && base && !base->isHeap() &&
+           !base->isArray() && !base->isBlackHoleObj() &&
+           !base->isFieldInsensitive() &&
+           !(base->isStack() && isRecursiveFun(base->getFunction())) &&
+           !state.lifetimes().mayBeFreed(adapter_.location(object));
+}
+
 void AbstractInterpretation::storeValue(const ValVar* pointer,
                                         const AD::Interval& interval,
                                         const AD::AddressSet& addresses,
                                         const ICFGNode* node)
 {
-    if (!adapter_.contains(*pointer))
-    {
-        const AD::AddressSet pointees = getAddressSet(pointer, node);
-        if (pointees.hasUnknownObject() && unknownTargetTelemetryEnabled_)
-            ++unknownTargetTelemetry_.stores;
-        if (!pointees.hasUnknownObject())
-        {
-            for (AD::Location location : pointees)
-                updateMemoryValue(location, interval, addresses, node);
-        }
-        return;
-    }
     State& denseState = ensureState(node);
-    materializeValue(denseState, pointer, node);
+    if (adapter_.contains(*pointer))
+        materializeValue(denseState, pointer, node);
     const AD::AddressSet pointees = getAddressSet(pointer, node);
     auto write = [&](AD::Location location)
     {
@@ -918,19 +918,18 @@ void AbstractInterpretation::storeValue(const ValVar* pointer,
         if (!object)
             return;
         const AD::Variable content = memoryVariable(*object, denseState);
-        // Original AE overwrites each enumerated target. This is an
-        // interpreter precision policy, not the domain's weak-store semantics.
-        if (!pointees.hasUnknownObject())
+        if (canStrongStore(pointees, *object, denseState))
         {
             assignMemoryValue(denseState, content, interval, addresses);
             return;
         }
-        AD::Interval joinedInterval = getInterval(object, node);
-        AD::AddressSet joinedAddresses = getAddressSet(object, node);
-        joinedInterval.joinWith(interval);
-        joinedAddresses.joinWith(addresses);
-        assignMemoryValue(denseState, content, joinedInterval,
-                          joinedAddresses);
+        // This cell may not be written (or may summarize several concrete
+        // cells). Retain the unchanged alternative, including initialization
+        // and address facets. Sequential weak writes overapproximate the
+        // choice of one target; they do not assert that all targets changed.
+        State written(denseState);
+        assignMemoryValue(written, content, interval, addresses);
+        denseState.joinWith(written);
     };
 
     if (pointees.hasUnknownObject())
