@@ -39,5 +39,16 @@ The first candidate runner incorrectly demanded ideal Safe positives for Box
 and small packs; its failed expectations and outputs are preserved, not counted
 as analyzer soundness failures.
 
-R08 (unreachable caller and scalar availability) is a separate pending change.
+R12 from Supervisor fixtures d22f6b8 is now frozen here: cases 1,2,3,7 are
+independent old-false-Safe/new-May red tests for call, non-singleton load,
+stale switch, and unsigned-as-signed respectively. The earlier
+BranchMemoryCase1/2/4/5 were already May on 20d73d8c; they provide coverage
+but are not red tests. Cases 4/9 (cast), 5 (fresh unsigned), and 8 (cross-BB,
+Box/packed) explicitly record real Safe-to-May precision costs; case 6 is a
+fresh switch positive. The runner now records 80 runs and separates these
+roles. Case 4's source comment says overwrite w, but the actual store is to o;
+the statements are retained without repair. Imported C/LLVM copies add one
+final blank line; their recorded hashes identify these exact local inputs.
+
+R08 (unreachable caller and scalar availability) is a separate reviewed change.
 No six-program rerun or new scale/precision certification is implied here.

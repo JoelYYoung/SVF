@@ -18,7 +18,11 @@ def main():
     cases={'R09_load_store_branch_refinement':['Safe','May'],
            'R10_stale_branch_refinement_false_safe':['May',None],
            **{f'BranchMemoryCase{i}':['May'] for i in [1,2,4,5]},
-           'BranchMemoryCase3':[None,None]}
+           'BranchMemoryCase3':[None,None],
+           **{f'R12_branch_guards_case{i}':['May'] for i in [1,2,3,4,7,9]},
+           'R12_branch_guards_case5':['May','May'],
+           'R12_branch_guards_case6':['Safe'],
+           'R12_branch_guards_case8':['May']}
     configs={'box':('box','dense','whole'),'dense':('octagon','dense','whole'),
              'semi':('octagon','semi-sparse','whole'),'pack':('octagon','dense','syntax-pack'),
              'oh':('octagon','oh-packed','syntax-pack')}
@@ -48,12 +52,18 @@ def main():
             # fresh relation. These ideal Safe queries are precision probes,
             # not grounds for accepting a false Safe on the stale queries.
             if name=='BranchMemoryCase3' and cfg in ('dense','semi'): want=['Safe','Safe']
+            if name=='R12_branch_guards_case8' and cfg in ('dense','semi'): want=['Safe']
             ok=result.returncode==0 and len(actual)==len(want) and all(
                 e is None or a==e for a,e in zip(actual,want)) and ps and all(
                 p['status'] in ('Pass','Infeasible','Unreachable') for p in ps)
             rec=dict(case=name,config=cfg,command=cmd,status=result.returncode,
                      started_at=start,ended_at=end,wall_seconds=wall,queries=qs,post=ps,
-                     expected=want,accepted=bool(ok))
+                     expected=want,accepted=bool(ok),
+                     role=('false-safe-red-regression' if name in
+                           [f'R12_branch_guards_case{i}' for i in [1,2,3,7]] else
+                           'known-precision-cost' if name in
+                           [f'R12_branch_guards_case{i}' for i in [4,5,8,9]] else
+                           'semantic-regression'))
             records.append(rec); (out/'results.json').write_text(json.dumps(records,indent=2))
             print(name,cfg,result.returncode,actual,'PASS' if ok else 'FAIL',flush=True)
             if not ok: failures.append((name,cfg))

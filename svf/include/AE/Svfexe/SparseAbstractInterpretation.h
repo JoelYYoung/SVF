@@ -154,6 +154,8 @@ protected:
         const State* callerOverride = nullptr) const;
     bool isSharedFunction(const FunObjVar* function) const;
     bool isSharedCalleeReturn(const RetICFGNode* returnSite) const;
+    bool callerFrameCannotBeReentered(const RetICFGNode* returnSite) const;
+    mutable Map<const RetICFGNode*, bool> nonReentrantReturnCache_;
     void applyScalarRefinement(State& state, const State& checkpoint);
     void scatterCycleValues(const ICFGCycleWTO* cycle, const State& state);
     void initializeScalarAvailability();
