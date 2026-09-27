@@ -1045,10 +1045,11 @@ AbstractInterpretation& AbstractInterpretation::getAEInstance()
                 "semi-sparse AE only");
         if (Options::AESparsity() == AESparsity::VersionedSparse &&
                 (Options::AEDomain() == AENumericalDomain::Box ||
-                 Options::AERelationalPolicy() != WholeRelational))
+                 (Options::AERelationalPolicy() != WholeRelational &&
+                  Options::AERelationalPolicy() != SyntaxPackedRelational)))
             throw std::invalid_argument(
                 "-ae-sparsity=d3 requires a relational domain with "
-                "-ae-relational-policy=whole");
+                "-ae-relational-policy=whole or syntax-pack");
         if (Options::AERelationalPolicy() != WholeRelational &&
                 Options::AEDomain() == AENumericalDomain::Box)
             throw std::invalid_argument(

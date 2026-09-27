@@ -66,6 +66,10 @@ public:
     ~VersionedSparseAbstractInterpretation() override;
 
 protected:
+    /// Under -ae-relational-policy=syntax-pack, add each content version to
+    /// the packs of its object content that also hold one of its anchors
+    /// (stored value, previous/operand version, reading load target).
+    void initializeExecutionPolicy() override;
     void handleSVFStatement(const SVFStmt* stmt) override;
     bool mergeStatesFromPredecessors(const ICFGNode* node) override;
     void filterPropagatedState(State& state) const override;

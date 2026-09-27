@@ -575,6 +575,109 @@ void VersionedSparseAbstractInterpretation::recordVersionSummary(
                   << existing->second.numerical().toString() << '\n';
 }
 
+void VersionedSparseAbstractInterpretation::initializeExecutionPolicy()
+{
+    Base::initializeExecutionPolicy();
+    if (Options::AERelationalPolicy() != SyntaxPackedRelational ||
+            !relationalPacking_)
+        return;
+
+    std::map<AD::Variable, AD::Variable> content;
+    std::map<AD::Variable, std::set<AD::Variable>> anchors;
+    const auto contentOf = [&](NodeID object)
+    {
+        return this->adapter_.contentVariable(
+            *SVFUtil::cast<ObjVar>(this->svfir->getGNode(object)));
+    };
+    for (const auto& [store, records] : storeVersions_)
+    {
+        const auto* source = SVFUtil::dyn_cast<ValVar>(store->getRHSVar());
+        for (const StoreVersion& record : records)
+        {
+            content[record.version] = contentOf(record.object);
+            if (source && this->adapter_.contains(*source) &&
+                    !source->isPointer())
+                anchors[record.version].insert(
+                    this->adapter_.variable(*source));
+            if (record.hasPrevious)
+                anchors[record.version].insert(record.previous);
+        }
+    }
+    for (const auto& [node, phis] : phiVersions_)
+        for (const auto& [object, version] : phis)
+        {
+            content[version] = contentOf(object);
+            for (const ICFGEdge* edge : node->getInEdges())
+            {
+                const auto out = versionOut_.find(edge->getSrcNode());
+                if (!isFlowEdge(edge) || out == versionOut_.end())
+                    continue;
+                const auto operand = out->second->find(object);
+                if (operand != out->second->end())
+                    anchors[version].insert(operand->second);
+            }
+        }
+    for (const auto& [load, snapshot] : loadVersions_)
+    {
+        const auto* target = SVFUtil::dyn_cast<ValVar>(load->getLHSVar());
+        if (!snapshot || !target || !this->adapter_.contains(*target) ||
+                target->isPointer())
+            continue;
+        bool havocAll = false;
+        for (const ObjVar* object :
+                staticTargets(load->getRHSVar(), havocAll))
+        {
+            const auto version = snapshot->find(object->getId());
+            if (version != snapshot->end())
+                anchors[version->second].insert(
+                    this->adapter_.variable(*target));
+        }
+    }
+
+    std::vector<std::set<AD::Variable>> packs;
+    for (const auto& pack : *relationalPacking_)
+        packs.emplace_back(pack.begin(), pack.end());
+    bool changed = true;
+    while (changed)
+    {
+        changed = false;
+        for (auto& pack : packs)
+            for (const auto& [version, object] : content)
+            {
+                if (pack.count(version) || !pack.count(object))
+                    continue;
+                const auto found = anchors.find(version);
+                if (found == anchors.end())
+                    continue;
+                const bool anchored = std::any_of(
+                    found->second.begin(), found->second.end(),
+                    [&](AD::Variable anchor) { return pack.count(anchor); });
+                if (anchored)
+                {
+                    pack.insert(version);
+                    changed = true;
+                }
+            }
+    }
+    auto result = std::make_shared<std::vector<std::vector<AD::Variable>>>();
+    std::size_t maxSize = 0;
+    std::set<AD::Variable> packed;
+    for (const auto& pack : packs)
+    {
+        result->emplace_back(pack.begin(), pack.end());
+        maxSize = std::max(maxSize, pack.size());
+        for (AD::Variable variable : pack)
+            if (versionVariables_.count(variable))
+                packed.insert(variable);
+    }
+    relationalPacking_ = std::move(result);
+    SVFUtil::outs() << "AE_D3_PACKS versions=" << versionVariables_.size()
+                    << " packed_versions=" << packed.size()
+                    << " box_only_versions="
+                    << versionVariables_.size() - packed.size()
+                    << " max_pack_with_versions=" << maxSize << '\n';
+}
+
 void VersionedSparseAbstractInterpretation::handleSVFStatement(
     const SVFStmt* stmt)
 {
