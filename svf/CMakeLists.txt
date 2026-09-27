@@ -148,6 +148,13 @@ if(BUILD_TESTING)
         --extapi ${CMAKE_BINARY_DIR}/lib/extapi.bc
         --library-path $<TARGET_FILE_DIR:z3::libz3>)
     set_tests_properties(ae-relational/WeakStoreSoundnessTest PROPERTIES TIMEOUT 180)
+    add_test(NAME ae-relational/MemoryEffectsSoundnessTest
+      COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_LIST_DIR}/../tests/ae-relational/check_memory_effects.py
+        --ae $<TARGET_FILE:ae>
+        --extapi ${CMAKE_BINARY_DIR}/lib/extapi.bc
+        --library-path $<TARGET_FILE_DIR:z3::libz3>)
+    set_tests_properties(ae-relational/MemoryEffectsSoundnessTest PROPERTIES TIMEOUT 180)
   endif()
   add_executable(PackedSparseAnalysisTest
     ${CMAKE_CURRENT_LIST_DIR}/../tests/ae-relational/PackedSparseAnalysisTest.cpp)

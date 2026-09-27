@@ -3206,13 +3206,13 @@ void AbstractInterpretation::updateStateOnCopy(const CopyStmt* copy)
     }
     else if (copy->getCopyKind() == CopyStmt::INTTOPTR)
     {
-        // Match Original AE's transfer policy: integer-derived addresses do
-        // not enter modeled pointer value-flow. AddressSet can express raw
-        // addresses, but this interpreter deliberately leaves the address
-        // component empty. Original's unmaterialized SSA result reads as
-        // numerical Top, which must survive a later store of this value.
+        // Without a provenance-preserving integer/pointer representation,
+        // the cast can designate any modeled object (including a pointer
+        // round trip). Empty would silently discard a subsequent store.
         updateValue(lhsVar, AD::Interval::top(),
-                    AD::AddressSet::bottom(), node);
+                    rhsInterval.isZero()
+                        ? AD::AddressSet::singleton(AD::Location::null())
+                        : AD::AddressSet::top(), node);
     }
     else if (copy->getCopyKind() == CopyStmt::PTRTOINT)
     {
