@@ -1,6 +1,6 @@
 # Oh 2012 packed sparse numerical kernel
 
-Experimental opt-in API in `AE/Core/PackedSparseAnalysis.h`, with a test/measurement executable `PackedSparseAnalysisTest`. The production `ae` executable does not select this engine yet. The existing Dense/Semi-Sparse implementations and baselines are untouched.
+Experimental opt-in API in `AE/Core/PackedSparseAnalysis.h`, with a test/measurement executable `PackedSparseAnalysisTest`. The production `ae` executable does not select this engine yet. Historical frozen baselines remain separate. This branch also carries the later assertion/parallel-phi/caller-frame frontend repairs for same-binary controls.
 
 Reference: Oh et al., *Design and Implementation of Sparse Global Analyses for C-like Languages*, PLDI 2012, sections 2 and 4--6, https://kihongheo.kaist.ac.kr/publications/pldi12.pdf .
 
@@ -36,3 +36,27 @@ The runner requires a new output directory, preserves raw attempts, validates a 
 ## Production gates still open
 
 Syntax-driven candidate extraction, ICFG/call and memory-effect adaptation, machine arithmetic, convergence policy, fixed-query real-program comparison, and a non-relational baseline all require additional implementation and validation. Do not present these tests as benchmark-bc measurements or as a fix for the existing production Semi-Sparse engine.
+
+## Production domain adapter (separate executor)
+
+`ae -ae-domain=octagon -ae-backend=native -ae-relational-policy=syntax-pack
+-ae-pack-max-vars=10` selects `PackedRelationalDomain`. It uses the existing
+Dense or Semi-Sparse executor, not the pack-level dependency solver above.
+Candidates come from individual SVF expressions, actual/formal bindings,
+pointer-analysis-selected load/store cells, LLVM basic blocks and WTO loops.
+They split in sorted variable order; duplicate/subset packs are removed.
+LLVM blocks approximate locality and are not the paper's C lexical blocks.
+
+The adapter carries a global Box fallback and a vector of bounded Octagons.
+Unknown/fresh variables remain in Box. Outside reads import interval bounds
+from the immutable pre-state, then drop temporary coordinates. Overlapping
+packs do not automatically exchange constraints. Expansion duplicates
+constraints without imposing equality. Product bottom is normalized across
+components; this reduction is specific to this adapter and would need extra
+dependencies before reusing it in the standalone sparse solver.
+
+`PackedRelationalDomainTest` covers memory overwrite versus assume, indirect
+refinement, overlap/no-reduction, cross-pack reads, simultaneous assignments,
+expansion, join/widen/forget, bottom normalization and fold/project. These are
+instance checks, not a proof for all frontend transfers. Existing-executor
+witness results and new Sparse acceptance must remain separate.

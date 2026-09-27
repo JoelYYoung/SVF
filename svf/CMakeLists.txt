@@ -4,6 +4,7 @@ set(ABSTRACT_DOMAIN_CORE_HEADERS
     ${CMAKE_CURRENT_LIST_DIR}/include/AE/Core/DimensionLayout.h
     ${CMAKE_CURRENT_LIST_DIR}/include/AE/Core/OctagonDomain.h
     ${CMAKE_CURRENT_LIST_DIR}/include/AE/Core/PackedSparseAnalysis.h
+    ${CMAKE_CURRENT_LIST_DIR}/include/AE/Core/PackedRelationalDomain.h
     ${CMAKE_CURRENT_LIST_DIR}/include/AE/Core/ConvexPolyhedraDomain.h
     ${CMAKE_CURRENT_LIST_DIR}/include/AE/Core/ELINABackendContract.h
     ${CMAKE_CURRENT_LIST_DIR}/include/AE/Core/AbstractDomain.h
@@ -20,6 +21,7 @@ set(ABSTRACT_DOMAIN_CORE_HEADERS
 set(ABSTRACT_DOMAIN_CORE_SOURCES
     ${CMAKE_CURRENT_LIST_DIR}/lib/AE/Core/OctagonDomain.cpp
     ${CMAKE_CURRENT_LIST_DIR}/lib/AE/Core/PackedSparseAnalysis.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/lib/AE/Core/PackedRelationalDomain.cpp
     ${CMAKE_CURRENT_LIST_DIR}/lib/AE/Core/ConvexPolyhedraDomain.cpp
     ${CMAKE_CURRENT_LIST_DIR}/lib/AE/Core/ELINABackendContract.cpp
     ${CMAKE_CURRENT_LIST_DIR}/lib/AE/Core/AbstractDomain.cpp
@@ -133,6 +135,10 @@ if(BUILD_TESTING)
   add_executable(PackedSparseAnalysisTest
     ${CMAKE_CURRENT_LIST_DIR}/../tests/ae-relational/PackedSparseAnalysisTest.cpp)
   target_link_libraries(PackedSparseAnalysisTest PRIVATE AbstractDomainCore)
+  add_executable(PackedRelationalDomainTest
+    ${CMAKE_CURRENT_LIST_DIR}/../tests/ae-relational/PackedRelationalDomainTest.cpp)
+  target_link_libraries(PackedRelationalDomainTest PRIVATE AbstractDomainCore)
+  add_test(NAME ae-relational/PackedRelationalDomainTest COMMAND PackedRelationalDomainTest)
   add_test(NAME ae-relational/PackedSparseAnalysisTest COMMAND PackedSparseAnalysisTest)
   set_tests_properties(ae-relational/PackedSparseAnalysisTest PROPERTIES TIMEOUT 60)
   add_test(NAME ae-relational/PackedSparseAnalysisMutation
@@ -230,6 +236,9 @@ file(GLOB_RECURSE SVF_CORE_HEADERS ${CMAKE_CURRENT_LIST_DIR}/include/*.h)
 file(GLOB_RECURSE SVF_CORE_SOURCES ${CMAKE_CURRENT_LIST_DIR}/lib/*.cpp)
 list(REMOVE_ITEM SVF_CORE_HEADERS ${ABSTRACT_DOMAIN_CORE_HEADERS})
 list(REMOVE_ITEM SVF_CORE_SOURCES ${ABSTRACT_DOMAIN_CORE_SOURCES})
+list(REMOVE_ITEM SVF_CORE_SOURCES
+    ${CMAKE_CURRENT_LIST_DIR}/lib/AE/Core/ElinaOctagonDomain.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/lib/AE/Core/ELINAPolyhedraDomain.cpp)
 target_link_libraries(SvfCore PUBLIC AbstractDomainCore)
 target_sources(
   SvfCore

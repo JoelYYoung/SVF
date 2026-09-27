@@ -112,13 +112,19 @@ protected:
     void assignRelationalValue(
         const ValVar* target,
         const AbstractDomain::LinearExpression& expression,
+        const AbstractDomain::Interval& interval,
         const AbstractDomain::AddressSet& addresses,
         const ICFGNode* node) override;
     void recordRelationalDependency(AbstractDomain::Variable target,
                                     AbstractDomain::Variable source) override;
+    void recordRelationalTupleDependency(
+        AbstractDomain::Variable target,
+        AbstractDomain::Variable peer) override;
     void recordRelationalSummary(AbstractDomain::Variable target,
                                  const State& summary,
                                  const ICFGNode* node) override;
+    void recordMergedReturnSummary(
+        const RetICFGNode* returnSite) override;
     void assignRelationalStore(
         const ValVar* source, AbstractDomain::Variable content,
         const ICFGNode* node) override;
@@ -146,6 +152,7 @@ protected:
     void restoreCallerFrameAfterSharedCallee(
         State& state, const RetICFGNode* returnSite,
         const State* callerOverride = nullptr) const;
+    bool isSharedFunction(const FunObjVar* function) const;
     bool isSharedCalleeReturn(const RetICFGNode* returnSite) const;
     void applyScalarRefinement(State& state, const State& checkpoint);
     void scatterCycleValues(const ICFGCycleWTO* cycle, const State& state);

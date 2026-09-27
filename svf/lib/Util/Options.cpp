@@ -822,6 +822,11 @@ const OptionMap<u32_t> Options::AERelationalPolicy(
     AbstractInterpretation::AERelationalPolicy::WholeRelational,
 {
     {
+        AbstractInterpretation::AERelationalPolicy::SyntaxPackedRelational,
+        "syntax-pack",
+        "Use bounded automatic IR syntax packs (native Octagon, global Box fallback)."
+    },
+    {
         AbstractInterpretation::AERelationalPolicy::WholeRelational, "whole",
         "Use the selected relational domain for every numerical variable."
     },
@@ -857,6 +862,7 @@ const OptionMap<u32_t> Options::AERelationalCallPolicy(
         "Keep unary bounds and effects across calls but do not propagate binary relations."
     }
 });
+const Option<u32_t> Options::AEPackMaxVars("ae-pack-max-vars", "Maximum syntax pack size", 10);
 const Option<std::string> Options::AENumericalTrace(
     "ae-numerical-trace",
     "Write a versioned, replay-oriented numerical operation trace (Default: disabled)",
