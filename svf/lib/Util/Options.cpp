@@ -871,6 +871,10 @@ const OptionMap<u32_t> Options::AERelationalCallPolicy(
     }
 });
 const Option<u32_t> Options::AEPackMaxVars("ae-pack-max-vars", "Maximum syntax pack size", 10);
+const Option<bool> Options::AEHarnessNondetNoCallback(
+    "ae-harness-nondet-no-callback",
+    "Explicit test-harness premise: nondet_i32 cannot call user code (default: false).",
+    false);
 const Option<std::string> Options::AENumericalTrace(
     "ae-numerical-trace",
     "Write a versioned, replay-oriented numerical operation trace (Default: disabled)",

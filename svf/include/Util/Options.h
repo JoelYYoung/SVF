@@ -241,6 +241,7 @@ public:
     static const Option<std::string> AENumericalTrace;
     static const Option<u32_t> AERelationalMaxVars;
     static const Option<u32_t> AEPackMaxVars;
+    static const Option<bool> AEHarnessNondetNoCallback;
     /// Optional complete abstract-execution query ledger (TSV).
     static const Option<std::string> AEQueryLedgerFile;
     /// Content identity supplied by the runner (normally input SHA-256).

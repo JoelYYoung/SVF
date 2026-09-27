@@ -154,6 +154,12 @@ protected:
         const State* callerOverride = nullptr) const;
     bool isSharedFunction(const FunObjVar* function) const;
     bool isSharedCalleeReturn(const RetICFGNode* returnSite) const;
+    /// Shared-callee admission used by production restoration and derived
+    /// executors. Preservation still applies only to available SSA names
+    /// owned by the current caller; this is not a memory-frame permission.
+    bool preservesCallerFrame(const RetICFGNode* returnSite) const;
+    bool callerFrameCannotBeReentered(const RetICFGNode* returnSite) const;
+    mutable Map<const RetICFGNode*, bool> nonReentrantReturnCache_;
     void applyScalarRefinement(State& state, const State& checkpoint);
     void scatterCycleValues(const ICFGCycleWTO* cycle, const State& state);
     void initializeScalarAvailability();
