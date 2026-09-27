@@ -25,6 +25,7 @@
 #include <map>
 #include <memory>
 #include <set>
+#include <string>
 #include <vector>
 
 #include "AE/Svfexe/SparseAbstractInterpretation.h"
@@ -78,6 +79,12 @@ protected:
     void assignRelationalLoad(const ValVar* target,
                               AbstractDomain::Variable content,
                               const ICFGNode* node) override;
+    /// Every non-StoreStmt memory write (external API models) must target
+    /// an object whose version the static model already invalidated.
+    void updateMemoryValue(AbstractDomain::Location location,
+                           const AbstractDomain::Interval& interval,
+                           const AbstractDomain::AddressSet& addresses,
+                           const ICFGNode* node) override;
 
 private:
     /// Object id -> content version reaching a program point.
@@ -97,6 +104,11 @@ private:
     void computeVersionAvailability();
     std::vector<const ObjVar*> staticTargets(const SVFVar* pointer,
                                              bool& havocAll) const;
+    /// Numerical objects reachable from a pointer through stored pointers.
+    std::vector<const ObjVar*> reachableTargets(const SVFVar* pointer,
+                                                bool& havocAll) const;
+    [[noreturn]] void failClosed(const ICFGNode* node,
+                                 const std::string& reason) const;
     AbstractDomain::Variable versionFor(
         std::map<std::pair<const void*, NodeID>, AbstractDomain::Variable>&
             table,
@@ -113,6 +125,8 @@ private:
     State materializedAt(const std::vector<AbstractDomain::Variable>& seeds,
                          const ICFGNode* node);
     void projectRefinementToAvailable(const ICFGNode* node);
+    std::vector<AbstractDomain::Variable> mergeInputs(
+        const ICFGNode* node) const;
     void reportTelemetry() const;
 
     std::set<const ICFGNode*> cycleHeads_;
@@ -134,6 +148,7 @@ private:
     std::size_t externalInvalidations_ = 0;
     std::size_t storeEscapes_ = 0;
     std::size_t loadMisses_ = 0;
+    bool inStoreStatement_ = false;
 };
 
 } // namespace SVF

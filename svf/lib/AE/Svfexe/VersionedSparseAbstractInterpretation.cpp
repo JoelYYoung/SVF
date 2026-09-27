@@ -26,6 +26,8 @@
 #include <functional>
 #include <iostream>
 #include <optional>
+#include <stdexcept>
+#include <string>
 
 #include "AE/Core/ICFGWTO.h"
 #include "AE/Svfexe/AEWTO.h"
@@ -124,6 +126,13 @@ staticTargets(const SVFVar* pointer, bool& havocAll) const
     }
     const PointsTo& pts =
         this->preAnalysis->getPointerAnalysis()->getPts(pointer->getId());
+    // An empty points-to set (for example an integer-to-pointer cast) says
+    // nothing about which cell is written; treat it as a write to anything.
+    if (pts.empty())
+    {
+        havocAll = true;
+        return targets;
+    }
     std::set<NodeID> seen;
     const auto add = [&](NodeID id)
     {
@@ -150,6 +159,67 @@ staticTargets(const SVFVar* pointer, bool& havocAll) const
             add(id);
     }
     return targets;
+}
+
+std::vector<const ObjVar*> VersionedSparseAbstractInterpretation::
+reachableTargets(const SVFVar* pointer, bool& havocAll) const
+{
+    havocAll = false;
+    std::vector<const ObjVar*> targets;
+    if (!pointer)
+    {
+        havocAll = true;
+        return targets;
+    }
+    std::set<NodeID> visitedPointers;
+    std::set<NodeID> visitedObjects;
+    std::deque<NodeID> pointers{pointer->getId()};
+    while (!pointers.empty())
+    {
+        const NodeID current = pointers.front();
+        pointers.pop_front();
+        if (!visitedPointers.insert(current).second)
+            continue;
+        const PointsTo& pts =
+            this->preAnalysis->getPointerAnalysis()->getPts(current);
+        for (NodeID id : pts)
+        {
+            if (SVFIR::isBlkObj(id))
+            {
+                havocAll = true;
+                return {};
+            }
+            std::vector<NodeID> objects{id};
+            if (const auto* base = SVFUtil::dyn_cast<BaseObjVar>(
+                                       this->svfir->getGNode(id)))
+                for (NodeID field : this->svfir->getAllFieldsObjVars(base))
+                    objects.push_back(field);
+            for (NodeID objectId : objects)
+            {
+                if (!visitedObjects.insert(objectId).second)
+                    continue;
+                const auto* object = SVFUtil::dyn_cast<ObjVar>(
+                                         this->svfir->getGNode(objectId));
+                if (!object)
+                    continue;
+                if (!object->isPointer())
+                    targets.push_back(object);
+                // A stored pointer exposes its own pointees to the callee.
+                pointers.push_back(objectId);
+            }
+        }
+    }
+    return targets;
+}
+
+void VersionedSparseAbstractInterpretation::failClosed(
+    const ICFGNode* node, const std::string& reason) const
+{
+    const std::string message = "D3 fail-closed at node " +
+                                std::to_string(node ? node->getId() : 0) +
+                                ": " + reason;
+    std::cerr << "AE_D3_FAIL_CLOSED " << message << '\n';
+    throw std::runtime_error(message);
 }
 
 AD::Variable VersionedSparseAbstractInterpretation::versionFor(
@@ -317,7 +387,8 @@ VersionedSparseAbstractInterpretation::transferNode(const ICFGNode* node,
         bool hasBody = false;
         for (const ICFGEdge* edge : call->getOutEdges())
             hasBody |= SVFUtil::isa<CallCFGEdge>(edge);
-        const bool external = (callee && SVFUtil::isExtCall(callee)) || !hasBody;
+        // Indirect calls may also reach external targets outside the ICFG.
+        const bool external = !callee || SVFUtil::isExtCall(callee) || !hasBody;
         if (external)
         {
             for (const ValVar* argument : call->getActualParms())
@@ -326,7 +397,7 @@ VersionedSparseAbstractInterpretation::transferNode(const ICFGNode* node,
                     continue;
                 bool havocAll = false;
                 const std::vector<const ObjVar*> targets =
-                    staticTargets(argument, havocAll);
+                    reachableTargets(argument, havocAll);
                 if (havocAll)
                 {
                     mutableMap().clear();
@@ -507,11 +578,29 @@ void VersionedSparseAbstractInterpretation::recordVersionSummary(
 void VersionedSparseAbstractInterpretation::handleSVFStatement(
     const SVFStmt* stmt)
 {
+    inStoreStatement_ = SVFUtil::isa<StoreStmt>(stmt);
     Base::handleSVFStatement(stmt);
+    inStoreStatement_ = false;
     if (const auto* load = SVFUtil::dyn_cast<LoadStmt>(stmt))
         versionLoad(load);
     else if (const auto* store = SVFUtil::dyn_cast<StoreStmt>(stmt))
         versionStore(store);
+}
+
+void VersionedSparseAbstractInterpretation::updateMemoryValue(
+    AD::Location location, const AD::Interval& interval,
+    const AD::AddressSet& addresses, const ICFGNode* node)
+{
+    if (!inStoreStatement_ && !location.isNull())
+    {
+        const ObjVar* object = this->objectAt(location);
+        const auto out = versionOut_.find(node);
+        if (object && !object->isPointer() && out != versionOut_.end() &&
+                out->second->count(object->getId()))
+            failClosed(node, "memory write outside a StoreStmt to versioned "
+                             "object " + std::to_string(object->getId()));
+    }
+    Base::updateMemoryValue(location, interval, addresses, node);
 }
 
 void VersionedSparseAbstractInterpretation::assignRelationalStore(
@@ -547,20 +636,17 @@ void VersionedSparseAbstractInterpretation::versionStore(
     std::set<NodeID> versioned;
     for (const StoreVersion& record : records->second)
         versioned.insert(record.object);
-    const auto reportEscape = [&](const std::string& reason)
-    {
-        ++storeEscapes_;
-        std::cerr << "AE_D3_STORE_ESCAPE node=" << node->getId() << " reason="
-                  << reason << '\n';
-    };
+    // The static version map cannot be repaired after the fact: a runtime
+    // target outside it would leave stale versions reachable. Fail closed.
     if (unknown)
-        reportEscape("unknown-target");
+        failClosed(node, "store with unknown target");
     for (NodeID object : written)
     {
         const auto* objectVar =
             SVFUtil::dyn_cast<ObjVar>(this->svfir->getGNode(object));
         if (objectVar && !objectVar->isPointer() && !versioned.count(object))
-            reportEscape("target-outside-static-points-to");
+            failClosed(node, "store target " + std::to_string(object) +
+                                 " outside static points-to set");
     }
 
     const bool sourceTracked = source && this->adapter_.contains(*source) &&
@@ -777,10 +863,53 @@ void VersionedSparseAbstractInterpretation::projectRefinementToAvailable(
     refinement->second.numerical().project(keep);
 }
 
+std::vector<AD::Variable> VersionedSparseAbstractInterpretation::mergeInputs(
+    const ICFGNode* node) const
+{
+    std::vector<AD::Variable> inputs;
+    const auto available = scalarAvailability_.find(node);
+    if (available == scalarAvailability_.end())
+        return inputs;
+    const std::set<AD::Variable> local = definedAt(node, this->adapter_);
+    for (AD::Variable variable : available->second)
+        if (!local.count(variable))
+            inputs.push_back(variable);
+    return inputs;
+}
+
 bool VersionedSparseAbstractInterpretation::mergeStatesFromPredecessors(
     const ICFGNode* node)
 {
-    if (!Base::mergeStatesFromPredecessors(node))
+    // Project every predecessor's refinement to the names available on entry
+    // to this node before the parent merge joins and applies it. A name the
+    // node redefines (loop phi, recomputed SSA value) must not receive a fact
+    // about its previous execution. Predecessor traces are restored after the
+    // merge because phi alternatives still read them in predecessor scope.
+    const std::vector<AD::Variable> inputs = mergeInputs(node);
+    const std::set<AD::Variable> keepSet(inputs.begin(), inputs.end());
+    std::vector<std::pair<const ICFGNode*, State>> saved;
+    std::set<const ICFGNode*> seen;
+    for (const ICFGEdge* edge : node->getInEdges())
+    {
+        const ICFGNode* predecessor = edge->getSrcNode();
+        if (!isFlowEdge(edge) || !seen.insert(predecessor).second)
+            continue;
+        const auto refinement = refinementTrace_.find(predecessor);
+        if (refinement == refinementTrace_.end())
+            continue;
+        if (predecessor != node)
+            saved.emplace_back(predecessor, refinement->second);
+        std::vector<AD::Variable> keep;
+        for (AD::Variable variable :
+                refinement->second.numerical().supportVariables())
+            if (keepSet.count(variable))
+                keep.push_back(variable);
+        refinement->second.numerical().project(keep);
+    }
+    const bool merged = Base::mergeStatesFromPredecessors(node);
+    for (auto& [predecessor, refinement] : saved)
+        refinementTrace_.insert_or_assign(predecessor, std::move(refinement));
+    if (!merged)
         return false;
     projectRefinementToAvailable(node);
     versionPhis(node);
