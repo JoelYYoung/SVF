@@ -70,6 +70,8 @@ protected:
     /// the packs of its object content that also hold one of its anchors
     /// (stored value, previous/operand version, reading load target).
     void initializeExecutionPolicy() override;
+    bool extraAvailable(const ICFGNode* node,
+                        AbstractDomain::Variable variable) const override;
     void handleSVFStatement(const SVFStmt* stmt) override;
     bool mergeStatesFromPredecessors(const ICFGNode* node) override;
     void filterPropagatedState(State& state) const override;
@@ -129,6 +131,7 @@ private:
     State materializedAt(const std::vector<AbstractDomain::Variable>& seeds,
                          const ICFGNode* node);
     void projectRefinementToAvailable(const ICFGNode* node);
+    bool availableAt(const ICFGNode* node, AbstractDomain::Variable variable) const;
     std::vector<AbstractDomain::Variable> mergeInputs(
         const ICFGNode* node) const;
     void reportTelemetry() const;
@@ -156,6 +159,7 @@ private:
     std::size_t storeEscapes_ = 0;
     std::size_t loadMisses_ = 0;
     bool inStoreStatement_ = false;
+    const ICFGNode* currentNode_ = nullptr;
 };
 
 } // namespace SVF

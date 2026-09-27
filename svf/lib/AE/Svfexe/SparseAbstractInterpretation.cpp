@@ -1147,10 +1147,15 @@ void SemiSparseAbstractInterpretation::materializeScalarDefinitions(
     if (available == scalarAvailability_.end())
         return;
 
+    const auto isAvailable = [&](AD::Variable variable)
+    {
+        return available->second.count(variable) != 0 ||
+               extraAvailable(node, variable);
+    };
     std::set<AD::Variable> retained;
     for (AD::Variable seed : seeds)
     {
-        if (available->second.count(seed) == 0)
+        if (!isAvailable(seed))
             continue;
         // Keep an available definition even when part of its transitive
         // carrier is out of scope at this point.  Projecting the saved
@@ -1162,7 +1167,7 @@ void SemiSparseAbstractInterpretation::materializeScalarDefinitions(
             carrierDependencyClosure({seed});
         for (AD::Variable dependency : closure)
         {
-            if (available->second.count(dependency) != 0)
+            if (isAvailable(dependency))
                 retained.insert(dependency);
         }
     }

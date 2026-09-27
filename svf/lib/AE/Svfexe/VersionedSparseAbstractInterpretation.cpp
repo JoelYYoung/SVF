@@ -163,15 +163,15 @@ staticTargets(const SVFVar* pointer, bool& havocAll) const
             havocAll = true;
             return {};
         }
-        const SVFVar* node = this->svfir->getGNode(id);
-        if (const auto* base = SVFUtil::dyn_cast<BaseObjVar>(node))
+        // AE's own gep evaluation may select a different field of the same
+        // base than the pre-analysis did; cover every cell of the base.
+        add(id);
+        if (const BaseObjVar* base = this->svfir->getBaseObject(id))
         {
-            add(id);
+            add(base->getId());
             for (NodeID field : this->svfir->getAllFieldsObjVars(base))
                 add(field);
         }
-        else
-            add(id);
     }
     return targets;
 }
@@ -205,10 +205,12 @@ reachableTargets(const SVFVar* pointer, bool& havocAll) const
                 return {};
             }
             std::vector<NodeID> objects{id};
-            if (const auto* base = SVFUtil::dyn_cast<BaseObjVar>(
-                                       this->svfir->getGNode(id)))
+            if (const BaseObjVar* base = this->svfir->getBaseObject(id))
+            {
+                objects.push_back(base->getId());
                 for (NodeID field : this->svfir->getAllFieldsObjVars(base))
                     objects.push_back(field);
+            }
             for (NodeID objectId : objects)
             {
                 if (!visitedObjects.insert(objectId).second)
@@ -534,10 +536,24 @@ void VersionedSparseAbstractInterpretation::computeVersionAvailability()
                 push(edge->getDstNode());
     }
     for (auto& [node, available] : out)
-    {
-        scalarAvailability_[node].insert(available.begin(), available.end());
         versionAvailability_[node] = std::move(available);
-    }
+}
+
+bool VersionedSparseAbstractInterpretation::extraAvailable(
+    const ICFGNode* node, AD::Variable variable) const
+{
+    const auto available = versionAvailability_.find(node);
+    return available != versionAvailability_.end() &&
+           available->second.count(variable) != 0;
+}
+
+bool VersionedSparseAbstractInterpretation::availableAt(
+    const ICFGNode* node, AD::Variable variable) const
+{
+    const auto scalars = scalarAvailability_.find(node);
+    return (scalars != scalarAvailability_.end() &&
+            scalars->second.count(variable) != 0) ||
+           extraAvailable(node, variable);
 }
 
 bool VersionedSparseAbstractInterpretation::strongUpdatable(
@@ -561,12 +577,9 @@ VersionedSparseAbstractInterpretation::materializedAt(
 void VersionedSparseAbstractInterpretation::recordVersionSummary(
     AD::Variable version, State summary, const ICFGNode* node)
 {
-    const auto available = scalarAvailability_.find(node);
     std::vector<AD::Variable> keep;
     for (AD::Variable variable : summary.numerical().supportVariables())
-        if (variable == version ||
-                (available != scalarAvailability_.end() &&
-                 available->second.count(variable)))
+        if (variable == version || availableAt(node, variable))
             keep.push_back(variable);
     if (std::find(keep.begin(), keep.end(), version) == keep.end())
         keep.push_back(version);
@@ -600,6 +613,7 @@ void VersionedSparseAbstractInterpretation::initializeExecutionPolicy()
         return;
 
     std::map<AD::Variable, AD::Variable> content;
+    std::map<AD::Variable, AD::Variable> baseContent;
     std::map<AD::Variable, std::set<AD::Variable>> anchors;
     const auto contentOf = [&](NodeID object)
     {
@@ -612,6 +626,9 @@ void VersionedSparseAbstractInterpretation::initializeExecutionPolicy()
         for (const StoreVersion& record : records)
         {
             content[record.version] = contentOf(record.object);
+            if (const BaseObjVar* base =
+                    this->svfir->getBaseObject(record.object))
+                baseContent[record.version] = contentOf(base->getId());
             if (source && this->adapter_.contains(*source) &&
                     !source->isPointer())
                 anchors[record.version].insert(
@@ -624,6 +641,8 @@ void VersionedSparseAbstractInterpretation::initializeExecutionPolicy()
         for (const auto& [object, version] : phis)
         {
             content[version] = contentOf(object);
+            if (const BaseObjVar* base = this->svfir->getBaseObject(object))
+                baseContent[version] = contentOf(base->getId());
             for (const ICFGEdge* edge : node->getInEdges())
             {
                 const auto out = versionOut_.find(edge->getSrcNode());
@@ -667,7 +686,11 @@ void VersionedSparseAbstractInterpretation::initializeExecutionPolicy()
         for (auto& pack : packs)
             for (const auto& [version, object] : content)
             {
-                if (pack.count(version) || !pack.count(object))
+                const auto base = baseContent.find(version);
+                const bool holdsObject =
+                    pack.count(object) ||
+                    (base != baseContent.end() && pack.count(base->second));
+                if (pack.count(version) || !holdsObject)
                     continue;
                 const auto found = anchors.find(version);
                 if (found == anchors.end())
@@ -710,6 +733,7 @@ void VersionedSparseAbstractInterpretation::handleSVFStatement(
     const SVFStmt* stmt)
 {
     inStoreStatement_ = SVFUtil::isa<StoreStmt>(stmt);
+    currentNode_ = stmt->getICFGNode();
     Base::handleSVFStatement(stmt);
     inStoreStatement_ = false;
     if (const auto* load = SVFUtil::dyn_cast<LoadStmt>(stmt))
@@ -779,8 +803,23 @@ void VersionedSparseAbstractInterpretation::versionStore(
         // cell created on demand at run time) cannot leave a stale version.
         if (objectVar && !objectVar->isPointer() && !versioned.count(object) &&
                 loadedObjects_.count(object))
-            failClosed(node, "store target " + std::to_string(object) +
-                                 " outside static points-to set");
+        {
+            std::string detail = "store target " + std::to_string(object) +
+                                 " outside static points-to set; pointer=" +
+                                 std::to_string(pointer->getId()) + " base=" +
+                                 std::to_string(this->svfir->getBaseObjVarID(object)) +
+                                 " static={";
+            for (NodeID id : versioned)
+                detail += std::to_string(id) + ",";
+            detail += "} andersen={";
+            for (NodeID id : this->preAnalysis->getPointerAnalysis()->getPts(
+                                 pointer->getId()))
+                detail += std::to_string(id) + ",";
+            detail += "} runtime={";
+            for (NodeID id : written)
+                detail += std::to_string(id) + ",";
+            failClosed(node, detail + "}");
+        }
     }
 
     const bool sourceTracked = source && this->adapter_.contains(*source) &&
@@ -954,14 +993,12 @@ void VersionedSparseAbstractInterpretation::versionPhis(const ICFGNode* node)
                                       AD::LinearExpression(operand->second));
             // A phi summary may mention only the phi result and names
             // available at the merge; never a predecessor-local operand.
-            const auto available = scalarAvailability_.find(node);
             const std::set<AD::Variable> local = definedAt(node, this->adapter_);
             std::vector<AD::Variable> keep{version};
             for (AD::Variable variable :
                     alternative.numerical().supportVariables())
                 if (variable != version && !local.count(variable) &&
-                        available != scalarAvailability_.end() &&
-                        available->second.count(variable))
+                        availableAt(node, variable))
                     keep.push_back(variable);
             alternative.numerical().project(keep);
             if (!joined)
@@ -984,15 +1021,13 @@ void VersionedSparseAbstractInterpretation::projectRefinementToAvailable(
     const ICFGNode* node)
 {
     const auto refinement = refinementTrace_.find(node);
-    const auto available = scalarAvailability_.find(node);
-    if (refinement == refinementTrace_.end() ||
-            available == scalarAvailability_.end())
+    if (refinement == refinementTrace_.end())
         return;
     const std::set<AD::Variable> local = definedAt(node, this->adapter_);
     std::vector<AD::Variable> keep;
     for (AD::Variable variable :
             refinement->second.numerical().supportVariables())
-        if (available->second.count(variable) && !local.count(variable))
+        if (availableAt(node, variable) && !local.count(variable))
             keep.push_back(variable);
     refinement->second.numerical().project(keep);
 }
@@ -1001,13 +1036,16 @@ std::vector<AD::Variable> VersionedSparseAbstractInterpretation::mergeInputs(
     const ICFGNode* node) const
 {
     std::vector<AD::Variable> inputs;
-    const auto available = scalarAvailability_.find(node);
-    if (available == scalarAvailability_.end())
-        return inputs;
     const std::set<AD::Variable> local = definedAt(node, this->adapter_);
-    for (AD::Variable variable : available->second)
-        if (!local.count(variable))
-            inputs.push_back(variable);
+    const auto available = scalarAvailability_.find(node);
+    if (available != scalarAvailability_.end())
+        for (AD::Variable variable : available->second)
+            if (!local.count(variable))
+                inputs.push_back(variable);
+    const auto versions = versionAvailability_.find(node);
+    if (versions != versionAvailability_.end())
+        inputs.insert(inputs.end(), versions->second.begin(),
+                      versions->second.end());
     return inputs;
 }
 
