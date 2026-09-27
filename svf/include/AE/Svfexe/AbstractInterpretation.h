@@ -595,6 +595,9 @@ protected:
     std::size_t relationalSeedCount_ = 0;
     std::size_t relationalDroppedCount_ = 0;
     Map<const ICFGNode*, State> stateTrace_;
+    // A predecessor merge overwrites the Dense node's current state. Keep
+    // split-phi widening history separate from that incoming pre-state.
+    Map<const PhiStmt*, AbstractDomain::Interval> phiIntervalHistory_;
     bool unknownTargetTelemetryEnabled_ = false;
     UnknownTargetTelemetry unknownTargetTelemetry_;
 

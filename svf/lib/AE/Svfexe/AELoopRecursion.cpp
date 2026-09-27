@@ -32,6 +32,8 @@
 #include "SVFIR/SVFIR.h"
 #include "Util/Options.h"
 #include "WPA/Andersen.h"
+#include <cstdlib>
+#include <iostream>
 
 using namespace SVF;
 using namespace SVFUtil;
@@ -176,6 +178,11 @@ bool AbstractInterpretation::widenCycleState(
     const State& currentDense = static_cast<const State&>(current);
     State next = previousDense;
     next.widenWith(currentDense);
+    if (std::getenv("SVF_AE_TRACE_CYCLE_STATE"))
+        std::cerr << "AE_WIDEN head=" << cycle->head()->getICFGNode()->getId()
+                  << " previous=" << previousDense.numerical().toString()
+                  << " current=" << currentDense.numerical().toString()
+                  << " next=" << next.numerical().toString() << '\n';
     const bool fixpoint =
         next.isEquivalentTo(previousDense) == AbstractDomain::CheckResult::True;
     const ICFGNode* head = cycle->head()->getICFGNode();

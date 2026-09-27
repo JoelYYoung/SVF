@@ -670,6 +670,13 @@ void AbstractInterpretation::initializeSyntaxPacking()
     SVFUtil::outs()<<"AE_SYNTAX_PACK packs="<<relationalPacking_->size()<<" variables="<<all.size()
         <<" memberships="<<memberships<<" max="<<maxSize<<" cap="<<cap
         <<" candidates="<<candidates.size()<<" locality=ir-basic-block-wto-loop\n";
+    if (std::getenv("SVF_AE_TRACE_RELATIONAL_POLICY"))
+        for (std::size_t i=0;i<relationalPacking_->size();++i)
+        {
+            std::cerr << "AE_SYNTAX_PACK_MEMBERS " << i;
+            for (auto variable:relationalPacking_->at(i)) std::cerr << ' ' << variable.id();
+            std::cerr << '\n';
+        }
 }
 
 void AbstractInterpretation::runOnModule()
@@ -2240,9 +2247,18 @@ void AbstractInterpretation::updateStateOnPhi(const PhiStmt* phi)
     // it is not the WTO component's first ICFG node.
     if (const auto* result = SVFUtil::dyn_cast<ValVar>(phi->getRes()))
     {
-        AD::Interval previous = getDefinedInterval(result, icfgNode);
+        const auto history = phiIntervalHistory_.find(phi);
+        AD::Interval previous = history == phiIntervalHistory_.end()
+            ? AD::Interval::bottom() : history->second;
+        const auto previousBeforeWiden = previous;
         previous.widenWith(interval);
+        if (std::getenv("SVF_AE_TRACE_PHI_RELATIONS"))
+            SVFUtil::outs() << "AE_PHI_WIDEN target=" << adapter_.variable(*result).id()
+                << " previous=" << previousBeforeWiden.toString()
+                << " incoming=" << interval.toString()
+                << " next=" << previous.toString() << '\n';
         interval = std::move(previous);
+        phiIntervalHistory_.insert_or_assign(phi, interval);
         AD::AddressSet previousAddresses = getAddressSet(result, icfgNode);
         previousAddresses.joinWith(addresses);
         addresses = std::move(previousAddresses);
