@@ -938,11 +938,69 @@ void AbstractInterpretation::writeQueryLedger() const
 {
     if (!queryLedgerEnabled())
         return;
-    std::ofstream output(Options::AEQueryLedgerFile(),
-                         std::ios::out | std::ios::trunc);
+    writeQueryLedgerTo(Options::AEQueryLedgerFile());
+}
+
+void AbstractInterpretation::recheckQueriesOnFinalStates(
+    Map<const ICFGNode*, State>& finals, const std::string& path)
+{
+    if (!queryLedgerEnabled())
+        return;
+    const Map<std::string, QueryRecord> saved = queryLedger_;
+    for (auto& [key, record] : queryLedger_)
+    {
+        (void)key;
+        record.outcome = QueryOutcome::Unreachable;
+        record.reason = "recheck: no Post final state";
+    }
+    std::vector<std::unique_ptr<AEDetector>> fresh;
+    for (const auto& detector : detectors)
+    {
+        if (detector->getKind() == AEDetector::BUF_OVERFLOW)
+            fresh.push_back(std::make_unique<BufOverflowDetector>());
+        else if (detector->getKind() == AEDetector::NULL_DEREF)
+            fresh.push_back(std::make_unique<NullptrDerefDetector>());
+    }
+    std::vector<const ICFGNode*> nodes;
+    for (const auto& [node, state] : finals)
+    {
+        (void)state;
+        nodes.push_back(node);
+    }
+    std::sort(nodes.begin(), nodes.end(),
+              [](const ICFGNode* a, const ICFGNode* b) { return a->getId() < b->getId(); });
+    recheckStates_ = &finals;
+    // Pass 1 rebuilds detector side tables (gep offsets) from the final
+    // states; pass 2 records the outcomes.
+    for (int pass = 0; pass < 2; ++pass)
+    {
+        if (pass == 1)
+            for (auto& [key, record] : queryLedger_)
+            {
+                (void)key;
+                record.outcome = QueryOutcome::Unreachable;
+                record.reason = "recheck: no Post final state";
+            }
+        for (const ICFGNode* node : nodes)
+        {
+            if (finals.at(node).isBottom())
+                continue;
+            if (const auto* call = SVFUtil::dyn_cast<CallICFGNode>(node))
+                recordReachedAssertion(call);
+            for (auto& detector : fresh)
+                detector->detect(node);
+        }
+    }
+    recheckStates_ = nullptr;
+    writeQueryLedgerTo(path);
+    queryLedger_ = saved;
+}
+
+void AbstractInterpretation::writeQueryLedgerTo(const std::string& path) const
+{
+    std::ofstream output(path, std::ios::out | std::ios::trunc);
     if (!output)
-        throw std::runtime_error("cannot open AE query ledger: " +
-                                 Options::AEQueryLedgerFile());
+        throw std::runtime_error("cannot open AE query ledger: " + path);
 
     output << "query_id\tinput_id\tdetector\tfunction\tsource_location\t"
               "icfg_node\toperand\tquery_kind\toutcome\treason\tsemantic_site\n";

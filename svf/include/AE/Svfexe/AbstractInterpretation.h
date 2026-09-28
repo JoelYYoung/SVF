@@ -641,6 +641,13 @@ protected:
     void enumerateStandardAssertionQueries();
     void recordReachedAssertion(const CallICFGNode* call);
     void writeQueryLedger() const;
+    void writeQueryLedgerTo(const std::string& path) const;
+    /// Diagnostic (SVF_AE_QUERY_RECHECK=<path>): re-evaluate every query on
+    /// the Post-certified final states and write a second ledger. While
+    /// recheckStates_ is set, state lookups read those final states.
+    void recheckQueriesOnFinalStates(Map<const ICFGNode*, State>& finals,
+                                     const std::string& path);
+    Map<const ICFGNode*, State>* recheckStates_ = nullptr;
 
     bool postCheckEnabled() const;
     /// Reconstruct the semantic post-state exposed to the dense-equation

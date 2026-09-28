@@ -605,6 +605,8 @@ void SemiSparseAbstractInterpretation::handleGlobalNode()
 AD::Interval SemiSparseAbstractInterpretation::getInterval(
     const ValVar* value, const ICFGNode* node)
 {
+    if (this->recheckStates_)
+        return Base::getInterval(value, node);
     const AD::Interval result = getDefinedInterval(value, node);
     if (!value || !this->adapter_.contains(*value))
         return result;
@@ -631,6 +633,8 @@ AD::Interval SemiSparseAbstractInterpretation::getInterval(
 AD::Interval SemiSparseAbstractInterpretation::getDefinedInterval(
     const ValVar* value, const ICFGNode* node)
 {
+    if (this->recheckStates_)
+        return Base::getDefinedInterval(value, node);
     if (const auto* integer = SVFUtil::dyn_cast<ConstIntValVar>(value))
         return AD::Interval::singleton(AD::Rational(integer->getSExtValue()));
     if (const auto* floating = SVFUtil::dyn_cast<ConstFPValVar>(value))
@@ -705,6 +709,8 @@ AD::Interval SemiSparseAbstractInterpretation::getDefinedInterval(
 AD::AddressSet SemiSparseAbstractInterpretation::getAddressSet(
     const ValVar* value, const ICFGNode* node)
 {
+    if (this->recheckStates_)
+        return Base::getAddressSet(value, node);
     (void)node;
     if (!value)
         return AD::AddressSet::top();
@@ -733,6 +739,8 @@ AD::AddressSet SemiSparseAbstractInterpretation::getAddressSet(
 bool SemiSparseAbstractInterpretation::hasAbsValue(
     const ValVar* value, const ICFGNode* node) const
 {
+    if (this->recheckStates_)
+        return Base::hasAbsValue(value, node);
     (void)node;
     if (SVFUtil::isa<ConstIntValVar>(value) ||
             SVFUtil::isa<ConstFPValVar>(value))
@@ -741,8 +749,10 @@ bool SemiSparseAbstractInterpretation::hasAbsValue(
 }
 
 bool SemiSparseAbstractInterpretation::numericalValueMayBeUninitialized(
-    const ValVar* value, const ICFGNode*) const
+    const ValVar* value, const ICFGNode* node) const
 {
+    if (this->recheckStates_)
+        return Base::numericalValueMayBeUninitialized(value, node);
     if (!value || !this->adapter_.contains(*value))
         return true;
     const AD::Variable variable = this->adapter_.variable(*value);

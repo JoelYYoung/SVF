@@ -112,6 +112,7 @@ AbstractInterpretation::State OhPackedAbstractInterpretation::reconstruct(const 
 
 const AbstractInterpretation::State& OhPackedAbstractInterpretation::state(const ICFGNode* node) const
 {
+    if (recheckStates_) return AbstractInterpretation::state(node);
     const State& raw=stateTrace_.at(node);
     if (raw.numerical().isDomain<AD::PackedRelationalDomain>()) return raw;
     // No cache reuse across writes. References are consumed within one shared
@@ -130,6 +131,7 @@ void OhPackedAbstractInterpretation::invalidateReadCache()
 
 AbstractInterpretation::State& OhPackedAbstractInterpretation::ensureState(const ICFGNode* node)
 {
+    if (recheckStates_ && recheckStates_->count(node)) return AbstractInterpretation::ensureState(node);
     invalidateReadCache();
     auto hit=stateTrace_.find(node);
     if (hit==stateTrace_.end()) hit=stateTrace_.emplace(node,topState()).first;

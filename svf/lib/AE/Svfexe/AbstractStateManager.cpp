@@ -420,6 +420,12 @@ AbstractInterpretation::makeNumericalDomain(bool bottom) const
 AbstractInterpretation::State& AbstractInterpretation::
 ensureState(const ICFGNode* node)
 {
+    if (recheckStates_)
+    {
+        auto final = recheckStates_->find(node);
+        if (final != recheckStates_->end())
+            return final->second;
+    }
     auto iterator = stateTrace_.find(node);
     if (iterator == stateTrace_.end())
         iterator = stateTrace_.emplace(node, topState()).first;
@@ -429,6 +435,12 @@ ensureState(const ICFGNode* node)
 const AbstractInterpretation::State& AbstractInterpretation::
 state(const ICFGNode* node) const
 {
+    if (recheckStates_)
+    {
+        auto final = recheckStates_->find(node);
+        if (final != recheckStates_->end())
+            return final->second;
+    }
     const auto iterator = stateTrace_.find(node);
     if (iterator == stateTrace_.end())
         throw std::out_of_range("no dense abstract state for ICFG node");

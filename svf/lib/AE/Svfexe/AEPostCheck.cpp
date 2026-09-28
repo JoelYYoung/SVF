@@ -494,6 +494,11 @@ void AbstractInterpretation::verifyPostFixpoint()
         finalStates.emplace(node,
                             reconstructPostState(node, availability.at(node)));
     }
+    if (const char* recheck = std::getenv("SVF_AE_QUERY_RECHECK"))
+        recheckQueriesOnFinalStates(
+            finalStates, std::string(recheck) == "auto"
+                             ? Options::AEQueryLedgerFile() + ".recheck.tsv"
+                             : std::string(recheck));
 
     // Replay through a separate dense interpreter. This prevents virtual
     // sparse transfer hooks from mutating the analyzed SSA carrier while the
