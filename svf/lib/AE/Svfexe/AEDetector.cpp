@@ -54,17 +54,23 @@ std::vector<u32_t> nullDerefArgumentIndices(const CallICFGNode* call)
     {
         if (annotation.find("MEMCPY") != std::string::npos)
         {
-            if (call->arg_size() < 4)
+            // MEMCPY denotes memory effects, not an argument-count ABI.
+            // memcpy/memmove intrinsics, fortified copies, memccpy, bcopy
+            // and strncpy access arguments 0/1. The trailing length,
+            // volatility, sentinel and destination-size values are scalars.
+            // iconv is the registered exception: its descriptor is opaque;
+            // the four following arguments describe the buffers and sizes.
+            const std::vector<u32_t> accessed =
+                call->getCalledFunction()->getName() == "iconv"
+                ? std::vector<u32_t>{1, 2, 3, 4}
+                : std::vector<u32_t>{0, 1};
+            for (u32_t index : accessed)
             {
-                result.push_back(0);
-                result.push_back(1);
-            }
-            else
-            {
-                result.push_back(1);
-                result.push_back(2);
-                result.push_back(3);
-                result.push_back(4);
+                if (index >= call->arg_size() ||
+                        !call->getArgument(index)->isPointer())
+                    throw std::invalid_argument(
+                        "MEMCPY detector memory role does not match pointer argument type");
+                result.push_back(index);
             }
         }
         else if (annotation.find("MEMSET") != std::string::npos)
