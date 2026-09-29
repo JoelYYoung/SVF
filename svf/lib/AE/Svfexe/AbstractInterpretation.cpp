@@ -1511,7 +1511,8 @@ void AbstractInterpretation::collectBranchRefinement(
         return;
     const SVFStmt* condDef = *cond->getInEdges().begin();
 
-    if (const CmpStmt* cmpStmt = SVFUtil::dyn_cast<CmpStmt>(condDef))
+    const CmpStmt* cmpStmt = edge->isSwitchEdge() ? nullptr : SVFUtil::dyn_cast<CmpStmt>(condDef);
+    if (cmpStmt)
     {
         s32_t predicate = cmpStmt->getPredicate();
         // Signed mathematical intervals cannot invert unsigned/IEEE guards.
@@ -1603,7 +1604,18 @@ void AbstractInterpretation::collectBranchRefinement(
         const SVFVar* var = cond;
 
         AD::Interval switch_cond = getInterval(var, pred);
-        switch_cond.meetWith(AD::Interval::singleton(AD::Rational(succ)));
+        if (edge->isSwitchEdge())
+        {
+            const auto& cases = edge->getSwitchCases();
+            if (edge->includesSwitchDefault() || edge->getSwitchWidth() < 32 ||
+                    edge->getSwitchWidth() > 64 || cases.empty())
+                return;
+            const auto limits = std::minmax_element(cases.begin(), cases.end());
+            switch_cond.meetWith(AD::Interval(AD::Bound::finite(AD::Rational(*limits.first)),
+                                             AD::Bound::finite(AD::Rational(*limits.second))));
+        }
+        else
+            switch_cond.meetWith(AD::Interval::singleton(AD::Rational(succ)));
         if (switch_cond.isBottom())
         {
             // This case label is not reachable from cond's interval.

@@ -36,6 +36,7 @@
 #include "SVF-LLVM/LLVMUtil.h"
 #include "llvm/ADT/SmallString.h"
 #include <algorithm>
+#include <cstdlib>
 
 using namespace SVF;
 using namespace SVFUtil;
@@ -229,6 +230,28 @@ void ICFGBuilder::processFunBody(WorkList& worklist)
                     label += "};default=";
                     label += si->getDefaultDest() == succ->getParent() ? "true" : "false";
                     SVFUtil::cast<IntraCFGEdge>(added)->setSemanticBranch(label);
+                }
+                // Multiple labels can have the same destination. Preserve
+                // every real IR case, never interpret legacy -1 as a label.
+                if (added)
+                {
+                    const unsigned width = si->getCondition()->getType()->getIntegerBitWidth();
+                    std::vector<s64_t> values;
+                    if (width <= 64)
+                        for (const auto& item : si->cases())
+                            if (item.getCaseSuccessor() == succ->getParent())
+                                values.push_back(item.getCaseValue()->getSExtValue());
+                    SVFUtil::cast<IntraCFGEdge>(added)->setSwitchCases(
+                        width, si->getDefaultDest() == succ->getParent(), values);
+                    // Optional read-only evidence for the IR-label contract.
+                    if (std::getenv("SVF_AE_TRACE_SWITCH_CASES"))
+                    {
+                        llvm::errs() << "AE_SWITCH_CASES width=" << width
+                                     << " default=" << (si->getDefaultDest() == succ->getParent())
+                                     << " values=";
+                        for (const auto value : values) llvm::errs() << value << ',';
+                        llvm::errs() << '\n';
+                    }
                 }
             }
             else
