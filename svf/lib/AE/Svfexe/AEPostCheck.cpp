@@ -332,6 +332,7 @@ void AbstractInterpretation::restorePostReplayCallerFrame(
 
 void AbstractInterpretation::verifyPostFixpoint()
 {
+    indexTracePhase_ = "post";
     if (!postCheckEnabled())
         return;
     if (Options::AEQueryInputID().empty())

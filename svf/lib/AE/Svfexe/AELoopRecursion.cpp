@@ -253,6 +253,9 @@ bool AbstractInterpretation::widenCycleState(
     const State& currentDense = static_cast<const State&>(current);
     State next = previousDense;
     next.widenWith(currentDense);
+    traceIndexState("widen-previous", cycle->head()->getICFGNode(), previousDense);
+    traceIndexState("widen-incoming", cycle->head()->getICFGNode(), currentDense);
+    traceIndexState("widen-next", cycle->head()->getICFGNode(), next);
     if (std::getenv("SVF_AE_TRACE_CYCLE_STATE"))
         std::cerr << "AE_WIDEN head=" << cycle->head()->getICFGNode()->getId()
                   << " previous=" << previousDense.numerical().toString()
@@ -285,6 +288,9 @@ bool AbstractInterpretation::narrowCycleState(
         currentDense.meetWith(previousDense);
     State next = previousDense;
     next.narrowWith(currentDense);
+    traceIndexState("narrow-previous", head, previousDense);
+    traceIndexState("narrow-incoming", head, currentDense);
+    traceIndexState("narrow-next", head, next);
     const bool fixpoint =
         next.isEquivalentTo(previousDense) == AbstractDomain::CheckResult::True;
     if (!fixpoint)

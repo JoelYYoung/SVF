@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <cstdlib>
 #include <iostream>
+#include <sstream>
 
 namespace SVF
 {
@@ -1093,6 +1094,101 @@ AbstractInterpretation::reconstructLinearExpression(
     return result;
 }
 
+void AbstractInterpretation::initializeIndexTrace() const
+{
+    if (indexTraceInitialized_) return;
+    indexTraceInitialized_ = true;
+    const char* selection = std::getenv("SVF_AE_TRACE_INDEX_NODES");
+    if (!selection || !*selection) return;
+    // The diagnostic is deliberately limited to the Dense Box path being
+    // studied. Reading a sparse carrier could have materialization effects.
+    if (Options::AEDomain() != AENumericalDomain::Box ||
+            Options::AESparsity() != AESparsity::Dense)
+        throw std::invalid_argument("index trace requires Dense Box");
+    std::set<NodeID> nodes;
+    std::string token;
+    std::istringstream input(selection);
+    const bool allMain = std::string(selection) == "main"; // R20 only
+    if (!allMain)
+        while (std::getline(input, token, ',')) nodes.insert(std::stoul(token));
+    auto* graph = svfir->getICFG();
+    for (auto it = graph->begin(); it != graph->end(); ++it)
+    {
+        const auto* node = it->second;
+        if (!node->getFun() || node->getFun()->getName() != "main" ||
+                (!allMain && !nodes.count(node->getId()))) continue;
+        for (const auto* stmt : node->getSVFStmts())
+        {
+            if (const auto* gep = SVFUtil::dyn_cast<GepStmt>(stmt))
+            {
+                indexTraceSites_[node->getId()] = stmt;
+                for (const auto& part : gep->getOffsetVarAndGepTypePairVec())
+                    if (!SVFUtil::isa<ConstIntValVar>(part.first))
+                        indexTraceVariables_.insert(part.first->getId());
+            }
+            else if (SVFUtil::isa<StoreStmt>(stmt))
+                indexTraceSites_[node->getId()] = stmt;
+        }
+    }
+    // Static backward scalar dependence only. This never reads AE state.
+    std::vector<NodeID> work(indexTraceVariables_.begin(), indexTraceVariables_.end());
+    auto add = [&](const ValVar* value)
+    {
+        if (value && !value->isPointer() && !SVFUtil::isa<ConstIntValVar>(value) &&
+                indexTraceVariables_.insert(value->getId()).second)
+            work.push_back(value->getId());
+    };
+    for (std::size_t i = 0; i < work.size(); ++i)
+        for (const auto* stmt : svfir->getSVFVar(work[i])->getInEdges())
+        {
+            if (const auto* multi = SVFUtil::dyn_cast<MultiOpndStmt>(stmt))
+                for (const auto* value : multi->getOpndVars()) add(value);
+            else if (const auto* copy = SVFUtil::dyn_cast<CopyStmt>(stmt))
+                add(copy->getRHSVar());
+        }
+}
+
+bool AbstractInterpretation::indexTraceSelected(const ICFGNode* node) const
+{
+    initializeIndexTrace();
+    return node && indexTraceSites_.count(node->getId());
+}
+
+void AbstractInterpretation::indexTraceDetail(const ICFGNode* node,
+        const std::string& detail) const
+{
+    if (!indexTraceSelected(node)) return;
+    std::cerr << "AE_INDEX seq=" << ++indexTraceSequence_
+              << " phase=" << (recheckStates_ ? "final-recheck" : indexTracePhase_)
+              << " target=" << node->getId()
+              << " site=" << indexTraceSites_.at(node->getId())->getQuerySite()
+              << ' ' << detail << '\n';
+}
+
+void AbstractInterpretation::traceIndexState(const char* event,
+        const ICFGNode* node, const State& value, const std::string& detail) const
+{
+    initializeIndexTrace();
+    if (indexTraceSites_.empty() || !node || !node->getFun() ||
+            node->getFun()->getName() != "main") return;
+    std::ostringstream values;
+    for (NodeID id : indexTraceVariables_)
+    {
+        const auto* var = SVFUtil::dyn_cast<ValVar>(svfir->getSVFVar(id));
+        values << " var" << id << '=';
+        if (!var || !adapter_.contains(*var)) values << "unavailable";
+        else
+        {
+            const auto coordinate = adapter_.variable(*var);
+            values << value.interval(coordinate).toString()
+                   << "/init=" << !value.numericalMayBeUninitialized(coordinate);
+        }
+    }
+    for (const auto& item : indexTraceSites_)
+        indexTraceDetail(item.second->getICFGNode(), std::string("event=") + event +
+                         " node=" + std::to_string(node->getId()) + " " + detail + values.str());
+}
+
 void AbstractInterpretation::assumeBranch(const IntraCFGEdge* edge,
         State& denseState)
 {
@@ -1112,6 +1208,18 @@ void AbstractInterpretation::assumeBranch(const IntraCFGEdge* edge,
                               AD::LinearExpression(AD::Rational(edge->getSuccessorCondValue()))));
         return;
     }
+
+    initializeIndexTrace();
+    const bool trace = indexTraceVariables_.count(comparison->getOpVar(0)->getId()) ||
+                       indexTraceVariables_.count(comparison->getOpVar(1)->getId());
+    const std::string edgeDetail = trace
+        ? "predicate=" + std::to_string(comparison->getPredicate()) +
+          " polarity=" + std::to_string(edge->getSuccessorCondValue()) +
+          " dst=" + std::to_string(edge->getDstNode()->getId()) +
+          " lhs=" + std::to_string(comparison->getOpVar(0)->getId()) +
+          " rhs=" + std::to_string(comparison->getOpVar(1)->getId()) +
+          " cmp=" + comparison->toString() : "";
+    if (trace) traceIndexState("guard-before", edge->getSrcNode(), denseState, edgeDetail);
 
     // Preserve the established Box baseline. Relational domains additionally
     // consume the source-level comparison itself, as in a conventional
@@ -1198,11 +1306,15 @@ void AbstractInterpretation::assumeBranch(const IntraCFGEdge* edge,
     // fact. Memory refinement is handled by collectBranchRefinement instead.
     AD::Interval result = getInterval(comparison->getRes(), edge->getSrcNode());
     if (result.isBottom())
+    {
+        if (trace) traceIndexState("guard-after", edge->getSrcNode(), denseState, edgeDetail + " result-bottom-return");
         return;
+    }
     result.meetWith(AD::Interval::singleton(
                         AD::Rational(edge->getSuccessorCondValue())));
     if (result.isBottom())
         denseState = bottomState();
+    if (trace) traceIndexState("guard-after", edge->getSrcNode(), denseState, edgeDetail);
 }
 
 

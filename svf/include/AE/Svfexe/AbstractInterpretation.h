@@ -192,6 +192,10 @@ public:
                      const std::string& reason = "", const SVFStmt* site = nullptr);
 
     /// Retrieve SVFVar given its ID; asserts if no such variable exists
+    // Diagnostic only: no state lookups/materialization in these helpers.
+    bool indexTraceSelected(const ICFGNode* node) const;
+    void indexTraceDetail(const ICFGNode* node, const std::string& detail) const;
+
     inline const SVFVar* getSVFVar(NodeID varId) const
     {
         return svfir->getSVFVar(varId);
@@ -602,6 +606,14 @@ protected:
     void forgetValue(State& state,
                      AbstractDomain::Variable variable) const;
     void assumeBranch(const IntraCFGEdge* edge, State& state);
+    void initializeIndexTrace() const;
+    void traceIndexState(const char* event, const ICFGNode* node,
+                         const State& state, const std::string& detail = "") const;
+    mutable bool indexTraceInitialized_ = false;
+    mutable std::map<NodeID, const SVFStmt*> indexTraceSites_;
+    mutable std::set<NodeID> indexTraceVariables_;
+    mutable std::size_t indexTraceSequence_ = 0;
+    const char* indexTracePhase_ = "solve";
 
     SVFIR* svfir{nullptr};
     AEWTO* preAnalysis{nullptr};

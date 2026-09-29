@@ -67,10 +67,16 @@ AD::Interval detectorGepOffset(const GepStmt* gep)
             const auto* constant = SVFUtil::dyn_cast<ConstIntValVar>(variable);
             auto index = constant ? integerInterval(constant->getSExtValue())
                                  : ae.getInterval(variable, gep->getICFGNode());
+            if (ae.indexTraceSelected(gep->getICFGNode()))
+                ae.indexTraceDetail(gep->getICFGNode(), "event=index var=" +
+                    std::to_string(variable->getId()) + " interval=" + index.toString() +
+                    " stride=" + std::to_string(size));
             result = AD::add(result, AD::multiply(index, integerInterval(size)));
         }
         else return AD::Interval::top();
     }
+    if (ae.indexTraceSelected(gep->getICFGNode()))
+        ae.indexTraceDetail(gep->getICFGNode(), "event=gep-offset offset=" + result.toString());
     return result;
 }
 
@@ -206,6 +212,10 @@ void BufOverflowDetector::detect(const ICFGNode* node)
 
                     // Calculate access offset and check for potential overflow
                     AD::Interval accessOffset = getAccessOffset(objId, gep);
+                    if (ae.indexTraceSelected(node))
+                        ae.indexTraceDetail(node, "event=formation object=" +
+                            std::to_string(objId) + " base=" + std::to_string(baseObject->getId()) +
+                            " extent=" + std::to_string(size) + " offset=" + accessOffset.toString());
                     if (!accessOffset.lower().isFinite() ||
                             accessOffset.lower().value() < AD::Rational(0) ||
                             !accessOffset.upper().isFinite() ||
@@ -276,6 +286,10 @@ void BufOverflowDetector::detectMemoryBounds(const SVFStmt* statement,
         checked = true;
         const AD::Rational size(base->getByteSizeOfObj());
         const AD::Rational width(static_cast<s64_t>(statement->getAccessBytes()));
+        if (ae.indexTraceSelected(node))
+            ae.indexTraceDetail(node, "event=access object=" + std::to_string(object->getId()) +
+                " base=" + std::to_string(base->getId()) + " extent=" + size.toString() +
+                " width=" + width.toString() + " offset=" + offset.toString());
         if (!offset.lower().isFinite() || offset.lower().value() < AD::Rational(0) ||
                 !offset.upper().isFinite() || offset.upper().value() + width > size)
             may = true;

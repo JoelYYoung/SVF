@@ -927,6 +927,11 @@ void AbstractInterpretation::recordQuery(
     registerQuery(detector, node, operand, queryKind, site);
     QueryRecord& record = queryLedger_.at(
                               queryKey(detector, node, operand, queryKind, site));
+    if (indexTraceSelected(node))
+        indexTraceDetail(node, "event=query id=" + Options::AEQueryInputID() +
+            ":v2:" + queryDetectorName(detector) + ":" + record.semanticSite + ":" + queryKind +
+            " kind=" + queryKind +
+            " outcome=" + queryOutcomeName(outcome) + " reason=" + reason);
     if (queryOutcomeRank(outcome) >= queryOutcomeRank(record.outcome))
     {
         record.outcome = outcome;
