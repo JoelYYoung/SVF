@@ -1097,7 +1097,30 @@ void AbstractInterpretation::assumeBranch(const IntraCFGEdge* edge,
         State& denseState)
 {
     const SVFVar* condition = edge->getCondition();
-    if (!condition || condition->getInEdges().empty())
+    if (!condition)
+        return;
+    if (edge->isSwitchEdge())
+    {
+        // A default destination can also contain explicit labels. Its union
+        // cannot be approximated by the hull of those labels alone.
+        const auto& cases = edge->getSwitchCases();
+        // Narrow integer values may retain a zero-extended representation in
+        // the abstract state. Do not intersect them with signed IR labels.
+        if (edge->includesSwitchDefault() || edge->getSwitchWidth() < 32 ||
+                edge->getSwitchWidth() > 64 || cases.empty())
+            return;
+        const auto* value = SVFUtil::dyn_cast<ValVar>(condition);
+        if (!value || !adapter_.contains(*value)) return;
+        const auto limits = std::minmax_element(cases.begin(), cases.end());
+        materializeValue(denseState, value, edge->getSrcNode());
+        const AD::LinearExpression expression(adapter_.variable(*value));
+        denseState.assume(AD::LinearConstraint(expression - AD::LinearExpression(AD::Rational(*limits.first)),
+                                             AD::ConstraintKind::GreaterEqual));
+        denseState.assume(AD::LinearConstraint(expression - AD::LinearExpression(AD::Rational(*limits.second)),
+                                             AD::ConstraintKind::LessEqual));
+        return;
+    }
+    if (condition->getInEdges().empty())
         return;
     const auto* comparison =
         SVFUtil::dyn_cast<CmpStmt>(*condition->getInEdges().begin());
