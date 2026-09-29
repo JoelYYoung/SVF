@@ -34,6 +34,8 @@
 #include "SVF-LLVM/CppUtil.h"
 #include "SVF-LLVM/LLVMModule.h"
 #include "SVF-LLVM/LLVMUtil.h"
+#include "llvm/ADT/SmallString.h"
+#include <algorithm>
 
 using namespace SVF;
 using namespace SVFUtil;
@@ -81,6 +83,7 @@ ICFG* ICFGBuilder::build()
 
     }
     connectGlobalToProgEntry();
+    llvmModuleSet()->attachSemanticSites(icfg);
     return icfg;
 }
 
@@ -187,7 +190,12 @@ void ICFGBuilder::processFunBody(WorkList& worklist)
             {
                 assert(branchID <= 1 && "if/else has more than two branches?");
                 if(br->isConditional())
-                    icfg->addConditionalIntraEdge(srcNode, dstNode, 1 - branchID);
+                {
+                    ICFGEdge* added = icfg->addConditionalIntraEdge(srcNode, dstNode, 1 - branchID);
+                    if (added && !Options::AEPostCheckFile().empty())
+                        SVFUtil::cast<IntraCFGEdge>(added)->setSemanticBranch(
+                            branchID == 0 ? "br:polarity=true" : "br:polarity=false");
+                }
                 else
                     icfg->addIntraEdge(srcNode, dstNode);
             }
@@ -199,7 +207,29 @@ void ICFGBuilder::processFunBody(WorkList& worklist)
                 s64_t val = -1;
                 if (condVal && condVal->getBitWidth() <= 64)
                     val = LLVMUtil::getIntegerValue(condVal).first;
-                icfg->addConditionalIntraEdge(srcNode, dstNode,val);
+                ICFGEdge* added = icfg->addConditionalIntraEdge(srcNode, dstNode,val);
+                if (added && !Options::AEPostCheckFile().empty())
+                {
+                    // Describe IR cases, not the lossy legacy successor value.
+                    // Decimal strings support arbitrary APInt widths. Sorting
+                    // canonicalizes the set without using pointer/visit order.
+                    std::vector<std::string> cases;
+                    for (const auto& item : si->cases())
+                        if (item.getCaseSuccessor() == succ->getParent())
+                        {
+                            llvm::SmallString<40> value;
+                            item.getCaseValue()->getValue().toString(value, 10, true);
+                            cases.push_back(value.str().str());
+                        }
+                    std::sort(cases.begin(), cases.end());
+                    std::string label = "switch:width=" + std::to_string(
+                        si->getCondition()->getType()->getIntegerBitWidth()) + ";cases={";
+                    for (std::size_t i = 0; i < cases.size(); ++i)
+                        label += (i ? "," : "") + cases[i];
+                    label += "};default=";
+                    label += si->getDefaultDest() == succ->getParent() ? "true" : "false";
+                    SVFUtil::cast<IntraCFGEdge>(added)->setSemanticBranch(label);
+                }
             }
             else
                 icfg->addIntraEdge(srcNode, dstNode);

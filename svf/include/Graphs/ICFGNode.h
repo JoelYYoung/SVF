@@ -71,6 +71,18 @@ public:
     {
     }
 
+    /// Frontend-owned semantic metadata; never used for graph ordering.
+    void setSemanticSite(std::string site) { semanticSite_ = std::move(site); }
+    const std::string& getSemanticSite() const { return semanticSite_; }
+    void setSemanticCondition(std::string site) { semanticCondition_ = std::move(site); }
+    const std::string& getSemanticCondition() const { return semanticCondition_; }
+
+private:
+    std::string semanticSite_;
+    std::string semanticCondition_;
+
+public:
+
     /// Return the function of this ICFGNode
     virtual const FunObjVar* getFun() const
     {

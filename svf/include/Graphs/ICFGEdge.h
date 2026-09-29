@@ -147,6 +147,10 @@ public:
         return branchCondVal;
     }
 
+    /// Output-only IR branch label. Never consumed by transfer or edge ordering.
+    void setSemanticBranch(std::string label) { semanticBranch_ = std::move(label); }
+    const std::string& getSemanticBranch() const { return semanticBranch_; }
+
     virtual const std::string toString() const;
 
 private:
@@ -161,6 +165,7 @@ private:
     /// the second element is 0
     const SVFVar* conditionVar;
     s64_t branchCondVal;
+    std::string semanticBranch_;
 
     inline void setConditionVar(const SVFVar* c)
     {

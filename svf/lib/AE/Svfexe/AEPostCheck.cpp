@@ -33,6 +33,10 @@ enum class EquationStatus
 struct EquationRecord
 {
     std::string id;
+    std::string semanticId;
+    std::string semanticSource;
+    std::string semanticTarget;
+    std::string semanticDiscriminator;
     std::string kind;
     NodeID source = 0;
     NodeID target = 0;
@@ -287,14 +291,19 @@ void writeReport(const std::vector<EquationRecord>& records)
         throw std::runtime_error("cannot open AE Post report: " +
                                  Options::AEPostCheckFile());
     output << "equation_id\tinput_id\tequation_kind\tsource\ttarget\t"
-              "status\treason\n";
+              "status\treason\tpost_schema\tsemantic_equation_id\t"
+              "semantic_source\tsemantic_target\tsemantic_discriminator\n";
     const std::string input = escapeField(Options::AEQueryInputID());
     for (const EquationRecord& record : records)
     {
         output << escapeField(record.id) << '\t' << input << '\t'
                << record.kind << '\t' << record.source << '\t'
                << record.target << '\t' << statusName(record.status) << '\t'
-               << escapeField(record.reason) << '\n';
+               << escapeField(record.reason) << "\tpost-v2\t"
+               << escapeField(record.semanticId) << '\t'
+               << escapeField(record.semanticSource) << '\t'
+               << escapeField(record.semanticTarget) << '\t'
+               << escapeField(record.semanticDiscriminator) << '\n';
     }
     if (!output)
         throw std::runtime_error("failed to write AE Post report: " +
@@ -340,6 +349,17 @@ void AbstractInterpretation::verifyPostFixpoint()
 
     const std::string input = escapeField(Options::AEQueryInputID());
     std::vector<EquationRecord> records;
+    std::set<std::string> semanticKeys;
+    const auto semanticNode = [&](NodeID id) {
+        const auto* node = icfg->getICFGNode(id);
+        if (!node || node->getSemanticSite().empty())
+            throw std::runtime_error("AE_POST_IDENTITY: missing node identity");
+        return node->getSemanticSite();
+    };
+    const auto field = [](const std::string& text) {
+        return std::to_string(text.size()) + ":" + text;
+    };
+    std::string semanticDiscriminator;
     bool failed = false;
     const auto addRecord = [&](const std::string& kind, NodeID source,
                                NodeID target, EquationStatus status,
@@ -354,6 +374,20 @@ void AbstractInterpretation::verifyPostFixpoint()
         record.reason = reason;
         record.id = input + ':' + kind + ':' + std::to_string(source) + ':' +
                     std::to_string(target) + discriminator;
+        record.semanticSource = kind == "initial"
+            ? semanticNode(icfg->getGlobalICFGNode()->getId()) + ":initial-seed"
+            : semanticNode(source);
+        record.semanticTarget = kind == "initial"
+            ? semanticNode(icfg->getGlobalICFGNode()->getId()) : semanticNode(target);
+        record.semanticDiscriminator = semanticDiscriminator;
+        if (std::getenv("SVF_AE_POST_IDENTITY_DROP_SITE"))
+            throw std::runtime_error("AE_POST_IDENTITY: injected missing site");
+        record.semanticId = "post-v2:" + field(Options::AEQueryInputID()) + field(kind) +
+                            field(record.semanticSource) + field(record.semanticTarget) +
+                            field(record.semanticDiscriminator);
+        if (!semanticKeys.insert(record.semanticId).second ||
+            std::getenv("SVF_AE_POST_IDENTITY_DUPLICATE_KEY"))
+            throw std::runtime_error("AE_POST_IDENTITY: duplicate semantic equation");
         records.push_back(std::move(record));
         failed |= status == EquationStatus::Fail ||
                   status == EquationStatus::Unsupported;
@@ -441,6 +475,7 @@ void AbstractInterpretation::verifyPostFixpoint()
         roots.push_back(rootWorklist.pop());
     if (roots.size() != 1)
     {
+        semanticDiscriminator = "global:initial:multi-root";
         addRecord("initial", 0, 0, EquationStatus::Unsupported,
                   "Post replay currently requires exactly one analysis entry",
                   "");
@@ -582,6 +617,7 @@ void AbstractInterpretation::verifyPostFixpoint()
     };
 
     const auto globalFinal = finalStates.find(global);
+    semanticDiscriminator = "global:initial";
     if (globalFinal == finalStates.end())
     {
         addRecord("initial", 0, global->getId(), EquationStatus::Fail,
@@ -624,6 +660,7 @@ void AbstractInterpretation::verifyPostFixpoint()
                     AD::CheckResult::True;
             if (!entryIncluded && entryFinal != finalStates.end())
                 traceFailure("entry", replayedEntry, entryFinal->second);
+            semanticDiscriminator = "global:entry";
             addRecord(
                 "entry", global->getId(), rootEntry->getId(),
                 entryIncluded ? EquationStatus::Pass : EquationStatus::Fail,
@@ -639,6 +676,7 @@ void AbstractInterpretation::verifyPostFixpoint()
     // apply RetPE from that exit to the summary's already-bound return value.
     for (const auto& [returnSite, call] : summaryReturns)
     {
+        semanticDiscriminator = "recursive-summary";
         replay.stateTrace_ = finalStates;
         replay.skipRecursionWithTop(call);
         State summarized = replay.state(returnSite);
@@ -681,6 +719,16 @@ void AbstractInterpretation::verifyPostFixpoint()
         const std::string kind = edgeKind(edge);
         std::string discriminator =
             ":edge=" + std::to_string(edge->getEdgeKind());
+        semanticDiscriminator = "edge=" + kind;
+        if (conditional && conditional->getCondition())
+        {
+            if (source->getSemanticCondition().empty())
+                throw std::runtime_error("AE_POST_IDENTITY: missing branch condition site");
+            if (conditional->getSemanticBranch().empty())
+                throw std::runtime_error("AE_POST_IDENTITY: missing IR branch label");
+            semanticDiscriminator += ";condition=" + field(source->getSemanticCondition()) +
+                ";label=" + field(conditional->getSemanticBranch());
+        }
         if (conditional && conditional->getCondition())
             discriminator +=
                 ":condition=" +

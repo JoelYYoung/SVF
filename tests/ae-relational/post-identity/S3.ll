@@ -1,0 +1,73 @@
+; ModuleID = 'S3_recsum.raw.ll'
+source_filename = "S3_recsum.c"
+target datalayout = "e-m:o-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-n32:64-S128-Fn32"
+target triple = "arm64-apple-macosx26.0.0"
+
+@g = global i32 0, align 4, !dbg !0
+
+; Function Attrs: noinline nounwind ssp uwtable(sync)
+define void @rec(i32 noundef %0) #0 !dbg !14 {
+    #dbg_value(i32 %0, !18, !DIExpression(), !19)
+  %2 = icmp sgt i32 %0, 0, !dbg !20
+  br i1 %2, label %3, label %5, !dbg !20
+
+3:                                                ; preds = %1
+  %4 = sub nsw i32 %0, 1, !dbg !22
+  call void @rec(i32 noundef %4), !dbg !23
+  br label %6, !dbg !23
+
+5:                                                ; preds = %1
+  store i32 99, ptr @g, align 4, !dbg !24
+  br label %6
+
+6:                                                ; preds = %5, %3
+  ret void, !dbg !25
+}
+
+; Function Attrs: noinline nounwind ssp uwtable(sync)
+define i32 @main() #0 !dbg !26 {
+  call void @rec(i32 noundef 1), !dbg !29
+  call void @rec(i32 noundef 2), !dbg !30
+  %1 = load i32, ptr @g, align 4, !dbg !31
+  ret i32 %1, !dbg !32
+}
+
+attributes #0 = { noinline nounwind ssp uwtable(sync) "frame-pointer"="non-leaf" "no-trapping-math"="true" "stack-protector-buffer-size"="8" "target-cpu"="apple-m1" "target-features"="+aes,+altnzcv,+ccdp,+ccidx,+ccpp,+complxnum,+crc,+dit,+dotprod,+flagm,+fp-armv8,+fp16fml,+fptoint,+fullfp16,+jsconv,+lse,+neon,+pauth,+perfmon,+predres,+ras,+rcpc,+rdm,+sb,+sha2,+sha3,+specrestrict,+ssbs,+v8.1a,+v8.2a,+v8.3a,+v8.4a,+v8a" }
+
+!llvm.module.flags = !{!6, !7, !8, !9, !10, !11, !12}
+!llvm.dbg.cu = !{!2}
+!llvm.ident = !{!13}
+
+!0 = !DIGlobalVariableExpression(var: !1, expr: !DIExpression())
+!1 = distinct !DIGlobalVariable(name: "g", scope: !2, file: !3, line: 1, type: !5, isLocal: false, isDefinition: true)
+!2 = distinct !DICompileUnit(language: DW_LANG_C11, file: !3, producer: "Homebrew clang version 21.1.8", isOptimized: false, runtimeVersion: 0, emissionKind: FullDebug, globals: !4, splitDebugInlining: false, nameTableKind: Apple, sysroot: "/Library/Developer/CommandLineTools/SDKs/MacOSX26.sdk", sdk: "MacOSX26.sdk")
+!3 = !DIFile(filename: "S3_recsum.c", directory: "/private/tmp/claude-501/-Users-xavier-Research-agentic-progressive-analysis/51ab49a9-30ea-46ef-a16d-d36be8c20fba/scratchpad/postid", checksumkind: CSK_MD5, checksum: "0f389ca1194d52297a481f1e883d1964")
+!4 = !{!0}
+!5 = !DIBasicType(name: "int", size: 32, encoding: DW_ATE_signed)
+!6 = !{i32 2, !"SDK Version", [2 x i32] [i32 26, i32 5]}
+!7 = !{i32 7, !"Dwarf Version", i32 5}
+!8 = !{i32 2, !"Debug Info Version", i32 3}
+!9 = !{i32 1, !"wchar_size", i32 4}
+!10 = !{i32 8, !"PIC Level", i32 2}
+!11 = !{i32 7, !"uwtable", i32 1}
+!12 = !{i32 7, !"frame-pointer", i32 1}
+!13 = !{!"Homebrew clang version 21.1.8"}
+!14 = distinct !DISubprogram(name: "rec", scope: !3, file: !3, line: 2, type: !15, scopeLine: 2, flags: DIFlagPrototyped, spFlags: DISPFlagDefinition, unit: !2, retainedNodes: !17)
+!15 = !DISubroutineType(types: !16)
+!16 = !{null, !5}
+!17 = !{}
+!18 = !DILocalVariable(name: "n", arg: 1, scope: !14, file: !3, line: 2, type: !5)
+!19 = !DILocation(line: 0, scope: !14)
+!20 = !DILocation(line: 2, column: 51, scope: !21)
+!21 = distinct !DILexicalBlock(scope: !14, file: !3, line: 2, column: 49)
+!22 = !DILocation(line: 2, column: 62, scope: !21)
+!23 = !DILocation(line: 2, column: 56, scope: !21)
+!24 = !DILocation(line: 2, column: 75, scope: !21)
+!25 = !DILocation(line: 2, column: 81, scope: !14)
+!26 = distinct !DISubprogram(name: "main", scope: !3, file: !3, line: 3, type: !27, scopeLine: 3, flags: DIFlagPrototyped, spFlags: DISPFlagDefinition, unit: !2)
+!27 = !DISubroutineType(types: !28)
+!28 = !{!5}
+!29 = !DILocation(line: 3, column: 18, scope: !26)
+!30 = !DILocation(line: 3, column: 26, scope: !26)
+!31 = !DILocation(line: 3, column: 41, scope: !26)
+!32 = !DILocation(line: 3, column: 34, scope: !26)

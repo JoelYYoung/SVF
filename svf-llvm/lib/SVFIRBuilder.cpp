@@ -1884,15 +1884,7 @@ void SVFIRBuilder::setCurrentBBAndValueForPAGEdge(PAGEdge* edge)
         llvm::raw_string_ostream stream(site);
         if (const auto* instruction = SVFUtil::dyn_cast<Instruction>(curVal))
         {
-            stream << "fn=" << instruction->getFunction()->getName() << ':';
-            instruction->getParent()->printAsOperand(stream, false);
-            unsigned ordinal = 0;
-            for (const auto& previous : *instruction->getParent())
-            {
-                if (&previous == instruction) break;
-                ++ordinal;
-            }
-            stream << ":inst=" << ordinal;
+            stream << LLVMModuleSet::instructionSemanticSite(instruction);
             llvm::Type* accessType = nullptr;
             if (const auto* load = SVFUtil::dyn_cast<llvm::LoadInst>(instruction))
                 accessType = load->getType();

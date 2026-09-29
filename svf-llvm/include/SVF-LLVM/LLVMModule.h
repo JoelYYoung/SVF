@@ -86,6 +86,8 @@ private:
     std::unique_ptr<LLVMContext> owned_ctx;
     std::vector<std::unique_ptr<Module>> owned_modules;
     std::vector<std::reference_wrapper<Module>> modules;
+    Map<const Function*, std::string> functionOrigins;
+    std::string semanticModuleNamespace;
 
     /// Record some "sse_" function declarations used in other ext function definition, e.g., svf_ext_foo(), and svf_ext_foo() used in app functions
     FunctionSetType ExtFuncsVec;
@@ -228,6 +230,12 @@ public:
     NodeID getObjectNode(const Value* V);
 
     void dumpSymTable();
+
+    /// Shared query-v2/Post LLVM instruction identity. Does not use SVF IDs.
+    static std::string instructionSemanticSite(const Instruction* instruction);
+    std::string functionSemanticOrigin(const Function* function) const;
+    void initializeSemanticOrigins();
+    void attachSemanticSites(ICFG* graph);
 
 public:
 

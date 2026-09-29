@@ -1,0 +1,23 @@
+{
+  "schema": "post-identity-acceptance-v2",
+  "scope": "Metadata only. R23 semantics are a separate prerequisite, not certified by this suite.",
+  "cases": {
+    "S1": {"exit": 0, "switch_labels": ["switch:width=32;cases={-1};default=false", "switch:width=32;cases={1,2};default=false", "switch:width=32;cases={3};default=false", "switch:width=32;cases={};default=true"]},
+    "S2": {"exit": 0, "call_count": 3, "return_count": 3},
+    "S3": {"exit": 0, "recursive_summary_count": 2, "unreachable_body_keys_required": true},
+    "S4": {"exit": 0, "branch_labels": ["br:polarity=true"]},
+    "S5": {"exit": 0, "branch_labels": ["br:polarity=false", "br:polarity=true"], "non_cmp_condition": true},
+    "S6": {"exit": 0, "assertion_count": 4, "outcomes": "Must equal the pinned semantic baseline, not a hardcoded desired precision."},
+    "S7": {"exit": 0, "assertion_count": 4, "outcomes": "R23 prerequisite must pass separately; metadata must not change the pinned baseline."},
+    "S8": {"exit": 0, "program_function": "strchr", "external_function": "strtok"},
+    "G_global": {"exit": 0, "initial_count": 1, "entry_count": 1},
+    "G_multi": {"exit": 2, "arguments": ["-ae-fun-entry=no-main"], "only_equation": "global:initial:multi-root", "only_status": "Unsupported"}
+  },
+  "mutations": [
+    {"name": "missing", "input": "S1", "environment": "SVF_AE_POST_IDENTITY_DROP_SITE", "exit": 2, "diagnostic": "AE_POST_IDENTITY: injected missing site"},
+    {"name": "collision", "input": "S1", "environment": "SVF_AE_POST_IDENTITY_DUPLICATE_KEY", "exit": 2, "diagnostic": "AE_POST_IDENTITY: duplicate semantic equation"}
+  ],
+  "gates": ["Every old equation ID has exactly one unique semantic key", "No key is built from NodeID, SVFVar ID, pointer address or container order", "Same binary three processes and second build one process: 100% identical semantic keys/status/reason", "Query and final recheck equal unchanged semantic baseline", "Post kind/status multiset unchanged by metadata, but never substitutes for full stable-key comparison"],
+  "run_budget": {"input_cases": 10, "mutation_cases": 2, "A_processes_each": 3, "B_processes_each": 1, "attempts": 48, "timeout_each_seconds": 10},
+  "state": "Inputs/expectations for lightweight freeze only; no execution or acceptance yet. Baseline must be repinned after independent R23 acceptance."
+}
