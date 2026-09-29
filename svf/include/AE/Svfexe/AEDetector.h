@@ -145,6 +145,8 @@ private:
 class BufOverflowDetector : public AEDetector
 {
     friend class AbstractInterpretation;
+    void detectMemoryBounds(const SVFStmt* statement, const SVFVar* pointer,
+                            const std::string& kind);
 
 public:
     /**
@@ -207,7 +209,8 @@ public:
     void addToGepObjOffsetFromBase(const GepObjVar* obj,
                                    const AbstractDomain::Interval& offset)
     {
-        gepObjOffsetFromBase[obj] = offset;
+        auto inserted = gepObjOffsetFromBase.emplace(obj, offset);
+        if (!inserted.second) inserted.first->second.joinWith(offset);
     }
 
     /**

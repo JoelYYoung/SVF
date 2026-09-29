@@ -46,6 +46,34 @@ bool upperAtLeast(const AD::Interval& interval, u32_t size)
            interval.upper().value() >= AD::Rational(size);
 }
 
+AD::Interval detectorGepOffset(const GepStmt* gep)
+{
+    // Address-carrier field limits must never truncate a detector bound.
+    if (gep->isConstantOffset())
+        return integerInterval(gep->accumulateConstantByteOffset());
+    auto& ae = AbstractInterpretation::getAEInstance();
+    AD::Interval result = integerInterval(0);
+    for (const auto& part : gep->getOffsetVarAndGepTypePairVec())
+    {
+        const auto* variable = part.first;
+        const auto* type = part.second;
+        if (const auto* structure = SVFUtil::dyn_cast<SVFStructType>(type))
+            result = AD::add(result, integerInterval(gep->getAccessPath().getStructFieldOffset(variable, structure)));
+        else if (SVFUtil::isa<SVFArrayType>(type) || SVFUtil::isa<SVFPointerType>(type))
+        {
+            const auto* array = SVFUtil::dyn_cast<SVFArrayType>(type);
+            const auto size = array ? array->getTypeOfElement()->getByteSize()
+                              : gep->getAccessPath().gepSrcPointeeType()->getByteSize();
+            const auto* constant = SVFUtil::dyn_cast<ConstIntValVar>(variable);
+            auto index = constant ? integerInterval(constant->getSExtValue())
+                                 : ae.getInterval(variable, gep->getICFGNode());
+            result = AD::add(result, AD::multiply(index, integerInterval(size)));
+        }
+        else return AD::Interval::top();
+    }
+    return result;
+}
+
 std::vector<u32_t> nullDerefArgumentIndices(const CallICFGNode* call)
 {
     std::vector<u32_t> result;
@@ -118,7 +146,7 @@ void BufOverflowDetector::detect(const ICFGNode* node)
                 const AD::AddressSet rhsVal =
                     ae.getAddressSet(gep->getRHSVar(), node);
                 updateGepObjOffsetFromBase(node, lhsVal, rhsVal,
-                                           ae.getGepByteOffset(gep));
+                                           detectorGepOffset(gep));
 
                 if (rhsVal.isBottom() || !rhsVal.isFinite() ||
                         rhsVal.hasUnknownObject())
@@ -167,17 +195,25 @@ void BufOverflowDetector::detect(const ICFGNode* node)
                         }
                     }
 
-                    if (!sizeKnown)
+                    if (!sizeKnown || size == 0)
+                    {
+                        // Zero/unsized extern objects do not provide a usable
+                        // allocation extent; never turn a missing size into 0.
                         unsupported = true;
+                        continue;
+                    }
                     checkedTarget = true;
 
                     // Calculate access offset and check for potential overflow
                     AD::Interval accessOffset = getAccessOffset(objId, gep);
-                    if (upperAtLeast(accessOffset, size))
+                    if (!accessOffset.lower().isFinite() ||
+                            accessOffset.lower().value() < AD::Rational(0) ||
+                            !accessOffset.upper().isFinite() ||
+                            accessOffset.upper().value() > AD::Rational(size))
                     {
                         mayOverflow = true;
-                        AEException bug(stmt->toString());
-                        addBugToReporter(bug, stmt->getICFGNode());
+                        // An out-of-range address-formation property is not
+                        // itself a memory-access bug (non-inbounds GEP).
                     }
                 }
                 const auto outcome = mayOverflow
@@ -186,11 +222,20 @@ void BufOverflowDetector::detect(const ICFGNode* node)
                        ? AbstractInterpretation::QueryOutcome::Unsupported
                        : AbstractInterpretation::QueryOutcome::Safe);
                 ae.recordQuery(BUF_OVERFLOW, node, gep->getRHSVar(),
-                               "gep-bounds", outcome,
-                               mayOverflow ? "access may exceed object bounds"
+                               "gep-allocation-range", outcome,
+                               mayOverflow ? "formed offset may be outside [0, allocation size]; not an access verdict"
                                : (unsupported || !checkedTarget
                                   ? "object or object size is unsupported"
-                                  : "all target offsets are in bounds"));
+                                  : "formed offsets are within [0, allocation size], including one-past; not a dereference verdict"), gep);
+            }
+            else if (const auto* load = SVFUtil::dyn_cast<LoadStmt>(stmt))
+                detectMemoryBounds(load, load->getRHSVar(), "load-bounds");
+            else if (const auto* store = SVFUtil::dyn_cast<StoreStmt>(stmt))
+            {
+                // Global initializer StoreStmts are synthetic writes, not
+                // LLVM memory accesses. Only instruction sites have a width.
+                if (node->getFun())
+                    detectMemoryBounds(store, store->getLHSVar(), "store-bounds");
             }
         }
     }
@@ -203,6 +248,43 @@ void BufOverflowDetector::detect(const ICFGNode* node)
             detectExtAPI(callNode);
         }
     }
+}
+
+void BufOverflowDetector::detectMemoryBounds(const SVFStmt* statement,
+        const SVFVar* pointer, const std::string& kind)
+{
+    auto& ae = AbstractInterpretation::getAEInstance();
+    using Outcome = AbstractInterpretation::QueryOutcome;
+    const auto* node = statement->getICFGNode();
+    const auto targets = ae.getAddressSet(pointer, node);
+    bool unsupported = statement->getAccessBytes() == 0;
+    bool may = targets.isBottom() || !targets.isFinite() || targets.hasUnknownObject();
+    bool checked = false;
+    if (targets.isFinite()) for (const auto location : targets)
+    {
+        const auto* object = ae.objectAt(location);
+        const auto* base = object ? PAG::getPAG()->getBaseObject(object->getId()) : nullptr;
+        if (!base || base->isBlackHoleObj()) { may = true; continue; }
+        if (!base->isConstantByteSize() || base->getByteSizeOfObj() == 0)
+        { unsupported = true; continue; }
+        AD::Interval offset = integerInterval(0);
+        if (const auto* field = SVFUtil::dyn_cast<GepObjVar>(object))
+        {
+            if (!hasGepObjOffsetFromBase(field)) { unsupported = true; continue; }
+            offset = getGepObjOffsetFromBase(field);
+        }
+        checked = true;
+        const AD::Rational size(base->getByteSizeOfObj());
+        const AD::Rational width(static_cast<s64_t>(statement->getAccessBytes()));
+        if (!offset.lower().isFinite() || offset.lower().value() < AD::Rational(0) ||
+                !offset.upper().isFinite() || offset.upper().value() + width > size)
+            may = true;
+    }
+    ae.recordQuery(BUF_OVERFLOW, node, pointer, kind,
+                   may ? Outcome::May : (unsupported || !checked ? Outcome::Unsupported : Outcome::Safe),
+                   may ? "memory access may exceed allocation byte range"
+                   : (unsupported || !checked ? "access width, allocation size or offset unsupported"
+                      : "access byte range is within allocation; nullness/lifetime checked separately"), statement);
 }
 
 void BufOverflowDetector::enumerateQueries()
@@ -272,7 +354,14 @@ void BufOverflowDetector::enumerateQueries()
         {
             if (const auto* gep = SVFUtil::dyn_cast<GepStmt>(statement))
                 ae.registerQuery(BUF_OVERFLOW, node, gep->getRHSVar(),
-                                 "gep-bounds");
+                                 "gep-allocation-range", gep);
+            else if (const auto* load = SVFUtil::dyn_cast<LoadStmt>(statement))
+                ae.registerQuery(BUF_OVERFLOW, node, load->getRHSVar(), "load-bounds", load);
+            else if (const auto* store = SVFUtil::dyn_cast<StoreStmt>(statement))
+            {
+                if (node->getFun())
+                    ae.registerQuery(BUF_OVERFLOW, node, store->getLHSVar(), "store-bounds", store);
+            }
         }
     }
 }
@@ -583,17 +672,16 @@ AD::Interval BufOverflowDetector::getAccessOffset(SVF::NodeID objId,
         const SVF::GepStmt* gep)
 {
     SVFIR* svfir = PAG::getPAG();
-    auto& ae = AbstractInterpretation::getAEInstance();
     auto obj = svfir->getSVFVar(objId);
 
     if (SVFUtil::isa<BaseObjVar>(obj))
     {
-        return ae.getGepByteOffset(gep);
+        return detectorGepOffset(gep);
     }
     else if (SVFUtil::isa<GepObjVar>(obj))
     {
         return AD::add(getGepObjOffsetFromBase(SVFUtil::cast<GepObjVar>(obj)),
-                       ae.getGepByteOffset(gep));
+                       detectorGepOffset(gep));
     }
     else
     {
@@ -669,14 +757,12 @@ void BufOverflowDetector::updateGepObjOffsetFromBase(const ICFGNode* node,
                     {
                         AD::Interval objOffsetFromBase =
                             getGepObjOffsetFromBase(objVar);
-                        if (!hasGepObjOffsetFromBase(gepObjVar))
-                            addToGepObjOffsetFromBase(
-                                gepObjVar, AD::add(objOffsetFromBase, offset));
+                        addToGepObjOffsetFromBase(
+                            gepObjVar, AD::add(objOffsetFromBase, offset));
                     }
                     else
                     {
-                        assert(false &&
-                               "GEP RHS object has no offset from base");
+                        addToGepObjOffsetFromBase(gepObjVar, AD::Interval::top());
                     }
                 }
             }
@@ -835,24 +921,8 @@ void NullptrDerefDetector::detect(const ICFGNode* node)
     {
         for (const auto& stmt : node->getSVFStmts())
         {
-            if (const GepStmt* gep = SVFUtil::dyn_cast<GepStmt>(stmt))
-            {
-                // like llvm bitcode `p = gep p, idx`
-                // we check rhs p's all address are valid mem
-                const ValVar* rhs = gep->getRHSVar();
-                const bool safe = canSafelyDerefPtr(rhs, node);
-                ae.recordQuery(NULL_DEREF, node, rhs, "gep-address",
-                               safe ? AbstractInterpretation::QueryOutcome::Safe
-                                    : AbstractInterpretation::QueryOutcome::May,
-                               safe ? "all targets valid"
-                                    : "may be null, invalid, unknown, or freed");
-                if (!safe)
-                {
-                    AEException bug(stmt->toString());
-                    addBugToReporter(bug, stmt->getICFGNode());
-                }
-            }
-            else if (const LoadStmt* load = SVFUtil::dyn_cast<LoadStmt>(stmt))
+            // GEP forms an address; it does not dereference its operand.
+            if (const LoadStmt* load = SVFUtil::dyn_cast<LoadStmt>(stmt))
             {
                 // like llvm bitcode `p = load q`
                 // The dereferenced pointer is the load address (RHS), not the
@@ -872,6 +942,17 @@ void NullptrDerefDetector::detect(const ICFGNode* node)
                     AEException bug(stmt->toString());
                     addBugToReporter(bug, stmt->getICFGNode());
                 }
+            }
+            else if (const auto* store = SVFUtil::dyn_cast<StoreStmt>(stmt))
+            {
+                if (!node->getFun()) continue;
+                const auto* address = store->getLHSVar();
+                const bool safe = canSafelyDerefPtr(address, node);
+                ae.recordQuery(NULL_DEREF, node, address, "store-address",
+                               safe ? AbstractInterpretation::QueryOutcome::Safe
+                                    : AbstractInterpretation::QueryOutcome::May,
+                               safe ? "all targets valid"
+                                    : "may be null, invalid, unknown, or freed", store);
             }
         }
     }
@@ -908,13 +989,15 @@ void NullptrDerefDetector::enumerateQueries()
 
         for (const SVFStmt* statement : node->getSVFStmts())
         {
-            if (const auto* gep = SVFUtil::dyn_cast<GepStmt>(statement))
-                ae.registerQuery(NULL_DEREF, node, gep->getRHSVar(),
-                                 "gep-address");
-            else if (const auto* load =
+            if (const auto* load =
                          SVFUtil::dyn_cast<LoadStmt>(statement))
                 ae.registerQuery(NULL_DEREF, node, load->getRHSVar(),
                                  "load-address");
+            else if (const auto* store = SVFUtil::dyn_cast<StoreStmt>(statement))
+            {
+                if (node->getFun())
+                    ae.registerQuery(NULL_DEREF, node, store->getLHSVar(), "store-address", store);
+            }
         }
     }
 }

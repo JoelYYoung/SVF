@@ -1874,6 +1874,46 @@ void SVFIRBuilder::setCurrentBBAndValueForPAGEdge(PAGEdge* edge)
     assert(curVal && "current Val is nullptr?");
     edge->setBB(curBB!=nullptr ? curBB : nullptr);
     edge->setValue(pag->getGNode(llvmModuleSet()->getValueNode(curVal)));
+    // Bind detector sites to the fixed LLVM input, never to allocation-order
+    // PAG/ICFG IDs. Constant expressions are uniqued by LLVM; repeated uses
+    // of the same expression denote one address-formation property.
+    if (SVFUtil::isa<GepStmt>(edge) || SVFUtil::isa<LoadStmt>(edge) ||
+            SVFUtil::isa<StoreStmt>(edge))
+    {
+        std::string site;
+        llvm::raw_string_ostream stream(site);
+        if (const auto* instruction = SVFUtil::dyn_cast<Instruction>(curVal))
+        {
+            stream << "fn=" << instruction->getFunction()->getName() << ':';
+            instruction->getParent()->printAsOperand(stream, false);
+            unsigned ordinal = 0;
+            for (const auto& previous : *instruction->getParent())
+            {
+                if (&previous == instruction) break;
+                ++ordinal;
+            }
+            stream << ":inst=" << ordinal;
+            llvm::Type* accessType = nullptr;
+            if (const auto* load = SVFUtil::dyn_cast<llvm::LoadInst>(instruction))
+                accessType = load->getType();
+            if (const auto* store = SVFUtil::dyn_cast<llvm::StoreInst>(instruction))
+                accessType = store->getValueOperand()->getType();
+            if (accessType && accessType->isSized())
+            {
+                auto size = instruction->getModule()->getDataLayout().getTypeStoreSize(accessType);
+                if (!size.isScalable()) edge->setAccessBytes(size.getFixedValue());
+            }
+        }
+        else
+        {
+            stream << "global=";
+            curVal->printAsOperand(stream, true);
+        }
+        if (const auto* gep = SVFUtil::dyn_cast<GepStmt>(edge))
+            stream << ":gep-field=" << gep->getAccessPath().getConstantStructFldIdx();
+        stream.flush();
+        edge->setQuerySite(site);
+    }
     ICFGNode* icfgNode = pag->getICFG()->getGlobalICFGNode();
     LLVMModuleSet* llvmMS = llvmModuleSet();
     if (const Instruction* curInst = SVFUtil::dyn_cast<Instruction>(curVal))

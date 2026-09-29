@@ -153,8 +153,15 @@ static std::vector<const ValVar*> definitionOperands(const SVFStmt* statement)
 
 static std::string queryKey(AEDetector::DetectorKind detector,
                             const ICFGNode* node, const SVFVar* operand,
-                            const std::string& queryKind)
+                            const std::string& queryKind, const SVFStmt* site = nullptr)
 {
+    if (site)
+    {
+        if (site->getQuerySite().empty())
+            throw std::invalid_argument("detector site lacks LLVM semantic identity");
+        return std::to_string(static_cast<unsigned>(detector)) + ":v2:" +
+               site->getQuerySite() + ':' + queryKind;
+    }
     return std::to_string(static_cast<unsigned>(detector)) + ':' +
            std::to_string(node ? node->getId() : 0) + ':' +
            std::to_string(operand ? operand->getId() : 0) + ':' + queryKind;
@@ -205,6 +212,10 @@ void AbstractInterpretation::handleGlobalNode()
                                    svfir->getGNode(PAG::getPAG()->getBlkPtr())))
         updateValue(variable, AD::Interval::top(),
                     blackHoleAddressSet(), node);
+    // Global initialization executes once. Its GEP properties must not be
+    // left as Unreachable merely because no ordinary ICFG visitor runs here.
+    for (auto& detector : detectors)
+        detector->detect(node);
 }
 
 void AbstractInterpretation::initializeObjectValue(
@@ -884,7 +895,7 @@ void AbstractInterpretation::recordReachedAssertion(
 
 void AbstractInterpretation::registerQuery(
     AEDetector::DetectorKind detector, const ICFGNode* node,
-    const SVFVar* operand, const std::string& queryKind)
+    const SVFVar* operand, const std::string& queryKind, const SVFStmt* site)
 {
     if (!queryLedgerEnabled())
         return;
@@ -898,20 +909,24 @@ void AbstractInterpretation::registerQuery(
     record.queryKind = queryKind;
     record.function = node->getFun() ? node->getFun()->getName() : "<global>";
     record.sourceLocation = node->getSourceLoc();
-    queryLedger_.emplace(queryKey(detector, node, operand, queryKind),
-                         std::move(record));
+    record.semanticSite = site ? site->getQuerySite() : "";
+    record.statement = site;
+    auto inserted = queryLedger_.emplace(queryKey(detector, node, operand, queryKind, site),
+                                        std::move(record));
+    if (!inserted.second && site && inserted.first->second.statement != site)
+        throw std::invalid_argument("duplicate detector semantic site: " + site->getQuerySite());
 }
 
 void AbstractInterpretation::recordQuery(
     AEDetector::DetectorKind detector, const ICFGNode* node,
     const SVFVar* operand, const std::string& queryKind, QueryOutcome outcome,
-    const std::string& reason)
+    const std::string& reason, const SVFStmt* site)
 {
     if (!queryLedgerEnabled())
         return;
-    registerQuery(detector, node, operand, queryKind);
+    registerQuery(detector, node, operand, queryKind, site);
     QueryRecord& record = queryLedger_.at(
-                              queryKey(detector, node, operand, queryKind));
+                              queryKey(detector, node, operand, queryKind, site));
     if (queryOutcomeRank(outcome) >= queryOutcomeRank(record.outcome))
     {
         record.outcome = outcome;
@@ -930,7 +945,7 @@ void AbstractInterpretation::writeQueryLedger() const
                                  Options::AEQueryLedgerFile());
 
     output << "query_id\tinput_id\tdetector\tfunction\tsource_location\t"
-              "icfg_node\toperand\tquery_kind\toutcome\treason\n";
+              "icfg_node\toperand\tquery_kind\toutcome\treason\tsemantic_site\n";
     const std::string input = escapeQueryField(Options::AEQueryInputID());
     std::vector<const QueryRecord*> records;
     records.reserve(queryLedger_.size());
@@ -972,7 +987,9 @@ void AbstractInterpretation::writeQueryLedger() const
         previousGroup = group;
         first = false;
         const std::string detector = queryDetectorName(record.detector);
-        const std::string identity = input + ':' + detector + ':' +
+        const std::string identity = !record.semanticSite.empty()
+            ? input + ":v2:" + detector + ':' + record.semanticSite + ':' + record.queryKind
+            : input + ':' + detector + ':' +
             record.function + ':' + record.sourceLocation + ':' +
             record.queryKind + ':' + std::to_string(occurrence);
         output << escapeQueryField(identity) << '\t' << input << '\t'
@@ -985,7 +1002,7 @@ void AbstractInterpretation::writeQueryLedger() const
                       record.outcome == QueryOutcome::Unreachable &&
                               record.reason.empty()
                       ? "not reached from configured analysis entries"
-                      : record.reason) << '\n';
+                      : record.reason) << '\t' << escapeQueryField(record.semanticSite) << '\n';
     }
     if (!output)
         throw std::runtime_error("failed to write AE query ledger: " +

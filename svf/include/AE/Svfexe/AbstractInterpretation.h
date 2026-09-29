@@ -181,7 +181,7 @@ public:
     /// unevaluated queries remain Unreachable in the final ledger.
     void registerQuery(AEDetector::DetectorKind detector,
                        const ICFGNode* node, const SVFVar* operand,
-                       const std::string& queryKind);
+                       const std::string& queryKind, const SVFStmt* site = nullptr);
 
     /// Merge a path/iteration result into a registered query. May dominates
     /// Unsupported, which dominates Safe; this prevents a later safe visit
@@ -189,7 +189,7 @@ public:
     void recordQuery(AEDetector::DetectorKind detector,
                      const ICFGNode* node, const SVFVar* operand,
                      const std::string& queryKind, QueryOutcome outcome,
-                     const std::string& reason = "");
+                     const std::string& reason = "", const SVFStmt* site = nullptr);
 
     /// Retrieve SVFVar given its ID; asserts if no such variable exists
     inline const SVFVar* getSVFVar(NodeID varId) const
@@ -629,6 +629,8 @@ protected:
         std::string queryKind;
         std::string function;
         std::string sourceLocation;
+        std::string semanticSite;
+        const SVFStmt* statement = nullptr;
         QueryOutcome outcome = QueryOutcome::Unreachable;
         std::string reason;
     };
