@@ -86,6 +86,11 @@ public:
         return it == cycleToValVars.end() ? Set<const ValVar*>() : it->second;
     }
 
+    bool functionHasCycle(const FunObjVar* function) const
+    {
+        return function && cyclicFunctions.count(function) != 0;
+    }
+
 private:
     SVFIR* svfir;
     ICFG* icfg;
@@ -99,6 +104,7 @@ private:
     /// every ValVar whose def-site is inside that cycle, including all
     /// nested sub-cycles. Empty in dense mode.
     Map<const ICFGCycleWTO*, Set<const ValVar*>> cycleToValVars;
+    Set<const FunObjVar*> cyclicFunctions;
 };
 
 } // End namespace SVF

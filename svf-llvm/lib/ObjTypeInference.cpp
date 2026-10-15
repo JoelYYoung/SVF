@@ -620,16 +620,19 @@ Set<const Value *> &ObjTypeInference::bwFindAllocOfVar(const Value *var)
         }
         else if (const auto *loadInst = SVFUtil::dyn_cast<LoadInst>(curValue))
         {
-            for (const auto use: loadInst->getPointerOperand()->users())
-            {
-                if (const StoreInst *storeInst = SVFUtil::dyn_cast<StoreInst>(use))
+            // Poison/undef/constant-data operands have no LLVM use list.
+            // Keep an empty allocation source set and the existing fallback.
+            if (hasUseList(loadInst->getPointerOperand()))
+                for (const auto use: loadInst->getPointerOperand()->users())
                 {
-                    if (storeInst->getPointerOperand() == loadInst->getPointerOperand())
+                    if (const StoreInst *storeInst = SVFUtil::dyn_cast<StoreInst>(use))
                     {
-                        insertAllocsOrPushWorklist(storeInst->getValueOperand());
+                        if (storeInst->getPointerOperand() == loadInst->getPointerOperand())
+                        {
+                            insertAllocsOrPushWorklist(storeInst->getValueOperand());
+                        }
                     }
                 }
-            }
         }
         else if (const auto *argument = SVFUtil::dyn_cast<Argument>(curValue))
         {
@@ -929,16 +932,17 @@ Set<const Value *> &ObjTypeInference::bwFindAllocOrClsNameSources(const Value *s
         }
         else if (const auto *loadInst = SVFUtil::dyn_cast<LoadInst>(curValue))
         {
-            for (const auto *user : loadInst->getPointerOperand()->users())
-            {
-                if (const auto *storeInst = SVFUtil::dyn_cast<StoreInst>(user))
+            if (hasUseList(loadInst->getPointerOperand()))
+                for (const auto *user : loadInst->getPointerOperand()->users())
                 {
-                    if (storeInst->getPointerOperand() == loadInst->getPointerOperand())
+                    if (const auto *storeInst = SVFUtil::dyn_cast<StoreInst>(user))
                     {
-                        insertSourcesOrPushWorklist(storeInst->getValueOperand());
+                        if (storeInst->getPointerOperand() == loadInst->getPointerOperand())
+                        {
+                            insertSourcesOrPushWorklist(storeInst->getValueOperand());
+                        }
                     }
                 }
-            }
         }
         else if (const auto *argument = SVFUtil::dyn_cast<Argument>(curValue))
         {

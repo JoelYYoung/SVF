@@ -85,6 +85,8 @@ private:
     const SVFBasicBlock* basicBlock; ///< LLVM BasicBlock
     ICFGNode* icfgNode;              ///< ICFGNode
     EdgeID edgeId;                   ///< Edge ID
+    std::string querySite_;          ///< LLVM semantic site, independent of PAG IDs
+    u64_t accessBytes_ = 0;          ///< Fixed-size LLVM load/store width; 0 = unknown
 
 protected:
     /// Private constructor for reading SVFIR from file without side-effect
@@ -192,6 +194,10 @@ public:
     {
         return value;
     }
+    void setQuerySite(const std::string& site) { querySite_ = site; }
+    const std::string& getQuerySite() const { return querySite_; }
+    void setAccessBytes(u64_t bytes) { accessBytes_ = bytes; }
+    u64_t getAccessBytes() const { return accessBytes_; }
 
     inline void setBB(const SVFBasicBlock* bb)
     {

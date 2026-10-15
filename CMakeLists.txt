@@ -93,6 +93,17 @@ option(SVF_EXPORT_DYNAMIC "Export all (not only the actually used) symbols to dy
 option(SVF_ENABLE_ASSERTIONS "Always enable debugging assertions, also if the build type is a release build")
 option(SVF_ENABLE_RTTI "Adds -fno-rtti to disable runtime type information (RTTI)" ON)
 option(SVF_ENABLE_EXCEPTIONS "Adds -fno-exceptions to disable exception handling" ON)
+option(SVF_ENABLE_ELINA
+       "Build optional ELINA f524156d Octagon and Polyhedra backends" OFF)
+set(ELINA_ROOT "" CACHE PATH
+    "Root of the pinned ELINA f524156d installation/build tree")
+set(ELINA_SOURCE_ROOT "${ELINA_ROOT}" CACHE PATH
+    "Pinned ELINA source checkout used for commit verification")
+if(NOT SVF_ENABLE_EXCEPTIONS)
+  message(FATAL_ERROR
+          "AbstractDomainCore uses exception-based API diagnostics; "
+          "SVF_ENABLE_EXCEPTIONS must be ON")
+endif()
 
 # If building dynamic libraries, always enable PIC
 if(SVF_SHARED_LIBS AND NOT SVF_USE_PIC)
@@ -224,6 +235,18 @@ message(
   Z3 C++ include dirs:  ${Z3_CXX_INCLUDE_DIRS}"
 )
 
+find_package(GMP REQUIRED)
+find_package(MPFR REQUIRED)
+message(
+  STATUS
+    "Using Box numeric libraries:
+  GMP include directory:  ${GMP_INCLUDE_DIR}
+  GMP C library:          ${GMP_LIBRARY}
+  GMP C++ library:        ${GMPXX_LIBRARY}
+  MPFR include directory: ${MPFR_INCLUDE_DIR}
+  MPFR library:           ${MPFR_LIBRARY}"
+)
+
 # =================================================================================
 # SVF configuration interface library
 # =================================================================================
@@ -272,10 +295,40 @@ install(TARGETS SvfFlags EXPORT SVFTargets)
 # =================================================================================
 
 # If ./Test-Suite exists, add & run the tests
-if(EXISTS "${SVF_SOURCE_DIR}/Test-Suite")
+if(EXISTS "${SVF_SOURCE_DIR}/Test-Suite/CMakeLists.txt")
   include(CTest)
   enable_testing()
   add_subdirectory(Test-Suite)
+
+  # Keep the external Test-Suite compatible with this branch's AE surface.
+  # Its symabs/aetest entries invoke legacy command-line self-tests for the
+  # removed IntervalState and RelationSolver surface.
+  configure_file(
+    cmake/CTestCustom.cmake.in
+    "${SVF_BINARY_DIR}/CTestCustom.cmake"
+    @ONLY
+  )
+
+  # The write/read differential tests produce fixed-name graph files in a
+  # shared working directory.  CMake 3.28 added the cross-directory operation
+  # needed to make an unrestricted `ctest -j` safe without modifying the
+  # separately maintained Test-Suite repository.
+  if(CMAKE_VERSION VERSION_GREATER_EQUAL 3.28)
+    get_property(
+      SVF_EXTERNAL_TESTS
+      DIRECTORY "${SVF_SOURCE_DIR}/Test-Suite"
+      PROPERTY TESTS
+    )
+    foreach(test_name IN LISTS SVF_EXTERNAL_TESTS)
+      if(test_name MATCHES "^diff_tests-wr-ander/")
+        set_tests_properties(
+          "${test_name}"
+          DIRECTORY "${SVF_SOURCE_DIR}/Test-Suite"
+          PROPERTIES RUN_SERIAL TRUE
+        )
+      endif()
+    endforeach()
+  endif()
 endif()
 
 # =================================================================================
@@ -292,6 +345,12 @@ add_subdirectory(svf-llvm)
 # Expose the required ABI flags (e.g., whether RTTI was disabled) in the build & install trees
 target_compile_options(SvfFlags INTERFACE $<$<NOT:$<BOOL:${SVF_ENABLE_RTTI}>>:-fno-rtti>)
 target_link_options(SvfFlags INTERFACE $<$<NOT:$<BOOL:${SVF_ENABLE_RTTI}>>:-fno-rtti>)
+if(TARGET AbstractDomainCore)
+  target_compile_options(
+    AbstractDomainCore PUBLIC
+    $<$<NOT:$<BOOL:${SVF_ENABLE_RTTI}>>:-fno-rtti>
+  )
+endif()
 
 # Expose build/link flags not required for users of SVF only in the build tree
 target_compile_options(

@@ -1,4 +1,5 @@
-//===- AEDetector.h -- Vulnerability Detectors---------------------------------//
+//===- AEDetector.h -- Vulnerability
+// Detectors---------------------------------//
 //
 //                     SVF: Static Value-Flow Analysis
 //
@@ -20,15 +21,15 @@
 //
 //===----------------------------------------------------------------------===//
 
-
 //
 //  Created on: May 1, 2025
 //      Author: Xiao Cheng, Jiawei Wang, Mingxiu Wang
 //
 #pragma once
-#include <SVFIR/SVFIR.h>
-#include <AE/Core/AbstractState.h>
+#include "AE/Core/AddressDomain.h"
+#include "AE/Core/NumericalDomain.h"
 #include "Util/SVFBugReport.h"
+#include <SVFIR/SVFIR.h>
 
 namespace SVF
 {
@@ -48,15 +49,16 @@ public:
      */
     enum DetectorKind
     {
-        BUF_OVERFLOW,   ///< Detector for buffer overflow issues.
-        NULL_DEREF,  ///< Detector for nullptr dereference issues.
-        UNKNOWN,    ///< Default type if the kind is not specified.
+        BUF_OVERFLOW, ///< Detector for buffer overflow issues.
+        NULL_DEREF,   ///< Detector for nullptr dereference issues.
+        ASSERTION,    ///< Standard C assert failure reachability.
+        UNKNOWN,      ///< Default type if the kind is not specified.
     };
 
     /**
      * @brief Constructor initializes the detector kind to UNKNOWN.
      */
-    AEDetector(): kind(UNKNOWN) {}
+    AEDetector() : kind(UNKNOWN) {}
 
     /**
      * @brief Virtual destructor for safe polymorphic use.
@@ -80,8 +82,14 @@ public:
      */
     virtual void detect(const ICFGNode* node) = 0;
 
+    /// Enumerate the detector's syntactic query scope before abstract
+    /// interpretation so Safe/May/Unsupported results cannot change which
+    /// query identities exist.
+    virtual void enumerateQueries() = 0;
+
     /**
-     * @brief Pure virtual function for handling stub external API calls. (e.g. UNSAFE_BUFACCESS)
+     * @brief Pure virtual function for handling stub external API calls. (e.g.
+     * UNSAFE_BUFACCESS)
      * @param call Pointer to the ext call ICFG node.
      */
     virtual void handleStubFunctions(const CallICFGNode* call) = 0;
@@ -115,8 +123,7 @@ public:
      * @brief Constructor initializes the exception with a message.
      * @param message The error message.
      */
-    AEException(const std::string& message)
-        : msg_(message) {}
+    AEException(const std::string& message) : msg_(message) {}
 
     /**
      * @brief Provides the error message.
@@ -138,9 +145,21 @@ private:
 class BufOverflowDetector : public AEDetector
 {
     friend class AbstractInterpretation;
+    void detectMemoryBounds(const SVFStmt* statement, const SVFVar* pointer,
+                            const std::string& kind);
+    bool relationalLengthBound(const CallICFGNode* call, const ValVar* pointer,
+                               const ValVar* length);
+    /// D-005: prove offset-from-base + GEP offset + width <= bytes of the
+    /// object, i.e. idx - Size(o) <= floor(-(offset + width) / element bytes),
+    /// through the numerical state (relational when idx and Size(o) share a
+    /// pack; interval arithmetic otherwise).
+    bool relationalUpperBound(const ICFGNode* node, const ObjVar* object,
+                              const GepStmt* gep, s64_t width);
+
 public:
     /**
-     * @brief Constructor initializes the detector kind to BUF_OVERFLOW and sets up external API buffer overflow rules.
+     * @brief Constructor initializes the detector kind to BUF_OVERFLOW and sets
+     * up external API buffer overflow rules.
      */
     BufOverflowDetector()
     {
@@ -171,9 +190,9 @@ public:
      * @param offset The interval value of the offset.
      */
     void updateGepObjOffsetFromBase(const ICFGNode* node,
-                                    AddressValue gepAddrs,
-                                    AddressValue objAddrs,
-                                    IntervalValue offset);
+                                    AbstractDomain::AddressSet gepAddrs,
+                                    AbstractDomain::AddressSet objAddrs,
+                                    AbstractDomain::Interval offset);
 
     /**
      * @brief Detect buffer overflow issues within a node.
@@ -182,6 +201,7 @@ public:
      */
     void detect(const ICFGNode*) override;
 
+    void enumerateQueries() override;
 
     /**
      * @brief Handles external API calls related to buffer overflow detection.
@@ -194,9 +214,11 @@ public:
      * @param obj Pointer to the GEP object.
      * @param offset The interval value of the offset.
      */
-    void addToGepObjOffsetFromBase(const GepObjVar* obj, const IntervalValue& offset)
+    void addToGepObjOffsetFromBase(const GepObjVar* obj,
+                                   const AbstractDomain::Interval& offset)
     {
-        gepObjOffsetFromBase[obj] = offset;
+        auto inserted = gepObjOffsetFromBase.emplace(obj, offset);
+        if (!inserted.second) inserted.first->second.joinWith(offset);
     }
 
     /**
@@ -214,7 +236,7 @@ public:
      * @param obj Pointer to the GEP object.
      * @return The interval value of the offset.
      */
-    IntervalValue getGepObjOffsetFromBase(const GepObjVar* obj) const
+    AbstractDomain::Interval getGepObjOffsetFromBase(const GepObjVar* obj) const
     {
         if (hasGepObjOffsetFromBase(obj))
             return gepObjOffsetFromBase.at(obj);
@@ -232,7 +254,7 @@ public:
      * @param gep Pointer to the GEP statement.
      * @return The interval value of the access offset.
      */
-    IntervalValue getAccessOffset(NodeID objId, const GepStmt* gep);
+    AbstractDomain::Interval getAccessOffset(NodeID objId, const GepStmt* gep);
 
     /**
      * @brief Adds a bug to the reporter based on an exception.
@@ -244,14 +266,17 @@ public:
 
         GenericBug::EventStack eventStack;
         SVFBugEvent sourceInstEvent(SVFBugEvent::EventType::SourceInst, node);
-        eventStack.push_back(sourceInstEvent); // Add the source instruction event to the event stack
+        eventStack.push_back(sourceInstEvent); // Add the source instruction
+        // event to the event stack
 
         if (eventStack.empty())
         {
             return; // If the event stack is empty, return early
         }
 
-        std::string loc = eventStack.back().getEventLoc(); // Get the location of the last event in the stack
+        std::string loc =
+            eventStack.back().getEventLoc(); // Get the location of the last
+        // event in the stack
 
         // Check if the bug at this location has already been reported
         if (bugLoc.find(loc) != bugLoc.end())
@@ -264,8 +289,10 @@ public:
         }
 
         // Add the bug to the recorder with details from the event stack
-        recoder.addAbsExecBug(GenericBug::FULLBUFOVERFLOW, eventStack, 0, 0, 0, 0);
-        nodeToBugInfo[node] = e.what(); // Record the exception information for the node
+        recoder.addAbsExecBug(GenericBug::FULLBUFOVERFLOW, eventStack, 0, 0, 0,
+                              0);
+        nodeToBugInfo[node] =
+            e.what(); // Record the exception information for the node
     }
 
     /**
@@ -275,12 +302,15 @@ public:
     {
         if (!nodeToBugInfo.empty())
         {
-            std::cerr << "######################Buffer Overflow (" + std::to_string(nodeToBugInfo.size())
-                      + " found)######################\n";
+            std::cerr << "######################Buffer Overflow (" +
+                      std::to_string(nodeToBugInfo.size()) +
+                      " found)######################\n";
             std::cerr << "---------------------------------------------\n";
             for (const auto& it : nodeToBugInfo)
             {
-                std::cerr << it.second << "\n---------------------------------------------\n";
+                std::cerr
+                        << it.second
+                        << "\n---------------------------------------------\n";
             }
         }
     }
@@ -295,16 +325,19 @@ public:
      * @param as Reference to the abstract state.
      * @param call Pointer to the call ICFG node.
      */
-    void detectExtAPI(const CallICFGNode *call);
+    void detectExtAPI(const CallICFGNode* call);
 
     /**
      * @brief Checks if memory can be safely accessed.
      * @param value Pointer to the SVF var.
-     * @param len The interval value representing the length of the memory access.
+     * @param len The interval value representing the length of the memory
+     * access.
      * @param node The ICFG node providing context.
      * @return True if the memory access is safe, false otherwise.
      */
-    bool canSafelyAccessMemory(const ValVar *value, const IntervalValue &len, const ICFGNode* node);
+    bool canSafelyAccessMemory(const ValVar* value,
+                               const AbstractDomain::Interval& len,
+                               const ICFGNode* node);
 
 private:
     /**
@@ -312,25 +345,32 @@ private:
      * @param call Pointer to the call ICFG node.
      * @return True if a buffer overflow is detected, false otherwise.
      */
-    bool detectStrcat(const CallICFGNode *call);
+    bool detectStrcat(const CallICFGNode* call);
 
     /**
      * @brief Detects buffer overflow in 'strcpy' function calls.
      * @param call Pointer to the call ICFG node.
      * @return True if a buffer overflow is detected, false otherwise.
      */
-    bool detectStrcpy(const CallICFGNode *call);
+    bool detectStrcpy(const CallICFGNode* call);
 
 private:
-    Map<const GepObjVar*, IntervalValue> gepObjOffsetFromBase; ///< Maps GEP objects to their offsets from the base.
-    Map<std::string, std::vector<std::pair<u32_t, u32_t>>> extAPIBufOverflowCheckRules; ///< Rules for checking buffer overflows in external APIs.
-    Set<std::string> bugLoc; ///< Set of locations where bugs have been reported.
+    Map<const GepObjVar*, AbstractDomain::Interval>
+    gepObjOffsetFromBase; ///< Maps GEP objects to their offsets from the
+    ///< base.
+    Map<std::string, std::vector<std::pair<u32_t, u32_t>>>
+    extAPIBufOverflowCheckRules; ///< Rules for checking buffer overflows in
+    ///< external APIs.
+    Set<std::string>
+    bugLoc;           ///< Set of locations where bugs have been reported.
     SVFBugReport recoder; ///< Recorder for abstract execution bugs.
-    Map<const ICFGNode*, std::string> nodeToBugInfo; ///< Maps ICFG nodes to bug information.
+    Map<const ICFGNode*, std::string>
+    nodeToBugInfo; ///< Maps ICFG nodes to bug information.
 };
 class NullptrDerefDetector : public AEDetector
 {
     friend class AbstractInterpretation;
+
 public:
     NullptrDerefDetector()
     {
@@ -351,6 +391,8 @@ public:
      */
     void detect(const ICFGNode* node) override;
 
+    void enumerateQueries() override;
+
     /**
      * @brief Handles external API calls related to nullptr dereferences.
      * @param call Pointer to the call ICFG node.
@@ -358,33 +400,24 @@ public:
     void handleStubFunctions(const CallICFGNode* call) override;
 
     /**
-     * @brief Checks if an Abstract Value is uninitialized.
-     * @param v The Abstract Value to check.
-     * @return True if the value is uninitialized, false otherwise.
+     * @brief Adds a bug to the reporter based on an exception.
+     * @param e The exception that was thrown.
+     * @param node Pointer to the ICFG node where the bug was detected.
      */
-    bool isUninit(AbstractValue v)
-    {
-        // uninitialized value has neither interval value nor address value
-        bool is = v.getAddrs().isBottom() && v.getInterval().isBottom();
-        return is;
-    }
-
-    /**
-    * @brief Adds a bug to the reporter based on an exception.
-    * @param e The exception that was thrown.
-    * @param node Pointer to the ICFG node where the bug was detected.
-    */
     void addBugToReporter(const AEException& e, const ICFGNode* node)
     {
         GenericBug::EventStack eventStack;
         SVFBugEvent sourceInstEvent(SVFBugEvent::EventType::SourceInst, node);
-        eventStack.push_back(sourceInstEvent); // Add the source instruction event to the event stack
+        eventStack.push_back(sourceInstEvent); // Add the source instruction
+        // event to the event stack
 
         if (eventStack.empty())
         {
             return; // If the event stack is empty, return early
         }
-        std::string loc = eventStack.back().getEventLoc(); // Get the location of the last event in the stack
+        std::string loc =
+            eventStack.back().getEventLoc(); // Get the location of the last
+        // event in the stack
 
         // Check if the bug at this location has already been reported
         if (bugLoc.find(loc) != bugLoc.end())
@@ -395,8 +428,10 @@ public:
         {
             bugLoc.insert(loc); // Otherwise, mark this location as reported
         }
-        recoder.addAbsExecBug(GenericBug::FULLNULLPTRDEREFERENCE, eventStack, 0, 0, 0, 0);
-        nodeToBugInfo[node] = e.what(); // Record the exception information for the node
+        recoder.addAbsExecBug(GenericBug::FULLNULLPTRDEREFERENCE, eventStack, 0,
+                              0, 0, 0);
+        nodeToBugInfo[node] =
+            e.what(); // Record the exception information for the node
     }
 
     /**
@@ -406,12 +441,15 @@ public:
     {
         if (!nodeToBugInfo.empty())
         {
-            std::cerr << "###################### Nullptr Dereference (" + std::to_string(nodeToBugInfo.size())
-                      + " found)######################\n";
+            std::cerr << "###################### Nullptr Dereference (" +
+                      std::to_string(nodeToBugInfo.size()) +
+                      " found)######################\n";
             std::cerr << "---------------------------------------------\n";
             for (const auto& it : nodeToBugInfo)
             {
-                std::cerr << it.second << "\n---------------------------------------------\n";
+                std::cerr
+                        << it.second
+                        << "\n---------------------------------------------\n";
             }
         }
     }
@@ -423,22 +461,13 @@ public:
      */
     void detectExtAPI(const CallICFGNode* call);
 
-
-    /**
-     * @brief Check if an Abstract Value is NULL (or uninitialized).
-     *
-     * @param v An Abstract Value of loaded from an address in an Abstract State.
-     */
-    bool isNull(AbstractValue v)
-    {
-        return !v.isAddr() && !v.isInterval();
-    }
-
     bool canSafelyDerefPtr(const ValVar* ptr, const ICFGNode* node);
 
 private:
-    Set<std::string> bugLoc; ///< Set of locations where bugs have been reported.
+    Set<std::string>
+    bugLoc;           ///< Set of locations where bugs have been reported.
     SVFBugReport recoder; ///< Recorder for abstract execution bugs.
-    Map<const ICFGNode*, std::string> nodeToBugInfo; ///< Maps ICFG nodes to bug information.
+    Map<const ICFGNode*, std::string>
+    nodeToBugInfo; ///< Maps ICFG nodes to bug information.
 };
-}
+} // namespace SVF
