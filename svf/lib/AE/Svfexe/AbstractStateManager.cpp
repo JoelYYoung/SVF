@@ -1,10 +1,17 @@
 //===- AbstractStateManager.cpp -- AE domain projection helpers --------===//
 
+#include "AE/Svfexe/AllocationSize.h"
 #include "AE/Svfexe/AbstractInterpretation.h"
+#include "AE/Core/NumericalDomainFactory.h"
+#include "AE/Core/PartialRelationalDomain.h"
+#include "AE/Core/PackedRelationalDomain.h"
 
 #include "SVFIR/SVFIR.h"
+#include "Util/Options.h"
 
 #include <algorithm>
+#include <cstdlib>
+#include <iostream>
 
 namespace SVF
 {
@@ -323,6 +330,146 @@ u32_t AbstractInterpretation::getAllocaInstByteSize(const AddrStmt* address)
     return static_cast<u32_t>(result);
 }
 
+const AllocationSizeModel& AbstractInterpretation::allocationSizeModel()
+{
+    if (!allocationSizeModel_)
+    {
+        allocationSizeModel_ = std::make_shared<AllocationSizeModel>(*svfir);
+        if (std::getenv("SVF_AE_TRACE_SIZE"))
+            for (const auto& size : allocationSizeModel_->all())
+                std::cerr << "AE_SIZE_MODEL object=" << size.object->getId()
+                          << " site_node=" << size.site->getICFGNode()->getId()
+                          << " known=" << size.known
+                          << " operand=" << (size.operand ? int(size.operand->getId()) : -1)
+                          << " constant=" << size.constant
+                          << " element_bytes=" << size.elementBytes
+                          << " coefficient=" << size.strippedCoefficient << '\n';
+    }
+    return *allocationSizeModel_;
+}
+
+std::optional<s64_t> AbstractInterpretation::allocationByteLowerBound(
+    const BaseObjVar* base)
+{
+    if (!base)
+        return std::nullopt;
+    const AllocationSize* size = allocationSizeModel().find(base);
+    if (size && size->known && !size->sizeValue && size->elementBytes > 0)
+        return size->constant * static_cast<s64_t>(size->elementBytes);
+    if (size && size->known && size->sizeValue && size->elementBytes > 0 &&
+            size->elementBytes % size->strippedCoefficient == 0)
+    {
+        // Every allocation at this site happens at its node, so the fixpoint
+        // interval of the size value covers all of them. Use its lower
+        // bound: an upper bound would accept accesses past smaller objects.
+        const ICFGNode* node = size->site->getICFGNode();
+        if (!hasAbsState(node))
+            return std::nullopt;
+        const AD::Interval count = getInterval(size->sizeValue, node);
+        if (count.isBottom())
+            return std::nullopt;
+        AD::Rational lower(0);
+        if (count.lower().isFinite() && count.lower().value() > lower)
+            lower = count.lower().value().floor();
+        const s64_t unit = size->elementBytes / size->strippedCoefficient;
+        return std::stoll((lower * AD::Rational(unit)).toString());
+    }
+    if (size)
+        return std::nullopt;
+    if (base->isConstantByteSize())
+        return base->getByteSizeOfObj();
+    return std::nullopt;
+}
+
+AD::Interval AbstractInterpretation::unknownInterval(const SVFVar* var) const
+{
+    // An LLVM integer value lies in its type range whatever produced it.
+    // Without this bound, x+1 on an unknown i32 looks able to wrap and the
+    // executor drops every relation of the result (T-011 CASE3).
+    if (var && SVFUtil::isa<SVFIntegerType>(var->getType()))
+        return utils->getRangeLimitFromType(var->getType());
+    return AD::Interval::top();
+}
+
+void AbstractInterpretation::assignAllocationSize(const AddrStmt* addr)
+{
+    // Size(o) is a memory-like synthetic coordinate. The sparse executors
+    // classify coordinates by object content and would treat it as a scalar,
+    // so it is carried by the dense executor only (all D-005 campaigns).
+    if (Options::AESparsity() != AbstractInterpretation::Dense)
+        return;
+    const AllocationSize* size = allocationSizeModel().find(addr);
+    if (!size)
+        return;
+    const ICFGNode* node = addr->getICFGNode();
+    State& denseState = ensureState(node);
+    if (denseState.isBottom())
+        return;
+    const AD::Variable target = adapter_.sizeVariable(*size->object);
+    const bool weak = std::getenv("SVF_AE_SIZE_WEAK") != nullptr;
+    State written(denseState);
+    State& output = weak ? written : denseState;
+    AD::Interval value = AD::Interval::top();
+    std::optional<AD::LinearExpression> expression;
+    if (size->known && !size->sizeValue)
+        value = AD::Interval::singleton(AD::Rational(size->constant));
+    else if (size->known && size->sizeValue)
+    {
+        // Size(o) = sizeValue / strippedCoefficient (element units). It is
+        // the stripped operand only if no stripped cast or multiplication
+        // can wrap: the operand must be non-negative and coefficient *
+        // operand must fit every integer type on the stripped chain.
+        const AD::Rational coefficient(size->strippedCoefficient);
+        const AD::Interval count = getInterval(size->sizeValue, node);
+        if (!count.isBottom())
+            value = AD::Interval(
+                count.lower().isFinite()
+                ? AD::Bound::finite((count.lower().value() / coefficient).floor())
+                : AD::Bound::minusInfinity(),
+                count.upper().isFinite()
+                ? AD::Bound::finite((count.upper().value() / coefficient).ceil())
+                : AD::Bound::plusInfinity());
+        if (const auto* operand = size->operand)
+        {
+            s64_t stripped = 1;
+            std::vector<const SVFVar*> chain;
+            AllocationSizeModel::stripCoefficient(size->sizeValue, stripped, &chain);
+            // A machine value lies in its own type's range even when the
+            // mathematical interval has not been clipped to it.
+            AD::Interval source = getDefinedInterval(operand, node);
+            if (!source.isBottom() && operand->getType())
+                source.meetWith(utils->getRangeLimitFromType(operand->getType()));
+            bool exact = adapter_.contains(*operand) && !source.isBottom() &&
+                         source.lower().isFinite() &&
+                         source.lower().value() >= AD::Rational(0);
+            const AD::Interval scaled = exact
+                ? AD::multiply(source, AD::Interval::singleton(coefficient))
+                : AD::Interval::top();
+            for (const SVFVar* step : chain)
+                exact = exact && step->getType() &&
+                        scaled.isSubsetOf(utils->getRangeLimitFromType(step->getType()));
+            if (std::getenv("SVF_AE_TRACE_SIZE"))
+                std::cerr << "AE_SIZE_OPERAND object=" << size->object->getId()
+                          << " operand=" << operand->getId() << " source=" << source.toString()
+                          << " count=" << count.toString() << " chain=" << chain.size()
+                          << " exact=" << exact << '\n';
+            if (exact)
+                expression = AD::LinearExpression(adapter_.variable(*operand));
+        }
+    }
+    if (std::getenv("SVF_AE_TRACE_SIZE"))
+        std::cerr << "AE_SIZE_ASSIGN object=" << size->object->getId()
+                  << " node=" << node->getId() << " known=" << size->known
+                  << " relational=" << bool(expression) << " value=" << value.toString()
+                  << " element_bytes=" << size->elementBytes << '\n';
+    if (expression)
+        output.assignNumeric(target, *expression);
+    else
+        assignInterval(output, target, value);
+    if (weak)
+        denseState.joinWith(written);
+}
+
 const AbstractDomain::AbstractDomain& AbstractInterpretation::
 getAbstractState(const ICFGNode* node) const
 {
@@ -347,18 +494,71 @@ const ObjVar* AbstractInterpretation::objectAt(AD::Location location) const
 AbstractInterpretation::State AbstractInterpretation::topState()
 const
 {
-    return State(AD::BoxDomain::top(), adapter_.memoryLayout(), true);
+    return State(makeNumericalDomain(false), adapter_.memoryLayout(), true);
 }
 
 AbstractInterpretation::State AbstractInterpretation::
 bottomState() const
 {
-    return State(AD::BoxDomain::bottom(), adapter_.memoryLayout(), true);
+    return State(makeNumericalDomain(true), adapter_.memoryLayout(), true);
+}
+
+std::unique_ptr<AD::NumericalDomain>
+AbstractInterpretation::makeNumericalDomain(bool bottom) const
+{
+    if (Options::AERelationalPolicy() == SyntaxPackedRelational ||
+            Options::AERelationalPolicy() == ClosurePackedRelational ||
+            Options::AERelationalPolicy() == ImpactPackedRelational ||
+            Options::AERelationalPolicy() == LearnedPackedRelational)
+    {
+        if (!relationalPacking_ || Options::AEDomain() != Octagon)
+            throw std::invalid_argument("packed policies require initialized native Octagon packing");
+        return std::make_unique<AD::PackedRelationalDomain>(relationalPacking_, bottom);
+    }
+    if (Options::AERelationalPolicy() != WholeRelational &&
+            Options::AEDomain() != AENumericalDomain::Box)
+    {
+        if (!relationalVocabulary_)
+            throw std::logic_error(
+                "partial relational vocabulary was not initialized");
+        const AD::DomainKind kind =
+            Options::AEDomain() == AENumericalDomain::Octagon
+            ? AD::DomainKind::Octagon
+            : AD::DomainKind::ConvexPolyhedra;
+        return std::make_unique<AD::PartialRelationalDomain>(
+                          bottom
+                          ? AD::PartialRelationalDomain::bottom(
+                              kind, relationalVocabulary_)
+                          : AD::PartialRelationalDomain::top(
+                              kind, relationalVocabulary_));
+    }
+    AD::DomainKind kind = AD::DomainKind::Box;
+    switch (Options::AEDomain())
+    {
+    case AENumericalDomain::Octagon:
+        kind = AD::DomainKind::Octagon;
+        break;
+    case AENumericalDomain::Polyhedra:
+        kind = AD::DomainKind::ConvexPolyhedra;
+        break;
+    case AENumericalDomain::Box:
+    default:
+        break;
+    }
+    AD::OctagonConfig config;
+    config.storage = AD::OctagonStorageKind::ComponentDense;
+    return AD::makeNumericalDomain(kind, bottom, config);
 }
 
 AbstractInterpretation::State& AbstractInterpretation::
 ensureState(const ICFGNode* node)
 {
+    if (recheckStates_)
+    {
+        auto final = recheckStates_->find(node);
+        if (final != recheckStates_->end())
+            return final->second;
+    }
     auto iterator = stateTrace_.find(node);
     if (iterator == stateTrace_.end())
         iterator = stateTrace_.emplace(node, topState()).first;
@@ -368,10 +568,87 @@ ensureState(const ICFGNode* node)
 const AbstractInterpretation::State& AbstractInterpretation::
 state(const ICFGNode* node) const
 {
+    if (recheckStates_)
+    {
+        auto final = recheckStates_->find(node);
+        if (final != recheckStates_->end())
+            return final->second;
+    }
     const auto iterator = stateTrace_.find(node);
     if (iterator == stateTrace_.end())
         throw std::out_of_range("no dense abstract state for ICFG node");
     return iterator->second;
+}
+
+AbstractInterpretation::State& AbstractInterpretation::
+scalarTransferState(const ICFGNode* node)
+{
+    return ensureState(node);
+}
+
+AbstractInterpretation::State AbstractInterpretation::
+phiAlternativeState(const ICFGNode* predecessor)
+{
+    return state(predecessor);
+}
+
+void AbstractInterpretation::assignRelationalValue(
+    const ValVar* target, const AD::LinearExpression& expression,
+    const AD::Interval& interval, const AD::AddressSet& addresses,
+    const ICFGNode* node)
+{
+    if (!target || !adapter_.contains(*target))
+        return;
+    State& destination = ensureState(node);
+    const AD::Variable variable = adapter_.variable(*target);
+    destination.assignNumeric(variable, expression);
+    (void)interval;
+    destination.setAddressSet(variable, addresses);
+}
+
+void AbstractInterpretation::recordRelationalDependency(AD::Variable,
+                                                        AD::Variable)
+{
+}
+
+void AbstractInterpretation::recordRelationalTupleDependency(
+    AD::Variable target, AD::Variable peer)
+{
+    recordRelationalDependency(target, peer);
+}
+
+void AbstractInterpretation::recordRelationalSummary(AD::Variable, const State&,
+                                                     const ICFGNode*)
+{
+}
+
+void AbstractInterpretation::assignRelationalStore(
+    const ValVar* source, AD::Variable content, const ICFGNode* node)
+{
+    if (!source || !adapter_.contains(*source))
+        return;
+    State& destination = ensureState(node);
+    const AD::Variable sourceVariable = adapter_.variable(*source);
+    if (!destination.numericalMayBeUninitialized(sourceVariable))
+        // storeValue has already installed both value facets and their
+        // initialization guards.  This second assignment only records the
+        // affine relation; assignNumeric would erase a pointer payload.
+        destination.numerical().assign(
+            content, AD::LinearExpression(sourceVariable));
+}
+
+void AbstractInterpretation::assignRelationalLoad(
+    const ValVar* target, AD::Variable content, const ICFGNode* node)
+{
+    if (!target || !adapter_.contains(*target))
+        return;
+    State& destination = ensureState(node);
+    if (!destination.numericalMayBeUninitialized(content))
+        // updateValue has already installed both value facets and their
+        // initialization guards.  Preserve a loaded pointer while refining
+        // only the numerical relation.
+        destination.numerical().assign(adapter_.variable(*target),
+                                       AD::LinearExpression(content));
 }
 
 void AbstractInterpretation::resetAbstractState(const ICFGNode* node)
@@ -406,7 +683,8 @@ void AbstractInterpretation::assignInterval(State& denseState,
 }
 
 void AbstractInterpretation::constrainInterval(
-    State& denseState, AD::Variable variable, const AD::Interval& interval)
+    State& denseState, AD::Variable variable,
+    const AD::Interval& interval) const
 {
     if (interval.isBottom())
         return;
@@ -468,6 +746,11 @@ AD::Variable AbstractInterpretation::memoryVariable(
 
 void AbstractInterpretation::materializeValue(State&, const ValVar*,
         const ICFGNode*)
+{
+}
+
+void AbstractInterpretation::materializeRelations(
+    State&, const std::vector<AD::Variable>&, const ICFGNode*)
 {
 }
 
@@ -593,6 +876,17 @@ bool AbstractInterpretation::hasAbsValue(const SVFVar* var,
     if (const auto* value = SVFUtil::dyn_cast<ValVar>(var))
         return hasAbsValue(value, node);
     return false;
+}
+
+bool AbstractInterpretation::numericalValueMayBeUninitialized(
+    const ValVar* var, const ICFGNode* node) const
+{
+    if (!var || !adapter_.contains(*var))
+        return true;
+    const auto stateIterator = stateTrace_.find(node);
+    return stateIterator == stateTrace_.end() ||
+           stateIterator->second.numericalMayBeUninitialized(
+               adapter_.variable(*var));
 }
 
 void AbstractInterpretation::updateValue(const ValVar* var,
@@ -741,25 +1035,26 @@ void AbstractInterpretation::loadValue(const ValVar* pointer,
     }
 }
 
+bool AbstractInterpretation::canStrongStore(
+    const AD::AddressSet& pointees, const ObjVar& object, const State& state)
+{
+    const BaseObjVar* base = svfir->getBaseObject(object.getId());
+    return pointees.isSingleton() && base && !base->isHeap() &&
+           !base->isArray() && !base->isBlackHoleObj() &&
+           !base->isFieldInsensitive() &&
+           !(base->isStack() && isRecursiveFun(base->getFunction())) &&
+           !adapter_.isRuntimeFieldSummary(object) &&
+           !state.lifetimes().mayBeFreed(adapter_.location(object));
+}
+
 void AbstractInterpretation::storeValue(const ValVar* pointer,
                                         const AD::Interval& interval,
                                         const AD::AddressSet& addresses,
                                         const ICFGNode* node)
 {
-    if (!adapter_.contains(*pointer))
-    {
-        const AD::AddressSet pointees = getAddressSet(pointer, node);
-        if (pointees.hasUnknownObject() && unknownTargetTelemetryEnabled_)
-            ++unknownTargetTelemetry_.stores;
-        if (!pointees.hasUnknownObject())
-        {
-            for (AD::Location location : pointees)
-                updateMemoryValue(location, interval, addresses, node);
-        }
-        return;
-    }
     State& denseState = ensureState(node);
-    materializeValue(denseState, pointer, node);
+    if (adapter_.contains(*pointer))
+        materializeValue(denseState, pointer, node);
     const AD::AddressSet pointees = getAddressSet(pointer, node);
     auto write = [&](AD::Location location)
     {
@@ -769,19 +1064,18 @@ void AbstractInterpretation::storeValue(const ValVar* pointer,
         if (!object)
             return;
         const AD::Variable content = memoryVariable(*object, denseState);
-        // Original AE overwrites each enumerated target. This is an
-        // interpreter precision policy, not the domain's weak-store semantics.
-        if (!pointees.hasUnknownObject())
+        if (canStrongStore(pointees, *object, denseState))
         {
             assignMemoryValue(denseState, content, interval, addresses);
             return;
         }
-        AD::Interval joinedInterval = getInterval(object, node);
-        AD::AddressSet joinedAddresses = getAddressSet(object, node);
-        joinedInterval.joinWith(interval);
-        joinedAddresses.joinWith(addresses);
-        assignMemoryValue(denseState, content, joinedInterval,
-                          joinedAddresses);
+        // This cell may not be written (or may summarize several concrete
+        // cells). Retain the unchanged alternative, including initialization
+        // and address facets. Sequential weak writes overapproximate the
+        // choice of one target; they do not assert that all targets changed.
+        State written(denseState);
+        assignMemoryValue(written, content, interval, addresses);
+        denseState.joinWith(written);
     };
 
     if (pointees.hasUnknownObject())
@@ -805,11 +1099,162 @@ void AbstractInterpretation::storeValue(const ValVar* pointer,
 }
 
 
+std::optional<AD::LinearExpression>
+AbstractInterpretation::reconstructLinearExpression(
+    const SVFVar* operand, State& denseState, const ICFGNode* node,
+    std::vector<AD::Variable>& relationVariables, unsigned depth,
+    std::set<NodeID>& visiting)
+{
+    const auto* value = SVFUtil::dyn_cast<ValVar>(operand);
+    if (!value)
+    {
+        const AD::Interval constant = getInterval(operand, node);
+        return constant.isSingleton()
+               ? std::optional<AD::LinearExpression>(
+                     AD::LinearExpression(constant.singletonValue()))
+               : std::nullopt;
+    }
+
+    AD::Interval literal;
+    if (constantInterval(value, literal) && literal.isSingleton())
+        return AD::LinearExpression(literal.singletonValue());
+    if (!adapter_.contains(*value))
+        return std::nullopt;
+
+    materializeValue(denseState, value, node);
+    const AD::Variable variable = adapter_.variable(*value);
+    if (denseState.numericalMayBeUninitialized(variable))
+        return std::nullopt;
+    const AD::Interval valueInterval = denseState.interval(variable);
+    if (valueInterval.isSingleton())
+        return AD::LinearExpression(valueInterval.singletonValue());
+
+    const auto retainValue = [&]() -> std::optional<AD::LinearExpression>
+    {
+        relationVariables.push_back(variable);
+        return AD::LinearExpression(variable);
+    };
+    if (depth == 0 || value->getInEdges().size() != 1 ||
+            !visiting.insert(value->getId()).second)
+        return retainValue();
+
+    const auto* binary = SVFUtil::dyn_cast<BinaryOPStmt>(
+                             *value->getInEdges().begin());
+    const bool supported = binary &&
+                           (binary->getOpcode() == BinaryOPStmt::Add ||
+                            binary->getOpcode() == BinaryOPStmt::Sub ||
+                            binary->getOpcode() == BinaryOPStmt::Mul);
+    const auto* integerType = binary
+                              ? SVFUtil::dyn_cast<SVFIntegerType>(
+                                    binary->getRes()->getType())
+                              : nullptr;
+    if (!supported || !integerType)
+    {
+        visiting.erase(value->getId());
+        return retainValue();
+    }
+
+    const auto intervalFor = [&](const SVFVar* input) -> AD::Interval
+    {
+        if (const auto* inputValue = SVFUtil::dyn_cast<ValVar>(input))
+        {
+            AD::Interval constant;
+            if (constantInterval(inputValue, constant))
+                return constant;
+            if (adapter_.contains(*inputValue))
+            {
+                materializeValue(denseState, inputValue, node);
+                const AD::Variable inputVariable =
+                    adapter_.variable(*inputValue);
+                if (denseState.numericalMayBeUninitialized(inputVariable))
+                    return AD::Interval::bottom();
+                return denseState.interval(inputVariable);
+            }
+        }
+        return getInterval(input, node);
+    };
+
+    const AD::Interval lhsInterval = intervalFor(binary->getOpVar(0));
+    const AD::Interval rhsInterval = intervalFor(binary->getOpVar(1));
+    AD::Interval mathematical = AD::Interval::top();
+    if (!lhsInterval.isBottom() && !rhsInterval.isBottom())
+    {
+        if (binary->getOpcode() == BinaryOPStmt::Add)
+            mathematical = AD::add(lhsInterval, rhsInterval);
+        else if (binary->getOpcode() == BinaryOPStmt::Sub)
+            mathematical = AD::subtract(lhsInterval, rhsInterval);
+        else
+            mathematical = AD::multiply(lhsInterval, rhsInterval);
+    }
+    const AD::Interval typeRange =
+        utils->getRangeLimitFromType(binary->getRes()->getType());
+    const bool noIntegerWrap = !mathematical.isBottom() &&
+                               mathematical.isSubsetOf(typeRange);
+    if (!noIntegerWrap)
+    {
+        visiting.erase(value->getId());
+        return retainValue();
+    }
+
+    std::vector<AD::Variable> expandedVariables;
+    const auto lhs = reconstructLinearExpression(
+                         binary->getOpVar(0), denseState, node,
+                         expandedVariables, depth - 1, visiting);
+    const auto rhs = reconstructLinearExpression(
+                         binary->getOpVar(1), denseState, node,
+                         expandedVariables, depth - 1, visiting);
+    visiting.erase(value->getId());
+    if (!lhs || !rhs)
+        return retainValue();
+
+    std::optional<AD::LinearExpression> result;
+    if (binary->getOpcode() == BinaryOPStmt::Add)
+        result = *lhs + *rhs;
+    else if (binary->getOpcode() == BinaryOPStmt::Sub)
+        result = *lhs - *rhs;
+    else if (lhsInterval.isSingleton())
+        result = lhsInterval.singletonValue() * *rhs;
+    else if (rhsInterval.isSingleton())
+        result = rhsInterval.singletonValue() * *lhs;
+
+    // Bound expansion even for Polyhedra. Octagon queries normally stop at
+    // two variables, while this small slack lets constants and copies fold.
+    if (!result || result->terms().size() > 8)
+        return retainValue();
+    relationVariables.insert(relationVariables.end(),
+                             expandedVariables.begin(),
+                             expandedVariables.end());
+    return result;
+}
+
 void AbstractInterpretation::assumeBranch(const IntraCFGEdge* edge,
         State& denseState)
 {
     const SVFVar* condition = edge->getCondition();
-    if (!condition || condition->getInEdges().empty())
+    if (!condition)
+        return;
+    if (edge->isSwitchEdge())
+    {
+        // A default destination can also contain explicit labels. Its union
+        // cannot be approximated by the hull of those labels alone.
+        const auto& cases = edge->getSwitchCases();
+        // Narrow integer values may retain a zero-extended representation in
+        // the abstract state. Do not intersect them with signed IR labels.
+        if (edge->includesSwitchDefault() || edge->getSwitchWidth() < 32 ||
+                edge->getSwitchWidth() > 64 || cases.empty())
+            return;
+        const auto* value = SVFUtil::dyn_cast<ValVar>(condition);
+        if (!value || !adapter_.contains(*value)) return;
+        const auto limits = std::minmax_element(cases.begin(), cases.end());
+        materializeValue(denseState, value, edge->getSrcNode());
+        const AD::LinearExpression expression(adapter_.variable(*value));
+        denseState.assume(AD::LinearConstraint(expression - AD::LinearExpression(AD::Rational(*limits.first)),
+                                             AD::ConstraintKind::GreaterEqual));
+        denseState.assume(AD::LinearConstraint(expression - AD::LinearExpression(AD::Rational(*limits.second)),
+                                             AD::ConstraintKind::LessEqual));
+        return;
+    }
+    if (condition->getInEdges().empty())
         return;
     const auto* comparison =
         SVFUtil::dyn_cast<CmpStmt>(*condition->getInEdges().begin());
@@ -823,6 +1268,88 @@ void AbstractInterpretation::assumeBranch(const IntraCFGEdge* edge,
                               AD::LinearExpression(adapter_.variable(*value)),
                               AD::LinearExpression(AD::Rational(edge->getSuccessorCondValue()))));
         return;
+    }
+
+    // Preserve the established Box baseline. Relational domains additionally
+    // consume the source-level comparison itself, as in a conventional
+    // numerical abstract interpreter, instead of refining only its Boolean
+    // SSA result. IEEE and unsigned comparisons need dedicated bit-vector/
+    // NaN semantics and therefore keep the conservative legacy behavior.
+    // D-006: with pi nodes, the destination's pi selects assume this
+    // comparison on the renamed operands, so the edge does not repeat it.
+    if (Options::AEDomain() != AENumericalDomain::Box &&
+            !comparison->getOpVar(0)->isPointer() && !edgeHasPiNodes(edge))
+    {
+        const s32_t predicate = comparison->getPredicate();
+        const bool supported =
+            predicate == CmpStmt::ICMP_EQ ||
+            predicate == CmpStmt::ICMP_NE ||
+            predicate == CmpStmt::ICMP_SLT ||
+            predicate == CmpStmt::ICMP_SLE ||
+            predicate == CmpStmt::ICMP_SGT ||
+            predicate == CmpStmt::ICMP_SGE;
+        if (supported)
+        {
+            const ICFGNode* source = edge->getSrcNode();
+            std::vector<AD::Variable> relationVariables;
+            std::set<NodeID> visiting;
+            const auto lhs = reconstructLinearExpression(
+                                 comparison->getOpVar(0), denseState, source,
+                                 relationVariables, kComparisonUnfoldDepth, visiting);
+            const auto rhs = reconstructLinearExpression(
+                                 comparison->getOpVar(1), denseState, source,
+                                 relationVariables, kComparisonUnfoldDepth, visiting);
+            if (lhs && rhs)
+            {
+                materializeRelations(denseState, relationVariables, source);
+                const bool taken = edge->getSuccessorCondValue() != 0;
+                AD::ConstraintKind kind = AD::ConstraintKind::Equal;
+                switch (predicate)
+                {
+                case CmpStmt::ICMP_EQ:
+                    kind = taken ? AD::ConstraintKind::Equal
+                           : AD::ConstraintKind::NotEqual;
+                    break;
+                case CmpStmt::ICMP_NE:
+                    kind = taken ? AD::ConstraintKind::NotEqual
+                           : AD::ConstraintKind::Equal;
+                    break;
+                case CmpStmt::ICMP_SLT:
+                    kind = taken ? AD::ConstraintKind::LessThan
+                           : AD::ConstraintKind::GreaterEqual;
+                    break;
+                case CmpStmt::ICMP_SLE:
+                    kind = taken ? AD::ConstraintKind::LessEqual
+                           : AD::ConstraintKind::GreaterThan;
+                    break;
+                case CmpStmt::ICMP_SGT:
+                    kind = taken ? AD::ConstraintKind::GreaterThan
+                           : AD::ConstraintKind::LessEqual;
+                    break;
+                case CmpStmt::ICMP_SGE:
+                    kind = taken ? AD::ConstraintKind::GreaterEqual
+                           : AD::ConstraintKind::LessThan;
+                    break;
+                default:
+                    break;
+                }
+                if (std::getenv("SVF_AE_TRACE_PHI_RELATIONS"))
+                    SVFUtil::outs()
+                        << "AE_BRANCH_BEFORE source="
+                        << edge->getSrcNode()->getId()
+                        << " predicate=" << predicate
+                        << " taken=" << taken << " state="
+                        << denseState.numerical().toString() << '\n';
+                denseState.assume(AD::LinearConstraint(*lhs - *rhs, kind));
+                if (std::getenv("SVF_AE_TRACE_PHI_RELATIONS"))
+                    SVFUtil::outs()
+                        << "AE_BRANCH_AFTER source="
+                        << edge->getSrcNode()->getId()
+                        << " predicate=" << predicate
+                        << " taken=" << taken << " state="
+                        << denseState.numerical().toString() << '\n';
+            }
+        }
     }
 
     // Original checks only the Boolean result for feasibility. It neither

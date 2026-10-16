@@ -44,11 +44,15 @@
 #include "SVFIR/SVFIR.h"
 #include "Util/SVFBugReport.h"
 #include "Util/WorkList.h"
+#include <memory>
+#include <set>
+#include <vector>
 
 namespace SVF
 {
 class AbstractInterpretation;
 class AbsExtAPI;
+class AllocationSizeModel;
 class AEStat;
 /// AbstractInterpretation is same as Abstract Execution.
 ///
@@ -59,6 +63,7 @@ class AEStat;
 class AbstractInterpretation
 {
     friend class AEStat;
+    friend class AbsExtAPI;
     friend class BufOverflowDetector;
     friend class NullptrDerefDetector;
 
@@ -88,7 +93,36 @@ public:
     {
         Dense,
         SemiSparse,
-        Sparse
+        Sparse,
+        OhPackedSparse,
+        /// D3: MemorySSA content versions, definition-site constraints,
+        /// branch-refinement channel and use-site recovery (relational only).
+        VersionedSparse
+    };
+
+    enum AENumericalDomain
+    {
+        Box,
+        Octagon,
+        Polyhedra
+    };
+
+    enum AERelationalPolicy
+    {
+        WholeRelational,
+        QuerySliceRelational,
+        EvaStyleRelational,
+        QueryEvaRelational,
+        SyntaxPackedRelational,
+        ClosurePackedRelational,
+        ImpactPackedRelational,
+        LearnedPackedRelational
+    };
+
+    enum AERelationalCallPolicy
+    {
+        ThroughCalls,
+        IntraproceduralCalls
     };
 
     enum HandleRecur
@@ -129,6 +163,28 @@ public:
         detectors.push_back(std::move(detector));
     }
 
+    enum class QueryOutcome
+    {
+        Unreachable,
+        Safe,
+        Unsupported,
+        May
+    };
+
+    /// Register a syntactic detector query before analysis. Registered but
+    /// unevaluated queries remain Unreachable in the final ledger.
+    void registerQuery(AEDetector::DetectorKind detector,
+                       const ICFGNode* node, const SVFVar* operand,
+                       const std::string& queryKind, const SVFStmt* site = nullptr);
+
+    /// Merge a path/iteration result into a registered query. May dominates
+    /// Unsupported, which dominates Safe; this prevents a later safe visit
+    /// from hiding an earlier uncertain or unsafe one.
+    void recordQuery(AEDetector::DetectorKind detector,
+                     const ICFGNode* node, const SVFVar* operand,
+                     const std::string& queryKind, QueryOutcome outcome,
+                     const std::string& reason = "", const SVFStmt* site = nullptr);
+
     /// Retrieve SVFVar given its ID; asserts if no such variable exists
     inline const SVFVar* getSVFVar(NodeID varId) const
     {
@@ -167,6 +223,13 @@ public:
     virtual bool hasAbsValue(const ObjVar* var, const ICFGNode* node) const;
     virtual bool hasAbsValue(const SVFVar* var, const ICFGNode* node) const;
 
+    /// Whether the numerical facet still includes the absent/uninitialized
+    /// alternative. External-call fallback uses this to define an otherwise
+    /// unmodelled non-void result as initialized Top without overwriting a
+    /// handler's precise result.
+    virtual bool numericalValueMayBeUninitialized(
+        const ValVar* var, const ICFGNode* node) const;
+
     /// Write both scalar facets without constructing an intermediate value
     /// object. Sparse subclasses re-route ValVar writes to the def-site.
     virtual void updateValue(const ValVar* var,
@@ -203,6 +266,17 @@ public:
                                    const AbstractDomain::Interval& interval,
                                    const AbstractDomain::AddressSet& addresses,
                                    const ICFGNode* node);
+    struct RecursiveMod
+    {
+        NodeBS modifiedBases;
+        bool allObjects = false;
+    };
+    /// Static overapproximation for TOP calls, available to version builders.
+    bool recursiveTopSummary(const CallICFGNode*) const;
+    RecursiveMod recursiveTopMod(const CallICFGNode*) const;
+    virtual void prepareRecursiveHavoc(const CallICFGNode*, const NodeBS&, bool)
+    {
+    }
     virtual void markFreedMemory(AbstractDomain::Location location,
                                  const ICFGNode* node);
     virtual bool isFreedMemory(AbstractDomain::Location location,
@@ -246,6 +320,17 @@ public:
                             const ICFGNode* node);
 
     u32_t getAllocaInstByteSize(const AddrStmt* addr);
+    /// Sparrow Size(o) model shared by the main analysis, detector and packers.
+    const AllocationSizeModel& allocationSizeModel();
+    /// Sound lower bound on the bytes of every object allocated at `base`'s
+    /// site in the current fixpoint; nullopt when the size is not modelled.
+    std::optional<s64_t> allocationByteLowerBound(const BaseObjVar* base);
+    /// Size(o) := allocated element count (D-005). Strong as in Sparrow
+    /// unless SVF_AE_SIZE_WEAK is set.
+    void assignAllocationSize(const AddrStmt* addr);
+    /// Value of an unmodelled input (external result, root argument,
+    /// unresolved call): its machine type range for integers, else Top.
+    AbstractDomain::Interval unknownInterval(const SVFVar* var) const;
 
     const Set<const ICFGNode*>& getAnalyzedNodes() const
     {
@@ -301,6 +386,8 @@ protected:
     /// temporary operands. Native sparse implementations use this boundary to
     /// keep ValVar values out of persistent ICFG states.
     virtual void finalizeAbstractState(const ICFGNode* node);
+    virtual void beginAbstractState(const ICFGNode*) {}
+    virtual void initializeExecutionPolicy() {}
 
     /// Pull-based state merge: read abstractTrace[pred] for each predecessor,
     /// apply branch refinement for conditional IntraCFGEdges, and join into
@@ -350,7 +437,13 @@ protected:
 
     /// Handle a function body via worklist-driven WTO traversal starting from
     /// funEntry
-    void handleFunction(const ICFGNode* funEntry, const CallICFGNode* caller);
+    bool handleFunction(const ICFGNode* funEntry, const CallICFGNode* caller);
+
+    /// A context-insensitive callee can grow when a later call site is
+    /// analyzed. Recompute already-reached sibling return sites so their
+    /// caller states cover the enlarged callee summary.
+    void refreshSiblingReturnSites(const FunObjVar* callee,
+                                   const RetICFGNode* currentReturn);
 
     /// Handle an ICFG node: execute statements; return true if state changed
     bool handleICFGNode(const ICFGNode* node);
@@ -378,8 +471,27 @@ protected:
     void updateStateOnGep(const GepStmt* gep);
 
     void updateStateOnSelect(const SelectStmt* select);
+    void updateStateOnSelectValue(const SelectStmt* select);
+    /// D-006: the guard of a pi select (x.pi = select c, x, x): the single
+    /// conditional edge entering its block. Null when the select is not a pi.
+    const IntraCFGEdge* piGuard(const SelectStmt* select) const;
+    /// D-006: the guard of a pi select as constraints over x.pi and the
+    /// comparison's other direct operand (empty when nothing applies).
+    std::vector<AbstractDomain::LinearConstraint> piConstraints(
+        const SelectStmt* select, const IntraCFGEdge* guard);
+    /// Whether the dense pi nodes of `edge`'s destination carry its comparison.
+    bool edgeHasPiNodes(const IntraCFGEdge* edge) const;
 
     void updateStateOnPhi(const PhiStmt* phi);
+
+    /// Reconstruct and apply a basic-block phi tuple when `node` is the last
+    /// ICFG node of that tuple. Shared by solver execution and Post replay.
+    void updateStateOnPhiGroupAtNode(const ICFGNode* node);
+
+    /// Apply every phi at one ICFG program point as a simultaneous tuple for
+    /// each predecessor, then join predecessor alternatives.  Processing the
+    /// targets independently loses relations shared by every alternative.
+    void updateStateOnPhiGroup(const std::vector<const PhiStmt*>& phis);
 
     ICFG* icfg;
     CallGraph* callGraph;
@@ -426,10 +538,59 @@ protected:
         return unknownTargetTelemetry_;
     }
 
-    State& ensureState(const ICFGNode* node);
-    const State& state(const ICFGNode* node) const;
+    virtual State& ensureState(const ICFGNode* node);
+    virtual const State& state(const ICFGNode* node) const;
+    /// State that owns SSA numerical relations created by a transfer. Dense
+    /// AE uses the current ICFG state; semi-sparse AE overrides this with its
+    /// module-wide SSA carrier.
+    virtual State& scalarTransferState(const ICFGNode* node);
+    virtual State phiAlternativeState(const ICFGNode* predecessor);
+    virtual void assignRelationalValue(
+        const ValVar* target,
+        const AbstractDomain::LinearExpression& expression,
+        const AbstractDomain::Interval& interval,
+        const AbstractDomain::AddressSet& addresses,
+        const ICFGNode* node);
+    virtual void recordRelationalDependency(AbstractDomain::Variable target,
+                                            AbstractDomain::Variable source);
+    /// Record that two results belong to the same simultaneous definition.
+    /// Unlike an ordinary use-def dependency, a tuple peer must not be
+    /// flattened through the peer's own operands.
+    virtual void recordRelationalTupleDependency(
+        AbstractDomain::Variable target,
+        AbstractDomain::Variable peer);
+    virtual void recordRelationalSummary(AbstractDomain::Variable target,
+                                         const State& summary,
+                                         const ICFGNode* node);
+    virtual void assignRelationalStore(
+        const ValVar* source, AbstractDomain::Variable content,
+        const ICFGNode* node);
+    virtual void assignRelationalLoad(
+        const ValVar* target, AbstractDomain::Variable content,
+        const ICFGNode* node);
     State topState() const;
     State bottomState() const;
+    std::unique_ptr<AbstractDomain::NumericalDomain> makeNumericalDomain(
+        bool bottom) const;
+    void initializeRelationalPolicy();
+    void initializeSyntaxPacking();
+    void initializeFixedPacking();
+    void applyRelationalCallBoundary(State& state, const ICFGEdge* edge,
+                                     const ICFGNode* target) const;
+    /// Execute the binding owned by one return edge before alternative
+    /// callee post-states are joined.
+    void applyReturnEdgeTransfer(State& state,
+                                 const RetCFGEdge* edge) const;
+    /// D-009: run every phi of `target`'s block as one parallel assignment
+    /// on the incoming edge, before the predecessor states are joined.
+    void applyPhiEdgeTransfer(State& state, const ICFGEdge* edge,
+                              const ICFGNode* target);
+    /// Whether `block` uses the D-009 edge transfer (Dense only, and every
+    /// phi maps each incoming edge to exactly one operand).
+    bool phiEdgeBlock(const SVFBasicBlock* block);
+    /// Publish a representation-specific summary after return alternatives
+    /// have been joined at a RetICFGNode.
+    virtual void recordMergedReturnSummary(const RetICFGNode* returnSite);
 
     void assignValue(State& state, AbstractDomain::Variable variable,
                      const AbstractDomain::Interval& interval,
@@ -438,14 +599,29 @@ protected:
                            AbstractDomain::Variable content,
                            const AbstractDomain::Interval& interval,
                            const AbstractDomain::AddressSet& addresses);
+    /// Strong writes require a definite, non-summary, live memory cell.
+    bool canStrongStore(const AbstractDomain::AddressSet& pointees,
+                        const ObjVar& object, const State& state);
     AbstractDomain::Variable memoryVariable(const ObjVar& object,
                                             const State& state) const;
     void assignInterval(State& state, AbstractDomain::Variable variable,
                         const AbstractDomain::Interval& interval);
     void constrainInterval(State& state, AbstractDomain::Variable variable,
-                           const AbstractDomain::Interval& interval);
+                           const AbstractDomain::Interval& interval) const;
     virtual void materializeValue(State& state, const ValVar* value,
                                   const ICFGNode* node);
+    virtual void materializeRelations(
+        State& state, const std::vector<AbstractDomain::Variable>& variables,
+        const ICFGNode* node);
+    /// Rebuild a bounded affine expression from a uniquely defined SSA value.
+    /// Integer arithmetic is unfolded only when its interval proves that the
+    /// LLVM operation cannot wrap at this program point. Unsupported
+    /// definitions remain sound leaf variables.
+    std::optional<AbstractDomain::LinearExpression>
+    reconstructLinearExpression(
+        const SVFVar* operand, State& state, const ICFGNode* node,
+        std::vector<AbstractDomain::Variable>& relationVariables,
+        unsigned depth, std::set<NodeID>& visiting);
     void forgetValue(State& state,
                      AbstractDomain::Variable variable) const;
     void assumeBranch(const IntraCFGEdge* edge, State& state);
@@ -453,9 +629,71 @@ protected:
     SVFIR* svfir{nullptr};
     AEWTO* preAnalysis{nullptr};
     SVFIRAdapter adapter_;
+    std::shared_ptr<AllocationSizeModel> allocationSizeModel_;
+    std::shared_ptr<const std::vector<AbstractDomain::Variable>>
+        relationalVocabulary_;
+    std::shared_ptr<const std::vector<std::vector<AbstractDomain::Variable>>>
+        relationalPacking_;
+    std::size_t relationalSeedCount_ = 0;
+    std::size_t relationalDroppedCount_ = 0;
     Map<const ICFGNode*, State> stateTrace_;
+    // A predecessor merge overwrites the Dense node's current state. Keep
+    // split-phi widening history separate from that incoming pre-state.
+    Map<const PhiStmt*, AbstractDomain::Interval> phiIntervalHistory_;
+    Map<const SVFBasicBlock*, bool> phiEdgeBlocks_;
+    /// D-014 item 6: comparisons use their direct operands only (depth 0);
+    /// relations through earlier definitions come from the pack's state.
+    static constexpr unsigned kComparisonUnfoldDepth = 0;
+    std::size_t phiEdgeFallbackBlocks_ = 0;
     bool unknownTargetTelemetryEnabled_ = false;
     UnknownTargetTelemetry unknownTargetTelemetry_;
+
+    struct QueryRecord
+    {
+        AEDetector::DetectorKind detector = AEDetector::UNKNOWN;
+        NodeID icfgNode = 0;
+        NodeID operand = 0;
+        std::string queryKind;
+        std::string function;
+        std::string sourceLocation;
+        std::string semanticSite;
+        const SVFStmt* statement = nullptr;
+        QueryOutcome outcome = QueryOutcome::Unreachable;
+        std::string reason;
+    };
+
+    Map<std::string, QueryRecord> queryLedger_;
+    bool queryLedgerEnabled() const;
+    void enumerateQueries();
+    void enumerateStandardAssertionQueries();
+    void recordReachedAssertion(const CallICFGNode* call);
+    void writeQueryLedger() const;
+    void writeQueryLedgerTo(const std::string& path) const;
+    void writeInvariantStates(const std::string& path) const;
+    /// Diagnostic (SVF_AE_QUERY_RECHECK=<path>): re-evaluate every query on
+    /// the Post-certified final states and write a second ledger. While
+    /// recheckStates_ is set, state lookups read those final states.
+    void recheckQueriesOnFinalStates(Map<const ICFGNode*, State>& finals,
+                                     const std::string& path);
+    Map<const ICFGNode*, State>* recheckStates_ = nullptr;
+
+    bool postCheckEnabled() const;
+    /// Reconstruct the semantic post-state exposed to the dense-equation
+    /// checker. Sparse solvers materialize only scalars available at `node`.
+    virtual State reconstructPostState(
+        const ICFGNode* node,
+        const std::set<AbstractDomain::Variable>& availableScalars);
+    virtual void normalizePostReplayState(
+        State& state,
+        const std::set<AbstractDomain::Variable>& availableScalars) const;
+    virtual void preparePostReplayState(
+        State& state, const ICFGNode* target,
+        const std::set<AbstractDomain::Variable>& inputScalars) const;
+    virtual void restorePostReplayCallerFrame(
+        State& state, const RetICFGNode* returnSite,
+        const State& callerState,
+        const std::set<AbstractDomain::Variable>& callerScalars) const;
+    void verifyPostFixpoint();
 
     bool shouldApplyNarrowing(const FunObjVar* fun);
 };

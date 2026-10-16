@@ -21,6 +21,7 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include <cstdlib>
 #include "AE/Svfexe/SVFIRAdapter.h"
 
 #include "SVFIR/SVFIR.h"
@@ -193,6 +194,28 @@ void SVFIRAdapter::registerObject(const ObjVar& object) const
         return;
 
     const Location location = nextLocation(nextLocationId_);
+    const auto* field = SVFUtil::dyn_cast<GepObjVar>(&object);
+    const ObjVar* base = field ? field->getBaseObj() : nullptr;
+    static const bool separate = std::getenv("SVF_AE_RUNTIME_FIELDS_SEPARATE") != nullptr;
+    if (runtimeFieldsFrozen_ && !separate && base &&
+            !SVFUtil::cast<BaseObjVar>(base)->isConstDataOrConstGlobal())
+    {
+        auto summary = runtimeFieldSummaries_.find(base);
+        if (summary == runtimeFieldSummaries_.end())
+        {
+            const Variable variable =
+                nextVariable(nextVariableId_, contentNumericType(object));
+            contentObjectsByVariableId_.resize(variable.id() + 1);
+            contentObjectsByVariableId_[variable.id()] = base;
+            summary = runtimeFieldSummaries_.emplace(base, variable).first;
+        }
+        locations_.emplace(&object, location);
+        objects_.emplace(location, &object);
+        contentVariables_.emplace(&object, summary->second);
+        summarizedFields_.insert(&object);
+        memoryLayout_.extend(location, summary->second);
+        return;
+    }
     const Variable content =
         nextVariable(nextVariableId_, contentNumericType(object));
     locations_.emplace(&object, location);
@@ -249,8 +272,44 @@ const ObjVar* SVFIRAdapter::contentObject(Variable variable) const
            : nullptr;
 }
 
+Variable SVFIRAdapter::syntheticVariable(const AbstractDomain::NumericType& type) const
+{
+    const Variable variable = nextVariable(nextVariableId_, type);
+    syntheticVariables_.insert(variable.id());
+    return variable;
+}
+
+Variable SVFIRAdapter::sizeVariable(const ObjVar& base) const
+{
+    const auto found = sizeVariables_.find(&base);
+    if (found != sizeVariables_.end())
+        return found->second;
+    const Variable variable =
+        syntheticVariable(AbstractDomain::NumericType::integer());
+    sizeVariables_.emplace(&base, variable);
+    sizeObjects_.emplace(variable.id(), &base);
+    return variable;
+}
+
+std::vector<const ObjVar*> SVFIRAdapter::objectsRegisteredAfter(Variable frontier) const
+{
+    std::vector<const ObjVar*> result;
+    for (std::size_t id = frontier.id() + 1; id < contentObjectsByVariableId_.size(); ++id)
+        if (contentObjectsByVariableId_[id])
+            result.push_back(contentObjectsByVariableId_[id]);
+    return result;
+}
+
+const ObjVar* SVFIRAdapter::sizeObject(Variable variable) const
+{
+    const auto found = sizeObjects_.find(variable.id());
+    return found == sizeObjects_.end() ? nullptr : found->second;
+}
+
 bool SVFIRAdapter::isPointer(Variable variable) const
 {
+    if (isSynthetic(variable))
+        return false;
     if (const ValVar* scalar = value(variable))
         return scalar->isPointer();
     if (const ObjVar* object = contentObject(variable))

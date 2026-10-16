@@ -108,7 +108,11 @@ void AbsExtAPI::initExtFunMap()
                     << SVFUtil::errMsg("Assertion failure, this svf_assert cannot "
                                "be verified!!\n")
                     << callNode->toString() << "\n";
-            assert(false);
+            // A query-ledger run records this as May and must continue so a
+            // complete dataset can be classified. Preserve the historical
+            // assertion behavior when no ledger was requested.
+            if (!ae->queryLedgerEnabled())
+                assert(false);
         }
         return;
     };
@@ -429,16 +433,7 @@ void AbsExtAPI::handleExtAPI(const CallICFGNode* call)
         }
         else
         {
-            if (const SVFVar* ret = call->getRetICFGNode()->getActualRet())
-            {
-                // Pointer returns retain the address fact established by the
-                // SVF call/value-flow edges (commonly the BlackHole summary
-                // object). This matches Original AE's policy and avoids
-                // replacing a useful points-to fact with object-top.
-                if (!ret->isPointer() || ae->getAddressSet(ret, call).isBottom())
-                    ae->updateInterval(ret, AD::Interval::top(), call);
-            }
-            return;
+            // The common result fallback below handles unknown functions too.
         }
     }
     // 1. memcpy functions like memcpy_chk, strncpy, annotate("MEMCPY"),
@@ -470,6 +465,23 @@ void AbsExtAPI::handleExtAPI(const CallICFGNode* call)
     }
     else
     {
+    }
+
+    const RetICFGNode* returnSite = call->getRetICFGNode();
+    const SVFVar* rawReturn = returnSite ? returnSite->getActualRet() : nullptr;
+    if (const auto* ret = rawReturn
+            ? SVFUtil::dyn_cast<ValVar>(rawReturn) : nullptr)
+    {
+        // Every normally returning non-void call defines its SSA result. A
+        // named model may describe only side effects (for example fread) and
+        // leave that result otherwise absent. Define it as initialized Top
+        // within its type range, but never overwrite a precise numerical result or a pointer address
+        // fact established by the handler/SVF value-flow edges.
+        const bool pointerFact =
+            ret->isPointer() && !ae->getAddressSet(ret, call).isBottom();
+        if (!pointerFact &&
+            ae->numericalValueMayBeUninitialized(ret, call))
+            ae->updateInterval(ret, ae->unknownInterval(ret), call);
     }
     return;
 }
@@ -626,42 +638,80 @@ void AbsExtAPI::handleStrncat(const CallICFGNode* call)
     handleMemcpy(dst, src, n, lowerInteger(dstLen), call);
 }
 
-/// Core memcpy: copy `len` bytes from src to dst starting at dst[start_idx].
+/// Copy complete scalar cells when their byte layout is known. SVF GEP fields
+/// are not byte-addressed cells: interpreting byte indices as field indices can
+/// silently miss scalar writes or make a partial byte copy a full assignment.
+/// Unsupported layouts conservatively lose the affected destination contents.
 void AbsExtAPI::handleMemcpy(const ValVar* dst, const ValVar* src,
                              const AD::Interval& len, u32_t start_idx,
                              const ICFGNode* node)
 {
-    if (!isValidLength(len))
+    const auto* call = SVFUtil::dyn_cast<CallICFGNode>(node);
+    const FunObjVar* callee = call ? call->getCalledFunction() : nullptr;
+    const std::string name = callee ? callee->getName() : "";
+    // MEMCPY annotations also include strncpy and memccpy, with stopping,
+    // padding or a different length argument. They require the havoc fallback.
+    const bool exactByteCopy = name == "memcpy" || name == "memmove" ||
+        name == "__memcpy_chk" || name == "__memmove_chk" ||
+        name.rfind("llvm.memcpy.", 0) == 0 || name.rfind("llvm.memmove.", 0) == 0 ||
+        name.rfind("llvm_memcpy", 0) == 0 || name.rfind("llvm_memmove", 0) == 0;
+    if (exactByteCopy && len.isZero())
         return;
-
-    u32_t elemSize = getElementSize(dst);
-    u32_t size = std::min((u32_t)Options::MaxFieldLimit(),
-                          static_cast<u32_t>(lowerInteger(len)));
-    u32_t range_val = size / elemSize;
-
-    if (ae->getAddressSet(src, node).isBottom() ||
-            ae->getAddressSet(dst, node).isBottom())
-        return;
-
-    for (u32_t index = 0; index < range_val; index++)
+    const AD::AddressSet sources = ae->getAddressSet(src, node);
+    const AD::AddressSet destinations = ae->getAddressSet(dst, node);
+    if (exactByteCopy && start_idx == 0 && len.isSingleton() && sources.isSingleton() &&
+            destinations.isSingleton())
     {
-        const AD::AddressSet exprSrc =
-            ae->getGepObjAddrs(src, integerInterval(index), node);
-        const AD::AddressSet exprDst =
-            ae->getGepObjAddrs(dst, integerInterval(index + start_idx), node);
-        if (!exprSrc.isFinite() || !exprDst.isFinite())
-            return;
-        for (AD::Location dstLocation : exprDst)
+        const AD::Location source = *sources.begin();
+        const AD::Location destination = *destinations.begin();
+        const ObjVar* sourceCell = source.isNull() ? nullptr : ae->objectAt(source);
+        const ObjVar* destinationCell = destination.isNull() ? nullptr : ae->objectAt(destination);
+        const auto* sourceObject = sourceCell ? SVFUtil::dyn_cast<BaseObjVar>(sourceCell) : nullptr;
+        const auto* destinationObject = destinationCell ? SVFUtil::dyn_cast<BaseObjVar>(destinationCell) : nullptr;
+        if (sourceObject && destinationObject &&
+                !sourceObject->isArray() && !sourceObject->isStruct() &&
+                !destinationObject->isArray() && !destinationObject->isStruct() &&
+                sourceObject->getType() == destinationObject->getType() &&
+                sourceObject->isConstantByteSize() &&
+                destinationObject->isConstantByteSize() &&
+                sourceObject->getByteSizeOfObj() > 0 &&
+                sourceObject->getByteSizeOfObj() == destinationObject->getByteSizeOfObj() &&
+                len.singletonValue() == AD::Rational(sourceObject->getByteSizeOfObj()) &&
+                ae->canStrongStore(destinations, *destinationObject, ae->state(node)) &&
+                ae->hasMemoryValue(source, node))
         {
-            for (AD::Location srcLocation : exprSrc)
-            {
-                if (ae->hasMemoryValue(srcLocation, node))
-                    ae->updateMemoryValue(
-                        dstLocation, ae->getMemoryInterval(srcLocation, node),
-                        ae->getMemoryAddressSet(srcLocation, node), node);
-            }
+            const AD::Interval value = ae->getMemoryInterval(source, node);
+            const AD::AddressSet addresses = ae->getMemoryAddressSet(source, node);
+            ae->updateMemoryValue(destination, value, addresses, node);
+            return;
         }
     }
+
+    // Havoc every represented field of every possible destination allocation.
+    // Missing/unknown destinations cannot justify retaining any memory fact.
+    bool all = destinations.hasUnknownObject() || destinations.mayContainRawAddress() ||
+               destinations.isBottom();
+    std::set<NodeID> bases;
+    for (AD::Location location : destinations.locations())
+    {
+        const ObjVar* object = location.isNull() ? nullptr : ae->objectAt(location);
+        const BaseObjVar* base = object ? svfir->getBaseObject(object->getId()) : nullptr;
+        if (!base || base->isBlackHoleObj())
+            all = true;
+        else
+            bases.insert(base->getId());
+    }
+    std::vector<AD::Location> targets;
+    for (const auto& [location, content] : ae->state(node).memoryLayout().cells())
+    {
+        (void)content;
+        const ObjVar* object = ae->objectAt(location);
+        const BaseObjVar* base = object ? svfir->getBaseObject(object->getId()) : nullptr;
+        if (all || (base && bases.count(base->getId())))
+            targets.push_back(location);
+    }
+    for (AD::Location location : targets)
+        ae->updateMemoryValue(location, AD::Interval::top(), AD::AddressSet::top(), node);
 }
 
 /// Core memset: fill dst with `elem` for `len` bytes.

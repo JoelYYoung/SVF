@@ -28,6 +28,7 @@
 
 #include <cstdint>
 #include <map>
+#include <set>
 #include <vector>
 
 namespace SVF
@@ -59,6 +60,21 @@ public:
     const ObjVar* contentObject(AbstractDomain::Variable variable) const;
     bool isPointer(AbstractDomain::Variable variable) const;
     const ObjVar& object(AbstractDomain::Location location) const;
+    /// Allocate an analysis-internal numerical coordinate with no SVFIR
+    /// counterpart (for example a MemorySSA content version). It is neither
+    /// a ValVar slot nor an object content slot.
+    AbstractDomain::Variable syntheticVariable(
+        const AbstractDomain::NumericType& type) const;
+    bool isSynthetic(AbstractDomain::Variable variable) const
+    {
+        return syntheticVariables_.count(variable.id()) != 0;
+    }
+    /// Sparrow's Size(a): element count of the latest allocation of a base
+    /// object (synthetic integer coordinate, created on first request).
+    AbstractDomain::Variable sizeVariable(const ObjVar& base) const;
+    const ObjVar* sizeObject(AbstractDomain::Variable variable) const;
+    /// Objects whose content coordinate was created after `frontier`.
+    std::vector<const ObjVar*> objectsRegisteredAfter(AbstractDomain::Variable frontier) const;
     AbstractDomain::Variable firstObjectContentVariable() const
     {
         return AbstractDomain::Variable(firstObjectContentVariableId_);
@@ -67,6 +83,26 @@ public:
     const AbstractDomain::MemoryLayout& memoryLayout() const
     {
         return memoryLayout_;
+    }
+
+    /// D-005 item 3: after V is frozen, a field object first seen by the main
+    /// analysis whose base is not constant data shares one summary coordinate
+    /// S(o) of its base, updated weakly only.
+    void freezeRuntimeFields() const
+    {
+        runtimeFieldsFrozen_ = true;
+    }
+    bool isRuntimeFieldSummary(const ObjVar& object) const
+    {
+        return summarizedFields_.count(&object) != 0;
+    }
+    std::size_t summarizedFieldCount() const
+    {
+        return summarizedFields_.size();
+    }
+    std::size_t summaryCount() const
+    {
+        return runtimeFieldSummaries_.size();
     }
 
 private:
@@ -82,6 +118,12 @@ private:
     mutable AbstractDomain::MemoryLayout memoryLayout_;
     mutable std::uint64_t nextVariableId_ = 1;
     mutable std::uint64_t nextLocationId_ = 1;
+    mutable std::set<std::uint32_t> syntheticVariables_;
+    mutable std::map<const ObjVar*, AbstractDomain::Variable> sizeVariables_;
+    mutable std::map<std::uint32_t, const ObjVar*> sizeObjects_;
+    mutable bool runtimeFieldsFrozen_ = false;
+    mutable std::map<const ObjVar*, AbstractDomain::Variable> runtimeFieldSummaries_;
+    mutable std::set<const ObjVar*> summarizedFields_;
     std::uint32_t firstObjectContentVariableId_ = 1;
 };
 

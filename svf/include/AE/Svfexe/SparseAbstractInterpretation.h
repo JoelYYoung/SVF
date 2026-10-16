@@ -24,6 +24,7 @@
 #ifndef SVF_AE_SPARSE_ABSTRACT_INTERPRETATION_H
 #define SVF_AE_SPARSE_ABSTRACT_INTERPRETATION_H
 
+#include <map>
 #include <memory>
 #include <optional>
 #include <set>
@@ -63,6 +64,8 @@ protected:
     using Base::getInterval;
     bool hasAbsValue(const ValVar* var, const ICFGNode* node) const override;
     using Base::hasAbsValue;
+    bool numericalValueMayBeUninitialized(
+        const ValVar* var, const ICFGNode* node) const override;
     void updateValue(const ValVar* var,
                      const AbstractDomain::Interval& interval,
                      const AbstractDomain::AddressSet& addresses,
@@ -76,6 +79,19 @@ protected:
     void resetAbstractState(const ICFGNode* node) override;
     void finalizeAbstractState(const ICFGNode* node) override;
     bool mergeStatesFromPredecessors(const ICFGNode* node) override;
+    State reconstructPostState(
+        const ICFGNode* node,
+        const std::set<AbstractDomain::Variable>& availableScalars) override;
+    void normalizePostReplayState(State& state,
+                                  const std::set<AbstractDomain::Variable>&
+                                      availableScalars) const override;
+    void preparePostReplayState(
+        State& state, const ICFGNode* target,
+        const std::set<AbstractDomain::Variable>& inputScalars) const override;
+    void restorePostReplayCallerFrame(
+        State& state, const RetICFGNode* returnSite,
+        const State& callerState,
+        const std::set<AbstractDomain::Variable>& callerScalars) const override;
 
     std::unique_ptr<AbstractDomain::AbstractDomain> cloneCycleHeadState(
         const ICFGCycleWTO* cycle) override;
@@ -88,6 +104,33 @@ protected:
 
     void materializeValue(State& state, const ValVar* value,
                           const ICFGNode* node) override;
+    void materializeRelations(
+        State& state, const std::vector<AbstractDomain::Variable>& variables,
+        const ICFGNode* node) override;
+    State& scalarTransferState(const ICFGNode* node) override;
+    State phiAlternativeState(const ICFGNode* predecessor) override;
+    void assignRelationalValue(
+        const ValVar* target,
+        const AbstractDomain::LinearExpression& expression,
+        const AbstractDomain::Interval& interval,
+        const AbstractDomain::AddressSet& addresses,
+        const ICFGNode* node) override;
+    void recordRelationalDependency(AbstractDomain::Variable target,
+                                    AbstractDomain::Variable source) override;
+    void recordRelationalTupleDependency(
+        AbstractDomain::Variable target,
+        AbstractDomain::Variable peer) override;
+    void recordRelationalSummary(AbstractDomain::Variable target,
+                                 const State& summary,
+                                 const ICFGNode* node) override;
+    void recordMergedReturnSummary(
+        const RetICFGNode* returnSite) override;
+    void assignRelationalStore(
+        const ValVar* source, AbstractDomain::Variable content,
+        const ICFGNode* node) override;
+    void assignRelationalLoad(
+        const ValVar* target, AbstractDomain::Variable content,
+        const ICFGNode* node) override;
     void loadValue(const ValVar* pointer, AbstractDomain::Interval& interval,
                    AbstractDomain::AddressSet& addresses,
                    bool& numericalMayBeUninitialized,
@@ -107,12 +150,43 @@ protected:
     void forgetActiveScalarValues(State& state) const;
     void forgetMemoryValues(State& state) const;
     void restoreCallerFrameAfterSharedCallee(
-        State& state, const RetICFGNode* returnSite) const;
+        State& state, const RetICFGNode* returnSite,
+        const State* callerOverride = nullptr) const;
+    bool isSharedFunction(const FunObjVar* function) const;
+    bool isSharedCalleeReturn(const RetICFGNode* returnSite) const;
+    /// Shared-callee admission used by production restoration and derived
+    /// executors. Preservation still applies only to available SSA names
+    /// owned by the current caller; this is not a memory-frame permission.
+    bool preservesCallerFrame(const RetICFGNode* returnSite) const;
+    bool callerFrameCannotBeReentered(const RetICFGNode* returnSite) const;
+    mutable Map<const RetICFGNode*, bool> nonReentrantReturnCache_;
     void applyScalarRefinement(State& state, const State& checkpoint);
     void scatterCycleValues(const ICFGCycleWTO* cycle, const State& state);
+    void initializeScalarAvailability();
+    std::vector<AbstractDomain::Variable> carrierDependencyClosure(
+        const std::vector<AbstractDomain::Variable>& seeds) const;
+    void materializeScalarDefinitions(
+        State& state, const std::vector<AbstractDomain::Variable>& seeds,
+        const ICFGNode* node,
+        const std::set<AbstractDomain::Variable>* availableOverride = nullptr) const;
+    /// Coordinates available at `node` beyond the scalar availability sets
+    /// (for example D3 content versions). They are materialized only when a
+    /// seed or dependency names them, never as an "all available" seed.
+    virtual bool extraAvailable(const ICFGNode*, AbstractDomain::Variable) const
+    {
+        return false;
+    }
 
     Map<const ICFGNode*, State> refinementTrace_;
+    Map<const ICFGNode*, std::set<AbstractDomain::Variable>>
+        scalarAvailability_;
+    std::map<AbstractDomain::Variable, std::set<AbstractDomain::Variable>>
+        scalarDependencies_;
+    std::map<AbstractDomain::Variable, State> scalarDefinitions_;
+    std::map<AbstractDomain::Variable, std::pair<const ICFGNode*, State>>
+        pendingDefinitionHistory_;
     std::optional<State> scalarState_;
+    std::optional<State> globalScalarSnapshot_;
 };
 
 /// Full-sparse AE backed by BoxAddressDomain. Scalar SSA values share the same

@@ -28,6 +28,8 @@
 
 #include <AE/Svfexe/AEDetector.h>
 #include <AE/Svfexe/AbsExtAPI.h>
+#include "AE/Svfexe/AllocationSize.h"
+#include <limits>
 #include <AE/Svfexe/AbstractInterpretation.h>
 
 using namespace SVF;
@@ -44,6 +46,115 @@ bool upperAtLeast(const AD::Interval& interval, u32_t size)
 {
     return !interval.upper().isFinite() ||
            interval.upper().value() >= AD::Rational(size);
+}
+
+AD::Interval detectorGepOffset(const GepStmt* gep)
+{
+    // Address-carrier field limits must never truncate a detector bound.
+    if (gep->isConstantOffset())
+        return integerInterval(gep->accumulateConstantByteOffset());
+    auto& ae = AbstractInterpretation::getAEInstance();
+    AD::Interval result = integerInterval(0);
+    for (const auto& part : gep->getOffsetVarAndGepTypePairVec())
+    {
+        const auto* variable = part.first;
+        const auto* type = part.second;
+        if (const auto* structure = SVFUtil::dyn_cast<SVFStructType>(type))
+            result = AD::add(result, integerInterval(gep->getAccessPath().getStructFieldOffset(variable, structure)));
+        else if (SVFUtil::isa<SVFArrayType>(type) || SVFUtil::isa<SVFPointerType>(type))
+        {
+            const auto* array = SVFUtil::dyn_cast<SVFArrayType>(type);
+            const auto size = array ? array->getTypeOfElement()->getByteSize()
+                              : gep->getAccessPath().gepSrcPointeeType()->getByteSize();
+            const auto* constant = SVFUtil::dyn_cast<ConstIntValVar>(variable);
+            auto index = constant ? integerInterval(constant->getSExtValue())
+                                 : ae.getInterval(variable, gep->getICFGNode());
+            result = AD::add(result, AD::multiply(index, integerInterval(size)));
+        }
+        else return AD::Interval::top();
+    }
+    return result;
+}
+
+/// Byte offset of a GEP as constant + scale * index with at most one
+/// variable index; false when the offset has another shape.
+bool decomposeGepOffset(const GepStmt* gep, s64_t& constant,
+                        const ValVar*& index, s64_t& scale)
+{
+    constant = 0;
+    index = nullptr;
+    scale = 0;
+    if (gep->isConstantOffset())
+    {
+        constant = gep->accumulateConstantByteOffset();
+        return true;
+    }
+    for (const auto& part : gep->getOffsetVarAndGepTypePairVec())
+    {
+        const auto* variable = part.first;
+        const auto* type = part.second;
+        if (const auto* structure = SVFUtil::dyn_cast<SVFStructType>(type))
+            constant += gep->getAccessPath().getStructFieldOffset(variable, structure);
+        else if (SVFUtil::isa<SVFArrayType>(type) || SVFUtil::isa<SVFPointerType>(type))
+        {
+            const auto* array = SVFUtil::dyn_cast<SVFArrayType>(type);
+            const s64_t size = array ? array->getTypeOfElement()->getByteSize()
+                               : gep->getAccessPath().gepSrcPointeeType()->getByteSize();
+            if (const auto* literal = SVFUtil::dyn_cast<ConstIntValVar>(variable))
+                constant += literal->getSExtValue() * size;
+            else if (!index && SVFUtil::isa<ValVar>(variable))
+            {
+                index = SVFUtil::cast<ValVar>(variable);
+                scale = size;
+            }
+            else
+                return false;
+        }
+        else
+            return false;
+    }
+    return true;
+}
+
+std::vector<u32_t> nullDerefArgumentIndices(const CallICFGNode* call)
+{
+    std::vector<u32_t> result;
+    for (const std::string& annotation :
+            ExtAPI::getExtAPI()->getExtFuncAnnotations(call->getCalledFunction()))
+    {
+        if (annotation.find("MEMCPY") != std::string::npos)
+        {
+            // MEMCPY denotes memory effects, not an argument-count ABI.
+            // memcpy/memmove intrinsics, fortified copies, memccpy, bcopy
+            // and strncpy access arguments 0/1. The trailing length,
+            // volatility, sentinel and destination-size values are scalars.
+            // iconv is the registered exception: its descriptor is opaque;
+            // the four following arguments describe the buffers and sizes.
+            const std::vector<u32_t> accessed =
+                call->getCalledFunction()->getName() == "iconv"
+                ? std::vector<u32_t>{1, 2, 3, 4}
+                : std::vector<u32_t>{0, 1};
+            for (u32_t index : accessed)
+            {
+                if (index >= call->arg_size() ||
+                        !call->getArgument(index)->isPointer())
+                    throw std::invalid_argument(
+                        "MEMCPY detector memory role does not match pointer argument type");
+                result.push_back(index);
+            }
+        }
+        else if (annotation.find("MEMSET") != std::string::npos)
+            result.push_back(0);
+        else if (annotation.find("STRCPY") != std::string::npos ||
+                 annotation.find("STRCAT") != std::string::npos)
+        {
+            result.push_back(0);
+            result.push_back(1);
+        }
+    }
+    std::sort(result.begin(), result.end());
+    result.erase(std::unique(result.begin(), result.end()), result.end());
+    return result;
 }
 } // namespace
 /**
@@ -67,6 +178,10 @@ void BufOverflowDetector::detect(const ICFGNode* node)
             if (const GepStmt* gep = SVFUtil::dyn_cast<GepStmt>(stmt))
             {
                 SVFIR* svfir = PAG::getPAG();
+                bool unsupported = false;
+                bool mayOverflow = false;
+                bool checkedTarget = false;
+                bool relational = false;
 
                 // Update the GEP object offset from its base
                 const AD::AddressSet lhsVal =
@@ -74,50 +189,94 @@ void BufOverflowDetector::detect(const ICFGNode* node)
                 const AD::AddressSet rhsVal =
                     ae.getAddressSet(gep->getRHSVar(), node);
                 updateGepObjOffsetFromBase(node, lhsVal, rhsVal,
-                                           ae.getGepByteOffset(gep));
+                                           detectorGepOffset(gep));
 
-                if (rhsVal.hasUnknownObject())
-                    continue;
-                for (AD::Location location : rhsVal)
+                if (rhsVal.isBottom() || !rhsVal.isFinite() ||
+                        rhsVal.hasUnknownObject())
+                    unsupported = true;
+                else for (AD::Location location : rhsVal)
                 {
                     const ObjVar* object = ae.objectAt(location);
                     if (!object)
+                    {
+                        unsupported = true;
                         continue;
+                    }
                     NodeID objId = object->getId();
                     const BaseObjVar* baseObject = svfir->getBaseObject(objId);
                     if (!baseObject)
+                    {
+                        unsupported = true;
                         continue;
-                    u32_t size = 0;
-                    // like `int arr[10]` which has constant size before runtime
-                    if (baseObject->isConstantByteSize())
-                    {
-                        size = baseObject->getByteSizeOfObj();
                     }
-                    else
+                    // D-005: a sound lower bound on every allocation at the
+                    // site (the previous code used the dynamic size's upper
+                    // bound and ignored the alloca element size).
+                    const auto lower = ae.allocationByteLowerBound(baseObject);
+                    if (!lower)
                     {
-                        // like `int len = ***; int arr[len]`, whose size can
-                        // only be known in runtime
-                        const ICFGNode* addrNode = baseObject->getICFGNode();
-                        if (!addrNode)
-                            continue;
-                        for (const SVFStmt* stmt2 : addrNode->getSVFStmts())
-                        {
-                            if (const AddrStmt* addrStmt =
-                                        SVFUtil::dyn_cast<AddrStmt>(stmt2))
-                            {
-                                size = ae.getAllocaInstByteSize(addrStmt);
-                            }
-                        }
+                        unsupported = true;
+                        continue;
                     }
+                    checkedTarget = true;
 
                     // Calculate access offset and check for potential overflow
                     AD::Interval accessOffset = getAccessOffset(objId, gep);
-                    if (upperAtLeast(accessOffset, size))
+                    const bool lowerUnsafe = !accessOffset.lower().isFinite() ||
+                                             accessOffset.lower().value() < AD::Rational(0);
+                    if (!lowerUnsafe && accessOffset.upper().isFinite() &&
+                            accessOffset.upper().value() <= AD::Rational(*lower))
+                        continue;
+                    if (!lowerUnsafe && relationalUpperBound(node, object, gep, 0))
                     {
-                        AEException bug(stmt->toString());
-                        addBugToReporter(bug, stmt->getICFGNode());
+                        relational = true;
+                        continue;
                     }
+                    const AllocationSize* model = ae.allocationSizeModel().find(baseObject);
+                    if (*lower == 0 && !(model && model->known && model->sizeValue))
+                    {
+                        // Static zero or unsized extents (e.g. extern T[0])
+                        // give no usable range; a dynamic size whose lower
+                        // bound is 0 falls through to May.
+                        unsupported = true;
+                        continue;
+                    }
+                    if (std::getenv("SVF_AE_TRACE_SIZE"))
+                        std::cerr << "AE_SIZE_GEP_MAY recheck=" << (ae.recheckStates_ != nullptr) << " node=" << node->getId()
+                                  << " object=" << objId << " offset=" << accessOffset.toString()
+                                  << " lower_bytes=" << *lower;
+                    if (std::getenv("SVF_AE_TRACE_SIZE"))
+                        for (const auto& part : gep->getOffsetVarAndGepTypePairVec())
+                            std::cerr << " part=" << part.first->getId() << ":"
+                                      << ae.getInterval(part.first, node).toString();
+                    if (std::getenv("SVF_AE_TRACE_SIZE"))
+                        std::cerr << '\n';
+                    mayOverflow = true;
+                    // An out-of-range address-formation property is not
+                    // itself a memory-access bug (non-inbounds GEP).
                 }
+                const auto outcome = mayOverflow
+                    ? AbstractInterpretation::QueryOutcome::May
+                    : (unsupported || !checkedTarget
+                       ? AbstractInterpretation::QueryOutcome::Unsupported
+                       : AbstractInterpretation::QueryOutcome::Safe);
+                ae.recordQuery(BUF_OVERFLOW, node, gep->getRHSVar(),
+                               "gep-allocation-range", outcome,
+                               mayOverflow ? "formed offset may be outside [0, allocation size]; not an access verdict"
+                               : (unsupported || !checkedTarget
+                                  ? "object or object size is unsupported"
+                                  : relational
+                                  ? "formed offsets are within [0, allocation size], including one-past; not a dereference verdict [relational-size]"
+                                  : "formed offsets are within [0, allocation size], including one-past; not a dereference verdict"), gep);
+            }
+            else if (const auto* load = SVFUtil::dyn_cast<LoadStmt>(stmt))
+                detectMemoryBounds(load, load->getRHSVar(), "load-bounds");
+            else if (const auto* store = SVFUtil::dyn_cast<StoreStmt>(stmt))
+            {
+                // Global initializer StoreStmts are synthetic writes, not
+                // LLVM memory accesses. Only instruction sites have a width.
+                if (node->getFun())
+                    detectMemoryBounds(store, store->getLHSVar(), "store-bounds");
             }
         }
     }
@@ -128,6 +287,270 @@ void BufOverflowDetector::detect(const ICFGNode* node)
         if (SVFUtil::isExtCall(callNode->getCalledFunction()))
         {
             detectExtAPI(callNode);
+        }
+    }
+}
+
+bool BufOverflowDetector::relationalUpperBound(const ICFGNode* node,
+        const ObjVar* object, const GepStmt* gep, s64_t width)
+{
+    auto& ae = AbstractInterpretation::getAEInstance();
+    const BaseObjVar* base = PAG::getPAG()->getBaseObject(object->getId());
+    const AllocationSize* size = base ? ae.allocationSizeModel().find(base) : nullptr;
+    if (!size || !size->known || size->elementBytes == 0)
+        return false;
+    // As in the interval check, a base-object target is addressed from its
+    // start; a field target adds its recorded offset from the base.
+    AD::Rational baseOffset(0);
+    if (const auto* field = SVFUtil::dyn_cast<GepObjVar>(object))
+    {
+        if (!hasGepObjOffsetFromBase(field))
+            return false;
+        const AD::Interval offset = getGepObjOffsetFromBase(field);
+        if (!offset.upper().isFinite())
+            return false;
+        baseOffset = offset.upper().value();
+    }
+    s64_t constant = 0, scale = 0;
+    const ValVar* index = nullptr;
+    if (!decomposeGepOffset(gep, constant, index, scale) || !index ||
+            scale != static_cast<s64_t>(size->elementBytes) ||
+            index->isPointer() || !ae.adapter_.contains(*index))
+        return false;
+    const auto& state = ae.state(node);
+    if (state.isBottom())
+        return false;
+    const AD::Variable indexVariable = ae.adapter_.variable(*index);
+    const AD::Variable sizeVariable = ae.adapter_.sizeVariable(*base);
+    if (state.numericalMayBeUninitialized(indexVariable) ||
+            state.numericalMayBeUninitialized(sizeVariable))
+        return false;
+    const AD::Interval difference = state.numerical().bound(
+        AD::LinearExpression(indexVariable) - AD::LinearExpression(sizeVariable));
+    if (std::getenv("SVF_AE_TRACE_SIZE"))
+        std::cerr << "AE_SIZE_CHECK node=" << node->getId() << " object=" << base->getId()
+                  << " index=" << index->getId() << " difference=" << difference.toString()
+                  << " size=" << state.numerical().bound(sizeVariable).toString()
+                  << " idx=" << state.numerical().bound(indexVariable).toString() << '\n';
+    if (difference.isBottom() || !difference.upper().isFinite())
+        return false;
+    // scale * (idx - Size) + baseOffset + constant + width <= 0
+    const AD::Rational limit =
+        ((AD::Rational(0) - baseOffset - AD::Rational(constant + width)) /
+         AD::Rational(scale)).floor();
+    return difference.upper().value() <= limit;
+}
+
+bool BufOverflowDetector::relationalLengthBound(const CallICFGNode* call,
+        const ValVar* pointer, const ValVar* length)
+{
+    auto& ae = AbstractInterpretation::getAEInstance();
+    if (!length || length->isPointer() || !ae.adapter_.contains(*length))
+        return false;
+    const auto lengthInterval = ae.getInterval(length, call);
+    if (lengthInterval.isBottom() || !lengthInterval.lower().isFinite() ||
+            lengthInterval.lower().value() < AD::Rational(0))
+        return false;
+    const auto targets = ae.getAddressSet(pointer, call);
+    if (targets.isBottom() || !targets.isFinite() || targets.hasUnknownObject())
+        return false;
+    const auto& state = ae.state(call);
+    const auto lengthVariable = ae.adapter_.variable(*length);
+    if (state.isBottom() || state.numericalMayBeUninitialized(lengthVariable))
+        return false;
+    bool checked = false;
+    for (const auto location : targets)
+    {
+        const auto* object = ae.objectAt(location);
+        const auto* base = object ? PAG::getPAG()->getBaseObject(object->getId()) : nullptr;
+        const AllocationSize* size = base ? ae.allocationSizeModel().find(base) : nullptr;
+        // Library lengths are bytes. Other element units need a scaled
+        // inequality, which Octagon cannot generally represent.
+        if (!size || !size->known || size->elementBytes != 1)
+            return false;
+        AD::Rational offset(0);
+        if (const auto* field = SVFUtil::dyn_cast<GepObjVar>(object))
+        {
+            if (!hasGepObjOffsetFromBase(field))
+                return false;
+            const auto range = getGepObjOffsetFromBase(field);
+            if (range.isBottom() || !range.lower().isFinite() ||
+                    range.lower().value() < AD::Rational(0) || !range.upper().isFinite())
+                return false;
+            offset = range.upper().value();
+        }
+        const auto sizeVariable = ae.adapter_.sizeVariable(*base);
+        if (state.numericalMayBeUninitialized(sizeVariable))
+            return false;
+        const auto difference = state.numerical().bound(
+            AD::LinearExpression(lengthVariable) - AD::LinearExpression(sizeVariable));
+        if (std::getenv("SVF_AE_TRACE_SIZE"))
+            std::cerr << "AE_SIZE_LENGTH node=" << call->getId()
+                      << " difference=" << difference.toString()
+                      << " length=" << lengthInterval.toString()
+                      << " size=" << state.numerical().bound(sizeVariable).toString()
+                      << " offset=" << offset.toString() << '\n';
+        if (difference.isBottom() || !difference.upper().isFinite() ||
+                difference.upper().value() > AD::Rational(0) - offset)
+            return false;
+        checked = true;
+    }
+    return checked;
+}
+
+void BufOverflowDetector::detectMemoryBounds(const SVFStmt* statement,
+        const SVFVar* pointer, const std::string& kind)
+{
+    auto& ae = AbstractInterpretation::getAEInstance();
+    using Outcome = AbstractInterpretation::QueryOutcome;
+    const auto* node = statement->getICFGNode();
+    const auto targets = ae.getAddressSet(pointer, node);
+    bool unsupported = statement->getAccessBytes() == 0;
+    bool may = targets.isBottom() || !targets.isFinite() || targets.hasUnknownObject();
+    bool checked = false;
+    bool relational = false;
+    const s64_t accessBytes = static_cast<s64_t>(statement->getAccessBytes());
+    // D-005 item 7: a pointer formed by a GEP can be proved in bounds through
+    // the relation idx - Size(o) of that GEP's base objects.
+    const auto* gep = pointer && pointer->getInEdges().size() == 1
+                      ? SVFUtil::dyn_cast<GepStmt>(*pointer->getInEdges().begin())
+                      : nullptr;
+    const auto provedThroughGep = [&](const BaseObjVar* base) {
+        if (!gep)
+            return false;
+        const AD::AddressSet sources = ae.getAddressSet(gep->getRHSVar(), node);
+        if (sources.isBottom() || !sources.isFinite() || sources.hasUnknownObject())
+            return false;
+        bool any = false;
+        for (const auto location : sources)
+        {
+            const auto* source = ae.objectAt(location);
+            if (!source || PAG::getPAG()->getBaseObject(source->getId()) != base ||
+                    !relationalUpperBound(node, source, gep, accessBytes))
+                return false;
+            any = true;
+        }
+        return any;
+    };
+    if (targets.isFinite()) for (const auto location : targets)
+    {
+        const auto* object = ae.objectAt(location);
+        const auto* base = object ? PAG::getPAG()->getBaseObject(object->getId()) : nullptr;
+        if (!base || base->isBlackHoleObj()) { may = true; continue; }
+        const auto lower = ae.allocationByteLowerBound(base);
+        if (!lower) { unsupported = true; continue; }
+        AD::Interval offset = integerInterval(0);
+        if (const auto* field = SVFUtil::dyn_cast<GepObjVar>(object))
+        {
+            if (!hasGepObjOffsetFromBase(field)) { unsupported = true; continue; }
+            offset = getGepObjOffsetFromBase(field);
+        }
+        checked = true;
+        const AD::Rational size(*lower);
+        const AD::Rational width(accessBytes);
+        const bool lowerSafe = offset.lower().isFinite() &&
+                               offset.lower().value() >= AD::Rational(0);
+        if (lowerSafe && offset.upper().isFinite() && offset.upper().value() + width <= size)
+            continue;
+        if (lowerSafe && provedThroughGep(base))
+        {
+            relational = true;
+            continue;
+        }
+        const AllocationSize* model = ae.allocationSizeModel().find(base);
+        if (*lower == 0 && !(model && model->known && model->sizeValue))
+        {
+            // Static zero or unsized extents (extern T[0]) stay unsupported;
+            // a dynamic size whose lower bound is 0 is a genuine May.
+            unsupported = true;
+            continue;
+        }
+        may = true;
+    }
+    ae.recordQuery(BUF_OVERFLOW, node, pointer, kind,
+                   may ? Outcome::May : (unsupported || !checked ? Outcome::Unsupported : Outcome::Safe),
+                   may ? "memory access may exceed allocation byte range"
+                   : (unsupported || !checked ? "access width, allocation size or offset unsupported"
+                      : relational
+                      ? "access byte range is within allocation; nullness/lifetime checked separately [relational-size]"
+                      : "access byte range is within allocation; nullness/lifetime checked separately"), statement);
+}
+
+void BufOverflowDetector::enumerateQueries()
+{
+    auto& ae = AbstractInterpretation::getAEInstance();
+    ICFG* graph = PAG::getPAG()->getICFG();
+    for (auto iterator = graph->begin(); iterator != graph->end(); ++iterator)
+    {
+        const ICFGNode* node = iterator->second;
+        if (const auto* call = SVFUtil::dyn_cast<CallICFGNode>(node))
+        {
+            const FunObjVar* function = call->getCalledFunction();
+            if (!function)
+                continue;
+            const std::string name = function->getName();
+            if ((name == "SAFE_BUFACCESS" || name == "UNSAFE_BUFACCESS") &&
+                    call->arg_size() >= 2)
+                ae.registerQuery(BUF_OVERFLOW, call, call->getArgument(0),
+                                 "stub-bounds");
+            if (!SVFUtil::isExtCall(function))
+                continue;
+
+            AbsExtAPI::ExtAPIType extType = AbsExtAPI::UNCLASSIFIED;
+            for (const std::string& annotation :
+                    ExtAPI::getExtAPI()->getExtFuncAnnotations(function))
+            {
+                if (annotation.find("MEMCPY") != std::string::npos)
+                    extType = AbsExtAPI::MEMCPY;
+                if (annotation.find("MEMSET") != std::string::npos)
+                    extType = AbsExtAPI::MEMSET;
+                if (annotation.find("STRCPY") != std::string::npos)
+                    extType = AbsExtAPI::STRCPY;
+                if (annotation.find("STRCAT") != std::string::npos)
+                    extType = AbsExtAPI::STRCAT;
+            }
+
+            if (extType == AbsExtAPI::MEMCPY ||
+                    extType == AbsExtAPI::MEMSET)
+            {
+                auto rule = extAPIBufOverflowCheckRules.find(name);
+                if (rule == extAPIBufOverflowCheckRules.end())
+                {
+                    ae.registerQuery(BUF_OVERFLOW, call, nullptr,
+                                     "ext-bounds-unsupported-rule");
+                    continue;
+                }
+                for (const auto& argument : rule->second)
+                {
+                    const ValVar* pointer = argument.first < call->arg_size()
+                                            ? call->getArgument(argument.first)
+                                            : nullptr;
+                    ae.registerQuery(
+                        BUF_OVERFLOW, call, pointer,
+                        "ext-bounds-arg-" +
+                        std::to_string(argument.first) + "-len-" +
+                        std::to_string(argument.second));
+                }
+            }
+            else if ((extType == AbsExtAPI::STRCPY ||
+                      extType == AbsExtAPI::STRCAT) && call->arg_size() >= 1)
+                ae.registerQuery(BUF_OVERFLOW, call, call->getArgument(0),
+                                 "ext-string-destination");
+            continue;
+        }
+
+        for (const SVFStmt* statement : node->getSVFStmts())
+        {
+            if (const auto* gep = SVFUtil::dyn_cast<GepStmt>(statement))
+                ae.registerQuery(BUF_OVERFLOW, node, gep->getRHSVar(),
+                                 "gep-allocation-range", gep);
+            else if (const auto* load = SVFUtil::dyn_cast<LoadStmt>(statement))
+                ae.registerQuery(BUF_OVERFLOW, node, load->getRHSVar(), "load-bounds", load);
+            else if (const auto* store = SVFUtil::dyn_cast<StoreStmt>(statement))
+            {
+                if (node->getFun())
+                    ae.registerQuery(BUF_OVERFLOW, node, store->getLHSVar(), "store-bounds", store);
+            }
         }
     }
 }
@@ -158,6 +581,11 @@ void BufOverflowDetector::handleStubFunctions(const SVF::CallICFGNode* callNode)
         }
         const ValVar* arg0Val = callNode->getArgument(0);
         bool isSafe = canSafelyAccessMemory(arg0Val, val, callNode);
+        ae.recordQuery(BUF_OVERFLOW, callNode, arg0Val, "stub-bounds",
+                       isSafe ? AbstractInterpretation::QueryOutcome::Safe
+                              : AbstractInterpretation::QueryOutcome::May,
+                       isSafe ? "access is in bounds"
+                              : "access may exceed object bounds");
         if (isSafe)
         {
             SVFUtil::outs()
@@ -187,6 +615,11 @@ void BufOverflowDetector::handleStubFunctions(const SVF::CallICFGNode* callNode)
         }
         const ValVar* arg0Val = callNode->getArgument(0);
         bool isSafe = canSafelyAccessMemory(arg0Val, val, callNode);
+        ae.recordQuery(BUF_OVERFLOW, callNode, arg0Val, "stub-bounds",
+                       isSafe ? AbstractInterpretation::QueryOutcome::Safe
+                              : AbstractInterpretation::QueryOutcome::May,
+                       isSafe ? "access is in bounds"
+                              : "access may exceed object bounds");
         if (!isSafe)
         {
             SVFUtil::outs()
@@ -228,6 +661,7 @@ void BufOverflowDetector::initExtAPIBufOverflowCheckRules()
         {1, 2}
     };
     extAPIBufOverflowCheckRules["__memcpy_chk"] = {{0, 2}, {1, 2}};
+    extAPIBufOverflowCheckRules["memcpy"] = {{0, 2}, {1, 2}};
     extAPIBufOverflowCheckRules["memmove"] = {{0, 2}, {1, 2}};
     extAPIBufOverflowCheckRules["bcopy"] = {{0, 2}, {1, 2}};
     extAPIBufOverflowCheckRules["memccpy"] = {{0, 3}, {1, 3}};
@@ -278,6 +712,10 @@ void BufOverflowDetector::detectExtAPI(const CallICFGNode* call)
         if (extAPIBufOverflowCheckRules.count(
                     call->getCalledFunction()->getName()) == 0)
         {
+            ae.recordQuery(BUF_OVERFLOW, call, nullptr,
+                           "ext-bounds-unsupported-rule",
+                           AbstractInterpretation::QueryOutcome::Unsupported,
+                           "external API has no buffer-size rule");
             SVFUtil::errs()
                     << "Warning: " << call->getCalledFunction()->getName()
                     << " is not in the rules, please implement it\n";
@@ -288,11 +726,34 @@ void BufOverflowDetector::detectExtAPI(const CallICFGNode* call)
                 call->getCalledFunction()->getName());
         for (auto arg : args)
         {
+            const ValVar* argVar = arg.first < call->arg_size()
+                                   ? call->getArgument(arg.first) : nullptr;
+            if (arg.first >= call->arg_size() ||
+                    arg.second >= call->arg_size())
+            {
+                ae.recordQuery(
+                    BUF_OVERFLOW, call, argVar,
+                    "ext-bounds-arg-" + std::to_string(arg.first) +
+                    "-len-" + std::to_string(arg.second),
+                    AbstractInterpretation::QueryOutcome::Unsupported,
+                    "external API call does not match buffer-size rule");
+                continue;
+            }
             AD::Interval offset = AD::subtract(
                                       ae.getInterval(call->getArgument(arg.second), call),
                                       integerInterval(1));
-            const ValVar* argVar = call->getArgument(arg.first);
-            if (!canSafelyAccessMemory(argVar, offset, call))
+            const bool intervalSafe = canSafelyAccessMemory(argVar, offset, call);
+            const bool relational = !intervalSafe && relationalLengthBound(
+                                        call, argVar, call->getArgument(arg.second));
+            const bool safe = intervalSafe || relational;
+            ae.recordQuery(BUF_OVERFLOW, call, argVar,
+                           "ext-bounds-arg-" + std::to_string(arg.first) +
+                           "-len-" + std::to_string(arg.second),
+                           safe ? AbstractInterpretation::QueryOutcome::Safe
+                                : AbstractInterpretation::QueryOutcome::May,
+                           safe ? (relational ? "access is in bounds [relational-size]" : "access is in bounds")
+                                : "access may exceed object bounds");
+            if (!safe)
             {
                 AEException bug(call->toString());
                 addBugToReporter(bug, call);
@@ -304,6 +765,10 @@ void BufOverflowDetector::detectExtAPI(const CallICFGNode* call)
         if (extAPIBufOverflowCheckRules.count(
                     call->getCalledFunction()->getName()) == 0)
         {
+            ae.recordQuery(BUF_OVERFLOW, call, nullptr,
+                           "ext-bounds-unsupported-rule",
+                           AbstractInterpretation::QueryOutcome::Unsupported,
+                           "external API has no buffer-size rule");
             SVFUtil::errs()
                     << "Warning: " << call->getCalledFunction()->getName()
                     << " is not in the rules, please implement it\n";
@@ -314,11 +779,31 @@ void BufOverflowDetector::detectExtAPI(const CallICFGNode* call)
                 call->getCalledFunction()->getName());
         for (auto arg : args)
         {
+            const ValVar* argVar = arg.first < call->arg_size()
+                                   ? call->getArgument(arg.first) : nullptr;
+            if (arg.first >= call->arg_size() ||
+                    arg.second >= call->arg_size())
+            {
+                ae.recordQuery(
+                    BUF_OVERFLOW, call, argVar,
+                    "ext-bounds-arg-" + std::to_string(arg.first) +
+                    "-len-" + std::to_string(arg.second),
+                    AbstractInterpretation::QueryOutcome::Unsupported,
+                    "external API call does not match buffer-size rule");
+                continue;
+            }
             AD::Interval offset = AD::subtract(
                                       ae.getInterval(call->getArgument(arg.second), call),
                                       integerInterval(1));
-            const ValVar* argVar = call->getArgument(arg.first);
-            if (!canSafelyAccessMemory(argVar, offset, call))
+            const bool safe = canSafelyAccessMemory(argVar, offset, call);
+            ae.recordQuery(BUF_OVERFLOW, call, argVar,
+                           "ext-bounds-arg-" + std::to_string(arg.first) +
+                           "-len-" + std::to_string(arg.second),
+                           safe ? AbstractInterpretation::QueryOutcome::Safe
+                                : AbstractInterpretation::QueryOutcome::May,
+                           safe ? "access is in bounds"
+                                : "access may exceed object bounds");
+            if (!safe)
             {
                 AEException bug(call->toString());
                 addBugToReporter(bug, call);
@@ -327,7 +812,16 @@ void BufOverflowDetector::detectExtAPI(const CallICFGNode* call)
     }
     else if (extType == AbsExtAPI::STRCPY)
     {
-        if (!detectStrcpy(call))
+        const bool safe = detectStrcpy(call);
+        const ValVar* destination = call->arg_size() >= 1
+                                    ? call->getArgument(0) : nullptr;
+        ae.recordQuery(BUF_OVERFLOW, call, destination,
+                       "ext-string-destination",
+                       safe ? AbstractInterpretation::QueryOutcome::Safe
+                            : AbstractInterpretation::QueryOutcome::May,
+                       safe ? "destination is large enough"
+                            : "destination may be too small");
+        if (!safe)
         {
             AEException bug(call->toString());
             addBugToReporter(bug, call);
@@ -335,7 +829,16 @@ void BufOverflowDetector::detectExtAPI(const CallICFGNode* call)
     }
     else if (extType == AbsExtAPI::STRCAT)
     {
-        if (!detectStrcat(call))
+        const bool safe = detectStrcat(call);
+        const ValVar* destination = call->arg_size() >= 1
+                                    ? call->getArgument(0) : nullptr;
+        ae.recordQuery(BUF_OVERFLOW, call, destination,
+                       "ext-string-destination",
+                       safe ? AbstractInterpretation::QueryOutcome::Safe
+                            : AbstractInterpretation::QueryOutcome::May,
+                       safe ? "destination is large enough"
+                            : "destination may be too small");
+        if (!safe)
         {
             AEException bug(call->toString());
             addBugToReporter(bug, call);
@@ -362,17 +865,16 @@ AD::Interval BufOverflowDetector::getAccessOffset(SVF::NodeID objId,
         const SVF::GepStmt* gep)
 {
     SVFIR* svfir = PAG::getPAG();
-    auto& ae = AbstractInterpretation::getAEInstance();
     auto obj = svfir->getSVFVar(objId);
 
     if (SVFUtil::isa<BaseObjVar>(obj))
     {
-        return ae.getGepByteOffset(gep);
+        return detectorGepOffset(gep);
     }
     else if (SVFUtil::isa<GepObjVar>(obj))
     {
         return AD::add(getGepObjOffsetFromBase(SVFUtil::cast<GepObjVar>(obj)),
-                       ae.getGepByteOffset(gep));
+                       detectorGepOffset(gep));
     }
     else
     {
@@ -448,14 +950,12 @@ void BufOverflowDetector::updateGepObjOffsetFromBase(const ICFGNode* node,
                     {
                         AD::Interval objOffsetFromBase =
                             getGepObjOffsetFromBase(objVar);
-                        if (!hasGepObjOffsetFromBase(gepObjVar))
-                            addToGepObjOffsetFromBase(
-                                gepObjVar, AD::add(objOffsetFromBase, offset));
+                        addToGepObjOffsetFromBase(
+                            gepObjVar, AD::add(objOffsetFromBase, offset));
                     }
                     else
                     {
-                        assert(false &&
-                               "GEP RHS object has no offset from base");
+                        addToGepObjOffsetFromBase(gepObjVar, AD::Interval::top());
                     }
                 }
             }
@@ -551,28 +1051,11 @@ bool BufOverflowDetector::canSafelyAccessMemory(const ValVar* value,
         const BaseObjVar* baseObject = svfir->getBaseObject(objId);
         if (!baseObject)
             return false;
-        u32_t size = 0;
-        // if the object is a constant size object, get the size directly
-        if (baseObject->isConstantByteSize())
-        {
-            size = baseObject->getByteSizeOfObj();
-        }
-        else
-        {
-            // if the object is not a constant size object, get the size from
-            // the addrStmt
-            const ICFGNode* addrNode = baseObject->getICFGNode();
-            if (!addrNode)
-                return false;
-            for (const SVFStmt* stmt2 : addrNode->getSVFStmts())
-            {
-                if (const AddrStmt* addrStmt =
-                            SVFUtil::dyn_cast<AddrStmt>(stmt2))
-                {
-                    size = ae.getAllocaInstByteSize(addrStmt);
-                }
-            }
-        }
+        const auto lower = ae.allocationByteLowerBound(baseObject);
+        if (!lower)
+            return false;
+        const u32_t size = static_cast<u32_t>(std::min<s64_t>(
+            *lower, std::numeric_limits<u32_t>::max()));
 
         AD::Interval offset = integerInterval(0);
         // if the object is a GepObjVar, get the offset from the base object
@@ -599,6 +1082,7 @@ bool BufOverflowDetector::canSafelyAccessMemory(const ValVar* value,
 
 void NullptrDerefDetector::detect(const ICFGNode* node)
 {
+    auto& ae = AbstractInterpretation::getAEInstance();
     if (SVFUtil::isa<CallICFGNode>(node))
     {
         // external API like memset(*dst, elem, sz)
@@ -613,27 +1097,82 @@ void NullptrDerefDetector::detect(const ICFGNode* node)
     {
         for (const auto& stmt : node->getSVFStmts())
         {
-            if (const GepStmt* gep = SVFUtil::dyn_cast<GepStmt>(stmt))
+            // GEP forms an address; it does not dereference its operand.
+            if (const LoadStmt* load = SVFUtil::dyn_cast<LoadStmt>(stmt))
             {
-                // like llvm bitcode `p = gep p, idx`
-                // we check rhs p's all address are valid mem
-                const ValVar* rhs = gep->getRHSVar();
-                if (!canSafelyDerefPtr(rhs, node))
+                // like llvm bitcode `p = load q`
+                // The dereferenced pointer is the load address (RHS), not the
+                // SSA value produced by the load (LHS).  Querying the LHS
+                // reports scalar loads as null-pointer alarms and also misses
+                // an unsafe address when the loaded value happens to be a
+                // valid pointer.
+                const ValVar* address = load->getRHSVar();
+                const bool safe = canSafelyDerefPtr(address, node);
+                ae.recordQuery(NULL_DEREF, node, address, "load-address",
+                               safe ? AbstractInterpretation::QueryOutcome::Safe
+                                    : AbstractInterpretation::QueryOutcome::May,
+                               safe ? "all targets valid"
+                                    : "may be null, invalid, unknown, or freed");
+                if (!safe)
                 {
                     AEException bug(stmt->toString());
                     addBugToReporter(bug, stmt->getICFGNode());
                 }
             }
-            else if (const LoadStmt* load = SVFUtil::dyn_cast<LoadStmt>(stmt))
+            else if (const auto* store = SVFUtil::dyn_cast<StoreStmt>(stmt))
             {
-                // like llvm bitcode `p = load q`
-                // we check lhs p's all address are valid mem
-                const ValVar* lhs = load->getLHSVar();
-                if (!canSafelyDerefPtr(lhs, node))
-                {
-                    AEException bug(stmt->toString());
-                    addBugToReporter(bug, stmt->getICFGNode());
-                }
+                if (!node->getFun()) continue;
+                const auto* address = store->getLHSVar();
+                const bool safe = canSafelyDerefPtr(address, node);
+                ae.recordQuery(NULL_DEREF, node, address, "store-address",
+                               safe ? AbstractInterpretation::QueryOutcome::Safe
+                                    : AbstractInterpretation::QueryOutcome::May,
+                               safe ? "all targets valid"
+                                    : "may be null, invalid, unknown, or freed", store);
+            }
+        }
+    }
+}
+
+void NullptrDerefDetector::enumerateQueries()
+{
+    auto& ae = AbstractInterpretation::getAEInstance();
+    ICFG* graph = PAG::getPAG()->getICFG();
+    for (auto iterator = graph->begin(); iterator != graph->end(); ++iterator)
+    {
+        const ICFGNode* node = iterator->second;
+        if (const auto* call = SVFUtil::dyn_cast<CallICFGNode>(node))
+        {
+            const FunObjVar* function = call->getCalledFunction();
+            if (!function)
+                continue;
+            const std::string name = function->getName();
+            if ((name == "SAFE_LOAD" || name == "UNSAFE_LOAD") &&
+                    call->arg_size() >= 1)
+                ae.registerQuery(NULL_DEREF, call, call->getArgument(0),
+                                 "stub-arg-0");
+            if (!SVFUtil::isExtCall(function))
+                continue;
+            for (u32_t argument : nullDerefArgumentIndices(call))
+            {
+                if (argument < call->arg_size())
+                    ae.registerQuery(NULL_DEREF, call,
+                                     call->getArgument(argument),
+                                     "ext-arg-" + std::to_string(argument));
+            }
+            continue;
+        }
+
+        for (const SVFStmt* statement : node->getSVFStmts())
+        {
+            if (const auto* load =
+                         SVFUtil::dyn_cast<LoadStmt>(statement))
+                ae.registerQuery(NULL_DEREF, node, load->getRHSVar(),
+                                 "load-address");
+            else if (const auto* store = SVFUtil::dyn_cast<StoreStmt>(statement))
+            {
+                if (node->getFun())
+                    ae.registerQuery(NULL_DEREF, node, store->getLHSVar(), "store-address", store);
             }
         }
     }
@@ -655,6 +1194,11 @@ void NullptrDerefDetector::handleStubFunctions(const CallICFGNode* callNode)
         // UNSAFE_LOAD(null)
         bool isSafe =
             canSafelyDerefPtr(arg0Val, callNode) && arg0Val->getId() != 0;
+        ae.recordQuery(NULL_DEREF, callNode, arg0Val, "stub-arg-0",
+                       isSafe ? AbstractInterpretation::QueryOutcome::Safe
+                              : AbstractInterpretation::QueryOutcome::May,
+                       isSafe ? "all targets valid"
+                              : "expected unsafe dereference");
         SVFUtil::outs() << "[UNSAFE_LOAD] node=" << callNode->getId()
                         << " arg0=" << arg0Val->getId() << " isSafe=" << isSafe
                         << "\n";
@@ -686,6 +1230,11 @@ void NullptrDerefDetector::handleStubFunctions(const CallICFGNode* callNode)
         // UNSAFE_LOAD(null)ols
         bool isSafe =
             canSafelyDerefPtr(arg0Val, callNode) && arg0Val->getId() != 0;
+        ae.recordQuery(NULL_DEREF, callNode, arg0Val, "stub-arg-0",
+                       isSafe ? AbstractInterpretation::QueryOutcome::Safe
+                              : AbstractInterpretation::QueryOutcome::May,
+                       isSafe ? "all targets valid"
+                              : "unexpected unsafe dereference");
         if (isSafe)
         {
             SVFUtil::outs()
@@ -708,57 +1257,22 @@ void NullptrDerefDetector::handleStubFunctions(const CallICFGNode* callNode)
 void NullptrDerefDetector::detectExtAPI(const CallICFGNode* call)
 {
     assert(call->getCalledFunction() && "FunObjVar* is nullptr");
-    // get ext type
-    // get argument index which are nullptr deref checkpoints for extapi
-    std::vector<u32_t> tmp_args;
-    for (const std::string& annotation :
-            ExtAPI::getExtAPI()->getExtFuncAnnotations(call->getCalledFunction()))
-    {
-        if (annotation.find("MEMCPY") != std::string::npos)
-        {
-            if (call->arg_size() < 4)
-            {
-                // for memcpy(void* dest, const void* src, size_t n)
-                tmp_args.push_back(0);
-                tmp_args.push_back(1);
-            }
-            else
-            {
-                // for unsigned long iconv(void* cd, char **restrict inbuf,
-                // unsigned long *restrict inbytesleft, char **restrict outbuf,
-                // unsigned long *restrict outbytesleft)
-                tmp_args.push_back(1);
-                tmp_args.push_back(2);
-                tmp_args.push_back(3);
-                tmp_args.push_back(4);
-            }
-        }
-        else if (annotation.find("MEMSET") != std::string::npos)
-        {
-            // for memset(void* dest, elem, sz)
-            tmp_args.push_back(0);
-        }
-        else if (annotation.find("STRCPY") != std::string::npos)
-        {
-            // for strcpy(void* dest, void* src)
-            tmp_args.push_back(0);
-            tmp_args.push_back(1);
-        }
-        else if (annotation.find("STRCAT") != std::string::npos)
-        {
-            // for strcat(void* dest, const void* src)
-            // for strncat(void* dest, const void* src, size_t n)
-            tmp_args.push_back(0);
-            tmp_args.push_back(1);
-        }
-    }
-
-    for (const auto& arg : tmp_args)
+    auto& ae = AbstractInterpretation::getAEInstance();
+    for (u32_t arg : nullDerefArgumentIndices(call))
     {
         if (call->arg_size() <= arg)
             continue;
         const ValVar* argVal = call->getArgument(arg);
-        if (argVal && !canSafelyDerefPtr(argVal, call))
+        if (!argVal)
+            continue;
+        const bool safe = canSafelyDerefPtr(argVal, call);
+        ae.recordQuery(NULL_DEREF, call, argVal,
+                       "ext-arg-" + std::to_string(arg),
+                       safe ? AbstractInterpretation::QueryOutcome::Safe
+                            : AbstractInterpretation::QueryOutcome::May,
+                       safe ? "all targets valid"
+                            : "may be null, invalid, unknown, or freed");
+        if (!safe)
         {
             AEException bug(call->toString());
             addBugToReporter(bug, call);

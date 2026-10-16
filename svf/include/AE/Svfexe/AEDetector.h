@@ -51,6 +51,7 @@ public:
     {
         BUF_OVERFLOW, ///< Detector for buffer overflow issues.
         NULL_DEREF,   ///< Detector for nullptr dereference issues.
+        ASSERTION,    ///< Standard C assert failure reachability.
         UNKNOWN,      ///< Default type if the kind is not specified.
     };
 
@@ -80,6 +81,11 @@ public:
      * @param node Pointer to the ICFG node.
      */
     virtual void detect(const ICFGNode* node) = 0;
+
+    /// Enumerate the detector's syntactic query scope before abstract
+    /// interpretation so Safe/May/Unsupported results cannot change which
+    /// query identities exist.
+    virtual void enumerateQueries() = 0;
 
     /**
      * @brief Pure virtual function for handling stub external API calls. (e.g.
@@ -139,6 +145,16 @@ private:
 class BufOverflowDetector : public AEDetector
 {
     friend class AbstractInterpretation;
+    void detectMemoryBounds(const SVFStmt* statement, const SVFVar* pointer,
+                            const std::string& kind);
+    bool relationalLengthBound(const CallICFGNode* call, const ValVar* pointer,
+                               const ValVar* length);
+    /// D-005: prove offset-from-base + GEP offset + width <= bytes of the
+    /// object, i.e. idx - Size(o) <= floor(-(offset + width) / element bytes),
+    /// through the numerical state (relational when idx and Size(o) share a
+    /// pack; interval arithmetic otherwise).
+    bool relationalUpperBound(const ICFGNode* node, const ObjVar* object,
+                              const GepStmt* gep, s64_t width);
 
 public:
     /**
@@ -185,6 +201,8 @@ public:
      */
     void detect(const ICFGNode*) override;
 
+    void enumerateQueries() override;
+
     /**
      * @brief Handles external API calls related to buffer overflow detection.
      * @param call Pointer to the call ICFG node.
@@ -199,7 +217,8 @@ public:
     void addToGepObjOffsetFromBase(const GepObjVar* obj,
                                    const AbstractDomain::Interval& offset)
     {
-        gepObjOffsetFromBase[obj] = offset;
+        auto inserted = gepObjOffsetFromBase.emplace(obj, offset);
+        if (!inserted.second) inserted.first->second.joinWith(offset);
     }
 
     /**
@@ -371,6 +390,8 @@ public:
      * @param node Pointer to the ICFG node.
      */
     void detect(const ICFGNode* node) override;
+
+    void enumerateQueries() override;
 
     /**
      * @brief Handles external API calls related to nullptr dereferences.

@@ -1,28 +1,36 @@
 # Build the backend-neutral abstract-domain library as a separate target. None of
 # these sources includes SVF IR or LLVM headers.
 set(ABSTRACT_DOMAIN_CORE_HEADERS
-    ${CMAKE_CURRENT_LIST_DIR}/include/AE/Core/OctagonDomain.h
-    ${CMAKE_CURRENT_LIST_DIR}/include/AE/Core/ConvexPolyhedraDomain.h
+    ${CMAKE_CURRENT_LIST_DIR}/include/AE/Core/LearnedRelationPacking.h
     ${CMAKE_CURRENT_LIST_DIR}/include/AE/Core/DimensionLayout.h
-    ${CMAKE_CURRENT_LIST_DIR}/include/AE/Core/NumericalDomainFactory.h
+    ${CMAKE_CURRENT_LIST_DIR}/include/AE/Core/OctagonDomain.h
+    ${CMAKE_CURRENT_LIST_DIR}/include/AE/Core/PackedRelationalDomain.h
+    ${CMAKE_CURRENT_LIST_DIR}/include/AE/Core/RelationPacking.h
+    ${CMAKE_CURRENT_LIST_DIR}/include/AE/Core/ConvexPolyhedraDomain.h
     ${CMAKE_CURRENT_LIST_DIR}/include/AE/Core/AbstractDomain.h
     ${CMAKE_CURRENT_LIST_DIR}/include/AE/Core/Variable.h
     ${CMAKE_CURRENT_LIST_DIR}/include/AE/Core/Expression.h
     ${CMAKE_CURRENT_LIST_DIR}/include/AE/Core/NumericalDomain.h
+    ${CMAKE_CURRENT_LIST_DIR}/include/AE/Core/NumericalDomainFactory.h
+    ${CMAKE_CURRENT_LIST_DIR}/include/AE/Core/PartialRelationalDomain.h
     ${CMAKE_CURRENT_LIST_DIR}/include/AE/Core/AddressDomain.h
     ${CMAKE_CURRENT_LIST_DIR}/include/AE/Core/InitializationDomain.h
     ${CMAKE_CURRENT_LIST_DIR}/include/AE/Core/BoxAddressDomain.h
 )
 set(ABSTRACT_DOMAIN_CORE_SOURCES
+    ${CMAKE_CURRENT_LIST_DIR}/lib/AE/Core/LearnedRelationPacking.cpp
     ${CMAKE_CURRENT_LIST_DIR}/lib/AE/Core/OctagonDomain.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/lib/AE/Core/PackedRelationalDomain.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/lib/AE/Core/RelationPacking.cpp
     ${CMAKE_CURRENT_LIST_DIR}/lib/AE/Core/ConvexPolyhedraDomain.cpp
-    ${CMAKE_CURRENT_LIST_DIR}/lib/AE/Core/NumericalDomainFactory.cpp
     ${CMAKE_CURRENT_LIST_DIR}/lib/AE/Core/AbstractDomain.cpp
     ${CMAKE_CURRENT_LIST_DIR}/lib/AE/Core/AddressDomain.cpp
     ${CMAKE_CURRENT_LIST_DIR}/lib/AE/Core/InitializationDomain.cpp
     ${CMAKE_CURRENT_LIST_DIR}/lib/AE/Core/BoxAddressDomain.cpp
     ${CMAKE_CURRENT_LIST_DIR}/lib/AE/Core/Expression.cpp
     ${CMAKE_CURRENT_LIST_DIR}/lib/AE/Core/NumericalDomain.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/lib/AE/Core/NumericalDomainFactory.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/lib/AE/Core/PartialRelationalDomain.cpp
 )
 add_library(AbstractDomainCore)
 add_library(SVF::AbstractDomainCore ALIAS AbstractDomainCore)
@@ -39,6 +47,7 @@ target_include_directories(
   $<BUILD_INTERFACE:${CMAKE_CURRENT_LIST_DIR}/include>
 )
 target_link_libraries(AbstractDomainCore PUBLIC GMP::GMPXX MPFR::MPFR)
+
 set_target_properties(
   AbstractDomainCore PROPERTIES
   VERSION ${SVF_VERSION}

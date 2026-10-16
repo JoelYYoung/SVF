@@ -45,10 +45,6 @@ include(CMakePackageConfigHelpers)
 # Allow checking for IPO support by the used compiler
 include(CheckIPOSupported)
 
-# Define BUILD_TESTING consistently even when the historical Test-Suite
-# directory is absent.  AE/Core tests are registered independently below.
-include(CTest)
-
 # Since SVF builds into non-standard directories; symlink/copy compile commands into top-level directory
 if(WIN32
    OR MINGW
@@ -293,13 +289,13 @@ install(TARGETS SvfFlags EXPORT SVFTargets)
 
 # If ./Test-Suite exists, add & run the tests
 if(EXISTS "${SVF_SOURCE_DIR}/Test-Suite/CMakeLists.txt")
+  include(CTest)
   enable_testing()
   add_subdirectory(Test-Suite)
 
   # Keep the external Test-Suite compatible with this branch's AE surface.
   # Its symabs/aetest entries invoke legacy command-line self-tests for the
-  # removed IntervalState and RelationSolver surface. The supported domain and
-  # AE behavior is covered by the in-tree tests registered below.
+  # removed IntervalState and RelationSolver surface.
   configure_file(
     cmake/CTestCustom.cmake.in
     "${SVF_BINARY_DIR}/CTestCustom.cmake"
