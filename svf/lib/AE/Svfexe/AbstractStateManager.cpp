@@ -1,402 +1,849 @@
-//===- AbstractStateManager.cpp -- AE state-access implementations ---//
-//
-//                     SVF: Static Value-Flow Analysis
-//
-// Copyright (C) <2013->  <Yulei Sui>
-//
-
-// This program is free software: you can redistribute it and/or modify
-// it under the terms of the GNU Affero General Public License as published by
-// the Free Software Foundation, either version 3 of the License, or
-// (at your option) any later version.
-
-// This program is distributed in the hope that it will be useful,
-// but WITHOUT ANY WARRANTY; without even the implied warranty of
-// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-// GNU Affero General Public License for more details.
-
-// You should have received a copy of the GNU Affero General Public License
-// along with this program.  If not, see <http://www.gnu.org/licenses/>.
-//
-//===----------------------------------------------------------------------===//
-//
-// State-access bodies factored out of AbstractInterpretation.cpp /
-// SparseAbstractInterpretation.cpp.  Class declarations stay in their
-// respective headers; this file just hosts the implementations of the
-// methods that used to live on the (now-folded) AbstractStateManager —
-// trace lookup, value get/has/update, GEP / load / store helpers, and
-// def/use queries — for dense and semi-sparse.  Full-sparse stubs and
-// SVFG-backed overrides live in SparseAbstractInterpretation.cpp.
-//
+//===- AbstractStateManager.cpp -- AE domain projection helpers --------===//
 
 #include "AE/Svfexe/AbstractInterpretation.h"
-#include "AE/Svfexe/SparseAbstractInterpretation.h"
+
 #include "SVFIR/SVFIR.h"
-#include "Util/Options.h"
 
-using namespace SVF;
+#include <algorithm>
 
-// =====================================================================
-//  Dense (AbstractInterpretation) — direct trace lookup; sparse
-//  subclasses override the virtuals below.
-// =====================================================================
-
-AbstractState& AbstractInterpretation::getAbsState(const ICFGNode* node)
+namespace SVF
 {
-    if (abstractTrace.count(node) == 0)
+
+namespace AD = AbstractDomain;
+
+namespace
+{
+
+s64_t finiteEndpoint(const AD::Bound& bound, s64_t fallback)
+{
+    if (!bound.isFinite())
+        return fallback;
+    try
     {
-        assert(false && "No preAbsTrace for this node");
-        abort();
+        return bound.value().toInt64();
     }
-    return abstractTrace[node];
+    catch (const std::exception&)
+    {
+        return fallback;
+    }
 }
 
-void AbstractInterpretation::updateAbsState(const ICFGNode* node, const AbstractState& state)
+AD::Interval finiteInterval(s64_t lower, s64_t upper)
 {
-    abstractTrace[node] = state;
+    return AD::Interval::closed(AD::Rational(lower), AD::Rational(upper));
 }
 
-void AbstractInterpretation::joinStates(AbstractState& dst, const AbstractState& src)
+bool constantInterval(const ValVar* value, AD::Interval& interval)
 {
-    dst.joinWith(src);
-}
-
-bool AbstractInterpretation::hasAbsState(const ICFGNode* node)
-{
-    return abstractTrace.count(node) != 0;
-}
-
-/// Dense base: direct trace lookup, with a top sentinel for genuinely
-/// missing entries (e.g. function parameters like argc, never written
-/// before first read).  Sparse subclasses override with a def-site
-/// resolution chain.
-///
-/// The "in map" check is a raw map.count — NOT inVarToValTable /
-/// inVarToAddrsTable, which gate on isInterval / isAddr.  SVF
-/// canonically represents uninit and null-pointer shapes as
-/// (interval=bottom ∧ addrs=∅); those predicates would falsely report
-/// such an entry as "not present", and the top fallback below would
-/// then clobber the very signal NullptrDerefDetector::isUninit keys off.
-const AbstractValue& AbstractInterpretation::getAbsValue(const ValVar* var, const ICFGNode* node)
-{
-    u32_t id = var->getId();
-    AbstractState& as = abstractTrace[node];
-    if (as.getVarToVal().count(id))
-        return as[id];
-    as[id] = IntervalValue::top();
-    return as[id];
-}
-
-const AbstractValue& AbstractInterpretation::getAbsValue(const ObjVar* var, const ICFGNode* node)
-{
-    AbstractState& as = getAbsState(node);
-    u32_t addr = AbstractState::getVirtualMemAddress(var->getId());
-    return as.load(addr);
-}
-
-const AbstractValue& AbstractInterpretation::getAbsValue(const SVFVar* var, const ICFGNode* node)
-{
-    if (const ObjVar* objVar = SVFUtil::dyn_cast<ObjVar>(var))
-        return getAbsValue(objVar, node);
-    if (const ValVar* valVar = SVFUtil::dyn_cast<ValVar>(var))
-        return getAbsValue(valVar, node);
-    assert(false && "Unknown SVFVar kind");
-    abort();
-}
-
-/// Dense base: direct existence check at `node`.  Mirrors the simplified
-/// getAbsValue lookup — uses raw map.contains rather than
-/// inVar*Table predicates, which would falsely report neutral
-/// (interval=bottom ∧ addrs=∅) entries as "not present".
-bool AbstractInterpretation::hasAbsValue(const ValVar* var, const ICFGNode* node) const
-{
-    auto it = abstractTrace.find(node);
-    if (it == abstractTrace.end())
-        return false;
-    return it->second.getVarToVal().count(var->getId()) != 0;
-}
-
-bool AbstractInterpretation::hasAbsValue(const ObjVar* var, const ICFGNode* node) const
-{
-    auto it = abstractTrace.find(node);
-    if (it == abstractTrace.end())
-        return false;
-    return it->second.getLocToVal().count(var->getId()) != 0;
-}
-
-bool AbstractInterpretation::hasAbsValue(const SVFVar* var, const ICFGNode* node) const
-{
-    if (const ObjVar* objVar = SVFUtil::dyn_cast<ObjVar>(var))
-        return hasAbsValue(objVar, node);
-    if (const ValVar* valVar = SVFUtil::dyn_cast<ValVar>(var))
-        return hasAbsValue(valVar, node);
+    if (const auto* integer = SVFUtil::dyn_cast<ConstIntValVar>(value))
+    {
+        interval =
+            AD::Interval::singleton(AD::Rational(integer->getSExtValue()));
+        return true;
+    }
+    if (const auto* floating = SVFUtil::dyn_cast<ConstFPValVar>(value))
+    {
+        interval = SVFIRAdapter::floatingConstant(floating->getFPValue());
+        return true;
+    }
     return false;
 }
 
-void AbstractInterpretation::updateAbsValue(const ValVar* var, const AbstractValue& val, const ICFGNode* node)
+} // namespace
+
+const AD::AbstractDomain* AbstractInterpretation::getScalarAbstractState() const
 {
-    abstractTrace[node][var->getId()] = val;
+    return nullptr;
 }
 
-void AbstractInterpretation::updateAbsValue(const ObjVar* var, const AbstractValue& val, const ICFGNode* node)
+void AbstractInterpretation::finalizeAbstractState(const ICFGNode*) {}
+
+void AbstractInterpretation::updateInterval(const SVFVar* variable,
+        const AD::Interval& interval,
+        const ICFGNode* node)
 {
-    AbstractState& as = getAbsState(node);
-    u32_t addr = AbstractState::getVirtualMemAddress(var->getId());
-    as.store(addr, val);
+    updateValue(variable, interval, AD::AddressSet::bottom(), node);
 }
 
-void AbstractInterpretation::updateAbsValue(const SVFVar* var, const AbstractValue& val, const ICFGNode* node)
+void AbstractInterpretation::updateAddressSet(const SVFVar* variable,
+        const AD::AddressSet& addresses,
+        const ICFGNode* node)
 {
-    if (const ObjVar* objVar = SVFUtil::dyn_cast<ObjVar>(var))
-        updateAbsValue(objVar, val, node);
-    else if (const ValVar* valVar = SVFUtil::dyn_cast<ValVar>(var))
-        updateAbsValue(valVar, val, node);
-    else
-        assert(false && "Unknown SVFVar kind");
+    updateValue(variable, AD::Interval::bottom(), addresses, node);
 }
 
-void AbstractInterpretation::getAbsState(const Set<const ValVar*>& vars, AbstractState& result, const ICFGNode* node)
-{
-    AbstractState& as = getAbsState(node);
-    for (const ValVar* var : vars)
-    {
-        u32_t id = var->getId();
-        result[id] = as[id];
-    }
-}
-
-void AbstractInterpretation::getAbsState(const Set<const ObjVar*>& vars, AbstractState& result, const ICFGNode* node)
-{
-    AbstractState& as = getAbsState(node);
-    for (const ObjVar* var : vars)
-    {
-        u32_t addr = AbstractState::getVirtualMemAddress(var->getId());
-        result.store(addr, as.load(addr));
-    }
-}
-
-void AbstractInterpretation::getAbsState(const Set<const SVFVar*>& vars, AbstractState& result, const ICFGNode* node)
-{
-    AbstractState& as = getAbsState(node);
-    for (const SVFVar* var : vars)
-    {
-        if (const ValVar* valVar = SVFUtil::dyn_cast<ValVar>(var))
-        {
-            u32_t id = valVar->getId();
-            result[id] = as[id];
-        }
-        else if (const ObjVar* objVar = SVFUtil::dyn_cast<ObjVar>(var))
-        {
-            u32_t addr = AbstractState::getVirtualMemAddress(objVar->getId());
-            result.store(addr, as.load(addr));
-        }
-    }
-}
-
-IntervalValue AbstractInterpretation::getGepElementIndex(const GepStmt* gep)
+AD::Interval AbstractInterpretation::getGepElementIndex(const GepStmt* gep)
 {
     const ICFGNode* node = gep->getICFGNode();
     if (gep->isConstantOffset())
-        return IntervalValue((s64_t)gep->accumulateConstantOffset());
+        return AD::Interval::singleton(
+                   AD::Rational(static_cast<s64_t>(gep->accumulateConstantOffset())));
 
-    IntervalValue res(0);
-    for (int i = gep->getOffsetVarAndGepTypePairVec().size() - 1; i >= 0; i--)
+    AD::Interval result = AD::Interval::singleton(AD::Rational());
+    for (int index =
+                static_cast<int>(gep->getOffsetVarAndGepTypePairVec().size()) - 1;
+            index >= 0; --index)
     {
-        const ValVar* var = gep->getOffsetVarAndGepTypePairVec()[i].first;
-        const SVFType* type = gep->getOffsetVarAndGepTypePairVec()[i].second;
+        const ValVar* variable =
+            gep->getOffsetVarAndGepTypePairVec()[index].first;
+        const SVFType* type =
+            gep->getOffsetVarAndGepTypePairVec()[index].second;
 
-        s64_t idxLb, idxUb;
-        if (const ConstIntValVar* constInt = SVFUtil::dyn_cast<ConstIntValVar>(var))
-            idxLb = idxUb = constInt->getSExtValue();
+        s64_t lower = 0;
+        s64_t upper = 0;
+        if (const auto* integer = SVFUtil::dyn_cast<ConstIntValVar>(variable))
+        {
+            lower = upper = integer->getSExtValue();
+        }
         else
         {
-            IntervalValue idxItv = getAbsValue(var, node).getInterval();
-            if (idxItv.isBottom())
-                idxLb = idxUb = 0;
-            else
+            const AD::Interval value = getInterval(variable, node);
+            // Original treats an uninitialized index as zero, not as an
+            // unknown range spanning every field. Keep this AE policy apart
+            // from the domain's Top/Bottom and finite-endpoint semantics.
+            if (!value.isBottom())
             {
-                idxLb = idxItv.lb().getIntNumeral();
-                idxUb = idxItv.ub().getIntNumeral();
+                lower = finiteEndpoint(value.lower(), 0);
+                upper = finiteEndpoint(value.upper(), Options::MaxFieldLimit());
             }
         }
 
         if (SVFUtil::isa<SVFPointerType>(type))
         {
-            u32_t elemNum = gep->getAccessPath().getElementNum(gep->getAccessPath().gepSrcPointeeType());
-            idxLb = (double)Options::MaxFieldLimit() / elemNum < idxLb ? Options::MaxFieldLimit() : idxLb * elemNum;
-            idxUb = (double)Options::MaxFieldLimit() / elemNum < idxUb ? Options::MaxFieldLimit() : idxUb * elemNum;
+            const u32_t elements = gep->getAccessPath().getElementNum(
+                                       gep->getAccessPath().gepSrcPointeeType());
+            lower = (double)Options::MaxFieldLimit() / elements < lower
+                    ? Options::MaxFieldLimit()
+                    : lower * elements;
+            upper = (double)Options::MaxFieldLimit() / elements < upper
+                    ? Options::MaxFieldLimit()
+                    : upper * elements;
+        }
+        else if (Options::ModelArrays())
+        {
+            const std::vector<u32_t>& flattened =
+                PAG::getPAG()->getTypeInfo(type)->getFlattenedElemIdxVec();
+            if (flattened.empty() ||
+                    upper >= static_cast<APOffset>(flattened.size()) || lower < 0)
+            {
+                lower = upper = 0;
+            }
+            else
+            {
+                lower = PAG::getPAG()->getFlattenedElemIdx(type, lower);
+                upper = PAG::getPAG()->getFlattenedElemIdx(type, upper);
+            }
         }
         else
         {
-            if (Options::ModelArrays())
-            {
-                const std::vector<u32_t>& so = PAG::getPAG()->getTypeInfo(type)->getFlattenedElemIdxVec();
-                if (so.empty() || idxUb >= (APOffset)so.size() || idxLb < 0)
-                    idxLb = idxUb = 0;
-                else
-                {
-                    idxLb = PAG::getPAG()->getFlattenedElemIdx(type, idxLb);
-                    idxUb = PAG::getPAG()->getFlattenedElemIdx(type, idxUb);
-                }
-            }
-            else
-                idxLb = idxUb = 0;
+            lower = upper = 0;
         }
-        res = res + IntervalValue(idxLb, idxUb);
+        result = AD::add(result, finiteInterval(lower, upper));
     }
-    res.meet_with(IntervalValue((s64_t)0, (s64_t)Options::MaxFieldLimit()));
-    if (res.isBottom())
-        res = IntervalValue(0);
-    return res;
+    result.meetWith(
+        finiteInterval(0, static_cast<s64_t>(Options::MaxFieldLimit())));
+    return result.isBottom() ? AD::Interval::singleton(AD::Rational()) : result;
 }
 
-IntervalValue AbstractInterpretation::getGepByteOffset(const GepStmt* gep)
+AD::Interval AbstractInterpretation::getGepByteOffset(const GepStmt* gep)
 {
     const ICFGNode* node = gep->getICFGNode();
     if (gep->isConstantOffset())
-        return IntervalValue((s64_t)gep->accumulateConstantByteOffset());
+        return AD::Interval::singleton(AD::Rational(
+                                           static_cast<s64_t>(gep->accumulateConstantByteOffset())));
 
-    IntervalValue res(0);
-    for (int i = gep->getOffsetVarAndGepTypePairVec().size() - 1; i >= 0; i--)
+    AD::Interval result = AD::Interval::singleton(AD::Rational());
+    for (int index =
+                static_cast<int>(gep->getOffsetVarAndGepTypePairVec().size()) - 1;
+            index >= 0; --index)
     {
-        const ValVar* idxOperandVar = gep->getOffsetVarAndGepTypePairVec()[i].first;
-        const SVFType* idxOperandType = gep->getOffsetVarAndGepTypePairVec()[i].second;
+        const ValVar* variable =
+            gep->getOffsetVarAndGepTypePairVec()[index].first;
+        const SVFType* type =
+            gep->getOffsetVarAndGepTypePairVec()[index].second;
 
-        if (SVFUtil::isa<SVFArrayType>(idxOperandType) || SVFUtil::isa<SVFPointerType>(idxOperandType))
+        if (SVFUtil::isa<SVFArrayType>(type) ||
+                SVFUtil::isa<SVFPointerType>(type))
         {
-            u32_t elemByteSize = 1;
-            if (const SVFArrayType* arrOperandType = SVFUtil::dyn_cast<SVFArrayType>(idxOperandType))
-                elemByteSize = arrOperandType->getTypeOfElement()->getByteSize();
-            else if (SVFUtil::isa<SVFPointerType>(idxOperandType))
-                elemByteSize = gep->getAccessPath().gepSrcPointeeType()->getByteSize();
-            else
-                assert(false && "idxOperandType must be ArrType or PtrType");
-
-            if (const ConstIntValVar* op = SVFUtil::dyn_cast<ConstIntValVar>(idxOperandVar))
-            {
-                s64_t lb = (double)Options::MaxFieldLimit() / elemByteSize >= op->getSExtValue()
-                           ? op->getSExtValue() * elemByteSize
-                           : Options::MaxFieldLimit();
-                res = res + IntervalValue(lb, lb);
-            }
-            else
-            {
-                IntervalValue idxVal = getAbsValue(idxOperandVar, node).getInterval();
-                if (idxVal.isBottom())
-                    res = res + IntervalValue(0, 0);
-                else
-                {
-                    s64_t ub = (idxVal.ub().getIntNumeral() < 0) ? 0
-                               : (double)Options::MaxFieldLimit() / elemByteSize >= idxVal.ub().getIntNumeral()
-                               ? elemByteSize * idxVal.ub().getIntNumeral()
-                               : Options::MaxFieldLimit();
-                    s64_t lb = (idxVal.lb().getIntNumeral() < 0) ? 0
-                               : (double)Options::MaxFieldLimit() / elemByteSize >= idxVal.lb().getIntNumeral()
-                               ? elemByteSize * idxVal.lb().getIntNumeral()
-                               : Options::MaxFieldLimit();
-                    res = res + IntervalValue(lb, ub);
-                }
-            }
-        }
-        else if (const SVFStructType* structOperandType = SVFUtil::dyn_cast<SVFStructType>(idxOperandType))
-        {
-            res = res + IntervalValue(gep->getAccessPath().getStructFieldOffset(idxOperandVar, structOperandType));
-        }
-        else
-        {
-            assert(false && "gep type pair only support arr/ptr/struct");
-        }
-    }
-    return res;
-}
-
-AddressValue AbstractInterpretation::getGepObjAddrs(const ValVar* pointer, IntervalValue offset)
-{
-    const ICFGNode* node = pointer->getICFGNode();
-    AddressValue gepAddrs;
-    AbstractState& as = getAbsState(node);
-    APOffset lb = offset.lb().getIntNumeral() < Options::MaxFieldLimit() ? offset.lb().getIntNumeral()
-                  : Options::MaxFieldLimit();
-    APOffset ub = offset.ub().getIntNumeral() < Options::MaxFieldLimit() ? offset.ub().getIntNumeral()
-                  : Options::MaxFieldLimit();
-    for (APOffset i = lb; i <= ub; i++)
-    {
-        const AbstractValue& addrs = getAbsValue(pointer, node);
-        for (const auto& addr : addrs.getAddrs())
-        {
-            s64_t baseObj = as.getIDFromAddr(addr);
-            assert(SVFUtil::isa<ObjVar>(svfir->getSVFVar(baseObj)) && "Fail to get the base object address!");
-            NodeID gepObj = svfir->getGepObjVar(baseObj, i);
-            as[gepObj] = AddressValue(AbstractState::getVirtualMemAddress(gepObj));
-            gepAddrs.insert(AbstractState::getVirtualMemAddress(gepObj));
-        }
-    }
-    return gepAddrs;
-}
-
-AbstractValue AbstractInterpretation::loadValue(const ValVar* pointer, const ICFGNode* node)
-{
-    const AbstractValue& ptrVal = getAbsValue(pointer, node);
-    AbstractState& as = getAbsState(node);
-    AbstractValue res;
-    for (auto addr : ptrVal.getAddrs())
-    {
-        res.join_with(
-            getAbsValue(svfir->getSVFVar(as.getIDFromAddr(addr)), node));
-    }
-    return res;
-}
-
-void AbstractInterpretation::storeValue(const ValVar* pointer, const AbstractValue& val, const ICFGNode* node)
-{
-    const AbstractValue& ptrVal = getAbsValue(pointer, node);
-    AbstractState& as = getAbsState(node);
-    for (auto addr : ptrVal.getAddrs())
-        updateAbsValue(svfir->getSVFVar(as.getIDFromAddr(addr)), val, node);
-}
-
-const SVFType* AbstractInterpretation::getPointeeElement(const ObjVar* var, const ICFGNode* node)
-{
-    const AbstractValue& ptrVal = getAbsValue(var, node);
-    if (!ptrVal.isAddr())
-        return nullptr;
-    for (auto addr : ptrVal.getAddrs())
-    {
-        NodeID objId = getAbsState(node).getIDFromAddr(addr);
-        if (objId == 0)
-            continue;
-        return svfir->getBaseObject(objId)->getType();
-    }
-    return nullptr;
-}
-
-u32_t AbstractInterpretation::getAllocaInstByteSize(const AddrStmt* addr)
-{
-    const ICFGNode* node = addr->getICFGNode();
-    if (const ObjVar* objvar = SVFUtil::dyn_cast<ObjVar>(addr->getRHSVar()))
-    {
-        if (svfir->getBaseObject(objvar->getId())->isConstantByteSize())
-        {
-            return svfir->getBaseObject(objvar->getId())->getByteSizeOfObj();
-        }
-        else
-        {
-            const std::vector<SVFVar*>& sizes = addr->getArrSize();
             u32_t elementSize = 1;
-            u64_t res = elementSize;
-            for (const SVFVar* value : sizes)
+            if (const auto* array = SVFUtil::dyn_cast<SVFArrayType>(type))
+                elementSize = array->getTypeOfElement()->getByteSize();
+            else
+                elementSize =
+                    gep->getAccessPath().gepSrcPointeeType()->getByteSize();
+
+            s64_t lower = 0;
+            s64_t upper = 0;
+            if (const auto* integer =
+                        SVFUtil::dyn_cast<ConstIntValVar>(variable))
             {
-                const AbstractValue& sizeVal = getAbsValue(value, node);
-                IntervalValue itv = sizeVal.getInterval();
-                if (itv.isBottom())
-                    itv = IntervalValue(Options::MaxFieldLimit());
-                res = res * itv.ub().getIntNumeral() > Options::MaxFieldLimit()
-                      ? Options::MaxFieldLimit() : res * itv.ub().getIntNumeral();
+                lower = upper = integer->getSExtValue();
             }
-            return (u32_t)res;
+            else
+            {
+                const AD::Interval value = getInterval(variable, node);
+                lower = finiteEndpoint(value.lower(), 0);
+                upper = finiteEndpoint(value.upper(),
+                                       Options::MaxFieldLimit());
+            }
+            lower = std::max<s64_t>(0, lower);
+            upper = std::max<s64_t>(0, upper);
+            lower = (double)Options::MaxFieldLimit() / elementSize >= lower
+                    ? lower * elementSize
+                    : Options::MaxFieldLimit();
+            upper = (double)Options::MaxFieldLimit() / elementSize >= upper
+                    ? upper * elementSize
+                    : Options::MaxFieldLimit();
+            result = AD::add(result, finiteInterval(lower, upper));
+        }
+        else if (const auto* structure = SVFUtil::dyn_cast<SVFStructType>(type))
+        {
+            const s64_t offset =
+                gep->getAccessPath().getStructFieldOffset(variable, structure);
+            result =
+                AD::add(result, AD::Interval::singleton(AD::Rational(offset)));
+        }
+        else
+        {
+            throw std::invalid_argument(
+                "GEP type pair must be array, pointer, or structure");
         }
     }
-    assert(false && "Addr rhs value is not ObjVar");
-    abort();
+    return result;
 }
 
+AD::AddressSet AbstractInterpretation::getGepObjAddrs(
+    const ValVar* pointer, const AD::Interval& offset, const ICFGNode* node)
+{
+    const AD::AddressSet bases = getAddressSet(pointer, node);
+    if (offset.isBottom())
+        return AD::AddressSet::bottom();
+
+    // Empty is AE's no-target policy, not an unknown pointer. Flow-insensitive
+    // points-to information must not resurrect targets killed by a later write.
+    if (bases.isBottom())
+        return AD::AddressSet::bottom();
+
+    AD::AddressSet result = bases.hasUnknownObject()
+                            ? AD::AddressSet::objectTop()
+                            : AD::AddressSet::bottom();
+    if (bases.mayContainRawAddress())
+        result.joinWith(AD::AddressSet::rawTop());
+    if (bases.hasUnknownObject())
+        return result;
+
+    auto integerEndpoint = [](const AD::Bound& bound,
+                              bool lower) -> std::optional<APOffset>
+    {
+        if (!bound.isFinite())
+        return std::nullopt;
+        const AD::Rational integer =
+        lower ? (bound.isStrict() ? bound.value().floor() + AD::Rational(1)
+        : bound.value().ceil())
+        : (bound.isStrict() ? bound.value().ceil() - AD::Rational(1)
+        : bound.value().floor());
+        try
+        {
+            return integer.toInt64();
+            }
+            catch (const std::exception&)
+            {
+                return std::nullopt;
+            }
+    };
+
+    std::optional<APOffset> lower = integerEndpoint(offset.lower(), true);
+    std::optional<APOffset> upper = integerEndpoint(offset.upper(), false);
+    if (lower && upper && *lower > *upper)
+        return AD::AddressSet::bottom();
+
+    // A finite narrow range must retain its signed offsets: negative GEPs are
+    // common in C++ vtable and subobject adjustment. SVFIR canonicalizes each
+    // signed offset modulo the base object's field limit. For an unbounded or
+    // wider range, enumerating one complete global field window covers every
+    // possible canonical field without an unbounded loop.
+    bool enumerateFieldUniverse = !lower || !upper;
+    if (!enumerateFieldUniverse)
+    {
+        enumerateFieldUniverse =
+            AD::Rational(*upper) - AD::Rational(*lower) >
+            AD::Rational(static_cast<s64_t>(Options::MaxFieldLimit()));
+    }
+    if (enumerateFieldUniverse)
+    {
+        lower = 0;
+        upper = static_cast<APOffset>(Options::MaxFieldLimit());
+    }
+
+    for (APOffset index = *lower;; ++index)
+    {
+        for (AD::Location base : bases)
+        {
+            if (base.isNull())
+                continue;
+            const ObjVar* object = objectAt(base);
+            if (!object)
+                continue;
+            const NodeID gepObject =
+                svfir->getGepObjVar(object->getId(), index);
+            const auto* gepVariable =
+                SVFUtil::dyn_cast<ObjVar>(svfir->getSVFVar(gepObject));
+            if (gepVariable)
+                result.insert(locationOf(gepVariable));
+        }
+        if (index == *upper)
+            break;
+    }
+    return result;
+}
+
+u32_t AbstractInterpretation::getAllocaInstByteSize(const AddrStmt* address)
+{
+    const ICFGNode* node = address->getICFGNode();
+    const auto* object = SVFUtil::dyn_cast<ObjVar>(address->getRHSVar());
+    if (!object)
+        throw std::invalid_argument("Addr rhs value is not ObjVar");
+    const BaseObjVar* base = svfir->getBaseObject(object->getId());
+    if (!base)
+        return Options::MaxFieldLimit();
+    if (base->isConstantByteSize())
+        return base->getByteSizeOfObj();
+
+    u64_t result = 1;
+    for (const SVFVar* value : address->getArrSize())
+    {
+        const AD::Interval size = getInterval(value, node);
+        const u64_t upper = static_cast<u64_t>(std::clamp<s64_t>(
+                finiteEndpoint(size.upper(), Options::MaxFieldLimit()), 0,
+                Options::MaxFieldLimit()));
+        result = upper != 0 && result > Options::MaxFieldLimit() / upper
+                 ? Options::MaxFieldLimit()
+                 : result * upper;
+    }
+    return static_cast<u32_t>(result);
+}
+
+const AbstractDomain::AbstractDomain& AbstractInterpretation::
+getAbstractState(const ICFGNode* node) const
+{
+    return state(node);
+}
+
+bool AbstractInterpretation::hasAbsState(const ICFGNode* node) const
+{
+    return stateTrace_.count(node) != 0;
+}
+
+AD::Location AbstractInterpretation::locationOf(const ObjVar* object) const
+{
+    return object ? adapter_.location(*object) : AD::Location::null();
+}
+
+const ObjVar* AbstractInterpretation::objectAt(AD::Location location) const
+{
+    return location.isNull() ? nullptr : &adapter_.object(location);
+}
+
+AbstractInterpretation::State AbstractInterpretation::topState()
+const
+{
+    return State(AD::BoxDomain::top(), adapter_.memoryLayout(), true);
+}
+
+AbstractInterpretation::State AbstractInterpretation::
+bottomState() const
+{
+    return State(AD::BoxDomain::bottom(), adapter_.memoryLayout(), true);
+}
+
+AbstractInterpretation::State& AbstractInterpretation::
+ensureState(const ICFGNode* node)
+{
+    auto iterator = stateTrace_.find(node);
+    if (iterator == stateTrace_.end())
+        iterator = stateTrace_.emplace(node, topState()).first;
+    return iterator->second;
+}
+
+const AbstractInterpretation::State& AbstractInterpretation::
+state(const ICFGNode* node) const
+{
+    const auto iterator = stateTrace_.find(node);
+    if (iterator == stateTrace_.end())
+        throw std::out_of_range("no dense abstract state for ICFG node");
+    return iterator->second;
+}
+
+void AbstractInterpretation::resetAbstractState(const ICFGNode* node)
+{
+    stateTrace_.insert_or_assign(node, topState());
+}
+
+void AbstractInterpretation::copyAbstractState(const ICFGNode* source,
+        const ICFGNode* destination)
+{
+    stateTrace_.insert_or_assign(destination, state(source));
+}
+
+std::unique_ptr<AbstractDomain::AbstractDomain> AbstractInterpretation::
+cloneAbstractState(const ICFGNode* node) const
+{
+    return state(node).clone();
+}
+
+bool AbstractInterpretation::isAbstractStateEquivalent(
+    const ICFGNode* node, const AbstractDomain::AbstractDomain& snapshot) const
+{
+    return state(node).isEquivalentTo(snapshot) ==
+           AbstractDomain::CheckResult::True;
+}
+
+void AbstractInterpretation::assignInterval(State& denseState,
+        AD::Variable variable,
+        const AD::Interval& interval)
+{
+    denseState.setInterval(variable, interval);
+}
+
+void AbstractInterpretation::constrainInterval(
+    State& denseState, AD::Variable variable, const AD::Interval& interval)
+{
+    if (interval.isBottom())
+        return;
+
+    // Constraints refine an initialized observation. Keep Top observations
+    // defined even when they need no Box payload slot.
+    if (denseState.interval(variable).isBottom())
+        denseState.setInterval(variable, AD::Interval::top());
+
+    AD::LinearConstraintSet constraints;
+    AD::LinearExpression expression(variable);
+    if (interval.lower().isFinite())
+    {
+        constraints.emplace_back(
+            expression - AD::LinearExpression(interval.lower().value()),
+            interval.lower().isStrict() ? AD::ConstraintKind::GreaterThan
+            : AD::ConstraintKind::GreaterEqual);
+    }
+    if (interval.upper().isFinite())
+    {
+        constraints.emplace_back(
+            expression - AD::LinearExpression(interval.upper().value()),
+            interval.upper().isStrict() ? AD::ConstraintKind::LessThan
+            : AD::ConstraintKind::LessEqual);
+    }
+    denseState.numerical().assumeAll(constraints);
+}
+
+void AbstractInterpretation::assignValue(State& denseState,
+        AD::Variable variable,
+        const AD::Interval& interval,
+        const AD::AddressSet& addresses)
+{
+    // SVF's synthetic extractvalue/extractelement edges can give even an
+    // integer-typed SSA value an address facet. Preserve both facets through
+    // assignment and a later store, just as for pointer-typed unknown values.
+    assignInterval(denseState, variable, interval);
+    denseState.setAddressSet(variable, addresses);
+}
+
+void AbstractInterpretation::assignMemoryValue(
+    State& denseState, AD::Variable content,
+    const AD::Interval& interval, const AD::AddressSet& addresses)
+{
+    assignInterval(denseState, content, interval);
+    denseState.setAddressSet(content, addresses);
+}
+
+AD::Variable AbstractInterpretation::memoryVariable(
+    const ObjVar& object, const State& denseState) const
+{
+    // Original's getIDFromAddr redirects freed-object accesses to its
+    // BlackHole memory cell. This is an interpreter policy, not Address Top.
+    if (denseState.lifetimes().mayBeFreed(adapter_.location(object)))
+        return adapter_.contentVariable(*SVFUtil::cast<ObjVar>(
+                                            svfir->getGNode(svfir->getBlackHoleNode())));
+    return adapter_.contentVariable(object);
+}
+
+void AbstractInterpretation::materializeValue(State&, const ValVar*,
+        const ICFGNode*)
+{
+}
+
+void AbstractInterpretation::forgetValue(State& denseState,
+        AD::Variable variable) const
+{
+    denseState.resetValue(variable);
+}
+
+AD::Interval AbstractInterpretation::getInterval(const ValVar* var,
+        const ICFGNode* node)
+{
+    const AD::Interval result = getDefinedInterval(var, node);
+    if (!var || !adapter_.contains(*var))
+        return result;
+    const State& denseState = ensureState(node);
+    return denseState.numericalMayBeUninitialized(adapter_.variable(*var))
+           ? AD::Interval::top() : result;
+}
+
+AD::Interval AbstractInterpretation::getDefinedInterval(const ValVar* var,
+        const ICFGNode* node)
+{
+    AD::Interval constant;
+    if (constantInterval(var, constant))
+        return constant;
+    // SVFIR also uses its canonical unknown pointer as the numeric source of
+    // nondeterministic external-input stores (STORE_TOP annotations).
+    if (var->getId() == svfir->getBlkPtr() ||
+            SVFUtil::isa<BlackHoleValVar>(var))
+        return AD::Interval::top();
+    if (!adapter_.contains(*var))
+        return AD::Interval::top();
+
+    const State& denseState = ensureState(node);
+    const AD::Variable variable = adapter_.variable(*var);
+    // Global initializers can refer to a function/global before its AddrStmt.
+    // This is an unresolved symbolic value, not an uninitialized memory load.
+    if ((SVFUtil::isa<FunValVar>(var) || SVFUtil::isa<GlobalValVar>(var)) &&
+            !denseState.hasValue(variable))
+        return AD::Interval::top();
+    return denseState.interval(variable);
+}
+
+AD::Interval AbstractInterpretation::getInterval(const ObjVar* var,
+        const ICFGNode* node)
+{
+    const State& denseState = ensureState(node);
+    const AD::Variable content = memoryVariable(*var, denseState);
+    return denseState.interval(content);
+}
+
+AD::Interval AbstractInterpretation::getInterval(const SVFVar* var,
+        const ICFGNode* node)
+{
+    if (const auto* object = SVFUtil::dyn_cast<ObjVar>(var))
+        return getInterval(object, node);
+    if (const auto* value = SVFUtil::dyn_cast<ValVar>(var))
+        return getInterval(value, node);
+    throw std::invalid_argument("unsupported SVF variable kind");
+}
+
+AD::AddressSet AbstractInterpretation::getAddressSet(const ValVar* var,
+        const ICFGNode* node)
+{
+    if (var->getId() == IRGraph::NullPtr ||
+            SVFUtil::isa<ConstNullPtrValVar>(var))
+        return AD::AddressSet::singleton(AD::Location::null());
+    if (var->getId() == svfir->getBlkPtr() ||
+            SVFUtil::isa<BlackHoleValVar>(var))
+        return blackHoleAddressSet();
+    if (!adapter_.contains(*var))
+        return AD::AddressSet::bottom();
+    const State& denseState = ensureState(node);
+    const AD::Variable variable = adapter_.variable(*var);
+    return denseState.addressSet(variable);
+}
+
+AD::AddressSet AbstractInterpretation::getAddressSet(const ObjVar* var,
+        const ICFGNode* node)
+{
+    const State& denseState = ensureState(node);
+    const AD::Variable content = memoryVariable(*var, denseState);
+    return denseState.addressSet(content);
+}
+
+AD::AddressSet AbstractInterpretation::getAddressSet(const SVFVar* var,
+        const ICFGNode* node)
+{
+    if (const auto* object = SVFUtil::dyn_cast<ObjVar>(var))
+        return getAddressSet(object, node);
+    if (const auto* value = SVFUtil::dyn_cast<ValVar>(var))
+        return getAddressSet(value, node);
+    throw std::invalid_argument("unsupported SVF variable kind");
+}
+
+bool AbstractInterpretation::hasAbsValue(const ValVar* var,
+        const ICFGNode* node) const
+{
+    if (SVFUtil::isa<ConstIntValVar>(var) ||
+            SVFUtil::isa<ConstFPValVar>(var))
+        return true;
+    return stateTrace_.count(node) != 0 && adapter_.contains(*var);
+}
+
+bool AbstractInterpretation::hasAbsValue(const ObjVar* var,
+        const ICFGNode* node) const
+{
+    const auto stateIterator = stateTrace_.find(node);
+    if (stateIterator == stateTrace_.end())
+        return false;
+    // Defined Top is a real incoming definition even without a payload slot.
+    // Inspect both guards because aggregate cells can carry either facet.
+    const AD::Variable content = adapter_.contentVariable(*var);
+    return stateIterator->second.hasValue(content);
+}
+
+bool AbstractInterpretation::hasAbsValue(const SVFVar* var,
+        const ICFGNode* node) const
+{
+    if (const auto* object = SVFUtil::dyn_cast<ObjVar>(var))
+        return hasAbsValue(object, node);
+    if (const auto* value = SVFUtil::dyn_cast<ValVar>(var))
+        return hasAbsValue(value, node);
+    return false;
+}
+
+void AbstractInterpretation::updateValue(const ValVar* var,
+        const AD::Interval& interval,
+        const AD::AddressSet& addresses,
+        const ICFGNode* node)
+{
+    if (adapter_.contains(*var))
+        assignValue(ensureState(node), adapter_.variable(*var), interval,
+                    addresses);
+}
+
+void AbstractInterpretation::addUninitializedNumericalAlternative(
+    const ValVar* var, const ICFGNode* node)
+{
+    if (var && adapter_.contains(*var))
+        ensureState(node).addUninitializedNumericalAlternative(
+            adapter_.variable(*var));
+}
+
+void AbstractInterpretation::updateValue(const ObjVar* var,
+        const AD::Interval& interval,
+        const AD::AddressSet& addresses,
+        const ICFGNode* node)
+{
+    State& denseState = ensureState(node);
+    assignMemoryValue(denseState, memoryVariable(*var, denseState), interval,
+                      addresses);
+}
+
+AD::Interval AbstractInterpretation::getMemoryInterval(
+    AD::Location location, const ICFGNode* node)
+{
+    if (location.isNull())
+        return AD::Interval::bottom();
+    return getInterval(&adapter_.object(location), node);
+}
+
+AD::AddressSet AbstractInterpretation::getMemoryAddressSet(
+    AD::Location location, const ICFGNode* node)
+{
+    if (location.isNull())
+        return AD::AddressSet::bottom();
+    return getAddressSet(&adapter_.object(location), node);
+}
+
+bool AbstractInterpretation::hasMemoryValue(AD::Location location,
+        const ICFGNode* node) const
+{
+    return !location.isNull() && hasAbsValue(&adapter_.object(location), node);
+}
+
+void AbstractInterpretation::updateMemoryValue(
+    AD::Location location, const AD::Interval& interval,
+    const AD::AddressSet& addresses, const ICFGNode* node)
+{
+    if (!location.isNull())
+        updateValue(&adapter_.object(location), interval, addresses, node);
+}
+
+void AbstractInterpretation::markFreedMemory(AD::Location location,
+        const ICFGNode* node)
+{
+    if (!location.isNull())
+        ensureState(node).lifetimes().release(location);
+}
+
+bool AbstractInterpretation::isFreedMemory(AD::Location location,
+        const ICFGNode* node) const
+{
+    if (stateTrace_.count(node) == 0 || location.isNull())
+        return false;
+    return state(node).lifetimes().mayBeFreed(location);
+}
+
+void AbstractInterpretation::updateValue(const SVFVar* var,
+        const AD::Interval& interval,
+        const AD::AddressSet& addresses,
+        const ICFGNode* node)
+{
+    if (const auto* object = SVFUtil::dyn_cast<ObjVar>(var))
+        updateValue(object, interval, addresses, node);
+    else if (const auto* scalar = SVFUtil::dyn_cast<ValVar>(var))
+        updateValue(scalar, interval, addresses, node);
+    else
+        throw std::invalid_argument("unsupported SVF variable kind");
+}
+
+
+void AbstractInterpretation::loadValue(const ValVar* pointer,
+                                       AD::Interval& interval,
+                                       AD::AddressSet& addresses,
+                                       bool& numericalMayBeUninitialized,
+                                       const ICFGNode* node)
+{
+    numericalMayBeUninitialized = false;
+    if (!adapter_.contains(*pointer))
+    {
+        interval = AD::Interval::bottom();
+        addresses = AD::AddressSet::bottom();
+        const AD::AddressSet pointees = getAddressSet(pointer, node);
+        if (pointees.hasUnknownObject())
+        {
+            if (unknownTargetTelemetryEnabled_)
+                ++unknownTargetTelemetry_.loads;
+            interval = AD::Interval::top();
+            addresses = AD::AddressSet::top();
+            return;
+        }
+        for (AD::Location location : pointees)
+        {
+            interval.joinWith(getMemoryInterval(location, node));
+            addresses.joinWith(getMemoryAddressSet(location, node));
+        }
+        return;
+    }
+    State& denseState = ensureState(node);
+    materializeValue(denseState, pointer, node);
+    const AD::AddressSet pointees = getAddressSet(pointer, node);
+    if (pointees.hasUnknownObject())
+    {
+        if (unknownTargetTelemetryEnabled_)
+            ++unknownTargetTelemetry_.loads;
+        interval = AD::Interval::top();
+        addresses = AD::AddressSet::top();
+        return;
+    }
+
+    interval = AD::Interval::bottom();
+    addresses = AD::AddressSet::bottom();
+    for (AD::Location location : pointees.locations())
+    {
+        // getInterval/getAddressSet implement Original's freed-cell routing;
+        // lifetime alone must not inject Top into value propagation.
+        if (denseState.memoryLayout().contains(location))
+        {
+            const ObjVar* object = objectAt(location);
+            if (!object)
+                continue;
+            const AD::Variable content = memoryVariable(*object, denseState);
+            numericalMayBeUninitialized |=
+                denseState.numericalMayBeUninitialized(content);
+            interval.joinWith(denseState.interval(content));
+            addresses.joinWith(denseState.addressSet(content));
+        }
+    }
+}
+
+void AbstractInterpretation::storeValue(const ValVar* pointer,
+                                        const AD::Interval& interval,
+                                        const AD::AddressSet& addresses,
+                                        const ICFGNode* node)
+{
+    if (!adapter_.contains(*pointer))
+    {
+        const AD::AddressSet pointees = getAddressSet(pointer, node);
+        if (pointees.hasUnknownObject() && unknownTargetTelemetryEnabled_)
+            ++unknownTargetTelemetry_.stores;
+        if (!pointees.hasUnknownObject())
+        {
+            for (AD::Location location : pointees)
+                updateMemoryValue(location, interval, addresses, node);
+        }
+        return;
+    }
+    State& denseState = ensureState(node);
+    materializeValue(denseState, pointer, node);
+    const AD::AddressSet pointees = getAddressSet(pointer, node);
+    auto write = [&](AD::Location location)
+    {
+        if (!denseState.memoryLayout().contains(location))
+            return;
+        const ObjVar* object = objectAt(location);
+        if (!object)
+            return;
+        const AD::Variable content = memoryVariable(*object, denseState);
+        // Original AE overwrites each enumerated target. This is an
+        // interpreter precision policy, not the domain's weak-store semantics.
+        if (!pointees.hasUnknownObject())
+        {
+            assignMemoryValue(denseState, content, interval, addresses);
+            return;
+        }
+        AD::Interval joinedInterval = getInterval(object, node);
+        AD::AddressSet joinedAddresses = getAddressSet(object, node);
+        joinedInterval.joinWith(interval);
+        joinedAddresses.joinWith(addresses);
+        assignMemoryValue(denseState, content, joinedInterval,
+                          joinedAddresses);
+    };
+
+    if (pointees.hasUnknownObject())
+    {
+        if (unknownTargetTelemetryEnabled_)
+            ++unknownTargetTelemetry_.stores;
+        for (const auto& [location, content] :
+                denseState.memoryLayout().cells())
+        {
+            if (unknownTargetTelemetryEnabled_)
+                ++unknownTargetTelemetry_.storeCellsVisited;
+            (void)content;
+            write(location);
+        }
+    }
+    else
+    {
+        for (AD::Location location : pointees.locations())
+            write(location);
+    }
+}
+
+
+void AbstractInterpretation::assumeBranch(const IntraCFGEdge* edge,
+        State& denseState)
+{
+    const SVFVar* condition = edge->getCondition();
+    if (!condition || condition->getInEdges().empty())
+        return;
+    const auto* comparison =
+        SVFUtil::dyn_cast<CmpStmt>(*condition->getInEdges().begin());
+    if (!comparison)
+    {
+        const auto* value = SVFUtil::dyn_cast<ValVar>(condition);
+        if (!value || !adapter_.contains(*value))
+            return;
+        materializeValue(denseState, value, edge->getSrcNode());
+        denseState.assume(AD::equal(
+                              AD::LinearExpression(adapter_.variable(*value)),
+                              AD::LinearExpression(AD::Rational(edge->getSuccessorCondValue()))));
+        return;
+    }
+
+    // Original checks only the Boolean result for feasibility. It neither
+    // refines the comparison's SSA operands nor stores a branch-local Boolean
+    // fact. Memory refinement is handled by collectBranchRefinement instead.
+    AD::Interval result = getInterval(comparison->getRes(), edge->getSrcNode());
+    if (result.isBottom())
+        return;
+    result.meetWith(AD::Interval::singleton(
+                        AD::Rational(edge->getSuccessorCondValue())));
+    if (result.isBottom())
+        denseState = bottomState();
+}
+
+
+bool AbstractInterpretation::isBranchEdgeFeasibleAt(
+    const IntraCFGEdge* edge, const ICFGNode* predecessor)
+{
+    State candidate = state(predecessor);
+    assumeBranch(edge, candidate);
+    return !candidate.isBottom();
+}
+
+} // namespace SVF

@@ -1,178 +1,185 @@
-//===- SparseAbstractInterpretation.h -- Sparse Abstract Execution------//
+//===- SparseAbstractInterpretation.h -- Sparse box/address AE -*- C++ -*-===//
 //
 //                     SVF: Static Value-Flow Analysis
 //
 // Copyright (C) <2013->  <Yulei Sui>
 //
-
 // This program is free software: you can redistribute it and/or modify
 // it under the terms of the GNU Affero General Public License as published by
 // the Free Software Foundation, either version 3 of the License, or
 // (at your option) any later version.
-
+//
 // This program is distributed in the hope that it will be useful,
 // but WITHOUT ANY WARRANTY; without even the implied warranty of
-// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
 // GNU Affero General Public License for more details.
-
-// You should have received a copy of the GNU Affero General Public License
-// along with this program.  If not, see <http://www.gnu.org/licenses/>.
 //
-//===---------------------------------------------------------------------===//
+// You should have received a copy of the GNU Affero General Public License
+// along with this program. If not, see <http://www.gnu.org/licenses/>.
+//
+// Contributors: Xiao Cheng, Jiawei Wang
+//
+//===----------------------------------------------------------------------===//
 
-#ifndef INCLUDE_AE_SVFEXE_SPARSEABSTRACTINTERPRETATION_H_
-#define INCLUDE_AE_SVFEXE_SPARSEABSTRACTINTERPRETATION_H_
+#ifndef SVF_AE_SPARSE_ABSTRACT_INTERPRETATION_H
+#define SVF_AE_SPARSE_ABSTRACT_INTERPRETATION_H
 
 #include <memory>
+#include <optional>
+#include <set>
 
 #include "AE/Svfexe/AbstractInterpretation.h"
-#include "MSSA/SVFGBuilder.h"
 
 namespace SVF
 {
 
-class SVFG;
-class SVFGBuilder;
 class IndirectSVFGEdge;
+class SVFGBuilder;
 class VFGNode;
 
-/// Abstract Interpretation for `Options::AESparsity::SemiSparse`.
-///
-/// ValVars live at their SVFG-style def-sites: reads pull from there,
-/// writes go there, state merges replace only the ObjVar map and skip
-/// the ValVar map, and the cycle helpers gather/scatter cycle ValVars
-/// around each widening iteration.
+/// Semi-sparse AE backed by BoxAddressDomain. Box values use one module-wide
+/// scalar carrier. Persistent ICFG states carry memory and lifetime values,
+/// while transfers materialize scalar operands only temporarily.
 class SemiSparseAbstractInterpretation : public AbstractInterpretation
 {
 public:
-    SemiSparseAbstractInterpretation()
-    {
-        preAnalysis->initCycleValVars();
-    }
+    using Base = AbstractInterpretation;
+    using State = typename Base::State;
+
+    SemiSparseAbstractInterpretation();
     ~SemiSparseAbstractInterpretation() override = default;
+    const AbstractDomain::AbstractDomain* getScalarAbstractState()
+    const override;
 
 protected:
-    AbstractState getFullCycleHeadState(const ICFGCycleWTO* cycle) override;
+    void handleGlobalNode() override;
+    AbstractDomain::Interval getInterval(const ValVar* var,
+                                         const ICFGNode* node) override;
+    AbstractDomain::Interval getDefinedInterval(
+        const ValVar* var, const ICFGNode* node) override;
+    AbstractDomain::AddressSet getAddressSet(const ValVar* var,
+            const ICFGNode* node) override;
+    using Base::getAddressSet;
+    using Base::getInterval;
+    bool hasAbsValue(const ValVar* var, const ICFGNode* node) const override;
+    using Base::hasAbsValue;
+    void updateValue(const ValVar* var,
+                     const AbstractDomain::Interval& interval,
+                     const AbstractDomain::AddressSet& addresses,
+                     const ICFGNode* node) override;
+    void addUninitializedNumericalAlternative(
+        const ValVar* var, const ICFGNode* node) override;
+    using Base::updateValue;
 
-    bool widenCycleState(const AbstractState& prev,
-                         const AbstractState& cur,
+    void copyAbstractState(const ICFGNode* source,
+                           const ICFGNode* destination) override;
+    void resetAbstractState(const ICFGNode* node) override;
+    void finalizeAbstractState(const ICFGNode* node) override;
+    bool mergeStatesFromPredecessors(const ICFGNode* node) override;
+
+    std::unique_ptr<AbstractDomain::AbstractDomain> cloneCycleHeadState(
+        const ICFGCycleWTO* cycle) override;
+    bool widenCycleState(const AbstractDomain::AbstractDomain& previous,
+                         const AbstractDomain::AbstractDomain& current,
                          const ICFGCycleWTO* cycle) override;
-
-    bool narrowCycleState(const AbstractState& prev,
-                          const AbstractState& cur,
+    bool narrowCycleState(const AbstractDomain::AbstractDomain& previous,
+                          const AbstractDomain::AbstractDomain& current,
                           const ICFGCycleWTO* cycle) override;
 
-    const AbstractValue& getAbsValue(const ValVar* var, const ICFGNode* node) override;
-    using AbstractInterpretation::getAbsValue;
+    void materializeValue(State& state, const ValVar* value,
+                          const ICFGNode* node) override;
+    void loadValue(const ValVar* pointer, AbstractDomain::Interval& interval,
+                   AbstractDomain::AddressSet& addresses,
+                   bool& numericalMayBeUninitialized,
+                   const ICFGNode* node) override;
+    void storeValue(const ValVar* pointer,
+                    const AbstractDomain::Interval& interval,
+                    const AbstractDomain::AddressSet& addresses,
+                    const ICFGNode* node) override;
 
-    bool hasAbsValue(const ValVar* var, const ICFGNode* node) const override;
-    using AbstractInterpretation::hasAbsValue;
+    /// Keep only the state facets that should flow along ordinary ICFG
+    /// edges. Full-sparse overrides this to remove MemorySSA-managed objects.
+    virtual void filterPropagatedState(State& state) const;
 
-    void updateAbsValue(const ValVar* var, const AbstractValue& val, const ICFGNode* node) override;
-    using AbstractInterpretation::updateAbsValue;
+    State& scalarState();
+    const State* findScalarState() const;
+    State flowState(bool bottom = false) const;
+    void forgetActiveScalarValues(State& state) const;
+    void forgetMemoryValues(State& state) const;
+    void restoreCallerFrameAfterSharedCallee(
+        State& state, const RetICFGNode* returnSite) const;
+    void applyScalarRefinement(State& state, const State& checkpoint);
+    void scatterCycleValues(const ICFGCycleWTO* cycle, const State& state);
 
-    void updateAbsState(const ICFGNode* node, const AbstractState& state) override;
-
-    void joinStates(AbstractState& dst, const AbstractState& src) override;
-
-    const ICFGNode* getICFGNode(const ValVar* var) const;
+    Map<const ICFGNode*, State> refinementTrace_;
+    std::optional<State> scalarState_;
 };
 
-/// Abstract Interpretation for `Options::AESparsity::Sparse` (full-sparse).
-///
-/// In full-sparse mode both ValVars and ObjVars live at their SVFG
-/// def-sites; reads query the SVFG for the reaching-def site, writes
-/// happen at def-sites.  See `doc/plan-full-sparse.md` for the
-/// phase plan; Phase 1 routes ValVar and ObjVar reads through the SVFG.
-class FullSparseAbstractInterpretation : public SemiSparseAbstractInterpretation
+/// Full-sparse AE backed by BoxAddressDomain. Scalar SSA values share the same
+/// module-wide scalar carrier as semi-sparse mode. Base/Dummy ObjVar contents
+/// move along MemorySSA/SVFG def-use edges; GepObjVar snapshots and lifetime
+/// facts continue to flow along the ICFG because those edges do not fully
+/// represent them.
+class FullSparseAbstractInterpretation
+    : public SemiSparseAbstractInterpretation
 {
 public:
-    FullSparseAbstractInterpretation()
-    {
-        buildSVFG();
-    }
+    using Base = SemiSparseAbstractInterpretation;
+    using State = typename Base::State;
+
+    FullSparseAbstractInterpretation();
     ~FullSparseAbstractInterpretation() override;
 
 protected:
-    /// Full-sparse does not merge normal value-flow state along ICFG
-    /// edges.  The ICFG join carries only side-channel state that is not
-    /// represented as MemorySSA def-use flow: GepObjVar field snapshots
-    /// and `_freedAddrs`.  Base/Dummy ObjVars are populated later by
-    /// pullObjValueFlows from SVFG indirect in-edges; ValVars stay at their
-    /// def-sites.
-    void joinStates(AbstractState& dst, const AbstractState& src) override;
-
-    /// After a store overwrites an ObjVar, clear any branch refinement
-    /// for that ObjVar at the store's node so stale branch constraints
-    /// don't propagate past the redefinition.
-    void storeValue(const ValVar* pointer, const AbstractValue& val,
-                    const ICFGNode* node) override;
-
-    /// Thin wrapper: defer to base for ICFG-edge bookkeeping
-    /// (predecessor iteration, branch feasibility, joinStates,
-    /// updateAbsState, reachability return).  For reachable nodes,
-    /// additionally run pullObjValueFlows to populate trace[node] with obj
-    /// values from SVFG def-sites.
     bool mergeStatesFromPredecessors(const ICFGNode* node) override;
-
-    /// Capture branch narrowings into refinementTrace[succ] instead of
-    /// writing them into the local `as`: in FullSparse `as` would be
-    /// discarded by joinStates (no-op for ObjVar), so we route the
-    /// narrowing to refinementTrace and let propagateAndApplyRefinement
-    /// bake it into trace at the end of mergeStatesFromPredecessors.
-    void recordBranchRefinement(NodeID objId, const IntervalValue& narrowed,
-                                AbstractState& as, const ICFGNode* loadIcfg,
-                                const ICFGNode* succ) override;
+    bool widenCycleState(const AbstractDomain::AbstractDomain& previous,
+                         const AbstractDomain::AbstractDomain& current,
+                         const ICFGCycleWTO* cycle) override;
+    bool narrowCycleState(const AbstractDomain::AbstractDomain& previous,
+                          const AbstractDomain::AbstractDomain& current,
+                          const ICFGCycleWTO* cycle) override;
+    void storeValue(const ValVar* pointer,
+                    const AbstractDomain::Interval& interval,
+                    const AbstractDomain::AddressSet& addresses,
+                    const ICFGNode* node) override;
+    void updateMemoryValue(AbstractDomain::Location location,
+                           const AbstractDomain::Interval& interval,
+                           const AbstractDomain::AddressSet& addresses,
+                           const ICFGNode* node) override;
+    void filterPropagatedState(State& state) const override;
+    void recordBranchRefinement(NodeID objectId,
+                                const AbstractDomain::Interval& narrowed,
+                                AbstractDomain::AbstractDomain& state,
+                                const ICFGNode* loadNode,
+                                const ICFGNode* successor) override;
 
 private:
-    /// SVFG-pull helper: walk each VFG node's indirect SVFG in-edges
-    /// and pull obj values from upstream def-site traces into
-    /// trace[node].  Multiple sources (e.g. mphi operands) JOIN.
-    void pullObjValueFlows(const ICFGNode* node);
-
-    /// Return whether an indirect SVFG edge should be pulled into dst.
-    /// Besides branch-feasible ICFG reachability, this rejects paths where
-    /// another store to the same points-to object kills the edge's value.
+    void recordMemoryDefinition(const ICFGNode* node,
+                                const AbstractDomain::AddressSet& targets);
+    bool hasMemoryDefinition(const ICFGNode* node,
+                             AbstractDomain::Variable content) const;
+    void pullObjectValueFlows(const ICFGNode* node);
     bool isIndirectSVFGEdgeFeasible(const IndirectSVFGEdge* edge,
-                                    const VFGNode* dst);
-
-    /// Return whether a branch-feasible ICFG path exists from src to dst.
-    /// Conditional edges are checked with a pure branch-feasibility query,
-    /// so path probing does not create branch-refinement side effects.
-    bool isICFGPathFeasible(const ICFGNode* src, const ICFGNode* dst);
-
-    /// Return whether this intra edge is allowed by the current branch state.
+                                    const VFGNode* destination);
     bool isIntraEdgeBranchFeasible(const IntraCFGEdge* edge,
-                                   const ICFGNode* src);
+                                   const ICFGNode* source);
+    void propagateAndApplyMemoryRefinement(const ICFGNode* node);
 
-    /// Compose pred-inherited refinement into refinementTrace[node]
-    /// (single-pred linear copy / multi-pred intersect-JOIN; any pred
-    /// without refinement drops the inheritance), then MEET the final
-    /// refinementTrace[node] into trace[node]._addrToAbsVal so the
-    /// inherited base getAbsValue(ObjVar*, node) returns the narrowed
-    /// value directly — no read-time override or cache.  Called once
-    /// per merge as the last step.
-    void propagateAndApplyRefinement(const ICFGNode* node);
-
-    /// Path-refined obj values produced by branch narrowing.  Each
-    /// entry is the *interval constraint* (not effective value) so
-    /// base trace can widen/narrow independently.  Cached at branch
-    /// successors by recordBranchRefinement; propagated and applied by
-    /// propagateAndApplyRefinement at the end of
-    /// mergeStatesFromPredecessors.
-    Map<const ICFGNode*, Map<NodeID, IntervalValue>> refinementTrace;
-
-    /// Build the SVFG on top of the semi-sparse precompute.
-    void buildSVFG();
-
-    /// Owns the SVFG (via SVFGBuilder's internal unique_ptr).  Without
-    /// this, SVFGBuilder would be a local in buildSVFG() and free the
-    /// graph at scope exit, leaving `svfg` dangling.
-    std::unique_ptr<SVFGBuilder> svfgBuilder;
-    /// View pointer into svfgBuilder's graph; non-null after buildSVFG().
-    SVFG* svfg{nullptr};
+    Map<const ICFGNode*, Map<NodeID, AbstractDomain::Interval>>
+    memoryRefinementTrace_;
+    /// Contents changed through analyzer-side models rather than StoreStmt.
+    /// SVFG has no defining edge for them, so they retain ICFG propagation.
+    std::set<AbstractDomain::Variable> denseMemoryVariables_;
+    /// SVFG definition support is separate from abstract values. A numeric
+    /// Top has no Box slot, but a StoreStmt that produces it must still be
+    /// distinguishable from an SVFG source that contributed no definition.
+    Map<const ICFGNode*, std::set<AbstractDomain::Variable>>
+    memoryDefinitionSupport_;
+    Map<const ICFGNode*, std::set<AbstractDomain::Variable>>
+    previousMemoryDefinitionSupport_;
+    std::unique_ptr<SVFGBuilder> svfgBuilder_;
 };
 
 } // namespace SVF
 
-#endif /* INCLUDE_AE_SVFEXE_SPARSEABSTRACTINTERPRETATION_H_ */
+#endif // SVF_AE_SPARSE_ABSTRACT_INTERPRETATION_H
