@@ -43,7 +43,9 @@ enum class DomainKind
     Address,
     Lifetime,
     Product,
-    Initialization
+    Initialization,
+    Octagon,
+    ConvexPolyhedra
 };
 
 const char* toString(CheckResult result);
@@ -71,6 +73,13 @@ public:
     /// represented by `other`.
     CheckResult isSubsetOf(const AbstractDomain& other) const;
     CheckResult isEquivalentTo(const AbstractDomain& other) const;
+    /// Return whether lattice operations between the two properties are
+    /// defined. Product domains use this to validate dynamically owned
+    /// components before dispatching an operation.
+    bool isCompatibleWith(const AbstractDomain& other) const
+    {
+        return hasCompatibleDomain(other);
+    }
     std::string toString() const;
 
     /// RTTI-free concrete-state query. SVF is commonly built with -fno-rtti,

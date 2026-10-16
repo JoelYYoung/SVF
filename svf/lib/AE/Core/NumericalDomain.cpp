@@ -22,6 +22,8 @@
 //===----------------------------------------------------------------------===//
 
 #include "AE/Core/NumericalDomain.h"
+#include "AE/Core/OctagonDomain.h"
+#include "AE/Core/ConvexPolyhedraDomain.h"
 #include "AE/Core/Expression.h"
 
 #include <algorithm>
@@ -41,6 +43,96 @@
 
 namespace SVF::AbstractDomain
 {
+
+namespace
+{
+bool telemetryEnabled = false;
+NumericalTelemetry telemetry;
+}
+
+void NumericalDomain::beginTelemetry()
+{
+    telemetry = {};
+    telemetryEnabled = true;
+}
+
+NumericalTelemetry NumericalDomain::endTelemetry()
+{
+    telemetryEnabled = false;
+    return telemetry;
+}
+
+std::vector<Variable> NumericalDomain::supportVariablesBefore(
+    Variable upperBound) const
+{
+    std::vector<Variable> variables = supportVariables();
+    variables.erase(std::lower_bound(variables.begin(), variables.end(), upperBound),
+                    variables.end());
+    return variables;
+}
+
+std::vector<Variable> NumericalDomain::relationalClosure(
+    const std::vector<Variable>& seeds) const
+{
+    if (telemetryEnabled)
+        ++telemetry.relationalClosureCalls;
+    return relationalClosureState(seeds);
+}
+
+std::vector<Variable> NumericalDomain::relationalClosureState(
+    const std::vector<Variable>& seeds) const
+{
+    recordRelationalClosureConstraintExport();
+    std::map<Variable, std::set<Variable>> adjacency;
+    for (const LinearConstraint& constraint : toConstraints())
+    {
+        std::vector<Variable> variables;
+        variables.reserve(constraint.expression().terms().size());
+        for (const auto& [variable, coefficient] :
+                constraint.expression().terms())
+        {
+            (void)coefficient;
+            variables.push_back(variable);
+        }
+        for (Variable lhs : variables)
+            for (Variable rhs : variables)
+                if (lhs != rhs)
+                    adjacency[lhs].insert(rhs);
+    }
+
+    std::set<Variable> closure(seeds.begin(), seeds.end());
+    std::vector<Variable> worklist(seeds.begin(), seeds.end());
+    while (!worklist.empty())
+    {
+        const Variable variable = worklist.back();
+        worklist.pop_back();
+        const auto neighbors = adjacency.find(variable);
+        if (neighbors == adjacency.end())
+            continue;
+        for (Variable neighbor : neighbors->second)
+            if (closure.insert(neighbor).second)
+                worklist.push_back(neighbor);
+    }
+    return std::vector<Variable>(closure.begin(), closure.end());
+}
+
+std::vector<Variable> NumericalDomain::delegateRelationalClosureState(
+    const NumericalDomain& facet, const std::vector<Variable>& seeds)
+{
+    return facet.relationalClosureState(seeds);
+}
+
+void NumericalDomain::recordRelationalClosureConstraintExport() const
+{
+    if (telemetryEnabled)
+        ++telemetry.relationalClosureConstraintExports;
+}
+
+void NumericalDomain::recordRelationalClosureIndexedQuery() const
+{
+    if (telemetryEnabled)
+        ++telemetry.relationalClosureIndexedQueries;
+}
 
 Integer::Integer() : value_(0) {}
 
@@ -664,7 +756,9 @@ constexpr std::uint64_t FnvPrime = 1099511628211ULL;
 
 enum class DomainTag : std::uint8_t
 {
-    Box = 1
+    Box = 1,
+    Octagon = 2,
+    ConvexPolyhedra = 3
 };
 
 std::uint64_t fnv1a(const std::uint8_t* data, std::size_t size)
@@ -892,6 +986,10 @@ DomainTag domainTag(const NumericalDomain& state)
 {
     if (state.isDomain<BoxDomain>())
         return DomainTag::Box;
+    if (state.isDomain<OctagonDomain>())
+        return DomainTag::Octagon;
+    if (state.isDomain<ConvexPolyhedraDomain>())
+        return DomainTag::ConvexPolyhedra;
     throw std::invalid_argument(
         "raw serialization does not support this domain");
 }
@@ -905,6 +1003,13 @@ std::uint8_t configurationFlags(const NumericalDomain& state, DomainTag tag)
         const auto& box = static_cast<const BoxDomain&>(state);
         return box.config().integerTightening ? 1U : 0U;
     }
+    case DomainTag::Octagon:
+    {
+        const auto& config = static_cast<const OctagonDomain&>(state).config();
+        return (config.integerTightening ? 1U : 0U) | (config.strongClosure ? 2U : 0U);
+    }
+    case DomainTag::ConvexPolyhedra:
+        return static_cast<const ConvexPolyhedraDomain&>(state).config().integerTightening ? 1U : 0U;
     }
     throw std::logic_error("unknown raw state domain tag");
 }
@@ -949,10 +1054,16 @@ void writeConstraints(Writer& writer, const LinearConstraintSet& constraints)
 }
 
 LinearConstraintSet canonicalConstraints(const NumericalDomain& state,
-        DomainTag)
+        DomainTag tag)
 {
-    return state.isBottom() ? LinearConstraintSet{} :
-           state.toConstraints();
+    if (state.isBottom())
+        return {};
+    if (tag == DomainTag::Box)
+        return state.toConstraints();
+    auto copy = state.clone();
+    auto& numerical = static_cast<NumericalDomain&>(*copy);
+    numerical.canonicalize();
+    return numerical.toConstraints();
 }
 
 Rational readRational(Reader& reader)
@@ -1004,6 +1115,10 @@ DomainTag decodeDomainTag(std::uint8_t value)
     {
     case static_cast<std::uint8_t>(DomainTag::Box):
         return DomainTag::Box;
+    case static_cast<std::uint8_t>(DomainTag::Octagon):
+        return DomainTag::Octagon;
+    case static_cast<std::uint8_t>(DomainTag::ConvexPolyhedra):
+        return DomainTag::ConvexPolyhedra;
     default:
         throw std::invalid_argument("raw state has an unknown domain tag");
     }
@@ -1025,6 +1140,25 @@ std::unique_ptr<NumericalDomain> restore(DomainTag tag, std::uint8_t flags,
                           ? BoxDomain::bottom(config)
                           : BoxDomain::fromConstraints(constraints, config);
         return std::make_unique<BoxDomain>(std::move(state));
+    }
+    case DomainTag::Octagon:
+    {
+        if ((flags & ~3U) != 0)
+            throw std::invalid_argument("raw Octagon state has invalid flags");
+        OctagonConfig config;
+        config.integerTightening = (flags & 1U) != 0;
+        config.strongClosure = (flags & 2U) != 0;
+        return std::make_unique<OctagonDomain>(bottom ? OctagonDomain::bottom(config)
+                                               : OctagonDomain::fromConstraints(constraints, config));
+    }
+    case DomainTag::ConvexPolyhedra:
+    {
+        if ((flags & ~1U) != 0)
+            throw std::invalid_argument("raw Polyhedra state has invalid flags");
+        ConvexPolyhedraConfig config;
+        config.integerTightening = (flags & 1U) != 0;
+        return std::make_unique<ConvexPolyhedraDomain>(bottom ? ConvexPolyhedraDomain::bottom(config)
+                : ConvexPolyhedraDomain::fromConstraints(constraints, config));
     }
     }
     throw std::logic_error("unknown raw state domain tag");
@@ -1677,6 +1811,71 @@ Interval integerRange(unsigned bitWidth, bool isSigned)
                             Rational::fromRaw(mpq_class(upper)));
 }
 
+Interval wrapIntegerInterval(const Interval& operand, unsigned bitWidth,
+                             bool isSigned)
+{
+    if (operand.isBottom())
+        return Interval::bottom();
+    const Interval range = integerRange(bitWidth, isSigned);
+    if (!operand.lower().isFinite() || !operand.upper().isFinite() ||
+        operand.lower().isStrict() || operand.upper().isStrict() ||
+        !operand.lower().value().isInteger() ||
+        !operand.upper().value().isInteger())
+        return range;
+
+    const mpz_class lower(
+        mpq_numref(operand.lower().value().value().get_mpq_t()));
+    const mpz_class upper(
+        mpq_numref(operand.upper().value().value().get_mpq_t()));
+    mpz_class modulus = 1;
+    mpz_mul_2exp(modulus.get_mpz_t(), modulus.get_mpz_t(), bitWidth);
+    mpz_class bias = 0;
+    if (isSigned)
+    {
+        bias = 1;
+        mpz_mul_2exp(bias.get_mpz_t(), bias.get_mpz_t(), bitWidth - 1);
+    }
+
+    mpz_class lowerQuotient;
+    mpz_class upperQuotient;
+    const mpz_class biasedLower = lower + bias;
+    const mpz_class biasedUpper = upper + bias;
+    mpz_fdiv_q(lowerQuotient.get_mpz_t(), biasedLower.get_mpz_t(),
+               modulus.get_mpz_t());
+    mpz_fdiv_q(upperQuotient.get_mpz_t(), biasedUpper.get_mpz_t(),
+               modulus.get_mpz_t());
+    if (lowerQuotient != upperQuotient)
+        return range;
+
+    return Interval::closed(
+        Rational::fromRaw(mpq_class(lower - lowerQuotient * modulus)),
+        Rational::fromRaw(mpq_class(upper - upperQuotient * modulus)));
+}
+
+Interval zeroExtendIntegerInterval(const Interval& operand,
+                                   unsigned sourceBitWidth, bool sourceIsSigned)
+{
+    if (operand.isBottom())
+        return Interval::bottom();
+    const Interval sourceRange = integerRange(sourceBitWidth, sourceIsSigned);
+    const Interval unsignedRange = integerRange(sourceBitWidth, false);
+    if (!operand.isSubsetOf(sourceRange) || !operand.lower().isFinite() ||
+        !operand.upper().isFinite() || operand.lower().isStrict() ||
+        operand.upper().isStrict() || !operand.lower().value().isInteger() ||
+        !operand.upper().value().isInteger())
+        return unsignedRange;
+    if (!sourceIsSigned || operand.lower().value().sign() >= 0)
+        return operand;
+    if (operand.upper().value().sign() >= 0)
+        return unsignedRange;
+
+    mpz_class modulus = 1;
+    mpz_mul_2exp(modulus.get_mpz_t(), modulus.get_mpz_t(), sourceBitWidth);
+    const Rational offset = Rational::fromRaw(mpq_class(modulus));
+    return Interval::closed(operand.lower().value() + offset,
+                            operand.upper().value() + offset);
+}
+
 Interval floatToInteger(const Interval& operand, unsigned bitWidth,
                         bool isSigned)
 {
@@ -2214,14 +2413,69 @@ void NumericalDomain::recordOperation(OperationKind operation,
                                       ApproximationKind approximation,
                                       bool best, std::string reason) const
 {
+    if (telemetryEnabled)
+    {
+        if (operation == OperationKind::Join)
+            ++telemetry.joinCalls;
+        else if (operation == OperationKind::Widening)
+            ++telemetry.wideningCalls;
+        else if (operation == OperationKind::Narrowing)
+            ++telemetry.narrowingCalls;
+    }
     lastOperation_ = {operation, approximation,
                       approximation == ApproximationKind::Exact, best,
                       std::move(reason)
                      };
 }
 
+void NumericalDomain::recordPartialOperation(bool inside) const
+{
+    if (!telemetryEnabled)
+        return;
+    if (inside)
+        ++telemetry.partialInsideOperations;
+    else
+        ++telemetry.partialFallbackOperations;
+}
+
+void NumericalDomain::recordPartialProjection() const
+{
+    if (telemetryEnabled)
+        ++telemetry.partialProjections;
+}
+
 std::uint64_t NumericalDomain::hash() const
 {
+    if (isDomain<ConvexPolyhedraDomain>())
+    {
+        // Equivalent polyhedra can have different irredundant equality bases.
+        // Hash their exact unary projection, not a history-dependent H cache.
+        // Losing relational discrimination is an intentional hash collision;
+        // callers must still use isEquivalentTo for equality.
+        const auto& polyhedron = static_cast<const ConvexPolyhedraDomain&>(*this);
+        std::set<Variable> variables;
+        if (!isBottom())
+            for (const auto& constraint : toConstraints())
+                for (const auto& term : constraint.expression().terms())
+                    variables.insert(term.first);
+        LinearConstraintSet unary;
+        for (Variable variable : variables)
+        {
+            const auto value = polyhedron.bound(variable);
+            if (value.lower().isFinite())
+                unary.emplace_back(LinearExpression(variable) - LinearExpression(value.lower().value()),
+                                   value.lower().isStrict() ? ConstraintKind::GreaterThan : ConstraintKind::GreaterEqual);
+            if (value.upper().isFinite())
+                unary.emplace_back(LinearExpression(variable) - LinearExpression(value.upper().value()),
+                                   value.upper().isStrict() ? ConstraintKind::LessThan : ConstraintKind::LessEqual);
+        }
+        Writer writer;
+        writer.writeByte(static_cast<std::uint8_t>(DomainTag::ConvexPolyhedra));
+        writer.writeByte(configurationFlags(*this, DomainTag::ConvexPolyhedra));
+        writer.writeByte(isBottom() ? 1U : 0U);
+        writeConstraints(writer, unary);
+        return readTrailingU64(writer.finish());
+    }
     const RawBuffer raw = serializeRaw();
     return readTrailingU64(raw);
 }
@@ -2602,6 +2856,14 @@ void BoxDomain::forget(Variable variable)
     if (!bottom_)
         eraseBound(variable);
     recordOperation(OperationKind::Forget, ApproximationKind::Exact, true);
+}
+
+void BoxDomain::project(const std::vector<Variable>& retained)
+{
+    const std::set<Variable> keep(retained.begin(), retained.end());
+    for (Variable variable : constrainedVariables())
+        if (keep.count(variable) == 0)
+            forget(variable);
 }
 
 std::vector<Variable> BoxDomain::constrainedVariables() const

@@ -297,6 +297,16 @@ Interval greaterThan(const Interval& lhs, const Interval& rhs);
 Interval greaterEqual(const Interval& lhs, const Interval& rhs);
 /// Complete mathematical range of a fixed-width signed or unsigned integer.
 Interval integerRange(unsigned bitWidth, bool isSigned);
+/// Convex hull of the fixed-width two's-complement image of an integer
+/// interval.  This is exact when the interval does not cross a modular
+/// discontinuity and otherwise conservatively returns the complete range.
+Interval wrapIntegerInterval(const Interval& operand, unsigned bitWidth,
+                             bool isSigned);
+/// Convex hull of an LLVM zero extension from a fixed-width source.  The
+/// source interval uses the signedness selected by the frontend.
+Interval zeroExtendIntegerInterval(const Interval& operand,
+                                   unsigned sourceBitWidth,
+                                   bool sourceIsSigned);
 /// Convert a floating interval to a fixed-width integer using LLVM's
 /// round-toward-zero semantics. If the operand may produce poison because it
 /// is non-finite or outside the destination range, return that complete range.
@@ -400,7 +410,9 @@ enum class OperationKind
     TopologicalClosure,
     Canonicalization,
     Expand,
-    Fold
+    Fold,
+    GeneratorImport,
+    GeneratorExport
 };
 
 /// APRON-style information about the most recently completed mutating
@@ -414,6 +426,19 @@ struct OperationMetadata
     bool exact = true;
     bool best = true;
     std::string reason;
+};
+
+struct NumericalTelemetry
+{
+    std::uint64_t relationalClosureCalls = 0;
+    std::uint64_t relationalClosureConstraintExports = 0;
+    std::uint64_t relationalClosureIndexedQueries = 0;
+    std::uint64_t joinCalls = 0;
+    std::uint64_t wideningCalls = 0;
+    std::uint64_t narrowingCalls = 0;
+    std::uint64_t partialInsideOperations = 0;
+    std::uint64_t partialFallbackOperations = 0;
+    std::uint64_t partialProjections = 0;
 };
 
 struct Diagnostic
@@ -440,6 +465,11 @@ public:
 
     ~NumericalDomain() override = default;
 
+    /// Process-local counters used only by explicitly enabled profiling runs.
+    /// Analysis is single-threaded while these counters are active.
+    static void beginTelemetry();
+    static NumericalTelemetry endTelemetry();
+
     /// Return a deterministic semantic hash. Compatible properties that are
     /// equivalent according to isEquivalentTo() have the same hash. Hash
     /// equality is not a substitute for an exact equivalence check.
@@ -450,7 +480,7 @@ public:
     /// Diagnostic sinks are observational and are not serialized.
     RawBuffer serializeRaw() const;
 
-    /// Restore a Box property from serializeRaw().
+    /// Restore a Box, Octagon, or Convex Polyhedra property from serializeRaw().
     /// Malformed, truncated, corrupt, or unsupported data is rejected.
     static std::unique_ptr<NumericalDomain> deserializeRaw(
         const RawBuffer& buffer);
@@ -479,6 +509,8 @@ public:
     virtual void assume(const LinearConstraint& constraint) = 0;
     virtual void assume(const TreeConstraint& constraint) = 0;
     virtual void forget(Variable variable) = 0;
+    /// Existentially remove every variable not present in `retained`.
+    virtual void project(const std::vector<Variable>& retained) = 0;
     /// Duplicate a summary variable into fresh variables. Every copy has the
     /// source variable's relations with all other variables, while the
     /// expanded variables remain mutually unrelated except where those
@@ -511,6 +543,22 @@ public:
     /// exceptional IEEE outcomes that cannot be represented numerically lose
     /// the affected bound to top.
     Interval bound(const TreeExpression& expression) const;
+    /// Variables with explicitly represented numerical support. Absence means
+    /// unconstrained, never undefined. The result is sorted and unique.
+    virtual std::vector<Variable> supportVariables() const = 0;
+    std::vector<Variable> supportVariablesBefore(Variable upperBound) const;
+    /// Return the transitive variable component connected to `seeds` by the
+    /// represented linear constraints. This is used when a semi-sparse client
+    /// must materialize a complete relation rather than unary projections.
+    std::vector<Variable> relationalClosure(
+        const std::vector<Variable>& seeds) const;
+    /// Strongly replace one coordinate by an interval while forgetting its
+    /// previous relations. This is the public product-domain entry point for
+    /// an interval-valued transfer.
+    void assignBound(Variable target, const Interval& value)
+    {
+        assignInterval(target, value);
+    }
     virtual LinearConstraintSet toConstraints() const = 0;
 
     /// Replace strict boundaries by non-strict boundaries. This is the
@@ -527,6 +575,18 @@ public:
     }
 
 protected:
+    /// Domain-specific closure hook. Relational domains with an indexed
+    /// physical representation can answer this without exporting constraints.
+    virtual std::vector<Variable> relationalClosureState(
+        const std::vector<Variable>& seeds) const;
+    /// Delegate a product wrapper's already-counted closure query to one of
+    /// its numerical facets without incrementing the public call counter a
+    /// second time. The facet still records export-vs-index telemetry.
+    static std::vector<Variable> delegateRelationalClosureState(
+        const NumericalDomain& facet,
+        const std::vector<Variable>& seeds);
+    void recordRelationalClosureConstraintExport() const;
+    void recordRelationalClosureIndexedQuery() const;
     /// Evaluate nonlinear and finite IEEE trees by sound interval semantics,
     /// applying each IEEE node's requested rounding mode at its endpoints.
     /// Exceptional IEEE outcomes conservatively produce top.
@@ -541,6 +601,8 @@ protected:
     void recordOperation(OperationKind operation,
                          ApproximationKind approximation, bool best,
                          std::string reason = {}) const;
+    void recordPartialOperation(bool inside) const;
+    void recordPartialProjection() const;
 
 private:
     mutable OperationMetadata lastOperation_;
@@ -599,6 +661,7 @@ public:
     void assume(const TreeConstraint& constraint) override;
     void assumeAll(const LinearConstraintSet& constraints) override;
     void forget(Variable variable) override;
+    void project(const std::vector<Variable>& retained) override;
     void expand(Variable source, const std::vector<Variable>& copies) override;
     void fold(Variable target, const std::vector<Variable>& folded) override;
 
@@ -611,6 +674,10 @@ public:
     std::vector<Variable> constrainedVariables() const;
     std::vector<Variable> constrainedVariablesBefore(
         Variable upperBound) const;
+    std::vector<Variable> supportVariables() const override
+    {
+        return constrainedVariables();
+    }
     LinearConstraintSet toConstraints() const override;
     void close() override;
     void canonicalize() override;
