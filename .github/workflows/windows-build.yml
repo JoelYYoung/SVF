@@ -3,6 +3,8 @@ name: windows-build
 on: [push, pull_request, workflow_dispatch]
 
 env:
+  # Match upstream master; newer aggregate-return tests require SVF PR #1919.
+  SVF_TEST_SUITE_REV: 14df550605576a6834bb01e809b6135149f1cea7
   SVF_Z3: 1
 
 jobs:
@@ -43,7 +45,7 @@ jobs:
         if: matrix.compiler == 'msvc'
         shell: pwsh
         run: |
-          & "$env:VCPKG_INSTALLATION_ROOT/vcpkg.exe" install gmp:x64-windows-static mpfr:x64-windows-static
+          & "$env:VCPKG_INSTALLATION_ROOT/vcpkg.exe" install gmp:x64-windows-static mpfr:x64-windows-static --host-triplet=x64-windows-static
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $prefix = "$env:VCPKG_INSTALLATION_ROOT/installed/x64-windows-static"
           "GMP_ROOT=$prefix" >> $env:GITHUB_ENV
@@ -52,7 +54,8 @@ jobs:
       - name: Clone Test-Suite
         shell: bash
         run: |
-          git clone --depth 1 "https://github.com/SVF-tools/Test-Suite.git" Test-Suite
+          git clone "https://github.com/SVF-tools/Test-Suite.git" Test-Suite
+          git -C Test-Suite checkout "$SVF_TEST_SUITE_REV"
 
       - name: Build SVF (MSVC)
         if: matrix.compiler == 'msvc'
@@ -96,7 +99,7 @@ jobs:
           lcov --remove coverage-mingw.info '*/llvm-*.obj/*' --output-file coverage-mingw.info --ignore-errors unused || true
           lcov --remove coverage-mingw.info '*/svf/include/FastCluster/*' --output-file coverage-mingw.info --ignore-errors unused || true
           lcov --remove coverage-mingw.info '*/svf/lib/FastCluster/*' --output-file coverage-mingw.info --ignore-errors unused || true
-          
+
           # Normalize paths in coverage-mingw.info to relative repository paths for Codecov
           if [ -f coverage-mingw.info ]; then
             sed -i 's|SF:[A-Za-z]:/[^/]*/[^/]*/[^/]*/|SF:|g' coverage-mingw.info || true

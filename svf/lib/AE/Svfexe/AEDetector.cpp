@@ -897,6 +897,19 @@ SVF::Interval BufOverflowDetector::getAccessOffset(SVF::NodeID objId,
     }
 }
 
+void BufOverflowDetector::addToGepObjOffsetFromBase(
+    const GepObjVar* obj, const SVF::Interval& offset)
+{
+    if (Options::AEDomain() == AbstractInterpretation::Box)
+    {
+        gepObjOffsetFromBase[obj] = offset;
+        return;
+    }
+    auto inserted = gepObjOffsetFromBase.emplace(obj, offset);
+    if (!inserted.second)
+        inserted.first->second.joinWith(offset);
+}
+
 /**
  * @brief Updates the offset of a GEP object from its base.
  *
@@ -964,8 +977,10 @@ void BufOverflowDetector::updateGepObjOffsetFromBase(const ICFGNode* node,
                     {
                         SVF::Interval objOffsetFromBase =
                             getGepObjOffsetFromBase(objVar);
-                        addToGepObjOffsetFromBase(
-                            gepObjVar, SVF::add(objOffsetFromBase, offset));
+                        if (Options::AEDomain() != AbstractInterpretation::Box ||
+                                !hasGepObjOffsetFromBase(gepObjVar))
+                            addToGepObjOffsetFromBase(
+                                gepObjVar, SVF::add(objOffsetFromBase, offset));
                     }
                     else
                     {

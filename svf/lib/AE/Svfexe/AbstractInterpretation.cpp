@@ -1960,8 +1960,12 @@ void AbstractInterpretation::collectBranchRefinement(
     if (cmpStmt)
     {
         s32_t predicate = cmpStmt->getPredicate();
-        // Signed mathematical intervals cannot invert unsigned/IEEE guards.
-        if (predicate!=CmpStmt::ICMP_EQ && predicate!=CmpStmt::ICMP_NE &&
+        const bool unsignedPredicate = predicate == CmpStmt::ICMP_ULT ||
+                                       predicate == CmpStmt::ICMP_ULE ||
+                                       predicate == CmpStmt::ICMP_UGT ||
+                                       predicate == CmpStmt::ICMP_UGE;
+        if (!(Options::AEDomain() == Box && unsignedPredicate) &&
+                predicate!=CmpStmt::ICMP_EQ && predicate!=CmpStmt::ICMP_NE &&
                 predicate!=CmpStmt::ICMP_SLT && predicate!=CmpStmt::ICMP_SLE &&
                 predicate!=CmpStmt::ICMP_SGT && predicate!=CmpStmt::ICMP_SGE)
             return;
@@ -1976,6 +1980,12 @@ void AbstractInterpretation::collectBranchRefinement(
             SVF::Interval opVal[2] = {getInterval(cmpStmt->getOpVar(0), pred),
                                       getInterval(cmpStmt->getOpVar(1), pred)
                                      };
+            // Unsigned and mathematical order agree on non-negative operands.
+            if (unsignedPredicate)
+                for (const auto& interval : opVal)
+                    if (interval.isBottom() || !interval.lower().isFinite() ||
+                            interval.lower().value() < SVF::Rational(0))
+                        return;
             SVF::AddressSet opAddr[2] =
             {
                 getAddressSet(cmpStmt->getOpVar(0), pred),
@@ -3161,7 +3171,8 @@ void AbstractInterpretation::updateStateOnPhi(const PhiStmt* phi)
     // violate its transfer equation. Widening here treats every split phi as
     // part of the enclosing loop header and guarantees termination even when
     // it is not the WTO component's first ICFG node.
-    if (const auto* result = SVFUtil::dyn_cast<ValVar>(phi->getRes()))
+    if (const auto* result = SVFUtil::dyn_cast<ValVar>(phi->getRes());
+            Options::AEDomain() != Box && result)
     {
         const auto history = phiIntervalHistory_.find(phi);
         SVF::Interval previous = history == phiIntervalHistory_.end()

@@ -222,11 +222,7 @@ public:
      * @param offset The interval value of the offset.
      */
     void addToGepObjOffsetFromBase(const GepObjVar* obj,
-                                   const SVF::Interval& offset)
-    {
-        auto inserted = gepObjOffsetFromBase.emplace(obj, offset);
-        if (!inserted.second) inserted.first->second.joinWith(offset);
-    }
+                                   const SVF::Interval& offset);
 
     /**
      * @brief Checks if a GEP object has an associated offset.

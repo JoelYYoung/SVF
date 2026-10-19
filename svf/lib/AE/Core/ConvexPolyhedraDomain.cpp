@@ -23,8 +23,8 @@
 
 #include "AE/Core/ConvexPolyhedraDomain.h"
 
-#include <bitset>
 #include <algorithm>
+#include <bitset>
 #include <cstddef>
 #include <cstdint>
 #include <map>
@@ -3340,16 +3340,7 @@ bool adjacentGenerators(const std::vector<Generator>& generators,
     {
         std::uint64_t common = generators[lhs].saturation[word] &
                                generators[rhs].saturation[word];
-#if defined(__clang__) || defined(__GNUC__)
-        commonCount +=
-            std::bitset<64>(common).count();
-#else
-        while (common != 0)
-        {
-            common &= common - 1;
-            ++commonCount;
-        }
-#endif
+        commonCount += std::bitset<64>(common).count();
     }
     const std::size_t required =
         ambientDimensions > lineDimensions + 2

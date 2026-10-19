@@ -1102,7 +1102,7 @@ bool AbstractInterpretation::canStrongStore(
            (box || (!base->isHeap() && !base->isArray())) &&
            !base->isBlackHoleObj() &&
            !base->isFieldInsensitive() &&
-           !(base->isStack() && isRecursiveFun(base->getFunction())) &&
+           (box || !(base->isStack() && isRecursiveFun(base->getFunction()))) &&
            !adapter_.isRuntimeFieldSummary(object) &&
            !state.lifetimes().mayBeFreed(adapter_.location(object));
 }
