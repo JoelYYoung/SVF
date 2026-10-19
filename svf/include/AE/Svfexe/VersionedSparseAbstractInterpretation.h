@@ -156,7 +156,6 @@ private:
 
     mutable std::size_t cycleHeadDrops_ = 0;
     std::size_t externalInvalidations_ = 0;
-    std::size_t storeEscapes_ = 0;
     std::size_t loadMisses_ = 0;
     bool inStoreStatement_ = false;
     const ICFGNode* currentNode_ = nullptr;

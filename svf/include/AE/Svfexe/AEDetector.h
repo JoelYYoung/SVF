@@ -29,6 +29,7 @@
 #include "AE/Core/AddressDomain.h"
 #include "AE/Core/NumericalDomain.h"
 #include "Util/SVFBugReport.h"
+#include <limits>
 #include <SVFIR/SVFIR.h>
 
 namespace SVF
@@ -157,6 +158,12 @@ class BufOverflowDetector : public AEDetector
                               const GepStmt* gep, s64_t width);
 
 public:
+    struct BufferOverflowInfo
+    {
+        u32_t bufferSize = 0;
+        Interval accessOffset = Interval::singleton(Rational(0));
+    };
+
     /**
      * @brief Constructor initializes the detector kind to BUF_OVERFLOW and sets
      * up external API buffer overflow rules.
@@ -263,6 +270,12 @@ public:
      */
     void addBugToReporter(const AEException& e, const ICFGNode* node)
     {
+        addBugToReporter(e, node, BufferOverflowInfo{});
+    }
+
+    void addBugToReporter(const AEException& e, const ICFGNode* node,
+                          const BufferOverflowInfo& info)
+    {
 
         GenericBug::EventStack eventStack;
         SVFBugEvent sourceInstEvent(SVFBugEvent::EventType::SourceInst, node);
@@ -289,8 +302,18 @@ public:
         }
 
         // Add the bug to the recorder with details from the event stack
-        recoder.addAbsExecBug(GenericBug::FULLBUFOVERFLOW, eventStack, 0, 0, 0,
-                              0);
+        const auto value = [](const Bound& bound)
+        {
+            if (bound.isFinite())
+                return bound.value().toDouble();
+            return bound.kind() == Bound::Kind::MinusInfinity
+                   ? -std::numeric_limits<double>::infinity()
+                   : std::numeric_limits<double>::infinity();
+        };
+        recoder.addAbsExecBug(GenericBug::FULLBUFOVERFLOW, eventStack,
+                              info.bufferSize, info.bufferSize,
+                              value(info.accessOffset.lower()),
+                              value(info.accessOffset.upper()));
         nodeToBugInfo[node] =
             e.what(); // Record the exception information for the node
     }
@@ -337,7 +360,7 @@ public:
      */
     bool canSafelyAccessMemory(const ValVar* value,
                                const SVF::Interval& len,
-                               const ICFGNode* node);
+                               const ICFGNode* node, BufferOverflowInfo* info = nullptr);
 
 private:
     /**
@@ -345,14 +368,14 @@ private:
      * @param call Pointer to the call ICFG node.
      * @return True if a buffer overflow is detected, false otherwise.
      */
-    bool detectStrcat(const CallICFGNode* call);
+    bool detectStrcat(const CallICFGNode* call, BufferOverflowInfo& info);
 
     /**
      * @brief Detects buffer overflow in 'strcpy' function calls.
      * @param call Pointer to the call ICFG node.
      * @return True if a buffer overflow is detected, false otherwise.
      */
-    bool detectStrcpy(const CallICFGNode* call);
+    bool detectStrcpy(const CallICFGNode* call, BufferOverflowInfo& info);
 
 private:
     Map<const GepObjVar*, SVF::Interval>

@@ -165,7 +165,16 @@ std::map<SVF::Variable,SVF::Interval> flowInsensitivePackingRanges(SVFIR& ir,con
                     for(auto id:pts.getPts(load->getRHSVar()->getId()))if(const auto* base=ir.getBaseObject(id))missing|=base->isBlackHoleObj();
                     add(*x,sources,[&,sources,missing]
                     {
-                        if(missing||sources.empty())return I::top(); auto result=I::bottom(); for(auto v:sources)result.joinWith(values.at(v)); return result;
+                        if (missing || sources.empty())
+                        {
+                            return I::top();
+                        }
+                        auto result = I::bottom();
+                        for (auto v : sources)
+                        {
+                            result.joinWith(values.at(v));
+                        }
+                        return result;
                     });
                 }
             }

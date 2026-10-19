@@ -700,6 +700,7 @@ void BufOverflowDetector::initExtAPIBufOverflowCheckRules()
  */
 void BufOverflowDetector::detectExtAPI(const CallICFGNode* call)
 {
+    BufferOverflowInfo info;
     assert(call->getCalledFunction() && "FunObjVar* is nullptr");
     auto& ae = AbstractInterpretation::getAEInstance();
 
@@ -755,7 +756,7 @@ void BufOverflowDetector::detectExtAPI(const CallICFGNode* call)
             SVF::Interval offset = SVF::subtract(
                                        ae.getInterval(call->getArgument(arg.second), call),
                                        integerInterval(1));
-            const bool intervalSafe = canSafelyAccessMemory(argVar, offset, call);
+            const bool intervalSafe = canSafelyAccessMemory(argVar, offset, call, &info);
             const bool relational = !intervalSafe && relationalLengthBound(
                                         call, argVar, call->getArgument(arg.second));
             const bool safe = intervalSafe || relational;
@@ -769,7 +770,7 @@ void BufOverflowDetector::detectExtAPI(const CallICFGNode* call)
             if (!safe)
             {
                 AEException bug(call->toString());
-                addBugToReporter(bug, call);
+                addBugToReporter(bug, call, info);
             }
         }
     }
@@ -808,7 +809,7 @@ void BufOverflowDetector::detectExtAPI(const CallICFGNode* call)
             SVF::Interval offset = SVF::subtract(
                                        ae.getInterval(call->getArgument(arg.second), call),
                                        integerInterval(1));
-            const bool safe = canSafelyAccessMemory(argVar, offset, call);
+            const bool safe = canSafelyAccessMemory(argVar, offset, call, &info);
             ae.recordQuery(BUF_OVERFLOW, call, argVar,
                            "ext-bounds-arg-" + std::to_string(arg.first) +
                            "-len-" + std::to_string(arg.second),
@@ -819,13 +820,13 @@ void BufOverflowDetector::detectExtAPI(const CallICFGNode* call)
             if (!safe)
             {
                 AEException bug(call->toString());
-                addBugToReporter(bug, call);
+                addBugToReporter(bug, call, info);
             }
         }
     }
     else if (extType == AbsExtAPI::STRCPY)
     {
-        const bool safe = detectStrcpy(call);
+        const bool safe = detectStrcpy(call, info);
         const ValVar* destination = call->arg_size() >= 1
                                     ? call->getArgument(0) : nullptr;
         ae.recordQuery(BUF_OVERFLOW, call, destination,
@@ -837,12 +838,12 @@ void BufOverflowDetector::detectExtAPI(const CallICFGNode* call)
         if (!safe)
         {
             AEException bug(call->toString());
-            addBugToReporter(bug, call);
+            addBugToReporter(bug, call, info);
         }
     }
     else if (extType == AbsExtAPI::STRCAT)
     {
-        const bool safe = detectStrcat(call);
+        const bool safe = detectStrcat(call, info);
         const ValVar* destination = call->arg_size() >= 1
                                     ? call->getArgument(0) : nullptr;
         ae.recordQuery(BUF_OVERFLOW, call, destination,
@@ -854,7 +855,7 @@ void BufOverflowDetector::detectExtAPI(const CallICFGNode* call)
         if (!safe)
         {
             AEException bug(call->toString());
-            addBugToReporter(bug, call);
+            addBugToReporter(bug, call, info);
         }
     }
     else
@@ -986,16 +987,16 @@ void BufOverflowDetector::updateGepObjOffsetFromBase(const ICFGNode* node,
  * @param call Pointer to the call ICFG node.
  * @return True if the memory access is safe, false otherwise.
  */
-bool BufOverflowDetector::detectStrcpy(const CallICFGNode* call)
+bool BufOverflowDetector::detectStrcpy(const CallICFGNode* call, BufferOverflowInfo& info)
 {
     const ValVar* arg0Val = call->getArgument(0);
     const ValVar* arg1Val = call->getArgument(1);
     auto& ae = AbstractInterpretation::getAEInstance();
     SVF::Interval strLen = ae.getUtils()->getStrlen(arg1Val, call);
-    return canSafelyAccessMemory(arg0Val, strLen, call);
+    return canSafelyAccessMemory(arg0Val, strLen, call, &info);
 }
 
-bool BufOverflowDetector::detectStrcat(const CallICFGNode* call)
+bool BufOverflowDetector::detectStrcat(const CallICFGNode* call, BufferOverflowInfo& info)
 {
     auto& ae = AbstractInterpretation::getAEInstance();
     const std::vector<std::string> strcatGroup = {"__strcat_chk", "strcat",
@@ -1013,7 +1014,7 @@ bool BufOverflowDetector::detectStrcat(const CallICFGNode* call)
         SVF::Interval strLen0 = ae.getUtils()->getStrlen(arg0Val, call);
         SVF::Interval strLen1 = ae.getUtils()->getStrlen(arg1Val, call);
         SVF::Interval totalLen = SVF::add(strLen0, strLen1);
-        return canSafelyAccessMemory(arg0Val, totalLen, call);
+        return canSafelyAccessMemory(arg0Val, totalLen, call, &info);
     }
     else if (std::find(strncatGroup.begin(), strncatGroup.end(),
                        call->getCalledFunction()->getName()) !=
@@ -1024,7 +1025,7 @@ bool BufOverflowDetector::detectStrcat(const CallICFGNode* call)
         SVF::Interval arg2Num = ae.getInterval(arg2Val, call);
         SVF::Interval strLen0 = ae.getUtils()->getStrlen(arg0Val, call);
         SVF::Interval totalLen = SVF::add(strLen0, arg2Num);
-        return canSafelyAccessMemory(arg0Val, totalLen, call);
+        return canSafelyAccessMemory(arg0Val, totalLen, call, &info);
     }
     else
     {
@@ -1047,8 +1048,10 @@ bool BufOverflowDetector::detectStrcat(const CallICFGNode* call)
  */
 bool BufOverflowDetector::canSafelyAccessMemory(const ValVar* value,
         const SVF::Interval& len,
-        const ICFGNode* node)
+        const ICFGNode* node, BufferOverflowInfo* info)
 {
+    if (info)
+        *info = {};
     SVFIR* svfir = PAG::getPAG();
     auto& ae = AbstractInterpretation::getAEInstance();
 
@@ -1087,6 +1090,8 @@ bool BufOverflowDetector::canSafelyAccessMemory(const ValVar* value,
         // if the offset is greater than the size, return false
         if (upperAtLeast(offset, size))
         {
+            if (info)
+                *info = {size, offset};
             return false;
         }
     }

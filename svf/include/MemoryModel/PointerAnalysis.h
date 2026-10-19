@@ -30,9 +30,6 @@
 #ifndef POINTERANALYSIS_H_
 #define POINTERANALYSIS_H_
 
-#include <unistd.h>
-#include <signal.h>
-
 #include "Graphs/CHG.h"
 #include "Graphs/CallGraph.h"
 #include "Graphs/SCC.h"
@@ -188,6 +185,10 @@ public:
 
     /// Interface exposed to users of our pointer analysis, given PAGNodeID
     virtual AliasResult alias(NodeID node1, NodeID node2) = 0;
+
+    /// Collect the nodes that may alias the given node.
+    /// Subclasses must implement this query; the default reports unsupported and aborts.
+    virtual NodeBS getMayAliases(NodeID node);
 
     /// Get points-to targets of a pointer. It needs to be implemented in child class
     virtual const PointsTo& getPts(NodeID ptr) = 0;

@@ -43,6 +43,9 @@
 #include "Util/GeneralType.h"
 #include "Util/Options.h"
 
+#include <optional>
+#include <vector>
+
 namespace SVF
 {
 
@@ -252,6 +255,18 @@ public:
         return getPTDataTy()->unionPts(id,ptd);
     }
 
+    /// Collect exactly the SVFIR nodes q for which mayAlias(node, q) holds
+    virtual NodeBS getMayAliases(NodeID node);
+
+    /// Query multiple pointers, reusing answers for equal points-to sets within this call.
+    /// @param nodes Input SVFIR node IDs in query order.
+    /// @return One owned alias set per input: result[i] equals getMayAliases(nodes[i]).
+    ///         Duplicates are preserved; empty input returns an empty vector.
+    /// The analysis, SVFIR, SCCs and points-to mapping must stay unchanged during the call.
+    /// Equal points-to sets must imply equal answers, including in subclass overrides.
+    /// Cache limits exclude the returned results; split large inputs to limit output storage.
+    std::vector<NodeBS> getMayAliasesBatch(const std::vector<NodeID>& nodes);
+
 
     void dumpTopLevelPtsTo();
 
@@ -354,6 +369,13 @@ protected:
     /// SCC detection
     virtual NodeStack& SCCDetect();
 
+    /// Answer a may-alias query from the reverse points-to sets. Returns nullopt
+    /// when those sets cannot answer it, leaving the caller to try every node.
+    std::optional<NodeBS> collectMayAliasesFromIndex(const PointsTo& expandedPts);
+
+    /// Also check getMayAliases on the pointers that the alias tests use
+    virtual void validateSuccessTests(std::string fun);
+
 
 
     /// Sanitize pts for field insensitive objects
@@ -423,11 +445,22 @@ public:
     }
 
     virtual void initialize();
+    virtual void finalize();
     virtual void solveWorklist();
     virtual void processNode(NodeID nodeId);
     virtual void postProcessNode(NodeID nodeId);
-    virtual bool handleLoad(NodeID id, const ConstraintEdge* load);
-    virtual bool handleStore(NodeID id, const ConstraintEdge* store);
+    virtual bool handleLoad(const PointsTo& objs, const ConstraintEdge* load);
+    virtual bool handleStore(const PointsTo& objs, const ConstraintEdge* store);
+
+private:
+    struct LoadStoreState
+    {
+        PointsTo pts;
+        NodeBS loadDsts;
+        NodeBS storeSrcs;
+    };
+    /// Per node, the objects and load/store endpoints already handled.
+    Map<NodeID, LoadStoreState> loadStoreStates;
 };
 
 } // End namespace SVF

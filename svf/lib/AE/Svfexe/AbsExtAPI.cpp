@@ -59,17 +59,17 @@ void AbsExtAPI::initExtFunMap()
 {
 #define SSE_FUNC_PROCESS(LLVM_NAME, FUNC_NAME)                                 \
     auto sse_##FUNC_NAME = [this](const CallICFGNode* callNode) {              \
-        /* run real ext function */                                            \
+        assert(callNode->arg_size() >= 1 && "external function expects one argument"); \
         const SVFVar* argVar = callNode->getArgument(0);                       \
         const SVF::Interval argVal = ae->getInterval(argVar, callNode);         \
-        if (argVal.isBottom() || !argVal.lower().isFinite())                   \
-            return;                                                            \
-        u32_t rhs = lowerInteger(argVal);                                      \
-        s32_t res = FUNC_NAME(rhs);                                            \
+        SVF::Interval result = SVF::Interval::top();                          \
+        if (argVal.isSingleton()) {                                           \
+            u32_t rhs = lowerInteger(argVal);                                \
+            result = integerInterval(FUNC_NAME(rhs));                         \
+        }                                                                    \
         const SVFVar* retVar = callNode->getRetICFGNode()->getActualRet();     \
-        ae->updateInterval(retVar, integerInterval(res), callNode);            \
-        return;                                                                \
-    };                                                                         \
+        ae->updateInterval(retVar, result, callNode);                         \
+    };                                                                       \
     func_map[#FUNC_NAME] = sse_##FUNC_NAME;
 
     SSE_FUNC_PROCESS(isalnum, isalnum);
@@ -138,8 +138,7 @@ void AbsExtAPI::initExtFunMap()
 
     auto svf_print = [&](const CallICFGNode* callNode)
     {
-        if (callNode->arg_size() < 2)
-            return;
+        assert(callNode->arg_size() >= 2 && "svf_print expects two arguments");
         std::string text = strRead(callNode->getArgument(1), callNode);
         SVF::Interval itv = ae->getInterval(callNode->getArgument(0), callNode);
         std::cout << "Text: " << text
@@ -152,8 +151,7 @@ void AbsExtAPI::initExtFunMap()
 
     auto svf_set_value = [&](const CallICFGNode* callNode)
     {
-        if (callNode->arg_size() < 2)
-            return;
+        assert(callNode->arg_size() >= 3 && "set_value expects three arguments");
         const SVF::Interval lbVal =
             ae->getInterval(callNode->getArgument(1), callNode);
         const SVF::Interval ubVal =
@@ -184,8 +182,7 @@ void AbsExtAPI::initExtFunMap()
 
     auto sse_fread = [&](const CallICFGNode* callNode)
     {
-        if (callNode->arg_size() < 3)
-            return;
+        assert(callNode->arg_size() >= 3 && "fread expects at least three arguments");
         SVF::Interval block_count =
             ae->getInterval(callNode->getArgument(2), callNode);
         SVF::Interval block_size =
@@ -202,24 +199,16 @@ void AbsExtAPI::initExtFunMap()
 
     auto sse_snprintf = [&](const CallICFGNode* callNode)
     {
-        if (callNode->arg_size() < 2)
-            return;
+        assert(callNode->arg_size() >= 2 && "formatted-output function expects at least two arguments");
         // get elem size of arg2
         u32_t elemSize = 1;
-        if (callNode->getArgument(2)->getType()->isArrayTy())
+        if (callNode->arg_size() > 2 &&
+                callNode->getArgument(2)->getType()->isArrayTy())
         {
             elemSize = SVFUtil::dyn_cast<SVFArrayType>(
                            callNode->getArgument(2)->getType())
                        ->getTypeOfElement()
                        ->getByteSize();
-        }
-        else if (callNode->getArgument(2)->getType()->isPointerTy())
-        {
-            elemSize = 1;
-        }
-        else
-        {
-            return;
         }
         SVF::Interval size = SVF::subtract(
                                  SVF::multiply(ae->getInterval(callNode->getArgument(1), callNode),
@@ -240,8 +229,7 @@ void AbsExtAPI::initExtFunMap()
 
     auto sse_itoa = [&](const CallICFGNode* callNode)
     {
-        if (callNode->arg_size() < 3)
-            return;
+        assert(callNode->arg_size() >= 3 && "itoa expects three arguments");
         const SVF::Interval value =
             ae->getInterval(callNode->getArgument(0), callNode);
         if (!value.isSingleton())
@@ -254,8 +242,7 @@ void AbsExtAPI::initExtFunMap()
 
     auto sse_strlen = [&](const CallICFGNode* callNode)
     {
-        if (callNode->arg_size() < 1)
-            return;
+        assert(callNode->arg_size() >= 1 && "strlen expects one argument");
         const SVFVar* retVar = callNode->getRetICFGNode()->getActualRet();
         SVF::Interval byteLen = getStrlen(callNode->getArgument(0), callNode);
         u32_t elemSize = getElementSize(callNode->getArgument(0));
@@ -273,8 +260,7 @@ void AbsExtAPI::initExtFunMap()
 
     auto sse_recv = [&](const CallICFGNode* callNode)
     {
-        if (callNode->arg_size() < 4)
-            return;
+        assert(callNode->arg_size() >= 4 && "recv expects four arguments");
         SVF::Interval len =
             SVF::subtract(ae->getInterval(callNode->getArgument(2), callNode),
                           integerInterval(1));
@@ -286,8 +272,7 @@ void AbsExtAPI::initExtFunMap()
 
     auto sse_free = [&](const CallICFGNode* callNode)
     {
-        if (callNode->arg_size() < 1)
-            return;
+        assert(callNode->arg_size() >= 1 && "free expects one argument");
         const SVF::AddressSet ptrVal =
             ae->getAddressSet(callNode->getArgument(0), callNode);
         if (ptrVal.hasUnknownObject())
@@ -792,7 +777,7 @@ void AbsExtAPI::handleMemcpy(const ValVar* dst, const ValVar* src,
 void AbsExtAPI::handleMemset(const ValVar* dst, const SVF::Interval& elem,
                              const SVF::Interval& len, const ICFGNode* node)
 {
-    if (!isValidLength(len))
+    if (!isValidLength(len) || len.lower().value() <= SVF::Rational(0))
         return;
 
     u32_t elemSize = 1;

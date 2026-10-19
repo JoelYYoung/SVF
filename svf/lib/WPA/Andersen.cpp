@@ -32,9 +32,16 @@
 #include "WPA/Andersen.h"
 #include "WPA/Steensgaard.h"
 #include "WPA/WPAStat.h"
+#include "Util/CoreBitVector.h"
 #include "Util/GeneralType.h"
 #include "Util/Options.h"
 #include "Util/SVFUtil.h"
+
+#include <utility>
+
+#include <algorithm>
+#include <cstdint>
+#include <vector>
 
 using namespace SVF;
 using namespace SVFUtil;
@@ -104,7 +111,12 @@ void AndersenBase::solveConstraints()
     // Start solving constraints
     DBOUT(DGENERAL, outs() << SVFUtil::pasMsg("Start Solving Constraints\n"));
 
-    bool limitTimerSet = SVFUtil::startAnalysisLimitTimer(Options::AnderTimeLimit());
+    bool timeLimited = Options::AnderTimeLimit() > 0;
+    if (timeLimited)
+    {
+        assert(Options::FsTimeLimit() == 0 && "both -ander-time-limit and -fs-time-limit set.");
+        SVFUtil::startAnalysisLimitTimer(Options::AnderTimeLimit());
+    }
 
     initWorklist();
     do
@@ -124,7 +136,10 @@ void AndersenBase::solveConstraints()
     while (reanalyze);
 
     // Analysis is finished, reset the alarm if we set it.
-    SVFUtil::stopAnalysisLimitTimer(limitTimerSet);
+    if (timeLimited)
+    {
+        SVFUtil::stopAnalysisLimitTimer();
+    }
 
     DBOUT(DGENERAL, outs() << SVFUtil::pasMsg("Finish Solving Constraints\n"));
 }
@@ -181,7 +196,10 @@ void AndersenBase:: solveAndwritePtsToFile(const std::string& filename)
 
 void AndersenBase::cleanConsCG(NodeID id)
 {
-    consCG->resetSubs(consCG->getRep(id));
+    // Remove only this node from its representative's members. Erasing the whole
+    // member set would leave every other member mapped to a representative that no
+    // longer lists it, so sccSubNodes would stop being the inverse of sccRepNode.
+    consCG->getSubs(consCG->sccRepNode(id)).reset(id);
     for (NodeID sub: consCG->getSubs(id))
         consCG->resetRep(sub);
     consCG->resetSubs(id);
@@ -687,7 +705,7 @@ bool Andersen::processGepPts(const PointsTo& pts, const GepCGEdge* edge)
 /**
  * Detect and collapse PWC nodes produced by processing gep edges, under the constraint of field limit.
  */
-inline void Andersen::collapsePWCNode(NodeID nodeId)
+void Andersen::collapsePWCNode(NodeID nodeId)
 {
     // If a node is a PWC node, collapse all its points-to target.
     // collapseNodePts() may change the points-to set of the nodes which have been processed
@@ -696,7 +714,7 @@ inline void Andersen::collapsePWCNode(NodeID nodeId)
         reanalyze = true;
 }
 
-inline void Andersen::collapseFields()
+void Andersen::collapseFields()
 {
     while (consCG->hasNodesToBeCollapsed())
     {
@@ -914,6 +932,192 @@ void Andersen::updateNodeRepAndSubs(NodeID nodeId, NodeID newRepId)
     consCG->resetSubs(nodeId);
 }
 
+/*!
+ * Collect every SVFIR node that may alias the given node.
+ */
+NodeBS Andersen::getMayAliases(NodeID node)
+{
+    // Reuse this expansion for the index lookup and, when necessary, every
+    // comparison in the exhaustive fallback.
+    PointsTo expandedPts;
+    expandFIObjs(getPts(node), expandedPts);
+    if (auto aliases = collectMayAliasesFromIndex(expandedPts))
+        return std::move(*aliases);
+
+    NodeBS aliases;
+    const bool queryPointsToBlackHole = containBlackHoleNode(expandedPts);
+    for (SVFIR::iterator it = pag->begin(), eit = pag->end(); it != eit; ++it)
+    {
+        const NodeID candidate = it->first;
+        if (queryPointsToBlackHole)
+        {
+            aliases.set(candidate);
+            continue;
+        }
+
+        PointsTo candidatePts;
+        expandFIObjs(getPts(candidate), candidatePts);
+        if (containBlackHoleNode(candidatePts) ||
+                expandedPts.intersects(candidatePts))
+            aliases.set(candidate);
+    }
+    return aliases;
+}
+
+/*!
+ * Reuse answers only within a batch whose analysis state is unchanged. For example,
+ * queries for p and q with pts(p) = pts(q) = {o} need the same reverse-index walk.
+ * Keep the cache local so later batches and scalar queries observe current state.
+ */
+std::vector<NodeBS> Andersen::getMayAliasesBatch(const std::vector<NodeID>& nodes)
+{
+    std::vector<NodeBS> results;
+    results.reserve(nodes.size());
+    Map<PointsTo, NodeBS> answers;
+    size_t cachedMembers = 0;
+    // Bound the reuse cache separately from the caller-owned results.
+    constexpr size_t maxCachedSets = 256;
+    constexpr size_t maxCachedMembers = 1 << 20;
+    for (NodeID node : nodes)
+    {
+        const PointsTo& pts = getPts(node);
+        auto cached = answers.find(pts);
+        if (cached != answers.end())
+        {
+            results.push_back(cached->second);
+            continue;
+        }
+
+        NodeBS aliases = getMayAliases(node);
+        const size_t members = static_cast<size_t>(pts.count()) + aliases.count();
+        if (members > maxCachedMembers)
+        {
+            results.push_back(std::move(aliases));
+            continue;
+        }
+        if (answers.size() == maxCachedSets || cachedMembers > maxCachedMembers - members)
+        {
+            answers.clear();
+            cachedMembers = 0;
+        }
+        auto inserted = answers.emplace(pts, std::move(aliases));
+        cachedMembers += members;
+        results.push_back(inserted.first->second);
+    }
+    return results;
+}
+
+/*!
+ * Answer a may-alias query from the reverse points-to sets, which say which nodes
+ * may point to a given object.
+ *
+ * Two nodes may alias exactly when their expanded points-to sets share an object.
+ * For every object in this query's expanded set, collect all raw points-to objects
+ * whose expansion can contain it: the object itself, its base, and every field of
+ * a field-insensitive base. The reverse sets of those objects therefore name the
+ * complete answer. The black-hole reverse set supplies nodes that alias everything.
+ *
+ * Returns nullopt when reverse points-to sets are unavailable or the query itself
+ * points to the black hole, leaving the caller to try every node.
+ */
+std::optional<NodeBS> Andersen::collectMayAliasesFromIndex(const PointsTo& expandedPts)
+{
+    if (!getPTDataTy()->hasReversePts() || containBlackHoleNode(expandedPts))
+        return std::nullopt;
+
+    NodeBS objects;
+    const u32_t nodeBound = pag->getTotalNodeNum();
+    for (NodeID object : expandedPts)
+    {
+        objects.set(object);
+        const NodeID base = pag->getBaseObjVarID(object);
+        objects.set(base);
+        if (isFieldInsensitive(base))
+            objects |= pag->getAllFieldsObjVars(base);
+    }
+    objects.set(pag->getBlackHoleNode());
+
+    const size_t wordCount = (static_cast<size_t>(nodeBound) +
+                              CoreBitVector::WordSize - 1) / CoreBitVector::WordSize;
+    CoreBitVector representatives(wordCount);
+    for (NodeID object : objects)
+    {
+        for (NodeID key : getRevPts(object))
+        {
+            const NodeID representative = sccRepNode(key);
+            // Reverse points-to sets can retain stale postings. Confirm the
+            // posting with one current-set bit test before treating it as an
+            // alias witness, unless an earlier object already confirmed it.
+            if (!representatives.test(representative) &&
+                    getPts(representative).test(object))
+                representatives.set(representative);
+        }
+    }
+
+    // SCC subnode sets are individually ordered, but their concatenation is
+    // not globally ordered. Collect them densely before inserting into the
+    // sparse result, where backward insertions would be costly.
+    CoreBitVector answer(wordCount);
+    for (NodeID representative : representatives)
+    {
+        for (NodeID subNode : sccSubNodes(representative))
+            answer.set(subNode);
+    }
+
+    // normalizePointsTo can remove field nodes while their ids remain in
+    // points-to sets. Do not return those stale nodes.
+    NodeBS aliases;
+    for (NodeID id : answer)
+    {
+        if (pag->hasGNode(id))
+            aliases.set(id);
+    }
+    return aliases;
+}
+
+/*!
+ * Run the alias tests, then check getMayAliases on every pointer they use: it must
+ * return exactly the nodes that mayAlias reports
+ */
+void Andersen::validateSuccessTests(std::string fun)
+{
+    AndersenBase::validateSuccessTests(fun);
+
+    PointerAnalysis* pta = this;
+    const FunObjVar* checkFun = pag->getFunObjVar(fun);
+    if (!checkFun)
+        return;
+    for (const CallICFGNode* callNode : pag->getCallSiteSet())
+    {
+        if (callNode->getCalledFunction() != checkFun)
+            continue;
+        std::vector<NodeID> queries;
+        for (u32_t i = 0; i < callNode->arg_size(); ++i)
+            queries.push_back(callNode->getArgument(i)->getId());
+        const std::vector<NodeBS> aliases = getMayAliasesBatch(queries);
+        assert(aliases.size() == queries.size() && "getMayAliasesBatch result count mismatch!");
+        for (size_t i = 0; i < queries.size(); ++i)
+        {
+            const NodeID ptr = queries[i];
+            NodeBS expected;
+            for (SVFIR::iterator it = pag->begin(), eit = pag->end(); it != eit; ++it)
+            {
+                if (mayAlias(ptr, it->first))
+                    expected.set(it->first);
+            }
+            if (aliases[i] == expected && pta->getMayAliases(ptr) == expected)
+                outs() << sucMsg("\t SUCCESS :") << "getMayAliases check <id:" << ptr << "> at ("
+                       << callNode->getSourceLoc() << ")\n";
+            else
+            {
+                SVFUtil::errs() << errMsg("\t FAILURE :") << "getMayAliases check <id:" << ptr
+                                << "> at (" << callNode->getSourceLoc() << ")\n";
+                assert(false && "getMayAliases disagrees with mayAlias!");
+            }
+        }
+    }
+}
+
 void Andersen::cluster(void) const
 {
     assert(Options::MaxFieldLimit() == 0 && "Andersen::cluster: clustering for Andersen's is currently only supported in field-insensitive analysis");
@@ -980,4 +1184,3 @@ void Andersen::dumpTopLevelPtsTo()
 
     outs().flush();
 }
-

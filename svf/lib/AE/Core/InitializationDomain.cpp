@@ -27,6 +27,10 @@
 #include <sstream>
 #include <stdexcept>
 
+#ifdef _MSC_VER
+#include <intrin.h>
+#endif
+
 namespace SVF
 {
 
@@ -148,7 +152,12 @@ std::vector<Variable> InitializationDomain::nonDefaultVariables(
             auto bits = it->page->uninitialized | it->page->initialized;
             while (bits)
             {
+#ifdef _MSC_VER
+                unsigned long slot;
+                _BitScanForward64(&slot, bits);
+#else
                 const unsigned slot = static_cast<unsigned>(__builtin_ctzll(bits));
+#endif
                 const Variable variable(index * ValuesPerPage + slot, it->key.type());
                 if (upperBound && !(variable < *upperBound))
                     break;

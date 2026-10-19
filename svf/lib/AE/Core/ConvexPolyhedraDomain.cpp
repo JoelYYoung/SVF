@@ -23,6 +23,7 @@
 
 #include "AE/Core/ConvexPolyhedraDomain.h"
 
+#include <bitset>
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
@@ -3341,7 +3342,7 @@ bool adjacentGenerators(const std::vector<Generator>& generators,
                                generators[rhs].saturation[word];
 #if defined(__clang__) || defined(__GNUC__)
         commonCount +=
-            static_cast<std::size_t>(__builtin_popcountll(common));
+            std::bitset<64>(common).count();
 #else
         while (common != 0)
         {

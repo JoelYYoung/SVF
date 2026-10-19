@@ -39,6 +39,12 @@
 #include "Util/NodeIDAllocator.h"
 #include "Util/ThreadAPI.h"
 
+#ifdef _MSC_VER
+#    define SVF_WEAK inline
+#else
+#    define SVF_WEAK __attribute__((weak))
+#endif
+
 namespace SVF
 {
 
@@ -101,6 +107,15 @@ bool getMemoryUsageKB(u32_t* vmrss_kb, u32_t* vmsize_kb);
 /// Increase the stack size limit
 void increaseStackSize();
 
+/// Check whether a file exists at the given path
+bool fileExists(const std::string& path);
+
+/// Execute a shell command and capture its stdout output
+std::string getStdoutFromCommand(const std::string& command);
+
+/// Return the absolute path of the current module/executable
+std::string getCurrentSOPath();
+
 /*!
  * Compare two PointsTo according to their size and points-to elements.
  * 1. PointsTo with smaller size is smaller than the other;
@@ -157,13 +172,6 @@ typedef struct equalNodeBS
         return SVFUtil::cmpNodeBS(lhs, rhs);
     }
 } equalNodeBS;
-
-inline NodeBS ptsToNodeBS(const PointsTo &pts)
-{
-    NodeBS nbs;
-    for (const NodeID o : pts) nbs.set(o);
-    return nbs;
-}
 
 typedef OrderedSet<PointsTo, equalPointsTo> PointsToList;
 void dumpPointsToList(const PointsToList& ptl);
@@ -256,14 +264,11 @@ inline void removeKey(const NodeID &key, NodeBS &keySet)
 /// Function to call when alarm for time limit hits.
 void timeLimitReached(int signum);
 
-/// Starts an analysis timer. If timeLimit is 0, sets no timer.
-/// If an alarm has already been set, does not set another.
-/// Returns whether we set a timer or not.
-bool startAnalysisLimitTimer(unsigned timeLimit);
+/// Starts analysis timer. timeLimit must be non-0. Timer must not be already set.
+void startAnalysisLimitTimer(unsigned timeLimit);
 
-/// Stops an analysis timer. limitTimerSet indicates whether the caller set the
-/// timer or not (return value of startLimitTimer).
-void stopAnalysisLimitTimer(bool limitTimerSet);
+/// Stops analysis timer.
+void stopAnalysisLimitTimer(void);
 
 /// Return true if the call is an external call (external library in function summary table)
 /// If the library function is redefined in the application code (e.g., memcpy), it will return false and will not be treated as an external call.
@@ -421,55 +426,6 @@ move(T &&t) noexcept
 {
     return std::move(t);
 }
-
-/// void_t is not available until C++17. We define it here for C++11/14.
-template <typename... Ts> struct make_void
-{
-    typedef void type;
-};
-template <typename... Ts> using void_t = typename make_void<Ts...>::type;
-
-/// @brief Type trait that checks if a type is iterable
-/// (can be applied on a range-based for loop)
-///@{
-template <typename T, typename = void> struct is_iterable : std::false_type {};
-template <typename T>
-struct is_iterable<T, void_t<decltype(std::begin(std::declval<T&>()) !=
-                                      std::end(std::declval<T&>()))>>
-: std::true_type {};
-template <typename T> constexpr bool is_iterable_v = is_iterable<T>::value;
-///@}
-
-/// @brief Type trait to check if a type is a map or unordered_map.
-///@{
-template <typename T> struct is_map : std::false_type {};
-template <typename... Ts> struct is_map<std::map<Ts...>> : std::true_type {};
-template <typename... Ts>
-struct is_map<std::unordered_map<Ts...>> : std::true_type {};
-template <typename... Ts> constexpr bool is_map_v = is_map<Ts...>::value;
-///@}
-
-/// @brief Type trait to check if a type is a set or unordered_set.
-///@{
-template <typename T> struct is_set : std::false_type {};
-template <typename... Ts> struct is_set<std::set<Ts...>> : std::true_type {};
-template <typename... Ts>
-struct is_set<std::unordered_set<Ts...>> : std::true_type {};
-template <typename... Ts> constexpr bool is_set_v = is_set<Ts...>::value;
-///@}
-
-/// @brief Type trait to check if a type is vector or list.
-template <typename T> struct is_sequence_container : std::false_type {};
-template <typename... Ts>
-struct is_sequence_container<std::vector<Ts...>> : std::true_type {};
-template <typename... Ts>
-struct is_sequence_container<std::deque<Ts...>> : std::true_type {};
-template <typename... Ts>
-struct is_sequence_container<std::list<Ts...>> : std::true_type {};
-template <typename... Ts>
-constexpr bool is_sequence_container_v = is_sequence_container<Ts...>::value;
-///@}
-
 
 } // End namespace SVFUtil
 
