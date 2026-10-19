@@ -363,6 +363,11 @@ public:
     {
         return signAndWidth < 0;
     }
+
+    bool isBoolean() const
+    {
+        return signAndWidth == 1 || signAndWidth == -1;
+    }
 };
 
 class SVFFunctionType : public SVFType

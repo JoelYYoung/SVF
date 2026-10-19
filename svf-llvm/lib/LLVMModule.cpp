@@ -34,6 +34,7 @@
 #include "Util/SVFUtil.h"
 #include "SVF-LLVM/BasicTypes.h"
 #include "SVF-LLVM/LLVMUtil.h"
+#include "SVF-LLVM/PiNodeInsertion.h"
 #include "SVF-LLVM/CppUtil.h"
 #include "SVF-LLVM/BreakConstantExpr.h"
 #include "SVF-LLVM/SymbolTableBuilder.h"
@@ -43,6 +44,10 @@
 #include "llvm/Transforms/Utils/Cloning.h"
 #include "SVF-LLVM/ICFGBuilder.h"
 #include "Graphs/CallGraph.h"
+#include "llvm/Support/SHA256.h"
+#include "llvm/Support/MemoryBuffer.h"
+#include "llvm/IR/ModuleSlotTracker.h"
+#include <stdexcept>
 #include "Util/CallGraphBuilder.h"
 
 #if LLVM_VERSION_MAJOR > 16
@@ -51,6 +56,121 @@
 
 using namespace std;
 using namespace SVF;
+
+std::string LLVMModuleSet::instructionSemanticSite(const Instruction* instruction)
+{
+    auto& blockNames = getLLVMModuleSet()->semanticBlockNames;
+    if (blockNames.find(instruction->getParent()) == blockNames.end())
+    {
+        // Operand numbering is fixed after module preprocessing.
+        llvm::ModuleSlotTracker slots(instruction->getModule(), false);
+        for (const Function& function : *instruction->getModule())
+        {
+            slots.incorporateFunction(function);
+            for (const BasicBlock& block : function)
+            {
+                std::string name;
+                llvm::raw_string_ostream stream(name);
+                block.printAsOperand(stream, false, slots);
+                blockNames.emplace(&block, std::move(name));
+            }
+        }
+    }
+    std::string site;
+    llvm::raw_string_ostream stream(site);
+    stream << "fn=" << instruction->getFunction()->getName() << ':';
+    stream << blockNames.at(instruction->getParent());
+    unsigned ordinal = 0;
+    for (const auto& previous : *instruction->getParent())
+    {
+        if (&previous == instruction) break;
+        ++ordinal;
+    }
+    stream << ":inst=" << ordinal;
+    stream.flush();
+    return site;
+}
+
+void LLVMModuleSet::initializeSemanticOrigins()
+{
+    if (Options::AEPostCheckFile().empty()) return;
+    std::set<std::string> origins;
+    for (Module& module : modules)
+    {
+        auto buffer = llvm::MemoryBuffer::getFile(module.getModuleIdentifier());
+        if (!buffer)
+            throw std::runtime_error("AE_POST_IDENTITY: module provenance file unavailable");
+        auto bytes = (*buffer)->getBuffer();
+        auto digest = llvm::SHA256::hash(llvm::ArrayRef<uint8_t>(
+            reinterpret_cast<const uint8_t*>(bytes.data()), bytes.size()));
+        const char* hex = "0123456789abcdef";
+        std::string sha;
+        for (uint8_t b : digest) { sha += hex[b >> 4]; sha += hex[b & 15]; }
+        const std::string origin = "module-sha256=" + sha;
+        origins.insert(origin);
+        for (const Function& function : module)
+            functionOrigins[&function] = origin;
+    }
+    for (const auto& origin : origins)
+        semanticModuleNamespace += origin + ";";
+}
+
+std::string LLVMModuleSet::functionSemanticOrigin(const Function* function) const
+{
+    auto it = functionOrigins.find(function);
+    if (it == functionOrigins.end())
+        throw std::runtime_error("AE_POST_IDENTITY: missing function module provenance");
+    return it->second;
+}
+
+void LLVMModuleSet::attachSemanticSites(ICFG* graph)
+{
+    if (Options::AEPostCheckFile().empty()) return;
+    graph->getGlobalICFGNode()->setSemanticSite(semanticModuleNamespace + "global");
+    for (Module& module : modules)
+        for (const Function& function : module)
+        {
+            if (function.isDeclaration()) continue;
+            const std::string prefix = functionSemanticOrigin(&function) + ";";
+            auto entry = FunToFunEntryNodeMap.find(&function);
+            auto exit = FunToFunExitNodeMap.find(&function);
+            if (entry == FunToFunEntryNodeMap.end() || exit == FunToFunExitNodeMap.end())
+                throw std::runtime_error("AE_POST_IDENTITY: missing function boundary");
+            entry->second->setSemanticSite(prefix + "fn=" + function.getName().str() + ":entry");
+            exit->second->setSemanticSite(prefix + "fn=" + function.getName().str() + ":exit");
+            for (const BasicBlock& block : function)
+                for (const Instruction& instruction : block)
+                {
+                    if (!hasICFGNode(&instruction)) continue;
+                    ICFGNode* node = getICFGNode(&instruction);
+                    const std::string site = prefix + instructionSemanticSite(&instruction);
+                    node->setSemanticSite(site + (SVFUtil::isa<CallICFGNode>(node) ? ":call" : ":intra"));
+                    if (SVFUtil::isa<CallICFGNode>(node))
+                        getRetICFGNode(&instruction)->setSemanticSite(site + ":ret");
+                    const Value* condition = nullptr;
+                    if (const auto* branch = llvm::dyn_cast<llvm::BranchInst>(&instruction))
+                        if (branch->isConditional()) condition = branch->getCondition();
+                    if (const auto* sw = llvm::dyn_cast<llvm::SwitchInst>(&instruction))
+                        condition = sw->getCondition();
+                    if (condition)
+                    {
+                        std::string identity;
+                        llvm::raw_string_ostream stream(identity);
+                        if (const auto* definition = llvm::dyn_cast<Instruction>(condition))
+                            stream << prefix << instructionSemanticSite(definition);
+                        else
+                        {
+                            stream << prefix << "fn=" << function.getName() << ":operand=";
+                            condition->printAsOperand(stream, true);
+                        }
+                        stream << ":type=";
+                        condition->getType()->print(stream);
+                        stream.flush();
+                        node->setSemanticCondition(identity);
+                    }
+                }
+        }
+}
 
 /*
   svf.main() is used to model the real entry point of a C++ program, which
@@ -164,9 +284,11 @@ void LLVMModuleSet::buildSymbolTable() const
 
 void LLVMModuleSet::build()
 {
+    semanticBlockNames.clear();
     if(preProcessed==false)
         prePassSchedule();
 
+    initializeSemanticOrigins();
     buildFunToFunMap();
     buildGlobalDefToRepMap();
 
@@ -289,6 +411,28 @@ void LLVMModuleSet::prePassSchedule()
             FPM.run(fun, FAM);
 #endif
         }
+    }
+
+    /// e-SSA pi nodes (research D-006), after exits are unified so the
+    /// function-return phi is not split. Every execution mode reads the same
+    /// IR, so query identities agree across modes.
+    if (Options::PiNodes())
+    {
+        PiNodeStatistics total;
+        for (Module &M : getLLVMModules())
+        {
+            const PiNodeStatistics statistics = insertPiNodes(M);
+            total.branches += statistics.branches;
+            total.switches += statistics.switches;
+            total.piNodes += statistics.piNodes;
+            total.renamedUses += statistics.renamedUses;
+            total.splitEdges += statistics.splitEdges;
+        }
+        if (std::getenv("SVF_AE_PHASE_STATS"))
+            SVFUtil::outs() << "AE_PI_NODES branches=" << total.branches
+                            << " switches=" << total.switches << " pi=" << total.piNodes
+                            << " renamed_uses=" << total.renamedUses
+                            << " split_edges=" << total.splitEdges << "\n";
     }
 }
 
@@ -745,6 +889,8 @@ void LLVMModuleSet::buildFunToFunMap()
         Function* clonedFunction = Function::Create(extFunToClone->getFunctionType(),
                 Function::ExternalLinkage,
                 extFunToClone->getName());
+        if (!Options::AEPostCheckFile().empty())
+            functionOrigins[clonedFunction] = functionSemanticOrigin(extFunToClone);
         // Map the arguments of the new function to the arguments of extFunToClone
         llvm::ValueToValueMapTy valueMap;
         Function::arg_iterator destArg = clonedFunction->arg_begin();

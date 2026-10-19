@@ -1,4 +1,4 @@
-//===- RelExeState.cpp ----Relation Execution States for Interval Domains-------//
+//===- RelExeState.cpp ---- Relation execution state ----------------------===//
 //
 //                     SVF: Static Value-Flow Analysis
 //
@@ -28,80 +28,56 @@
  */
 
 #include "AE/Core/RelExeState.h"
-#include "Util/GeneralType.h"
 #include "Util/SVFUtil.h"
+
 #include <iomanip>
+#include <sstream>
 
 using namespace SVF;
 using namespace SVFUtil;
 
-/*!
- * Extract sub SVFVar IDs of a Z3Expr
- *
- * e.g., Given an expr "a+b", return {a.id, b.id}
- * @param expr
- * @param res
- */
-void RelExeState::extractSubVars(const Z3Expr &expr, Set<u32_t> &res)
+void RelExeState::extractSubVars(const Z3Expr& expr, Set<u32_t>& res)
 {
-    if (expr.getExpr().num_args() == 0)
-        if (!expr.getExpr().is_true() && !expr.getExpr().is_false() && !expr.is_numeral())
-        {
-            const std::string &exprStr = expr.to_string();
-            res.insert(std::stoi(exprStr.substr(1, exprStr.size() - 1)));
-        }
+    if (expr.getExpr().num_args() == 0 && !expr.getExpr().is_true() &&
+            !expr.getExpr().is_false() && !expr.is_numeral())
+    {
+        const std::string exprStr = expr.to_string();
+        res.insert(std::stoi(exprStr.substr(1, exprStr.size() - 1)));
+    }
     for (u32_t i = 0; i < expr.getExpr().num_args(); ++i)
     {
-        const z3::expr &e = expr.getExpr().arg(i);
-        extractSubVars(e, res);
+        const z3::expr& argument = expr.getExpr().arg(i);
+        extractSubVars(argument, res);
     }
 }
 
-/*!
- * Extract all related SVFVar IDs based on compare expr
- *
- * @param expr
- * @param res
- */
-void RelExeState::extractCmpVars(const Z3Expr &expr, Set<u32_t> &res)
+void RelExeState::extractCmpVars(const Z3Expr& expr, Set<u32_t>& res)
 {
-    Set<u32_t> r;
-    extractSubVars(expr, r);
-    res.insert(r.begin(), r.end());
-    assert(!r.empty() && "symbol not init?");
-    if (r.size() == 1 && eq(expr, toZ3Expr(*r.begin())))
-    {
+    Set<u32_t> directVars;
+    extractSubVars(expr, directVars);
+    res.insert(directVars.begin(), directVars.end());
+    assert(!directVars.empty() && "symbol not init?");
+    if (directVars.size() == 1 && eq(expr, toZ3Expr(*directVars.begin())))
         return;
-    }
-    for (const auto &id: r)
-    {
+
+    for (u32_t id : directVars)
         extractCmpVars((*this)[id], res);
-    }
 }
 
-/*!
- * Build relational Z3Expr
- * @param cmp
- * @param succ
- * @param vars return all the relational vars of a given variable
- * @param initVars the vars on the right hand side of cmp statement, e.g., {a} for "cmp = a > 1"
- * @return
- */
-Z3Expr RelExeState::buildRelZ3Expr(u32_t cmp, s32_t succ, Set<u32_t> &vars, Set<u32_t> &initVars)
+Z3Expr RelExeState::buildRelZ3Expr(u32_t cmp, s32_t succ, Set<u32_t>& vars,
+                                   Set<u32_t>& initVars)
 {
-    Z3Expr res = (getZ3Expr(cmp) == succ).simplify();
-    extractSubVars(res, initVars);
-    extractCmpVars(res, vars);
-    for (const auto &id: vars)
-    {
-        res = (res && toZ3Expr(id) == getZ3Expr(id)).simplify();
-    }
-    res = (res && (toZ3Expr(cmp) == getZ3Expr(cmp))).simplify();
+    Z3Expr result = (getZ3Expr(cmp) == succ).simplify();
+    extractSubVars(result, initVars);
+    extractCmpVars(result, vars);
+    for (u32_t id : vars)
+        result = (result && toZ3Expr(id) == getZ3Expr(id)).simplify();
+    result = (result && (toZ3Expr(cmp) == getZ3Expr(cmp))).simplify();
     vars.insert(cmp);
-    return res;
+    return result;
 }
 
-RelExeState &RelExeState::operator=(const RelExeState &rhs)
+RelExeState& RelExeState::operator=(const RelExeState& rhs)
 {
     if (*this != rhs)
     {
@@ -111,106 +87,123 @@ RelExeState &RelExeState::operator=(const RelExeState &rhs)
     return *this;
 }
 
-/*!
- * Overloading Operator==
- * @param rhs
- * @return
- */
-bool RelExeState::operator==(const RelExeState &rhs) const
+RelExeState& RelExeState::operator=(RelExeState&& rhs) noexcept
+{
+    if (this != &rhs)
+    {
+        _varToVal = std::move(rhs._varToVal);
+        _addrToVal = std::move(rhs._addrToVal);
+    }
+    return *this;
+}
+
+bool RelExeState::operator==(const RelExeState& rhs) const
 {
     return eqVarToValMap(_varToVal, rhs.getVarToVal()) &&
            eqVarToValMap(_addrToVal, rhs.getLocToVal());
 }
 
-/*!
- * Overloading Operator<
- * @param rhs
- * @return
- */
-bool RelExeState::operator<(const RelExeState &rhs) const
+bool RelExeState::operator<(const RelExeState& rhs) const
 {
     return lessThanVarToValMap(_varToVal, rhs.getVarToVal()) ||
            lessThanVarToValMap(_addrToVal, rhs.getLocToVal());
 }
 
-bool RelExeState::eqVarToValMap(const VarToValMap &lhs, const VarToValMap &rhs) const
+u32_t RelExeState::hash() const
 {
-    if (lhs.size() != rhs.size()) return false;
-    for (const auto &item: lhs)
+    std::size_t variableHash = getVarToVal().size() * 2;
+    Hash<u32_t> hashValue;
+    for (const auto& [variable, expression] : getVarToVal())
     {
-        auto it = rhs.find(item.first);
-        // return false if SVFVar not exists in rhs or z3Expr not equal
-        if (it == rhs.end() || !eq(item.second, it->second))
+        variableHash ^= hashValue(variable) + 0x9e3779b9 +
+                        (variableHash << 6) + (variableHash >> 2);
+        variableHash ^= hashValue(expression.id()) + 0x9e3779b9 +
+                        (variableHash << 6) + (variableHash >> 2);
+    }
+
+    std::size_t locationHash = getVarToVal().size() * 2;
+    for (const auto& [location, expression] : getLocToVal())
+    {
+        locationHash ^= hashValue(location) + 0x9e3779b9 +
+                        (locationHash << 6) + (locationHash >> 2);
+        locationHash ^= hashValue(expression.id()) + 0x9e3779b9 +
+                        (locationHash << 6) + (locationHash >> 2);
+    }
+
+    Hash<std::pair<u32_t, u32_t>> pairHash;
+    return pairHash(std::make_pair(static_cast<u32_t>(variableHash),
+                                   static_cast<u32_t>(locationHash)));
+}
+
+bool RelExeState::eqVarToValMap(const VarToValMap& lhs,
+                                const VarToValMap& rhs) const
+{
+    if (lhs.size() != rhs.size())
+        return false;
+    for (const auto& [variable, expression] : lhs)
+    {
+        const auto found = rhs.find(variable);
+        if (found == rhs.end() || !eq(expression, found->second))
             return false;
     }
     return true;
 }
 
-bool RelExeState::lessThanVarToValMap(const VarToValMap &lhs, const VarToValMap &rhs) const
+bool RelExeState::lessThanVarToValMap(const VarToValMap& lhs,
+                                      const VarToValMap& rhs) const
 {
-    if (lhs.size() != rhs.size()) return lhs.size() < rhs.size();
-    for (const auto &item: lhs)
+    if (lhs.size() != rhs.size())
+        return lhs.size() < rhs.size();
+    for (const auto& [variable, expression] : lhs)
     {
-        auto it = rhs.find(item.first);
-        // lhs > rhs if SVFVar not exists in rhs
-        if (it == rhs.end())
+        const auto found = rhs.find(variable);
+        if (found == rhs.end())
             return false;
-        // judge from expr id
-        if (!eq(item.second, it->second))
-            return item.second.id() < it->second.id();
+        if (!eq(expression, found->second))
+            return expression.id() < found->second.id();
     }
     return false;
 }
 
-/*!
- * Store value to location
- * @param loc location, e.g., int_val(0x7f..01)
- * @param value
- */
-void RelExeState::store(const Z3Expr &loc, const Z3Expr &value)
+void RelExeState::store(const Z3Expr& loc, const Z3Expr& value)
 {
     assert(loc.is_numeral() && "location must be numeral");
-    s32_t virAddr = z3Expr2NumValue(loc);
-    assert(isVirtualMemAddress(virAddr) && "Pointer operand is not a physical address?");
-    store(getInternalID(virAddr), value);
+    const s32_t virtualAddress = z3Expr2NumValue(loc);
+    assert(isVirtualMemAddress(virtualAddress) &&
+           "pointer operand is not a virtual address");
+    store(getInternalID(virtualAddress), value);
 }
 
-/*!
- * Load value at location
- * @param loc location, e.g., int_val(0x7f..01)
- * @return
- */
-Z3Expr &RelExeState::load(const Z3Expr &loc)
+Z3Expr& RelExeState::load(const Z3Expr& loc)
 {
     assert(loc.is_numeral() && "location must be numeral");
-    s32_t virAddr = z3Expr2NumValue(loc);
-    assert(isVirtualMemAddress(virAddr) && "Pointer operand is not a physical address?");
-    u32_t objId = getInternalID(virAddr);
-    assert(getInternalID(objId) == objId && "SVFVar idx overflow > 0x7f000000?");
-    return load(objId);
+    const s32_t virtualAddress = z3Expr2NumValue(loc);
+    assert(isVirtualMemAddress(virtualAddress) &&
+           "pointer operand is not a virtual address");
+    const u32_t objectId = getInternalID(virtualAddress);
+    assert(getInternalID(objectId) == objectId &&
+           "SVFVar index overflow > 0x7f000000");
+    return load(objectId);
 }
 
-/*!
- * Print values of all expressions
- */
 void RelExeState::printExprValues()
 {
     std::cout.flags(std::ios::left);
     std::cout << "-----------Var and Value-----------\n";
-    for (const auto &item: getVarToVal())
+    for (const auto& [variable, expression] : getVarToVal())
     {
-        std::stringstream exprName;
-        exprName << "Var" << item.first;
-        std::cout << std::setw(25) << exprName.str();
-        const Z3Expr &sim = item.second.simplify();
-        if (sim.is_numeral() && isVirtualMemAddress(z3Expr2NumValue(sim)))
+        std::stringstream expressionName;
+        expressionName << "Var" << variable;
+        std::cout << std::setw(25) << expressionName.str();
+        const Z3Expr simplified = expression.simplify();
+        if (simplified.is_numeral() &&
+                isVirtualMemAddress(z3Expr2NumValue(simplified)))
         {
-            std::cout << "\t Value: " << std::hex << "0x" << z3Expr2NumValue(sim) << "\n";
+            std::cout << "\t Value: " << std::hex
+                      << "0x" << z3Expr2NumValue(simplified) << "\n";
         }
         else
-        {
-            std::cout << "\t Value: " << std::dec << sim << "\n";
-        }
+            std::cout << "\t Value: " << std::dec << simplified << "\n";
     }
     std::cout << "-----------------------------------------\n";
 }

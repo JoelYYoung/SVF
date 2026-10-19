@@ -141,11 +141,28 @@ public:
         return conditionVar;
     }
 
+    /// Actual LLVM switch successor semantics, separate from legacy -1 IDs.
+    void setSwitchCases(unsigned width, bool includesDefault,
+                        const std::vector<s64_t>& values)
+    {
+        switchWidth = width;
+        switchDefault = includesDefault;
+        switchCases = values;
+    }
+    bool isSwitchEdge() const { return switchWidth != 0; }
+    unsigned getSwitchWidth() const { return switchWidth; }
+    bool includesSwitchDefault() const { return switchDefault; }
+    const std::vector<s64_t>& getSwitchCases() const { return switchCases; }
+
     s64_t getSuccessorCondValue() const
     {
         assert(getCondition() && "this is not a conditional branch edge");
         return branchCondVal;
     }
+
+    /// Output-only IR branch label. Never consumed by transfer or edge ordering.
+    void setSemanticBranch(std::string label) { semanticBranch_ = std::move(label); }
+    const std::string& getSemanticBranch() const { return semanticBranch_; }
 
     virtual const std::string toString() const;
 
@@ -161,6 +178,10 @@ private:
     /// the second element is 0
     const SVFVar* conditionVar;
     s64_t branchCondVal;
+    std::string semanticBranch_;
+    unsigned switchWidth = 0;
+    bool switchDefault = false;
+    std::vector<s64_t> switchCases;
 
     inline void setConditionVar(const SVFVar* c)
     {

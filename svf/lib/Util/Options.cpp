@@ -1,4 +1,21 @@
 //===- Options.cpp -- Command line options ------------------------//
+//
+//                     SVF: Static Value-Flow Analysis
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Affero General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+// GNU Affero General Public License for more details.
+//
+// You should have received a copy of the GNU Affero General Public License
+// along with this program. If not, see <http://www.gnu.org/licenses/>.
+//
+//===----------------------------------------------------------------------===//
 
 #include "Util/Options.h"
 #include "Util/CommandLine.h"
@@ -531,6 +548,12 @@ Option<bool> Options::SVFMain(
     false
 );
 
+Option<bool> Options::PiNodes(
+    "pi-nodes",
+    "Insert e-SSA pi nodes for integer branch and switch operands before building SVFIR",
+    false
+);
+
 Option<bool> Options::ModelConsts(
     "model-consts",
     "Modeling individual constant objects",
@@ -782,8 +805,120 @@ const OptionMap<u32_t> Options::AESparsity(
     {
         AbstractInterpretation::AESparsity::Sparse, "sparse",
         "Sparse abstract execution via SVFG."
+    },
+    {
+        AbstractInterpretation::AESparsity::OhPackedSparse, "oh-packed",
+        "Oh pack-location sparse propagation with dense auxiliary facets."
+    },
+    {
+        AbstractInterpretation::AESparsity::VersionedSparse, "d3",
+        "D3 relational sparse AE: memory content versions, definition-site constraints, refinement channel."
     }
 });
+const OptionMap<u32_t> Options::AEDomain(
+    "ae-domain",
+    "Numerical abstract domain (Default: box)",
+    AbstractInterpretation::AENumericalDomain::Box,
+{
+    {
+        AbstractInterpretation::AENumericalDomain::Box, "box",
+        "Independent interval bounds."
+    },
+    {
+        AbstractInterpretation::AENumericalDomain::Octagon, "octagon",
+        "Relational constraints of the form +/-x +/-y <= c."
+    },
+    {
+        AbstractInterpretation::AENumericalDomain::Polyhedra, "polyhedra",
+        "General convex linear constraints."
+    }
+});
+const OptionMap<u32_t> Options::AERelationalPolicy(
+    "ae-relational-policy",
+    "Relational-domain activation policy (Default: whole)",
+    AbstractInterpretation::AERelationalPolicy::WholeRelational,
+{
+    {
+        AbstractInterpretation::AERelationalPolicy::LearnedPackedRelational,
+        "learned-pack",
+        "Use SAS16 reconstructed decision tree; SVF_LEARNED_MODEL supplies model path."
+    },
+    {
+        AbstractInterpretation::AERelationalPolicy::ImpactPackedRelational,
+        "impact-pack",
+        "Use public Sparrow impact graph adaptation (native Octagon)."
+    },
+    {
+        AbstractInterpretation::AERelationalPolicy::ClosurePackedRelational,
+        "closure-pack",
+        "Use uncapped statement/points-to connected components (native Octagon)."
+    },
+    {
+        AbstractInterpretation::AERelationalPolicy::SyntaxPackedRelational,
+        "syntax-pack",
+        "Use bounded automatic IR syntax packs (native Octagon, global Box fallback)."
+    },
+    {
+        AbstractInterpretation::AERelationalPolicy::WholeRelational, "whole",
+        "Use the selected relational domain for every numerical variable."
+    },
+    {
+        AbstractInterpretation::AERelationalPolicy::QuerySliceRelational,
+        "query-slice",
+        "Use Box globally and the relational domain on a fixed query dependency slice."
+    },
+    {
+        AbstractInterpretation::AERelationalPolicy::EvaStyleRelational,
+        "eva-style",
+        "Use Box globally and relational variables induced by Eva-style recognizable expressions."
+    },
+    {
+        AbstractInterpretation::AERelationalPolicy::QueryEvaRelational,
+        "query-eva",
+        "Use the query dependency slice restricted by Eva-style recognizable expressions."
+    }
+});
+const OptionMap<u32_t> Options::AERelationalCallPolicy(
+    "ae-relational-calls",
+    "Relational propagation across call boundaries (Default: through)",
+    AbstractInterpretation::AERelationalCallPolicy::ThroughCalls,
+{
+    {
+        AbstractInterpretation::AERelationalCallPolicy::ThroughCalls,
+        "through",
+        "Propagate actual/formal and return relations across calls."
+    },
+    {
+        AbstractInterpretation::AERelationalCallPolicy::IntraproceduralCalls,
+        "intraprocedural",
+        "Keep unary bounds and effects across calls but do not propagate binary relations."
+    }
+});
+const Option<u32_t> Options::AEPackMaxVars("ae-pack-max-vars", "Maximum syntax pack size", 10);
+const Option<bool> Options::AEHarnessNondetNoCallback(
+    "ae-harness-nondet-no-callback",
+    "Explicit test-harness premise: nondet_i32 cannot call user code (default: false).",
+    false);
+const Option<u32_t> Options::AERelationalMaxVars(
+    "ae-relational-max-vars",
+    "Maximum variables in the fixed partial relational vocabulary.",
+    32
+);
+const Option<std::string> Options::AEQueryLedgerFile(
+    "ae-query-ledger",
+    "Write the complete abstract-execution detector query ledger as TSV.",
+    ""
+);
+const Option<std::string> Options::AEQueryInputID(
+    "ae-query-input-id",
+    "Stable input identity recorded in AE verification artifacts (for example SHA-256).",
+    ""
+);
+const Option<std::string> Options::AEPostCheckFile(
+    "ae-post-check",
+    "Replay dense transfer equations and write the post-fixpoint report as TSV.",
+    ""
+);
 const OptionMap<u32_t> Options::AEFunEntry(
     "ae-fun-entry",
     "Abstract execution function entry mode (Default: main)",

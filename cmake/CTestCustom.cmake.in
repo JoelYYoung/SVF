@@ -1,0 +1,4 @@
+# The external Test-Suite still registers command-line self-tests for the
+# removed IntervalState and RelationSolver surface. This branch tests the
+# supported domain and AE behavior with in-tree tests instead.
+set(CTEST_CUSTOM_TESTS_IGNORE symabs aetest)
