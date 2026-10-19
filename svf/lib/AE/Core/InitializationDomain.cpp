@@ -22,9 +22,9 @@
 //===----------------------------------------------------------------------===//
 
 #include "AE/Core/InitializationDomain.h"
+#include "Util/SparseBitVector.h"
 
 #include <algorithm>
-#include <bitset>
 #include <sstream>
 #include <stdexcept>
 
@@ -149,8 +149,7 @@ std::vector<Variable> InitializationDomain::nonDefaultVariables(
             auto bits = it->page->uninitialized | it->page->initialized;
             while (bits)
             {
-                const auto lowestBit = bits & (~bits + 1);
-                const auto slot = std::bitset<64>(lowestBit - 1).count();
+                const auto slot = countTrailingZeros(bits);
                 const Variable variable(index * ValuesPerPage + slot, it->key.type());
                 if (upperBound && !(variable < *upperBound))
                     break;
