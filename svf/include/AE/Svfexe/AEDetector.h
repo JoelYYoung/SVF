@@ -161,6 +161,7 @@ public:
     struct BufferOverflowInfo
     {
         u32_t bufferSize = 0;
+        u32_t bufferLowerBound = 0;
         Interval accessOffset = Interval::singleton(Rational(0));
     };
 
@@ -307,7 +308,7 @@ public:
                    : std::numeric_limits<double>::infinity();
         };
         recoder.addAbsExecBug(GenericBug::FULLBUFOVERFLOW, eventStack,
-                              info.bufferSize, info.bufferSize,
+                              info.bufferLowerBound, info.bufferSize,
                               value(info.accessOffset.lower()),
                               value(info.accessOffset.upper()));
         nodeToBugInfo[node] =

@@ -322,7 +322,13 @@ public:
                             const SVF::AddressSet& addresses,
                             const ICFGNode* node);
 
-    u32_t getAllocaInstByteSize(const AddrStmt* addr);
+    struct AllocationSizeBounds
+    {
+        u32_t lowerBound;
+        u32_t upperBound;
+    };
+
+    AllocationSizeBounds getAllocaInstByteSize(const AddrStmt* addr);
     /// Sparrow Size(o) model shared by the main analysis, detector and packers.
     const AllocationSizeModel& allocationSizeModel();
     /// Sound lower bound on the bytes of every object allocated at `base`'s

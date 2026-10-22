@@ -102,10 +102,14 @@ void LLVMModuleSet::initializeSemanticOrigins()
             throw std::runtime_error("AE_POST_IDENTITY: module provenance file unavailable");
         auto bytes = (*buffer)->getBuffer();
         auto digest = llvm::SHA256::hash(llvm::ArrayRef<uint8_t>(
-            reinterpret_cast<const uint8_t*>(bytes.data()), bytes.size()));
+                                             reinterpret_cast<const uint8_t*>(bytes.data()), bytes.size()));
         const char* hex = "0123456789abcdef";
         std::string sha;
-        for (uint8_t b : digest) { sha += hex[b >> 4]; sha += hex[b & 15]; }
+        for (uint8_t b : digest)
+        {
+            sha += hex[b >> 4];
+            sha += hex[b & 15];
+        }
         const std::string origin = "module-sha256=" + sha;
         origins.insert(origin);
         for (const Function& function : module)
@@ -285,6 +289,12 @@ void LLVMModuleSet::buildSymbolTable() const
 void LLVMModuleSet::build()
 {
     semanticBlockNames.clear();
+    if (!empty())
+    {
+        targetABI = LLVMUtil::detectTargetABI(
+                        LLVMUtil::getTargetTriple(getMainLLVMModule()));
+    }
+
     if(preProcessed==false)
         prePassSchedule();
 
@@ -707,10 +717,10 @@ void LLVMModuleSet::addSVFMain()
         Function* svfmain = SVFUtil::dyn_cast<Function>(svfmainFn.getCallee());
 #else
         Function* svfmain = SVFUtil::dyn_cast<Function>(M.getOrInsertFunction(
-                                SVF_MAIN_FUNC_NAME,
-                                Type::getVoidTy(M.getContext()),
-                                i32,i8ptr2,i8ptr2
-                            ));
+                SVF_MAIN_FUNC_NAME,
+                Type::getVoidTy(M.getContext()),
+                i32,i8ptr2,i8ptr2
+            ));
 #endif
         svfmain->setCallingConv(llvm::CallingConv::C);
         BasicBlock* block = BasicBlock::Create(M.getContext(), "entry", svfmain);
@@ -887,8 +897,8 @@ void LLVMModuleSet::buildFunToFunMap()
             appModule = appFunToReplace->getParent();
         }
         Function* clonedFunction = Function::Create(extFunToClone->getFunctionType(),
-                Function::ExternalLinkage,
-                extFunToClone->getName());
+            Function::ExternalLinkage,
+            extFunToClone->getName());
         if (!Options::AEPostCheckFile().empty())
             functionOrigins[clonedFunction] = functionSemanticOrigin(extFunToClone);
         // Map the arguments of the new function to the arguments of extFunToClone

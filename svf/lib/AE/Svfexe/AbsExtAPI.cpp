@@ -533,7 +533,7 @@ SVF::Interval AbsExtAPI::getStrlen(const ValVar* strValue, const ICFGNode* node)
                                 SVFUtil::dyn_cast<AddrStmt>(stmt2))
                     {
                         dst_size = std::max(
-                                       dst_size, ae->getAllocaInstByteSize(addrStmt));
+                                       dst_size, ae->getAllocaInstByteSize(addrStmt).upperBound);
                     }
                 }
             }

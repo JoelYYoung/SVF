@@ -1106,7 +1106,14 @@ bool BufOverflowDetector::canSafelyAccessMemory(const ValVar* value,
         if (upperAtLeast(offset, size))
         {
             if (info)
-                *info = {size, offset};
+            {
+                u32_t upper = size;
+                if (const ICFGNode* site = baseObject->getICFGNode())
+                    for (const SVFStmt* stmt : site->getSVFStmts())
+                        if (const auto* allocation = SVFUtil::dyn_cast<AddrStmt>(stmt))
+                            upper = std::max(upper, ae.getAllocaInstByteSize(allocation).upperBound);
+                *info = {upper, size, offset};
+            }
             return false;
         }
     }

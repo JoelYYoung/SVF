@@ -320,7 +320,8 @@ SVF::AddressSet AbstractInterpretation::getGepObjAddrs(
     return result;
 }
 
-u32_t AbstractInterpretation::getAllocaInstByteSize(const AddrStmt* address)
+AbstractInterpretation::AllocationSizeBounds
+AbstractInterpretation::getAllocaInstByteSize(const AddrStmt* address)
 {
     const ICFGNode* node = address->getICFGNode();
     const auto* object = SVFUtil::dyn_cast<ObjVar>(address->getRHSVar());
@@ -328,22 +329,33 @@ u32_t AbstractInterpretation::getAllocaInstByteSize(const AddrStmt* address)
         throw std::invalid_argument("Addr rhs value is not ObjVar");
     const BaseObjVar* base = svfir->getBaseObject(object->getId());
     if (!base)
-        return Options::MaxFieldLimit();
+        return {0, Options::MaxFieldLimit()};
     if (base->isConstantByteSize())
-        return base->getByteSizeOfObj();
+    {
+        const u32_t size = base->getByteSizeOfObj();
+        return {size, size};
+    }
 
-    u64_t result = 1;
+    u64_t lower = address->getArrSize().empty() ? 0 : 1;
+    u64_t upper = 1;
+    const auto multiply = [](u64_t product, u64_t factor)
+    {
+        return factor != 0 && product > Options::MaxFieldLimit() / factor
+               ? Options::MaxFieldLimit() : product * factor;
+    };
     for (const SVFVar* value : address->getArrSize())
     {
         const SVF::Interval size = getInterval(value, node);
-        const u64_t upper = static_cast<u64_t>(std::clamp<s64_t>(
-                finiteEndpoint(size.upper(), Options::MaxFieldLimit()), 0,
-                Options::MaxFieldLimit()));
-        result = upper != 0 && result > Options::MaxFieldLimit() / upper
-                 ? Options::MaxFieldLimit()
-                 : result * upper;
+        const u64_t lb = size.isBottom() ? 0 : static_cast<u64_t>(std::clamp<s64_t>(
+                finiteEndpoint(size.lower(), 0), 0, Options::MaxFieldLimit()));
+        const u64_t ub = size.isBottom() ? Options::MaxFieldLimit() :
+                         static_cast<u64_t>(std::clamp<s64_t>(
+                                                finiteEndpoint(size.upper(), Options::MaxFieldLimit()),
+                                                0, Options::MaxFieldLimit()));
+        lower = multiply(lower, lb);
+        upper = multiply(upper, ub);
     }
-    return static_cast<u32_t>(result);
+    return {static_cast<u32_t>(std::min(lower, upper)), static_cast<u32_t>(upper)};
 }
 
 const AllocationSizeModel& AbstractInterpretation::allocationSizeModel()
@@ -1063,46 +1075,23 @@ bool AbstractInterpretation::canStrongStore(
 {
     const BaseObjVar* base = svfir->getBaseObject(object.getId());
     const bool box = Options::AEDomain() == AENumericalDomain::Box;
-    // One abstract allocation site can denote several concrete heap objects.
-    // Strong updates require a non-repeating site and a unique, non-repeating
-    // caller chain; a singleton points-to set alone is insufficient.
-    if (base && base->isHeap())
+    if (box)
     {
-        if (!box)
-            return false;
-        const ICFGNode* site = base->getICFGNode();
-        std::set<const FunObjVar*> visited;
-        while (site)
-        {
-            const FunObjVar* function = site->getFun();
-            if (!function || !visited.insert(function).second || isRecursiveFun(function))
-                return false;
-            const auto& wtos = preAnalysis->getFuncToWTO();
-            const auto found = wtos.find(function);
-            if (found == wtos.end() || !found->second->in_cycleDepth_table(site) ||
-                    found->second->isHead(site) ||
-                    found->second->cycleDepth(site).begin() != found->second->cycleDepth(site).end())
-                return false;
-            std::set<const CallICFGNode*> callers;
-            for (const auto* edge : callGraph->getCallGraphNode(function)->getInEdges())
-            {
-                callers.insert(edge->getDirectCalls().begin(), edge->getDirectCalls().end());
-                callers.insert(edge->getIndirectCalls().begin(), edge->getIndirectCalls().end());
-            }
-            if (callers.size() > 1)
-                return false;
-            if (callers.empty())
-                break;
-            site = *callers.begin();
-        }
-        if (!site)
-            return false;
+        const NodeID id = object.getId();
+        const auto* pta = preAnalysis->getPointerAnalysis();
+        return pointees.isSingleton() && base && !svfir->isNullOrBlkObj(id) &&
+               !pta->isHeapMemObj(id) && !base->isFieldInsensitive() &&
+               !pta->isLocalVarInRecursiveFun(id) &&
+               (!pta->isArrayMemObj(id) || svfir->isGepObjVar(id)) &&
+               base->getType()->getTypeInfo()->getNumOfFlattenElements() <=
+               base->getMaxFieldOffsetLimit() &&
+               !state.lifetimes().mayBeFreed(adapter_.location(object));
     }
     return pointees.isSingleton() && base &&
-           (box || (!base->isHeap() && !base->isArray())) &&
+           !base->isHeap() && !base->isArray() &&
            !base->isBlackHoleObj() &&
            !base->isFieldInsensitive() &&
-           (box || !(base->isStack() && isRecursiveFun(base->getFunction()))) &&
+           !(base->isStack() && isRecursiveFun(base->getFunction())) &&
            !adapter_.isRuntimeFieldSummary(object) &&
            !state.lifetimes().mayBeFreed(adapter_.location(object));
 }

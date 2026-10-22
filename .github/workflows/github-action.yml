@@ -8,8 +8,7 @@ on:
 
 # Customize the env variable
 env:
-  # Match upstream master; newer aggregate-return tests require SVF PR #1919.
-  SVF_TEST_SUITE_REV: 14df550605576a6834bb01e809b6135149f1cea7
+  SVF_TEST_SUITE_REV: 9b1bc44fc10256018e3e558b9d71c1cf356fdf6e
   SVF_CTIR: 1
   SVF_Z3: 1
   SVF_DIR: $GITHUB_WORKSPACE
