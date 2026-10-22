@@ -1096,6 +1096,55 @@ bool AbstractInterpretation::canStrongStore(
            !state.lifetimes().mayBeFreed(adapter_.location(object));
 }
 
+bool AbstractInterpretation::canRefineMemory(
+    const SVF::AddressSet& pointees, const ObjVar& object, const State& state)
+{
+    const BaseObjVar* base = svfir->getBaseObject(object.getId());
+    const bool box = Options::AEDomain() == AENumericalDomain::Box;
+    // One abstract allocation site can denote several concrete heap objects.
+    // Strong updates require a non-repeating site and a unique, non-repeating
+    // caller chain; a singleton points-to set alone is insufficient.
+    if (base && base->isHeap())
+    {
+        if (!box)
+            return false;
+        const ICFGNode* site = base->getICFGNode();
+        std::set<const FunObjVar*> visited;
+        while (site)
+        {
+            const FunObjVar* function = site->getFun();
+            if (!function || !visited.insert(function).second || isRecursiveFun(function))
+                return false;
+            const auto& wtos = preAnalysis->getFuncToWTO();
+            const auto found = wtos.find(function);
+            if (found == wtos.end() || !found->second->in_cycleDepth_table(site) ||
+                    found->second->isHead(site) ||
+                    found->second->cycleDepth(site).begin() != found->second->cycleDepth(site).end())
+                return false;
+            std::set<const CallICFGNode*> callers;
+            for (const auto* edge : callGraph->getCallGraphNode(function)->getInEdges())
+            {
+                callers.insert(edge->getDirectCalls().begin(), edge->getDirectCalls().end());
+                callers.insert(edge->getIndirectCalls().begin(), edge->getIndirectCalls().end());
+            }
+            if (callers.size() > 1)
+                return false;
+            if (callers.empty())
+                break;
+            site = *callers.begin();
+        }
+        if (!site)
+            return false;
+    }
+    return pointees.isSingleton() && base &&
+           (box || (!base->isHeap() && !base->isArray())) &&
+           !base->isBlackHoleObj() &&
+           !base->isFieldInsensitive() &&
+           (box || !(base->isStack() && isRecursiveFun(base->getFunction()))) &&
+           !adapter_.isRuntimeFieldSummary(object) &&
+           !state.lifetimes().mayBeFreed(adapter_.location(object));
+}
+
 void AbstractInterpretation::storeValue(const ValVar* pointer,
                                         const SVF::Interval& interval,
                                         const SVF::AddressSet& addresses,

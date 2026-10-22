@@ -2042,7 +2042,7 @@ void AbstractInterpretation::collectBranchRefinement(
                                 for (const SVF::Location location : ptrVal)
                                 {
                                     if (const ObjVar* object = objectAt(location))
-                                        if (canStrongStore(ptrVal,*object,static_cast<State&>(state)))
+                                        if (canRefineMemory(ptrVal,*object,static_cast<State&>(state)))
                                             recordBranchRefinement(
                                                 object->getId(), narrowed, state,
                                                 loadIcfg, succNode);
@@ -2102,7 +2102,7 @@ void AbstractInterpretation::collectBranchRefinement(
                         for (const SVF::Location location : ptrVal)
                         {
                             if (const ObjVar* object = objectAt(location))
-                                if (canStrongStore(ptrVal,*object,static_cast<State&>(state)))
+                                if (canRefineMemory(ptrVal,*object,static_cast<State&>(state)))
                                     recordBranchRefinement(object->getId(),
                                                            switch_cond, state,
                                                            loadIcfg, succNode);

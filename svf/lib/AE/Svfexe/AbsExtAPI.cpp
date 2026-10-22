@@ -650,24 +650,28 @@ void AbsExtAPI::handleMemcpy(const ValVar* dst, const ValVar* src,
         const ObjVar* destinationCell = destination.isNull() ? nullptr : ae->objectAt(destination);
         const auto* sourceObject = sourceCell ? SVFUtil::dyn_cast<BaseObjVar>(sourceCell) : nullptr;
         const auto* destinationObject = destinationCell ? SVFUtil::dyn_cast<BaseObjVar>(destinationCell) : nullptr;
-        // Array elements are field cells, not bytes. Copy only complete,
-        // identically typed scalar elements; preserve source snapshots before
-        // any write so memmove overlap cannot read an already changed cell.
-        const auto* sourceArray = sourceObject
-                                  ? SVFUtil::dyn_cast<SVFArrayType>(sourceObject->getType()) : nullptr;
-        const auto* destinationArray = destinationObject
-                                       ? SVFUtil::dyn_cast<SVFArrayType>(destinationObject->getType()) : nullptr;
-        if (sourceArray && destinationArray && sourceArray == destinationArray &&
-                !sourceArray->getTypeOfElement()->isArrayTy() &&
-                !sourceArray->getTypeOfElement()->isStructTy() &&
-                sourceObject->isConstantByteSize() && destinationObject->isConstantByteSize())
+        // Snapshot complete, identically typed cells before writing, including
+        // flattened fields of a whole aggregate. Partial aggregate copies fall back.
+        const SVFType* type = sourceObject ? sourceObject->getType() : nullptr;
+        const auto* array = type ? SVFUtil::dyn_cast<SVFArrayType>(type) : nullptr;
+        const s64_t bytes = lowerInteger(len);
+        u64_t cells = 0;
+        if (sourceObject && destinationObject && type == destinationObject->getType() &&
+                sourceObject->isConstantByteSize() && destinationObject->isConstantByteSize() &&
+                bytes > 0 && static_cast<u64_t>(bytes) <= sourceObject->getByteSizeOfObj() &&
+                static_cast<u64_t>(bytes) <= destinationObject->getByteSizeOfObj())
         {
-            const u32_t elementBytes = sourceArray->getTypeOfElement()->getByteSize();
-            const s64_t bytes = lowerInteger(len);
-            if (elementBytes && bytes > 0 && bytes % elementBytes == 0 &&
-                    static_cast<u64_t>(bytes) <= sourceObject->getByteSizeOfObj() &&
-                    static_cast<u64_t>(bytes) <= destinationObject->getByteSizeOfObj() &&
-                    static_cast<u64_t>(bytes / elementBytes) <= Options::MaxFieldLimit())
+            if ((type->isArrayTy() || type->isStructTy()) &&
+                    static_cast<u64_t>(bytes) == type->getByteSize())
+                cells = type->getTypeInfo()->getNumOfFlattenElements();
+            else if (array && !array->getTypeOfElement()->isArrayTy() &&
+                     !array->getTypeOfElement()->isStructTy())
+            {
+                const u32_t elementBytes = array->getTypeOfElement()->getByteSize();
+                if (elementBytes && bytes % elementBytes == 0)
+                    cells = bytes / elementBytes;
+            }
+            if (cells > 0 && cells <= Options::MaxFieldLimit())
             {
                 struct CellCopy
                 {
@@ -677,7 +681,7 @@ void AbsExtAPI::handleMemcpy(const ValVar* dst, const ValVar* src,
                 };
                 std::vector<CellCopy> copies;
                 bool complete = true;
-                for (s64_t index = 0; index < bytes / elementBytes; ++index)
+                for (u64_t index = 0; index < cells; ++index)
                 {
                     const SVF::AddressSet from = ae->getGepObjAddrs(src, integerInterval(index), node);
                     const SVF::AddressSet to = ae->getGepObjAddrs(dst, integerInterval(index), node);

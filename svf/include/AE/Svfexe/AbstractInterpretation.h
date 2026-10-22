@@ -611,6 +611,8 @@ protected:
     /// Strong writes require a definite, non-summary, live memory cell.
     bool canStrongStore(const SVF::AddressSet& pointees,
                         const ObjVar& object, const State& state);
+    bool canRefineMemory(const SVF::AddressSet& pointees,
+                         const ObjVar& object, const State& state);
     SVF::Variable memoryVariable(const ObjVar& object,
                                  const State& state) const;
     void assignInterval(State& state, SVF::Variable variable,

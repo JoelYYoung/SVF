@@ -11,7 +11,8 @@ permissions:
 
 # Customize the env variable
 env:
-  SVF_TEST_SUITE_REV: 9b1bc44fc10256018e3e558b9d71c1cf356fdf6e
+  # Match the suite used by upstream d700066b CI.
+  SVF_TEST_SUITE_REV: 8ce4e183ea89c38a52ba8b0527ef72a1a566c789
   SVF_CTIR: 1
   SVF_Z3: 1
   SVF_DIR: $GITHUB_WORKSPACE

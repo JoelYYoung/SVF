@@ -710,7 +710,7 @@ SVF::Interval SemiSparseAbstractInterpretation::getDefinedInterval(
     // resolves them at the global node, where their numerical value is Top,
     // rather than reading the value written at the generated load's node.
     // Keep this policy for subsequent generated stores as well as queries.
-    if (SVFUtil::isa<DummyValVar>(value))
+    if (SVFUtil::isa<DummyValVar>(value) && !value->getICFGNode())
         return SVF::Interval::top();
 
     const SVF::Variable variable = this->adapter_.variable(*value);
@@ -779,7 +779,7 @@ SVF::AddressSet SemiSparseAbstractInterpretation::getAddressSet(
     if (value->getId() == this->svfir->getBlkPtr() ||
             SVFUtil::isa<BlackHoleValVar>(value))
         return this->blackHoleAddressSet();
-    if (SVFUtil::isa<DummyValVar>(value))
+    if (SVFUtil::isa<DummyValVar>(value) && !value->getICFGNode())
         return SVF::AddressSet::bottom();
     if (!this->adapter_.contains(*value))
         return SVF::AddressSet::bottom();
