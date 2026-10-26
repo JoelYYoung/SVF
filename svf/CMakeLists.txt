@@ -7,6 +7,10 @@ set(ABSTRACT_DOMAIN_CORE_HEADERS
     ${CMAKE_CURRENT_LIST_DIR}/include/AE/Core/AddressDomain.h
     ${CMAKE_CURRENT_LIST_DIR}/include/AE/Core/InitializationDomain.h
     ${CMAKE_CURRENT_LIST_DIR}/include/AE/Core/BoxAddressDomain.h
+    ${CMAKE_CURRENT_LIST_DIR}/include/AE/Core/OctagonDomain.h
+    ${CMAKE_CURRENT_LIST_DIR}/include/AE/Core/ConvexPolyhedraDomain.h
+    ${CMAKE_CURRENT_LIST_DIR}/include/AE/Core/NumericalDomainFactory.h
+    ${CMAKE_CURRENT_LIST_DIR}/include/AE/Core/DimensionLayout.h
 )
 set(ABSTRACT_DOMAIN_CORE_SOURCES
     ${CMAKE_CURRENT_LIST_DIR}/lib/AE/Core/AbstractDomain.cpp
@@ -15,6 +19,9 @@ set(ABSTRACT_DOMAIN_CORE_SOURCES
     ${CMAKE_CURRENT_LIST_DIR}/lib/AE/Core/BoxAddressDomain.cpp
     ${CMAKE_CURRENT_LIST_DIR}/lib/AE/Core/Expression.cpp
     ${CMAKE_CURRENT_LIST_DIR}/lib/AE/Core/NumericalDomain.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/lib/AE/Core/OctagonDomain.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/lib/AE/Core/ConvexPolyhedraDomain.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/lib/AE/Core/NumericalDomainFactory.cpp
 )
 add_library(AbstractDomainCore)
 add_library(SVF::AbstractDomainCore ALIAS AbstractDomainCore)
