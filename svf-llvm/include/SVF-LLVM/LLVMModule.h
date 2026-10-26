@@ -87,6 +87,7 @@ private:
     std::unique_ptr<LLVMContext> owned_ctx;
     std::vector<std::unique_ptr<Module>> owned_modules;
     std::vector<std::reference_wrapper<Module>> modules;
+    Map<const BasicBlock*, std::string> semanticBlockNames;
 
     /// C++ ABI of the module being analyzed.
     TargetABI targetABI = TargetABI::Itanium;
@@ -232,6 +233,9 @@ public:
     NodeID getObjectNode(const Value* V);
 
     void dumpSymTable();
+
+    /// Stable instruction identity for detector query reports.
+    static std::string instructionSemanticSite(const Instruction* instruction);
 
 public:
 

@@ -1,4 +1,21 @@
 //===- Options.cpp -- Command line options ------------------------//
+//
+//                     SVF: Static Value-Flow Analysis
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Affero General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+// GNU Affero General Public License for more details.
+//
+// You should have received a copy of the GNU Affero General Public License
+// along with this program. If not, see <http://www.gnu.org/licenses/>.
+//
+//===----------------------------------------------------------------------===//
 
 #include "Util/Options.h"
 #include "Util/CommandLine.h"
@@ -152,14 +169,12 @@ const Option<u32_t> Options::FlowBudget(
     10000
 );
 
-
 // Offline constraint graph (OfflineConsG.cpp)
 const Option<bool> Options::OCGDotGraph(
     "dump-ocg",
     "Dump dot graph of Offline Constraint Graph",
     false
 );
-
 
 // Program Assignment Graph for pointer analysis (SVFIR.cpp)
 Option<bool> Options::HandBlackHole(
@@ -181,7 +196,6 @@ const Option<bool> Options::FirstFieldEqBase(
     false
 );
 
-
 // SVFG optimizer (SVFGOPT.cpp)
 const Option<bool> Options::ContextInsensitive(
     "ci-svfg",
@@ -201,14 +215,12 @@ const Option<std::string> Options::SelfCycle(
     ""
 );
 
-
 // Sparse value-flow graph (VFG.cpp)
 const Option<bool> Options::DumpVFG(
     "dump-vfg",
     "Dump dot graph of VFG",
     false
 );
-
 
 // Base class of pointer analyses (PointerAnalysis.cpp)
 const Option<bool> Options::TypePrint(
@@ -331,7 +343,6 @@ const Option<bool> Options::ConnectVCallOnCHA(
     false
 );
 
-
 // PointerAnalysisImpl.cpp
 const Option<bool> Options::INCDFPTData(
     "inc-data",
@@ -406,7 +417,6 @@ const Option<bool> Options::IgnoreDeadFun(
     false
 );
 
-
 // Base class of pointer analyses (MemSSA.cpp)
 const Option<bool> Options::DumpMSSA(
     "dump-mssa",
@@ -430,7 +440,6 @@ const OptionMap<u32_t> Options::MemPar(
     {MemSSA::MemPartition::InterDisjoint, "inter-disjoint", "memory regions partitioned across functions"},
 }
 );
-
 
 // SVFG builder (SVFGBuilder.cpp)
 const Option<bool> Options::SVFGWithIndirectCall(
@@ -457,13 +466,11 @@ const Option<std::string> Options::ReadSVFG(
     ""
 );
 
-
 const Option<bool> Options::IntraLock(
     "mta-intra-lock-td-edge",
     "Use simple intra-procedural lock for adding SVFG edges",
     true
 );
-
 
 // LockAnalysis.cpp
 const Option<bool> Options::PrintLockSpan(
@@ -471,7 +478,6 @@ const Option<bool> Options::PrintLockSpan(
     "Print Thread Interleaving Results",
     false
 );
-
 
 // MHP.cpp
 const Option<bool> Options::PrintInterLev(
@@ -486,7 +492,6 @@ const Option<bool> Options::DoLockAnalysis(
     true
 );
 
-
 // TCT.cpp
 const Option<bool> Options::TCTDotGraph(
     "mta-dump-tct",
@@ -494,14 +499,12 @@ const Option<bool> Options::TCTDotGraph(
     false
 );
 
-
 // LeakChecker.cpp
 const Option<bool> Options::ValidateTests(
     "valid-tests",
     "Validate memory leak tests",
     false
 );
-
 
 // Source-sink analyzer (SrcSnkDDA.cpp)
 const Option<bool> Options::DumpSlice(
@@ -516,14 +519,12 @@ const Option<u32_t> Options::CxtLimit(
     3
 );
 
-
 // CHG.cpp
 const Option<bool> Options::DumpCHA(
     "dump-cha",
     "dump the class hierarchy graph",
     false
 );
-
 
 // LLVMModule.cpp
 const Option<std::string> Options::Graphtxt(
@@ -576,15 +577,12 @@ const Option<u32_t> Options::MaxBVLen(
     64
 );
 
-
-
 // SaberCondAllocator.cpp
 const Option<bool> Options::PrintPathCond(
     "print-pc",
     "Print out path condition",
     false
 );
-
 
 // SaberSVFGBuilder.cpp
 const Option<bool> Options::CollectExtRetGlobals(
@@ -593,14 +591,12 @@ const Option<bool> Options::CollectExtRetGlobals(
     true
 );
 
-
 // SVFUtil.cpp
 const Option<bool> Options::DisableWarn(
     "dwarn",
     "Disable warning",
     true
 );
-
 
 // Andersen.cpp
 const Option<bool> Options::ConsCGDotGraph(
@@ -691,7 +687,6 @@ OptionMultiple<PTATY> Options::PASelected(
     {PTATY::TypeCPP_WPA, "type", "Type-based fast analysis for Callgraph, SVFIR and CHA"},
 }
 );
-
 
 OptionMultiple<u32_t> Options::AliasRule(
     "Select alias check rule",
@@ -789,8 +784,26 @@ const OptionMap<u32_t> Options::AESparsity(
     {
         AbstractInterpretation::AESparsity::Sparse, "sparse",
         "Sparse abstract execution via SVFG."
-    }
+    },
+
 });
+
+const Option<bool> Options::AEHarnessNondetNoCallback(
+    "ae-harness-nondet-no-callback",
+    "Explicit test-harness premise: nondet_i32 cannot call user code (default: false).",
+    false);
+
+const Option<std::string> Options::AEQueryLedgerFile(
+    "ae-query-ledger",
+    "Write the complete abstract-execution detector query ledger as TSV.",
+    ""
+);
+const Option<std::string> Options::AEQueryInputID(
+    "ae-query-input-id",
+    "Stable input identity recorded in AE verification artifacts (for example SHA-256).",
+    ""
+);
+
 const OptionMap<u32_t> Options::AEFunEntry(
     "ae-fun-entry",
     "Abstract execution function entry mode (Default: main)",
@@ -854,7 +867,6 @@ const Option<bool> Options::RunUncallFuncs(
     "run-uncall-fun","Skip Gep Unknown Index",false);
 const Option<bool> Options::ICFGMergeAdjacentNodes(
     "icfg-merge-adjnodes","ICFG Simplification - Merge Adjacent Nodes in the Same Basic Block.",false);
-
 
 const Option<u32_t> Options::AEPrecision(
     "precision",

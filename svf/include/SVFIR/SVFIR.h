@@ -107,6 +107,7 @@ private:
     static std::string pagReadFromTxt;
 
     std::string moduleIdentifier;
+    NodeBS constantStringObjects; ///< Frontend semantic facts, not numerical-state tags.
 
     /// Constructor
     SVFIR(bool buildFromFile);
@@ -115,6 +116,14 @@ private:
     void destroy();
 
 public:
+    void markConstantStringObject(NodeID id)
+    {
+        constantStringObjects.set(id);
+    }
+    bool isConstantStringObject(NodeID id) const
+    {
+        return constantStringObjects.test(id);
+    }
 
     /// Singleton design here to make sure we only have one instance during any analysis
     //@{

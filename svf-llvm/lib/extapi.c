@@ -724,6 +724,12 @@ __attribute__((annotate("MEMCPY")))
 void __memcpy_chk(char* dst, char* src, int sz, int flag){}
 
 __attribute__((annotate("MEMCPY")))
+void *memcpy(void *dst, const void *src, unsigned long n)
+{
+    return NULL;
+}
+
+__attribute__((annotate("MEMCPY")))
 void *memmove(void *str1, const void *str2, unsigned long n)
 {
     return NULL;

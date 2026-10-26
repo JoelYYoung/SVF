@@ -4,7 +4,9 @@
 
 # Find the LLVM instance to build & link SvfLLVM against (prioritise $LLVM_DIR)
 find_package(LLVM CONFIG REQUIRED HINTS ${LLVM_HOME} $ENV{LLVM_HOME} ${LLVM_DIR} $ENV{LLVM_DIR})
-add_compile_definitions(LLVM_BUILD_STATIC)
+if(WIN32)
+  add_compile_definitions(LLVM_BUILD_STATIC)
+endif()
 
 # Import certain utilities (e.g. to make add_llvm_library() available)
 list(APPEND CMAKE_MODULE_PATH "${LLVM_CMAKE_DIR}")
@@ -50,8 +52,10 @@ include_directories(SYSTEM ${LLVM_INCLUDE_DIRS})
 link_directories(${LLVM_LIBRARY_DIRS})
 add_definitions(${_LLVM_DEFINITIONS})
 
-# Force dynamic dylib link checking to OFF so that llvm_map_components_to_libnames returns the individual component libraries.
-set(LLVM_LINK_LLVM_DYLIB OFF)
+# Windows SDKs provide the individual LLVM component libraries.
+if(WIN32)
+  set(LLVM_LINK_LLVM_DYLIB OFF)
+endif()
 
 # Use all components as link targets (picks dynamic/static libs); store in $LLVM_LIBRARIES
 if(LLVM_LINK_LLVM_DYLIB)
@@ -193,8 +197,16 @@ if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
   )
 endif()
 
-# Only expose the headers in the source tree to in-tree users of SVF
-target_include_directories(SvfLLVM PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_LIST_DIR}/include>)
+# Only expose the headers in the source tree to in-tree users of SVF.  SvfLLVM's
+# public headers include LLVM headers, so their build-tree include directories
+# are part of the public build interface as well.
+target_include_directories(
+  SvfLLVM
+  PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_LIST_DIR}/include>
+)
+target_include_directories(
+  SvfLLVM SYSTEM PUBLIC "$<BUILD_INTERFACE:${LLVM_INCLUDE_DIRS}>"
+)
 
 # Set the library & .so version of the LLVM library
 set_target_properties(SvfLLVM PROPERTIES VERSION ${SVF_VERSION} SOVERSION ${SVF_VERSION_MAJOR})
