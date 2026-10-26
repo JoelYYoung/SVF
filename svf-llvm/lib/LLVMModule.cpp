@@ -43,6 +43,7 @@
 #include "llvm/Transforms/Utils/Cloning.h"
 #include "SVF-LLVM/ICFGBuilder.h"
 #include "Graphs/CallGraph.h"
+#include "llvm/IR/ModuleSlotTracker.h"
 #include "Util/CallGraphBuilder.h"
 
 #if LLVM_VERSION_MAJOR > 16
@@ -51,6 +52,41 @@
 
 using namespace std;
 using namespace SVF;
+
+std::string LLVMModuleSet::instructionSemanticSite(const Instruction* instruction)
+{
+    auto& blockNames = getLLVMModuleSet()->semanticBlockNames;
+    if (blockNames.find(instruction->getParent()) == blockNames.end())
+    {
+        // Operand numbering is fixed after module preprocessing.
+        llvm::ModuleSlotTracker slots(instruction->getModule(), false);
+        for (const Function& function : *instruction->getModule())
+        {
+            slots.incorporateFunction(function);
+            for (const BasicBlock& block : function)
+            {
+                std::string name;
+                llvm::raw_string_ostream stream(name);
+                block.printAsOperand(stream, false, slots);
+                blockNames.emplace(&block, std::move(name));
+            }
+        }
+    }
+    std::string site;
+    llvm::raw_string_ostream stream(site);
+    stream << "fn=" << instruction->getFunction()->getName() << ':';
+    stream << blockNames.at(instruction->getParent());
+    unsigned ordinal = 0;
+    for (const auto& previous : *instruction->getParent())
+    {
+        if (&previous == instruction) break;
+        ++ordinal;
+    }
+    stream << ":inst=" << ordinal;
+    stream.flush();
+    return site;
+}
+
 
 /*
   svf.main() is used to model the real entry point of a C++ program, which
@@ -164,6 +200,7 @@ void LLVMModuleSet::buildSymbolTable() const
 
 void LLVMModuleSet::build()
 {
+    semanticBlockNames.clear();
     if (!empty())
     {
         targetABI = LLVMUtil::detectTargetABI(

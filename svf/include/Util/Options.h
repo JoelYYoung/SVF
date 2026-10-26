@@ -1,4 +1,21 @@
 //===- Options.h -- Command line options ------------------------//
+//
+//                     SVF: Static Value-Flow Analysis
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Affero General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+// GNU Affero General Public License for more details.
+//
+// You should have received a copy of the GNU Affero General Public License
+// along with this program. If not, see <http://www.gnu.org/licenses/>.
+//
+//===----------------------------------------------------------------------===//
 
 #ifndef OPTIONS_H_
 #define OPTIONS_H_
@@ -235,6 +252,12 @@ public:
 
     // Abstract Execution
     static const OptionMap<u32_t> AESparsity;
+    static const Option<bool> AEHarnessNondetNoCallback;
+    /// Optional complete abstract-execution query ledger (TSV).
+    static const Option<std::string> AEQueryLedgerFile;
+    /// Content identity supplied by the runner (normally input SHA-256).
+    static const Option<std::string> AEQueryInputID;
+    /// Optional dense-equation post-fixpoint verification report (TSV).
     static const OptionMap<u32_t> AEFunEntry;
     static const Option<u32_t> WidenDelay;
     /// recursion handling mode, Default: TOP

@@ -1002,6 +1002,10 @@ void SVFIRBuilder::visitGlobal()
             if (gvar->hasInitializer())
             {
                 Constant *C = gvar->getInitializer();
+                if(gvar->isConstant())
+                    if(const auto* bytes=SVFUtil::dyn_cast<ConstantDataSequential>(C))
+                        if(bytes->isCString()&&pag->getBaseObject(obj)->isGlobalObj())
+                            pag->markConstantStringObject(obj);
                 DBOUT(DPAGBuild, outs() << "add global var node "
                       << LLVMUtil::dumpValue(gvar) << "\n");
                 InitialGlobal(gvar, C, 0);
@@ -1629,7 +1633,7 @@ void SVFIRBuilder::initialiseAggregateReturns()
         for (const User* user : fun->users())
             calls.push_back(SVFUtil::cast<CallInst>(user));
         std::sort(calls.begin(), calls.end(), [this](const CallInst* lhs,
-                  const CallInst* rhs)
+                const CallInst* rhs)
         {
             return llvmModuleSet()->getCallICFGNode(lhs)->getId() <
                    llvmModuleSet()->getCallICFGNode(rhs)->getId();
@@ -2073,7 +2077,7 @@ const Value* SVFIRBuilder::getBaseValueForExtArg(const Value* V)
                 auto isCoveredByMemcpy = [offset, accessBytes](const CallBase* cs) -> bool
                 {
                     if (cs->arg_size() < 3)
-                        return false;
+                    return false;
 
                     const auto* copySize = SVFUtil::dyn_cast<ConstantInt>(cs->getArgOperand(2));
                     if (!copySize)
@@ -2081,11 +2085,11 @@ const Value* SVFIRBuilder::getBaseValueForExtArg(const Value* V)
                         return false;
                     }
 
-                    const u64_t copyBytes = copySize->getZExtValue();
-                    return copyBytes >= accessBytes && copyBytes - accessBytes >= offset;
-                };
+                const u64_t copyBytes = copySize->getZExtValue();
+                return copyBytes >= accessBytes && copyBytes - accessBytes >= offset;
+            };
 
-                auto hasInterveningWrite = [load](const Instruction* from) -> bool
+            auto hasInterveningWrite = [load](const Instruction* from) -> bool
                 {
                     if (from->getParent() != load->getParent() || !from->comesBefore(load))
                         return true;
@@ -2286,6 +2290,38 @@ void SVFIRBuilder::setCurrentBBAndValueForPAGEdge(PAGEdge* edge)
     assert(curVal && "current Val is nullptr?");
     edge->setBB(curBB!=nullptr ? curBB : nullptr);
     edge->setValue(pag->getGNode(llvmModuleSet()->getValueNode(curVal)));
+    // Bind detector sites to the fixed LLVM input, never to allocation-order
+    // PAG/ICFG IDs. Constant expressions are uniqued by LLVM; repeated uses
+    // of the same expression denote one address-formation property.
+    if (SVFUtil::isa<GepStmt>(edge) || SVFUtil::isa<LoadStmt>(edge) ||
+            SVFUtil::isa<StoreStmt>(edge))
+    {
+        std::string site;
+        llvm::raw_string_ostream stream(site);
+        if (const auto* instruction = SVFUtil::dyn_cast<Instruction>(curVal))
+        {
+            stream << LLVMModuleSet::instructionSemanticSite(instruction);
+            llvm::Type* accessType = nullptr;
+            if (const auto* load = SVFUtil::dyn_cast<llvm::LoadInst>(instruction))
+                accessType = load->getType();
+            if (const auto* store = SVFUtil::dyn_cast<llvm::StoreInst>(instruction))
+                accessType = store->getValueOperand()->getType();
+            if (accessType && accessType->isSized())
+            {
+                auto size = instruction->getModule()->getDataLayout().getTypeStoreSize(accessType);
+                if (!size.isScalable()) edge->setAccessBytes(size.getFixedValue());
+            }
+        }
+        else
+        {
+            stream << "global=";
+            curVal->printAsOperand(stream, true);
+        }
+        if (const auto* gep = SVFUtil::dyn_cast<GepStmt>(edge))
+            stream << ":gep-field=" << gep->getAccessPath().getConstantStructFldIdx();
+        stream.flush();
+        edge->setQuerySite(site);
+    }
     ICFGNode* icfgNode = pag->getICFG()->getGlobalICFGNode();
     LLVMModuleSet* llvmMS = llvmModuleSet();
     if (const Instruction* curInst = SVFUtil::dyn_cast<Instruction>(curVal))

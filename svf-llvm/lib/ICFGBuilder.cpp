@@ -199,7 +199,21 @@ void ICFGBuilder::processFunBody(WorkList& worklist)
                 s64_t val = -1;
                 if (condVal && condVal->getBitWidth() <= 64)
                     val = LLVMUtil::getIntegerValue(condVal).first;
-                icfg->addConditionalIntraEdge(srcNode, dstNode,val);
+                ICFGEdge* added = icfg->addConditionalIntraEdge(srcNode, dstNode,val);
+
+                // Multiple labels can have the same destination. Preserve
+                // every real IR case, never interpret legacy -1 as a label.
+                if (added)
+                {
+                    const unsigned width = si->getCondition()->getType()->getIntegerBitWidth();
+                    std::vector<s64_t> values;
+                    if (width <= 64)
+                        for (const auto& item : si->cases())
+                            if (item.getCaseSuccessor() == succ->getParent())
+                                values.push_back(item.getCaseValue()->getSExtValue());
+                    SVFUtil::cast<IntraCFGEdge>(added)->setSwitchCases(
+                        width, si->getDefaultDest() == succ->getParent(), values);
+                }
             }
             else
                 icfg->addIntraEdge(srcNode, dstNode);
